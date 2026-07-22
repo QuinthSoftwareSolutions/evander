@@ -153,9 +153,11 @@ it is separate from the worker registry setting and routes package metadata/tarb
 Nexus while sending audit requests to public npm.
 
 For Azure-style deployments that include `evander_hosts`, the worker playbook also prepares
-restricted SSH before `repo_checkout` and checks out the deployment repo through a control-plane bare
-mirror instead of talking to GitHub directly. Deploy the control plane first so that mirror can serve
-the requested worker revision from the control-plane checkout.
+restricted SSH before `repo_checkout` and checks out the deployment repo through the root-owned
+managed control-plane repository instead of talking to GitHub directly. Deploy the control plane
+first so the worker playbook can publish its exact requested revision to the repository's
+worker-specific `refs/evander/deploy/` ref. The playbook never recreates the retired
+`git-remotes/evander-deploy.git` mirror.
 
 If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build, run the same build
 with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build; worker

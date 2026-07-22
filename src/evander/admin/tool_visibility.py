@@ -158,6 +158,12 @@ _APPROVAL_TOOLS = {
     ToolName.APPROVAL_CHECK,
 }
 
+_DOCUMENTATION_TOOLS = {
+    ToolName.DOCUMENTATION_LIST,
+    ToolName.DOCUMENTATION_SEARCH,
+    ToolName.DOCUMENTATION_READ,
+}
+
 _AGENT_CONTROL_TOOLS = {
     ToolName.GET_AGENT_STATUS,
     ToolName.GET_AGENT_LOGS,
@@ -274,6 +280,8 @@ def _tool_category(tool_name: McpToolName) -> str:
         return "Pull requests"
     if tool_name in _APPROVAL_TOOLS:
         return "Approvals"
+    if tool_name in _DOCUMENTATION_TOOLS:
+        return "Documentation"
     if tool_name in _AGENT_CONTROL_TOOLS:
         return "Agent control"
     if tool_name in _MESSAGING_TOOLS:
@@ -308,6 +316,8 @@ def _tool_provider(tool_name: McpToolName, category: str) -> str | None:
         return "pull_requests"
     if tool_name in _APPROVAL_TOOLS:
         return "approvals"
+    if tool_name in _DOCUMENTATION_TOOLS:
+        return "documentation"
     if tool_name in _AGENT_CONTROL_TOOLS:
         return "agent"
     if tool_name in _DISCORD_TOOLS:

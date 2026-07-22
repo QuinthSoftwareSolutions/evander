@@ -454,15 +454,15 @@ direct Ubuntu mirror egress. Verify the private path from a worker with
 `curl http://<control-plane-private-ip>:3142/acng-report.html`.
 
 When `evander_worker_repo_checkout_via_control_plane_git` is enabled, the worker playbook
-also prepares restricted SSH before `repo_checkout`, creates a control-plane bare mirror named by
-`evander_worker_repo_mirror_name`, and points `evander_repo_url` at
-`ssh://{{ evander_git_ssh_alias }}{{ evander_worker_repo_mirror_path }}`. This keeps the
-worker deploy checkout on the private control-plane Git path instead of requiring worker egress to
-GitHub. The control-plane checkout must already contain the requested `evander_repo_version`;
-deploy `site.yml` first, then run `worker.yml`. During the worker run, Ansible publishes that exact
-control-plane commit to the deployment mirror at `refs/heads/deploy/evander` before the worker
-checkout task fetches from the mirror. That deployment mirror disables the restricted SSH wrapper's
-normal auto-refresh path so the run-scoped deploy ref is not pruned during `git-upload-pack`.
+also prepares restricted SSH before `repo_checkout`, resolves the control-plane checkout through
+the root-owned managed Git registry, and points `evander_repo_url` at that exact managed bare
+repository. This keeps the worker deploy checkout on the private control-plane Git path instead of
+requiring worker egress to GitHub. The control-plane checkout must already contain the requested
+`evander_repo_version`; deploy `site.yml` first, then run `worker.yml`. During the worker run,
+Ansible publishes that exact control-plane commit to
+`refs/evander/deploy/<worker-inventory-name>` before the worker checkout fetches it. The worker's
+read-only SSH key is scoped to the one managed repository; legacy `git-remotes/evander-deploy.git`
+mirrors are not created or modified.
 
 The worker `python_env` install uses the control-plane Nexus PyPI group through
 `evander_python_install_env`, setting `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, `UV_INSECURE_HOST`,

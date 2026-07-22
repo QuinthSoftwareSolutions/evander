@@ -91,16 +91,11 @@
   delegate_to: "{{ evander_control_plane_host }}"
   when: evander_worker_install_control_plane_git_authorized_key | bool
 
-- name: Authorize worker deployment-mirror key on the control plane
+- name: Remove prior worker deployment authorization before managed repo resolution
   ansible.builtin.lineinfile:
     path: "{{ evander_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh/authorized_keys"
-    create: true
-    owner: "{{ evander_git_user }}"
-    group: "{{ evander_git_user }}"
-    mode: "0600"
     regexp: "{{ evander_worker_git_public_key.split()[1] | regex_escape }}"
-    line: >-
-      from="{{ evander_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="EVANDER_GIT_ROOT_B64={{ (evander_worker_repo_mirror_path | dirname) | b64encode }} EVANDER_GIT_AUTH_ACCESS=read-only EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }} {{ evander_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ evander_worker_git_public_key }}
+    state: absent
   delegate_to: "{{ evander_control_plane_host }}"
   when: evander_worker_install_control_plane_git_authorized_key | bool
 
@@ -132,58 +127,79 @@
     success_msg: Control-plane checkout contains the requested worker revision.
   when: evander_worker_repo_checkout_via_control_plane_git | bool
 
-- name: Ensure control-plane deployment repo mirror exists
+- name: Resolve control-plane checkout as a root-owned managed repository
   ansible.builtin.command:
     argv:
-      - "{{ evander_control_plane_deploy_path }}/scripts/create_git_remote.sh"
-      - "{{ evander_worker_repo_mirror_name }}"
-  environment:
-    EVANDER_GIT_ROOT: "{{ evander_worker_repo_mirror_path | dirname }}"
-    EVANDER_GIT_HOST: "{{ evander_git_host }}"
-    EVANDER_GIT_USER: "{{ evander_git_user }}"
-    EVANDER_GIT_SSH_ALIAS: "{{ evander_git_ssh_alias }}"
+      - "{{ evander_control_plane_deploy_path }}/.venv/bin/evander-cli"
+      - git-repos
+      - register
+      - --runtime-dir
+      - "{{ evander_control_plane_deploy_path }}/runtime"
+      - --directory-path
+      - "{{ evander_worker_repo_managed_directory_path }}"
+      - --repo-source
+      - "{{ evander_control_plane_deploy_path }}"
+      - --no-refresh
   delegate_to: "{{ evander_control_plane_host }}"
   become_user: "{{ evander_git_user }}"
+  register: evander_worker_repo_managed_register
   changed_when: false
   when: evander_worker_repo_checkout_via_control_plane_git | bool
 
-- name: Configure control-plane deployment repo mirror metadata
-  ansible.builtin.command:
-    argv:
-      - git
-      - "--git-dir={{ evander_worker_repo_mirror_path }}"
-      - config
-      - "{{ item.key }}"
-      - "{{ item.value }}"
-  loop:
-    - key: evander.mirrorSource
-      value: "{{ evander_control_plane_deploy_path }}"
-    - key: evander.mirrorRemoteName
-      value: origin
-    - key: evander.mirrorSyncRemote
-      value: "0"
-    - key: evander.mirrorForceLocal
-      value: "0"
-    - key: evander.mirrorAutoRefresh
-      value: "0"
-  delegate_to: "{{ evander_control_plane_host }}"
-  become_user: "{{ evander_git_user }}"
-  changed_when: false
+- name: Record managed deployment repository
+  ansible.builtin.set_fact:
+    evander_worker_repo_managed_record: "{{ evander_worker_repo_managed_register.stdout | from_json }}"
   when: evander_worker_repo_checkout_via_control_plane_git | bool
 
-- name: Publish requested control-plane revision to deployment repo mirror
+- name: Assert managed deployment repository is root-owned
+  ansible.builtin.assert:
+    that:
+      - (evander_worker_repo_managed_record.managed_repo_id | default('') | string | length) > 0
+      - evander_worker_repo_managed_record.directory_path == evander_worker_repo_managed_directory_path
+    fail_msg: >-
+      The control-plane checkout did not resolve to a managed repository owned by
+      {{ evander_worker_repo_managed_directory_path }}. result={{ evander_worker_repo_managed_record }}
+    success_msg: Control-plane checkout resolved to a root-owned managed repository.
+  when: evander_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Resolve managed deployment repository path
+  ansible.builtin.set_fact:
+    evander_worker_repo_managed_path: >-
+      {{ evander_git_root }}/{{ evander_worker_repo_managed_record.managed_repo_id }}.git
+  when: evander_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Resolve managed deployment repository checkout URL
+  ansible.builtin.set_fact:
+    evander_worker_repo_checkout_url: >-
+      ssh://{{ evander_git_ssh_alias }}{{ evander_worker_repo_managed_path }}
+  when: evander_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Authorize worker managed-repository key on the control plane
+  ansible.builtin.lineinfile:
+    path: "{{ evander_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh/authorized_keys"
+    create: true
+    owner: "{{ evander_git_user }}"
+    group: "{{ evander_git_user }}"
+    mode: "0600"
+    regexp: "{{ evander_worker_git_public_key.split()[1] | regex_escape }}"
+    line: >-
+      from="{{ evander_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="EVANDER_GIT_ROOT_B64={{ evander_git_root | b64encode }} EVANDER_GIT_AUTH_ACCESS=read-only EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_managed_path | b64encode }} {{ evander_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ evander_worker_git_public_key }}
+  delegate_to: "{{ evander_control_plane_host }}"
+  when: evander_worker_install_control_plane_git_authorized_key | bool
+
+- name: Publish requested control-plane revision to managed deployment ref
   ansible.builtin.command:
     argv:
       - git
-      - "--git-dir={{ evander_worker_repo_mirror_path }}"
+      - "--git-dir={{ evander_worker_repo_managed_path }}"
       - fetch
       - --force
       - "{{ evander_control_plane_deploy_path }}"
-      - "{{ evander_control_plane_repo_revision_check.stdout }}:refs/heads/deploy/evander"
+      - "{{ evander_control_plane_repo_revision_check.stdout }}:{{ evander_worker_repo_deploy_ref }}"
   delegate_to: "{{ evander_control_plane_host }}"
   become_user: "{{ evander_git_user }}"
-  register: evander_worker_repo_mirror_fetch
-  changed_when: (evander_worker_repo_mirror_fetch.stderr | trim | length) > 0
+  register: evander_worker_repo_managed_fetch
+  changed_when: (evander_worker_repo_managed_fetch.stderr | trim | length) > 0
   when: evander_worker_repo_checkout_via_control_plane_git | bool
 
 - name: Use private control-plane mirror for worker repo checkout

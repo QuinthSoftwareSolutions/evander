@@ -134,8 +134,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "evander_worker_git_access_enabled" in text
     assert "evander_worker_install_control_plane_git_authorized_key" in text
     assert "evander_worker_repo_checkout_via_control_plane_git" in text
-    assert "evander_worker_repo_mirror_name" in text
-    assert "evander_worker_repo_checkout_url" in text
+    assert 'evander_worker_repo_managed_directory_path: "root"' in text
+    assert 'evander_worker_repo_deploy_ref: "refs/evander/deploy/{{ inventory_hostname }}"' in text
+    assert "evander_worker_repo_mirror_name" not in text
     assert 'evander_runner_image_name: "evander-runner:latest"' in text
     assert 'evander_claude_runner_image_name: "evander-runner-claude:latest"' in text
     assert "evander_runner_image_archive_path" in text
@@ -589,23 +590,24 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert worker.index("- role: worker_git_access") < worker.index("- role: repo_checkout")
     assert "Generate restricted worker Git SSH key" in role
     assert "IdentityFile ~/.ssh/evander-git" in role
-    assert "Authorize worker deployment-mirror key on the control plane" in role
+    assert "Remove prior worker deployment authorization before managed repo resolution" in role
+    assert "Resolve control-plane checkout as a root-owned managed repository" in role
+    assert '"{{ evander_control_plane_deploy_path }}/.venv/bin/evander-cli"' in role
+    assert "git-repos\n      - register" in role
+    assert "--no-refresh" in role
+    assert "Assert managed deployment repository is root-owned" in role
+    assert "Authorize worker managed-repository key on the control plane" in role
     assert "git_ssh_command_wrapper.sh" in role
-    assert (
-        "EVANDER_GIT_ROOT_B64={{ (evander_worker_repo_mirror_path | dirname) | b64encode }}" in role
-    )
+    assert "EVANDER_GIT_ROOT_B64={{ evander_git_root | b64encode }}" in role
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in role
-    assert "EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }}" in role
+    assert "EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_managed_path | b64encode }}" in role
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64" not in role
-    assert "Ensure control-plane deployment repo mirror exists" in role
-    assert "scripts/create_git_remote.sh" in role
-    assert "evander.mirrorSource" in role
-    assert "evander.mirrorSyncRemote" in role
-    assert "evander.mirrorAutoRefresh" in role
-    assert "Publish requested control-plane revision to deployment repo mirror" in role
-    assert '"--git-dir={{ evander_worker_repo_mirror_path }}"' in role
+    assert "scripts/create_git_remote.sh" not in role
+    assert "evander.mirrorSource" not in role
+    assert "Publish requested control-plane revision to managed deployment ref" in role
+    assert '"--git-dir={{ evander_worker_repo_managed_path }}"' in role
     assert "fetch\n      - --force" in role
-    assert "refs/heads/deploy/evander" in role
+    assert "evander_worker_repo_deploy_ref" in role
     assert "evander_control_plane_repo_revision_check.stdout" in role
     assert "Use private control-plane mirror for worker repo checkout" in role
     assert 'evander_repo_url: "{{ evander_worker_repo_checkout_url }}"' in role

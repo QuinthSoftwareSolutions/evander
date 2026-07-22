@@ -586,6 +586,9 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     )
     assert any(tool.name == "get_workflow_snapshot" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
+    assert {"list_documentation", "search_documentation", "read_documentation"} <= {
+        tool.name for tool in server._tool_manager.list_tools()
+    }
     assert any(tool.name == "list_contacts" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_phone_call_result" for tool in server._tool_manager.list_tools())
@@ -2277,6 +2280,110 @@ def test_assistant_read_config_returns_directory_global_and_worker_config(
     assert worker_result["scope"] == "worker_global"
     assert worker_result["worker_id"] == "teams-ingest"
     assert isinstance(worker_result["config"], dict)
+
+
+def test_documentation_tools_are_available_to_an_explicitly_granted_agent(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    runtime_dir = project_dir / "runtime"
+    (project_dir / "docs" / "evander-user-manual" / "chapters").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    (project_dir / "README.md").write_text("# Project\n\nRoot docs.\n", encoding="utf-8")
+    (project_dir / "docs" / "README.md").write_text(
+        """# Documentation Map
+
+## Authoritative Entry Points
+
+- [`../README.md`](../README.md): overview
+- [`guide.md`](guide.md): guide
+
+## Focused References
+
+- [`focused.md`](focused.md): focused
+""",
+        encoding="utf-8",
+    )
+    (project_dir / "docs" / "guide.md").write_text(
+        "# Guide\n\nAgent documentation needle.\n",
+        encoding="utf-8",
+    )
+    (project_dir / "docs" / "focused.md").write_text(
+        "# Focused\n\nFocused text.\n",
+        encoding="utf-8",
+    )
+    (project_dir / "docs" / "evander-user-manual" / "chapters" / "02-detail.md").write_text(
+        "# 2. Detail\n\nTechnical text.\n",
+        encoding="utf-8",
+    )
+    context = build_runtime(GatewayConfig(runtime_dir=runtime_dir))
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="ordinary-agent",
+            allowed_tools=[
+                ToolName.DOCUMENTATION_LIST,
+                ToolName.DOCUMENTATION_SEARCH,
+                ToolName.DOCUMENTATION_READ,
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    server = create_server(context)
+
+    catalog = _call_tool(server, "list_documentation", {"session_id": "ordinary-agent"})
+    search = _call_tool(
+        server,
+        "search_documentation",
+        {"session_id": "ordinary-agent", "query": "documentation needle"},
+    )
+    read = _call_tool(
+        server,
+        "read_documentation",
+        {"session_id": "ordinary-agent", "path": "docs/guide.md", "line_count": 10},
+    )
+
+    assert catalog["count"] == 5
+    assert search["matches"][0]["path"] == "docs/guide.md"
+    assert "Agent documentation needle." in read["content"]
+    documentation_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name")
+        in {
+            ToolName.DOCUMENTATION_LIST.value,
+            ToolName.DOCUMENTATION_SEARCH.value,
+            ToolName.DOCUMENTATION_READ.value,
+        }
+    ]
+    assert [event["decision"] for event in documentation_events] == [
+        "allowed",
+        "allowed",
+        "allowed",
+    ]
+
+
+def test_documentation_tools_require_an_explicit_session_grant(tmp_path: Path) -> None:
+    context = build_runtime(GatewayConfig(runtime_dir=tmp_path / "runtime"))
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="ordinary-agent",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        _call_tool(server, "list_documentation", {"session_id": "ordinary-agent"})
+    denied_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.DOCUMENTATION_LIST.value
+    ]
+    assert denied_events[-1]["decision"] == "denied"
 
 
 def test_assistant_post_chat_reply_enforces_thread_mapping(tmp_path: Path) -> None:
