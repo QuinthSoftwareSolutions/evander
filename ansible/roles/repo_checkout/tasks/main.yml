@@ -89,6 +89,12 @@
     repo: "{{ evander_repo_url }}"
     dest: "{{ evander_deploy_path }}"
     version: "{{ evander_repo_version }}"
+    refspec: >-
+      {{
+        evander_repo_refspec
+        if (evander_repo_refspec | default('') | string | trim | length) > 0
+        else omit
+      }}
     accept_newhostkey: "{{ evander_repo_accept_newhostkey | bool }}"
     key_file: >-
       {{
