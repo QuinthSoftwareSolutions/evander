@@ -364,6 +364,224 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "process-blocked reviews" in retry_release_description
 
 
+def test_teamless_governance_agent_can_reply_to_active_team_chat(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_REPLY_TO_CHAT_TOOL])
+    repo = _seed_governance_state(context.config.runtime_dir)
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="governance-manager",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, source_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please acknowledge this policy.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=source_message.id,
+        dispatch_id=f"team-chat:{source_message.id}",
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_REPLY_TO_CHAT_TOOL,
+        {
+            "session_id": "session-governance",
+            "conversation_id": conversation.id,
+            "message_id": source_message.id,
+            "body": "Understood.",
+            "request_id": "reply-to-policy",
+        },
+    )
+
+    assert result["success"] is True
+    stored = repo.read()
+    assert stored.conversation_messages[source_message.id].status == "replied"
+    reply = stored.conversation_messages[result["chat_message_id"]]
+    assert reply.sender == "agent"
+    assert reply.body == "Understood."
+
+
+def test_teamless_governance_agent_can_stage_attachment_for_active_team_chat(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_STAGE_CHAT_ATTACHMENT_TOOL, TEAM_REPLY_TO_CHAT_TOOL],
+    )
+    repo = _seed_governance_state(context.config.runtime_dir)
+    TeamChatAttachmentPolicyService(repo).set_override(
+        directory_path="root",
+        values={"agent_send_requires_approval": False},
+        updated_by="test",
+        expected_revision=repo.read().revision,
+    )
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="governance-manager",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, source_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please attach the policy summary.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=source_message.id,
+        dispatch_id=f"team-chat:{source_message.id}",
+    )
+    monkeypatch.setattr(
+        AgentExecEffectProvider,
+        "execute",
+        lambda _self: {
+            "success": True,
+            "session_id": "session-governance",
+            "stdout": (
+                "__EVANDER_TEAM_CHAT_FILE_BEGIN__\n"
+                '{"source_path":"/home/agent/policy.txt","filename":"policy.txt",'
+                '"mime_type":"text/plain","byte_count":6,"content_base64":"cG9saWN5"}\n'
+                "__EVANDER_TEAM_CHAT_FILE_END__\n"
+            ),
+        },
+    )
+    server = create_server(context)
+
+    staged_result = _call_tool(
+        server,
+        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+        {
+            "session_id": "session-governance",
+            "source_path": "/home/agent/policy.txt",
+        },
+    )
+    staged = staged_result["attachment"]
+    replied = _call_tool(
+        server,
+        TEAM_REPLY_TO_CHAT_TOOL,
+        {
+            "session_id": "session-governance",
+            "conversation_id": conversation.id,
+            "message_id": source_message.id,
+            "body": "Attached.",
+            "attachment_ids": [staged["id"]],
+            "request_id": "reply-with-policy",
+        },
+    )
+
+    assert replied["success"] is True
+    stored = repo.read()
+    reply = stored.conversation_messages[replied["chat_message_id"]]
+    assert len(reply.attachment_ids) == 1
+    attachment = stored.chat_attachments[reply.attachment_ids[0]]
+    assert attachment.filename == "policy.txt"
+    assert attachment.created_by_session_id == "session-governance"
+
+
+def test_teamless_governance_agent_cannot_reply_outside_active_team_chat(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_STAGE_CHAT_ATTACHMENT_TOOL, TEAM_REPLY_TO_CHAT_TOOL],
+    )
+    repo = _seed_governance_state(context.config.runtime_dir)
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="governance-manager",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, source_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please acknowledge this policy.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    before = repo.read()
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="active Team dispatch lease"):
+        _call_tool(
+            server,
+            TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+            {
+                "session_id": "session-governance",
+                "source_path": "/home/agent/policy.txt",
+            },
+        )
+    with pytest.raises(ToolError, match="active Team dispatch lease"):
+        _call_tool(
+            server,
+            TEAM_REPLY_TO_CHAT_TOOL,
+            {
+                "session_id": "session-governance",
+                "conversation_id": conversation.id,
+                "message_id": source_message.id,
+                "body": "Understood.",
+                "request_id": "reply-without-chat-dispatch",
+            },
+        )
+
+    after = repo.read()
+    assert after.revision == before.revision
+    assert after.conversation_messages == before.conversation_messages
+
+
+def test_teamless_governance_chat_dispatch_cannot_use_ordinary_team_tools(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_REPLY_TO_CHAT_TOOL, TEAM_RECORD_NOTE_TOOL],
+    )
+    repo = _seed_governance_state(context.config.runtime_dir)
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="governance-manager",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, source_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please acknowledge this policy.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=source_message.id,
+        dispatch_id=f"team-chat:{source_message.id}",
+    )
+    before = repo.read()
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Team-assigned persistent agent"):
+        _call_tool(
+            server,
+            TEAM_RECORD_NOTE_TOOL,
+            {
+                "session_id": "session-governance",
+                "body": "This ordinary Team mutation must remain unavailable.",
+                "request_id": "teamless-chat-note",
+            },
+        )
+
+    after = repo.read()
+    assert after.revision == before.revision
+    assert after.action_records == before.action_records
+
+
 def test_team_chat_agent_attachment_staging_and_exact_approved_reply(
     tmp_path: Path,
     monkeypatch,

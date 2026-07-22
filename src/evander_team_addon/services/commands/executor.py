@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 from .context import (
     _normalize_team_command_context,
+    _normalized_wake_session_class,
     _resolve_command_agent,
     _resolve_command_assignment,
     _resolve_command_governance_group,
@@ -297,7 +298,11 @@ class TeamCommandExecutor:
                 message=f"agent {agent.id} is {agent.status.value}",
                 correction_context={"agent_id": agent.id, "status": agent.status.value},
             )
-        if agent.team_id is None:
+        teamless_chat_reply = (
+            context.tool_name == "team_reply_to_chat"
+            and _normalized_wake_session_class(context.wake_session_class) == "team_chat"
+        )
+        if agent.team_id is None and not teamless_chat_reply:
             return resolved, TeamCommandValidationError(
                 code="teamless_agent",
                 message=f"agent {agent.id} is not assigned to a team",

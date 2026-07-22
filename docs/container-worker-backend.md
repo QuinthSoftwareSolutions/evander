@@ -400,7 +400,14 @@ failed session-expired result, and queued prompt replay leaves the queued record
 in place until the session is renewed. Git SSH access to host-local remotes
 remains available for recovery even while execution is blocked.
 
-If a request includes `repo_source`, the daemon clones it under `/home/agent/repos/<repo-name>`. Existing non-empty target directories are rejected unless they are already Git checkouts for the same requested source. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
+If a request includes `repo_source`, the daemon clones it under
+`/home/agent/repos/<repo-name>`. Existing non-empty target directories are rejected unless they
+are already Git checkouts for the same requested source. Worker Git intake is prefix-gated:
+deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a
+missing prefix list means all `repo_source` values are rejected. SSH sources are parsed before
+matching. A managed repository may use the repository-specific
+`<configured-host>-<grant-slot>` alias only when that slot matches the `managed_repo_id` in the
+repository filename and the path remains under the configured prefix.
 
 The worker API also exposes a session-preparation surface used by portable
 `effect:agent:*` workflow nodes:
@@ -674,7 +681,13 @@ Routes:
 - `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`
 - `GET /healthz`
 
-`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `codex_turn`, optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`, and sanitized `metadata`. `codex_turn` is the structured prompt/auth-mode contract used by subscription execution; it never contains credentials. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
+`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `codex_turn`,
+optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`,
+and sanitized `metadata`. `codex_turn` is the structured prompt/auth-mode contract used by
+subscription execution; it never contains credentials. Raw `env`, `environment`, and
+`environment_variables` request fields are rejected. If `repo_source` is present, it must match a
+configured allowed Git source prefix. Repository-specific managed Git SSH aliases are accepted
+only for their corresponding managed repository beneath that prefix.
 
 This route list is an operational inventory, not a frozen wire schema. The authoritative request and response models are [`src/evander/worker/models.py`](../src/evander/worker/models.py), and route registration is authoritative in [`src/evander/worker/api.py`](../src/evander/worker/api.py). Client implementations should use those sources so route-specific models and newly added fields are not silently omitted.
 

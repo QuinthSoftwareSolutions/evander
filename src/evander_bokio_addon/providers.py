@@ -13,6 +13,7 @@ from evander.workflow.plugins import ProviderPluginRegistration
 
 from .api import _execute_prepared_action
 from .client import BokioClient
+from .evidence import normalize_stored_evidence_ids
 from .state import PreparedActionStore, upload_staging_dir
 
 
@@ -158,9 +159,14 @@ class _PrepareActionEffectProvider(_BokioProviderMixin, EffectProviderBase):
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self._payload(resolved_config)
+        context = self._context()
         action = self._store().create_action(
             kind=self.action_kind,
             payload=_object(payload.get("payload"), "payload"),
+            evidence_ids=normalize_stored_evidence_ids(
+                context.runtime_dir,
+                payload.get("evidence_ids"),
+            ),
             source=_optional(payload.get("source")) or "workflow",
             note=_optional(payload.get("note")),
         )
@@ -314,8 +320,18 @@ _CATALOG = [
         kind="effect",
         type="effect:bokio:prepare-journal-entry",
         label="Prepare Bokio journal entry",
-        description="Create a local prepared journal entry action for approval.",
-        fields=[_PAYLOAD_FIELD, _field("note", "Note")],
+        description="Create a local prepared journal entry and evidence action for approval.",
+        fields=[
+            _PAYLOAD_FIELD,
+            _field(
+                "evidence_ids",
+                "Evidence IDs",
+                "json",
+                multiline=True,
+                json_value_type="array",
+            ),
+            _field("note", "Note"),
+        ],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",

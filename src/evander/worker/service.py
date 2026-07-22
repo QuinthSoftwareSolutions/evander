@@ -39,6 +39,7 @@ from evander.session_artifacts import (
     read_artifact_text_no_follow,
 )
 from evander.git_ssh_authorized_keys import public_key_body_from_line
+from evander.managed_git_grants import managed_git_ssh_alias
 
 from .docker_runtime import DockerContainerRuntime
 from .codex_auth_broker import CodexAuthBroker
@@ -114,6 +115,65 @@ _DESTINATION_NOFOLLOW_ERROR = (
     "destination_path must stay below /home/agent and must not contain symlinks "
     "or non-directory segments"
 )
+_MANAGED_GIT_REPOSITORY_FILENAME_PATTERN = re.compile(
+    r"^(?P<managed_repo_id>mr_[0-9a-f]{20})\.git$"
+)
+
+
+def _git_source_matches_allowed_prefix(repo_source: str, allowed_prefix: str) -> bool:
+    try:
+        allowed = urlparse(allowed_prefix)
+    except ValueError:
+        return False
+    if allowed.scheme.casefold() != "ssh":
+        return repo_source.startswith(allowed_prefix)
+
+    try:
+        source = urlparse(repo_source)
+        source_host = source.hostname
+        allowed_host = allowed.hostname
+        source_port = source.port
+        allowed_port = allowed.port
+        source_username = source.username
+        allowed_username = allowed.username
+        source_password = source.password
+        allowed_password = allowed.password
+    except ValueError:
+        return False
+    if source.scheme.casefold() != "ssh" or source_host is None or allowed_host is None:
+        return False
+    if source.params or source.query or source.fragment:
+        return False
+    if allowed.params or allowed.query or allowed.fragment:
+        return False
+    if source_password is not None or allowed_password is not None:
+        return False
+    if source_username != allowed_username or source_port != allowed_port:
+        return False
+
+    source_path = unquote(source.path)
+    allowed_path = unquote(allowed.path)
+    if "\x00" in source_path or "\x00" in allowed_path:
+        return False
+    if any(segment in {".", ".."} for segment in source_path.split("/")):
+        return False
+    if any(segment in {".", ".."} for segment in allowed_path.split("/")):
+        return False
+    if not source_path.startswith(allowed_path):
+        return False
+    if source_host == allowed_host:
+        return True
+
+    repository_match = _MANAGED_GIT_REPOSITORY_FILENAME_PATTERN.fullmatch(
+        source_path.rsplit("/", 1)[-1]
+    )
+    if repository_match is None:
+        return False
+    expected_alias = managed_git_ssh_alias(
+        allowed_host,
+        repository_match.group("managed_repo_id"),
+    )
+    return source_host == expected_alias
 
 
 @dataclass(frozen=True)
@@ -2018,7 +2078,10 @@ class WorkerDaemon:
     def _ensure_allowed_git_source(self, repo_source: str) -> None:
         if not self.allowed_git_source_prefixes:
             raise ValueError("worker Git source prefixes are not configured; refusing repo_source")
-        if not any(repo_source.startswith(prefix) for prefix in self.allowed_git_source_prefixes):
+        if not any(
+            _git_source_matches_allowed_prefix(repo_source, prefix)
+            for prefix in self.allowed_git_source_prefixes
+        ):
             allowed = ", ".join(self.allowed_git_source_prefixes)
             raise ValueError(
                 f"repo_source is not allowed for this worker: {repo_source!r}; "

@@ -373,10 +373,18 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   operation key. These outward writes follow the standard per-tool MCP policy;
   enable autonomous use only for sessions that are explicitly permitted to make
   those calls.
+- `bokio_prepare_journal_entry` accepts optional `evidence_ids` from the durable
+  evidence store. The prepared action keeps that exact evidence list for operator
+  review, and approved execution uses the same durable create-and-attach ledger as
+  the direct evidence-aware write. The action becomes `executed` only after every
+  attachment succeeds. If the journal entry succeeds but an upload fails, **Retry**
+  resumes the evidence upload without creating another journal entry.
 - If an evidence upload has an uncertain failure, its state becomes
   `needs_attention`; an agent can make an explicit `retry_if_failed` call after
-  reconciling the existing entry. The add-on never blindly recreates a journal
-  entry whose creation outcome is unknown.
+  reconciling the existing entry. A definite journal-create rejection becomes
+  `failed` and can be retried with `retry_if_failed`. An uncertain journal create
+  can be retried only after checking Bokio and setting `confirm_not_created`; the
+  add-on never blindly recreates a journal entry whose creation outcome is unknown.
 - Agents can prepare journal entries, supplier invoices, and bank payments as
   local add-on actions for operator approval.
 - `bokio_create_supplier_invoice` is the deliberately narrow autonomous write
@@ -402,12 +410,13 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   uploads use `uploads/scopes/admin`.
 - The Bokio Admin tab is the prepared-action review workspace. Pending actions
   use one atomic **Approve & execute** operation; approved legacy actions can be
-  executed separately. Definite failures expose **Retry**. Uncertain outcomes
-  expose **Confirm absent & retry** only after reconciliation, while a stranded
+  executed or rejected separately. Definite failures expose both **Retry** and
+  **Reject**, preserving their failure details and transition history. Uncertain
+  outcomes expose **Confirm absent & retry** only after reconciliation, while a stranded
   `executing` action uses **Confirm absent & recover** and still refuses to take
-  over a live or unknown owner. Payload, result, error, source, and transition
-  history remain visible. All Admin mutations require an Admin owner with
-  privileged operations unlocked.
+  over a live or unknown owner. Prepared evidence IDs and final evidence results
+  are shown alongside the payload, result, error, source, and transition history.
+  All Admin mutations require an Admin owner with privileged operations unlocked.
 - Prepared-action execution tools execute only approved prepared actions and
   should also be policy-gated with MCP invocation approval for production
   sessions.

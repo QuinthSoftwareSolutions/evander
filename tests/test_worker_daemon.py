@@ -23,6 +23,7 @@ from evander.capacity_health import (
     TelemetryStatus,
 )
 from evander.codex_auth import CodexAuthMode, CodexTurnSpec
+from evander.managed_git_grants import managed_git_ssh_alias
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.service import WorkerDaemon, _git_subprocess_env
 from evander.worker.models import (
@@ -42,6 +43,10 @@ from evander.worker_daemon import (
     WorkerTelemetryPayload,
     create_app,
 )
+
+
+_TEST_MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
+_TEST_MANAGED_GIT_ALIAS = managed_git_ssh_alias("evander-git-host", _TEST_MANAGED_REPO_ID)
 
 
 class FakeContainerRuntime:
@@ -586,9 +591,17 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
     assert telemetry.jobs.error_count == 1
 
 
+@pytest.mark.parametrize(
+    "repo_source",
+    [
+        f"ssh://evander-git-host/runtime/managed-git/{_TEST_MANAGED_REPO_ID}.git",
+        f"ssh://{_TEST_MANAGED_GIT_ALIAS}/runtime/managed-git/{_TEST_MANAGED_REPO_ID}.git",
+    ],
+)
 def test_worker_clone_repo_uses_session_home_for_git_ssh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    repo_source: str,
 ) -> None:
     ssh_source = tmp_path / "git-ssh"
     ssh_source.mkdir()
@@ -614,7 +627,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     daemon.clone_repo(
         "session-1",
         WorkerRepoCloneRequest(
-            repo_source=("ssh://evander-git-host/runtime/managed-git/mr_0123456789abcdefabcd.git"),
+            repo_source=repo_source,
             clone_branch="main",
             repo_name="repo",
         ),
@@ -1995,7 +2008,23 @@ def test_session_repo_clone_rejects_sources_without_allowed_prefix(tmp_path: Pat
     assert "prefixes are not configured" in response.json()["error"]
 
 
-def test_session_repo_clone_rejects_sources_outside_allowed_prefix(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "repo_source",
+    [
+        "https://github.com/example/repo.git",
+        (f"ssh://evander-git-host-00000000000000000000/opt/git/{_TEST_MANAGED_REPO_ID}.git"),
+        (f"ssh://{_TEST_MANAGED_GIT_ALIAS}.example.com/opt/git/{_TEST_MANAGED_REPO_ID}.git"),
+        (f"ssh://{_TEST_MANAGED_GIT_ALIAS}/opt/other/{_TEST_MANAGED_REPO_ID}.git"),
+        (f"ssh://{_TEST_MANAGED_GIT_ALIAS}/opt/git/%2e%2e/{_TEST_MANAGED_REPO_ID}.git"),
+        (f"ssh://agent:secret@{_TEST_MANAGED_GIT_ALIAS}/opt/git/{_TEST_MANAGED_REPO_ID}.git"),
+        (f"ssh://{_TEST_MANAGED_GIT_ALIAS}/opt/git/{_TEST_MANAGED_REPO_ID}.git?ref=main"),
+        (f"ssh://{_TEST_MANAGED_GIT_ALIAS}/opt/git/{_TEST_MANAGED_REPO_ID}.git#main"),
+    ],
+)
+def test_session_repo_clone_rejects_sources_outside_allowed_prefix(
+    tmp_path: Path,
+    repo_source: str,
+) -> None:
     client = _client(
         tmp_path,
         allowed_git_source_prefixes=["ssh://evander-git-host/opt/git/"],
@@ -2004,7 +2033,7 @@ def test_session_repo_clone_rejects_sources_outside_allowed_prefix(tmp_path: Pat
     response = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": "https://github.com/example/repo.git"},
+        json={"repo_source": repo_source},
     )
 
     assert response.status_code == 400
