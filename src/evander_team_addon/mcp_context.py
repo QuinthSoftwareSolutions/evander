@@ -131,6 +131,25 @@ class TeamMcpContextResolver:
             raise ToolError(f"{tool_name} requires an active Team Chat dispatch")
         return caller
 
+    def require_chat_attachment_context(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: str,
+    ) -> TeamMcpCallerContext:
+        caller = self.resolve(session_id=session_id, tool_name=tool_name)
+        if caller.agent is None:
+            raise ToolError(f"{tool_name} requires a persistent Team agent session")
+        if caller.agent.status != AgentStatus.ACTIVE:
+            raise ToolError(f"{tool_name} requires an active Team agent")
+        if caller.active_dispatch_id is None:
+            raise ToolError(f"{tool_name} requires an active Team dispatch lease")
+        if caller.agent.team_id is None and caller.wake_reason != "team_chat":
+            raise ToolError(
+                f"{tool_name} requires a Team-assigned agent or an active Team Chat dispatch"
+            )
+        return caller
+
     def require_governance_context(
         self,
         *,

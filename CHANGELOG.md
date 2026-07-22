@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-22 - Bokio Evidence Recovery and Teamless Chat Attachments
+
+- Reopened evidence-bearing journal creation after an operator confirms an uncertain create is
+  absent, and kept definite Bokio create rejections failed and explicitly retryable.
+- Allowed active teamless agents to stage attachments during their Team Chat dispatch while
+  preserving the existing Team-assigned staging path for other active dispatches.
+
 ## 2026-07-22 - Team Chat Relative Runtime Attachment Delivery
 
 - Resolved Team Chat attachment source files and their private allowed source root to absolute

@@ -540,7 +540,9 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         name=CREATE_JOURNAL_ENTRY_WITH_EVIDENCE_TOOL,
         description=(
             "Create a Bokio journal entry and attach managed evidence. This direct write is "
-            "autonomous or per-invocation approved according to the normal MCP policy."
+            "autonomous or per-invocation approved according to the normal MCP policy. Definite "
+            "failures require retry_if_failed; uncertain creates require checking Bokio and "
+            "confirm_not_created before retrying."
         ),
     )
     def bokio_create_journal_entry_with_evidence(
@@ -548,6 +550,7 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         evidence_ids: list[str],
         operation_key: str | None = None,
         retry_if_failed: bool = False,
+        confirm_not_created: bool = False,
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -559,6 +562,7 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
                 evidence_ids=evidence_ids,
                 operation_key=operation_key,
                 retry_if_failed=retry_if_failed,
+                confirm_not_created=confirm_not_created,
             )
         }
 

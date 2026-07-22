@@ -760,7 +760,7 @@ def _register_slice5_tools(
         mime_type: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        caller = resolver.require_persistent_action_context(
+        caller = resolver.require_chat_attachment_context(
             session_id=session_id,
             tool_name=TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
         )

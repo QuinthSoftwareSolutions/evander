@@ -240,6 +240,7 @@ def _execute_prepared_action(
                     evidence_ids=evidence_ids,
                     operation_key=evidence_operation_key,
                     retry_if_failed=retry,
+                    confirm_not_created=confirm_not_created,
                 )
                 result = _object(evidence_operation.get("result"), "evidence result")
             else:

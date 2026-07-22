@@ -414,6 +414,151 @@ def test_bokio_admin_prepared_journal_attaches_evidence_without_recreating_entry
     ]
 
 
+def test_bokio_admin_retries_confirmed_absent_prepared_journal_creation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
+    client = TestClient(create_app(runtime))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    evidence, _created = BokioEvidenceStore(tmp_path / "runtime").ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm-confirmed-absent",
+        mime_type="application/pdf",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            create_count = sum(item.url.path.endswith("/journal-entries") for item in requests)
+            if create_count == 1:
+                return httpx.Response(503, json={"message": "temporarily unavailable"})
+            return httpx.Response(200, json={"id": "journal-entry-retried"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={
+            "kind": "journal_entry",
+            "payload": {"title": "Confirmed absent receipt", "items": []},
+            "evidence_ids": [evidence["evidence_id"]],
+        },
+    ).json()["action"]
+    action_url = f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}"
+
+    first = client.post(f"{action_url}/approve-and-execute")
+
+    assert first.status_code == 503
+    attention = PreparedActionStore(tmp_path / "runtime").get_action(created["action_id"])
+    assert attention is not None
+    assert attention["status"] == "needs_attention"
+    evidence_operation = BokioEvidenceStore(tmp_path / "runtime").get_journal_entry_operation(
+        f"prepared-action:{created['action_id']}"
+    )
+    assert evidence_operation["status"] == "needs_attention"
+    assert evidence_operation["journal_entry_id"] is None
+
+    unconfirmed = client.post(f"{action_url}/retry", json={})
+    assert unconfirmed.status_code == 400
+    assert "confirm it was not created" in unconfirmed.json()["error"]
+    assert len(requests) == 1
+
+    retried = client.post(
+        f"{action_url}/retry",
+        json={"confirm_not_created": True},
+    )
+
+    assert retried.status_code == 200
+    result = retried.json()["result"]
+    assert result["action"]["status"] == "executed"
+    assert result["action"]["result"] == {"id": "journal-entry-retried"}
+    assert result["evidence_operation"]["status"] == "completed"
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "journal-entries",
+        "uploads",
+    ]
+
+
+def test_bokio_admin_keeps_definite_prepared_journal_rejections_failed_and_retryable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
+    client = TestClient(create_app(runtime))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    evidence, _created = BokioEvidenceStore(tmp_path / "runtime").ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm-rejected-journal",
+        mime_type="application/pdf",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(400, json={"message": "invalid journal entry"})
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={
+            "kind": "journal_entry",
+            "payload": {"title": "Rejected receipt", "items": []},
+            "evidence_ids": [evidence["evidence_id"]],
+        },
+    ).json()["action"]
+    action_url = f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}"
+
+    first = client.post(f"{action_url}/approve-and-execute")
+
+    assert first.status_code == 400
+    failed = PreparedActionStore(tmp_path / "runtime").get_action(created["action_id"])
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["error"]["evidence_operation"]["status"] == "failed"
+
+    retried = client.post(f"{action_url}/retry", json={})
+
+    assert retried.status_code == 400
+    assert len(requests) == 2
+    assert (
+        PreparedActionStore(tmp_path / "runtime").get_action(created["action_id"])["status"]
+        == "failed"
+    )
+
+    rejected = client.post(
+        f"{action_url}/reject",
+        json={"reason": "Correct the journal payload"},
+    )
+
+    assert rejected.status_code == 200
+    assert rejected.json()["action"]["status"] == "rejected"
+
+
 def test_bokio_admin_recovers_an_interrupted_prepared_action(
     tmp_path: Path,
     monkeypatch,

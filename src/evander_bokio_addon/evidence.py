@@ -14,6 +14,7 @@ from uuid import uuid4
 from evander.addons import addon_storage_path
 
 from .client import BokioClient
+from .operations import bokio_write_failure_is_uncertain
 from .state import ADDON_ID
 
 
@@ -428,31 +429,85 @@ class BokioEvidenceStore:
             )
             return self._operation_with_connection(connection, normalized_key)
 
-    def resume_journal_entry_operation(
-        self, *, operation_key: str, retry_if_failed: bool
+    def mark_journal_entry_operation_failed(
+        self,
+        *,
+        operation_key: str,
+        error: Exception | str,
+        expected_status: str,
     ) -> dict[str, Any]:
         normalized_key = _required_text(operation_key, "operation_key")
+        normalized_expected_status = _required_text(expected_status, "expected_status")
         with self._connect() as connection:
-            operation = self._operation_with_connection(connection, normalized_key)
-            if operation["status"] != "needs_attention":
-                return operation
-            if not retry_if_failed:
-                raise BokioEvidenceError(
-                    "Bokio journal-entry operation needs attention; set retry_if_failed only after "
-                    "checking the existing journal entry"
-                )
-            if not str(operation.get("journal_entry_id") or "").strip():
-                raise BokioEvidenceError(
-                    "Bokio journal-entry creation outcome is unknown; do not retry creation automatically"
-                )
             connection.execute(
                 """
                 UPDATE journal_entry_operations
-                SET status = ?, error = NULL, updated_at = ?
-                WHERE operation_key = ?
+                SET status = ?, error = ?, updated_at = ?
+                WHERE operation_key = ? AND status = ?
                 """,
-                ("pending_evidence", _storage_datetime(datetime.now(UTC)), normalized_key),
+                (
+                    "failed",
+                    str(error)[:2000],
+                    _storage_datetime(datetime.now(UTC)),
+                    normalized_key,
+                    normalized_expected_status,
+                ),
             )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def resume_journal_entry_operation(
+        self,
+        *,
+        operation_key: str,
+        retry_if_failed: bool,
+        confirm_not_created: bool = False,
+    ) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            operation = self._operation_with_connection(connection, normalized_key)
+            status = str(operation["status"])
+            if status not in {"failed", "needs_attention"}:
+                return operation
+            journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
+            if status == "failed":
+                if not retry_if_failed:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry operation previously failed; set retry_if_failed to "
+                        "make a new attempt"
+                    )
+                resumed_status = "pending_evidence" if journal_entry_id else "pending_create"
+            elif journal_entry_id:
+                if not retry_if_failed:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry operation needs attention; set retry_if_failed only "
+                        "after checking the existing journal entry"
+                    )
+                resumed_status = "pending_evidence"
+            else:
+                if not confirm_not_created:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry creation outcome is unknown; inspect Bokio and set "
+                        "confirm_not_created only after confirming the journal entry is absent"
+                    )
+                resumed_status = "pending_create"
+            updated = connection.execute(
+                """
+                UPDATE journal_entry_operations
+                SET status = ?, error = NULL, updated_at = ?
+                WHERE operation_key = ? AND status = ?
+                """,
+                (
+                    resumed_status,
+                    _storage_datetime(datetime.now(UTC)),
+                    normalized_key,
+                    status,
+                ),
+            ).rowcount
+            if updated != 1:
+                raise BokioEvidenceError(
+                    "Bokio journal-entry operation changed while it was being resumed"
+                )
             return self._operation_with_connection(connection, normalized_key)
 
     def _initialize(self) -> None:
@@ -673,6 +728,7 @@ def create_journal_entry_with_evidence(
     evidence_ids: list[str],
     operation_key: str | None,
     retry_if_failed: bool,
+    confirm_not_created: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("payload must be a JSON object")
@@ -696,10 +752,11 @@ def create_journal_entry_with_evidence(
     )
     if operation["status"] == "completed":
         return {**operation, "idempotent": True}
-    if operation["status"] == "needs_attention":
+    if operation["status"] in {"failed", "needs_attention"}:
         operation = store.resume_journal_entry_operation(
             operation_key=operation["operation_key"],
             retry_if_failed=retry_if_failed,
+            confirm_not_created=confirm_not_created,
         )
     if operation["status"] == "pending_create":
         client = BokioClient.from_context(context)
@@ -720,11 +777,18 @@ def create_journal_entry_with_evidence(
                     result=created,
                 )
             except Exception as exc:
-                store.mark_journal_entry_operation_needs_attention(
-                    operation_key=operation["operation_key"],
-                    error=exc,
-                    expected_status="creating",
-                )
+                if bokio_write_failure_is_uncertain(exc):
+                    store.mark_journal_entry_operation_needs_attention(
+                        operation_key=operation["operation_key"],
+                        error=exc,
+                        expected_status="creating",
+                    )
+                else:
+                    store.mark_journal_entry_operation_failed(
+                        operation_key=operation["operation_key"],
+                        error=exc,
+                        expected_status="creating",
+                    )
                 raise
     if operation["status"] == "completed":
         return {**operation, "idempotent": True}
@@ -737,6 +801,7 @@ def create_journal_entry_with_evidence(
         operation = store.resume_journal_entry_operation(
             operation_key=operation["operation_key"],
             retry_if_failed=retry_if_failed,
+            confirm_not_created=confirm_not_created,
         )
     journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
     if not journal_entry_id:

@@ -381,8 +381,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   resumes the evidence upload without creating another journal entry.
 - If an evidence upload has an uncertain failure, its state becomes
   `needs_attention`; an agent can make an explicit `retry_if_failed` call after
-  reconciling the existing entry. The add-on never blindly recreates a journal
-  entry whose creation outcome is unknown.
+  reconciling the existing entry. A definite journal-create rejection becomes
+  `failed` and can be retried with `retry_if_failed`. An uncertain journal create
+  can be retried only after checking Bokio and setting `confirm_not_created`; the
+  add-on never blindly recreates a journal entry whose creation outcome is unknown.
 - Agents can prepare journal entries, supplier invoices, and bank payments as
   local add-on actions for operator approval.
 - `bokio_create_supplier_invoice` is the deliberately narrow autonomous write
