@@ -736,7 +736,7 @@ def test_audit_index_migrates_existing_rows_to_trigram_search_in_background(
             """
         )
 
-    index.ensure_schema()
+    index.ensure_schema(force=True)
 
     assert index.search_index_ready() is False
     fallback_page = index.query_tool_calls(
@@ -797,6 +797,47 @@ def test_audit_index_migrates_existing_rows_to_trigram_search_in_background(
         ).fetchone()[0]
     assert "detail='none'" in search_schema
     assert "columnsize=0" in search_schema
+
+
+def test_audit_index_steady_state_reads_do_not_reenter_schema_migration(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from evander.repositories import audit_index as audit_index_module
+
+    index = ToolCallAuditIndex(tmp_path / "runtime" / "audit.db")
+    assert index.index_payload(
+        {
+            "event_type": "tool_call",
+            "directory_path": "root",
+            "tool_name": "sample_tool",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:00:00+00:00",
+        }
+    )
+
+    def fail_if_schema_migration_reentered(path):
+        raise AssertionError(f"steady-state read reentered schema migration for {path}")
+
+    monkeypatch.setattr(
+        audit_index_module,
+        "ensure_audit_index_schema",
+        fail_if_schema_migration_reentered,
+    )
+
+    assert index.search_index_ready() is True
+    page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert page.matched == 1
 
 
 def test_audit_index_trigram_search_keeps_substring_and_literal_quote_semantics(

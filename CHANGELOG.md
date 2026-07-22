@@ -18,6 +18,8 @@
   Admin Web startup.
 - Debounced free-text searches, stopped polling exact filtered result sets, and removed a redundant
   aggregate scan from each indexed query.
+- Cached successful schema initialization per audit-index instance so steady-state reads do not
+  re-enter migrations or acquire SQLite write locks.
 
 ## 2026-07-22 - Managed Worker Deployment Checkout
 

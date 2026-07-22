@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -356,13 +357,21 @@ def ensure_audit_index_schema(path: Path | str) -> None:
 class ToolCallAuditIndex:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
+        self._schema_lock = threading.Lock()
+        self._schema_ensured = False
 
     @classmethod
     def for_audit_log(cls, audit_log_path: Path | str) -> ToolCallAuditIndex:
         return cls(audit_index_path_for_log_path(audit_log_path))
 
-    def ensure_schema(self) -> None:
-        ensure_audit_index_schema(self.path)
+    def ensure_schema(self, *, force: bool = False) -> None:
+        if self._schema_ensured and not force:
+            return
+        with self._schema_lock:
+            if self._schema_ensured and not force:
+                return
+            ensure_audit_index_schema(self.path)
+            self._schema_ensured = True
 
     def search_index_ready(self) -> bool:
         self.ensure_schema()
