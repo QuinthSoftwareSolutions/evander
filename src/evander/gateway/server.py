@@ -217,6 +217,7 @@ from evander.gateway.communication_tools import (
     register_communication_tools,
 )
 from evander.gateway.connector_tools import register_connector_tools
+from evander.gateway.documentation_tools import register_documentation_tools
 from evander.gateway.consultation_tools import register_consultation_tools
 from evander.gateway.email_draft_helpers import (
     EmailDraftHelpers,
@@ -758,6 +759,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
         audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
         payload_from_result=_payload_from_result,
+    )
+    register_documentation_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
     register_chat_tools(
         server,

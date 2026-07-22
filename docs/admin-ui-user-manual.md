@@ -144,6 +144,12 @@ Common tasks:
 7. If the launcher is disabled or shows an error, check assistant configuration and
    `/api/chat/session` server logs before relying on it for operator work.
 
+Admin assistant profiles include the read-only `list_documentation`, `search_documentation`, and
+`read_documentation` MCP tools. They query the current host checkout instead of a copied guest
+snapshot, so the assistant can consult current authoritative and focused references plus canonical
+technical-manual chapters. Documentation answers describe supported behavior; questions about the
+current runtime should still be checked against live status, configuration, workflows, or logs.
+
 ## Dashboard
 
 The Dashboard is the default landing view after sign-in.
@@ -453,6 +459,12 @@ Common tasks:
 
 Inherited disallow rules remain effective in child directories. A child directory or session cannot
 re-enable a tool that an ancestor directory has denied.
+
+The Documentation group contains `list_documentation`, `search_documentation`, and
+`read_documentation`. They are ordinary session-grantable tools: Admin assistant profiles receive
+them by default, while other agents need an explicit session grant or eligible workflow lease.
+Their catalog is read-only and excludes historical design records, generated publication
+duplicates, managed upstream content, dependencies, and arbitrary repository files.
 
 ## Connectors
 

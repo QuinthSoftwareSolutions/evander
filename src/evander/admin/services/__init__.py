@@ -20,6 +20,7 @@ _SERVICE_EXPORTS = {
         "CapacityHealthAdminDependencies",
     ),
     "CapacityHealthAdminService": (".capacity_health_service", "CapacityHealthAdminService"),
+    "DocumentationService": (".documentation_service", "DocumentationService"),
     "IssueGitAdminDependencies": (".issue_git_service", "IssueGitAdminDependencies"),
     "IssueGitAdminService": (".issue_git_service", "IssueGitAdminService"),
     "IssueGitAdminSupport": (".issue_git_service", "IssueGitAdminSupport"),

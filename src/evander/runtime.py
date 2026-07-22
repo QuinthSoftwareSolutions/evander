@@ -98,6 +98,9 @@ from evander.voice_sessions import (
 
 CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
     "read-only": (
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
         ToolName.ASSISTANT_READ_STATUS,
         ToolName.ASSISTANT_LIST_AGENTS,
         ToolName.ASSISTANT_INSPECT_WORKFLOWS,
@@ -105,6 +108,9 @@ CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
         ToolName.ASSISTANT_POST_CHAT_REPLY,
     ),
     "operator-limited": (
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
         ToolName.ASSISTANT_READ_STATUS,
         ToolName.ASSISTANT_LIST_AGENTS,
         ToolName.ASSISTANT_INSPECT_WORKFLOWS,
@@ -114,6 +120,9 @@ CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
         ToolName.ASSISTANT_POST_CHAT_REPLY,
     ),
     "full-admin": (
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
         ToolName.ASSISTANT_READ_STATUS,
         ToolName.ASSISTANT_LIST_AGENTS,
         ToolName.ASSISTANT_INSPECT_WORKFLOWS,

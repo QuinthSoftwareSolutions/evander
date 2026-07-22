@@ -57,6 +57,9 @@ def normalize_ado_mention_refs(value: object) -> list[str]:
 
 
 class ToolName(str, Enum):
+    DOCUMENTATION_LIST = "list_documentation"
+    DOCUMENTATION_SEARCH = "search_documentation"
+    DOCUMENTATION_READ = "read_documentation"
     ASSISTANT_READ_STATUS = "assistant_read_status"
     ASSISTANT_LIST_AGENTS = "assistant_list_agents"
     ASSISTANT_INSPECT_WORKFLOWS = "assistant_inspect_workflows"

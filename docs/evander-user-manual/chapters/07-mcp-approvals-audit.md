@@ -165,6 +165,24 @@ rejection before catalog evaluation; a valid session with no visible tools can l
 receive an empty catalog. Catalog visibility is not pre-approval, and argument/resource policy can
 still reject a particular payload.
 
+### Live project documentation
+
+Three read-only built-in tools expose the current host documentation without copying the repository
+into an execution target:
+
+- `list_documentation` lists the permitted document paths, titles, and classifications;
+- `search_documentation` performs bounded case-insensitive literal search, optionally within one
+  document;
+- `read_documentation` returns a bounded line range with pagination metadata.
+
+They are normal session-grantable tools and use the same catalog filtering, invocation policy, and
+audit envelope as other built-ins. Admin assistant capability profiles receive them by default;
+other agents need an explicit session grant or an eligible workflow lease. The host service reads
+files at invocation time from the authoritative/focused map and canonical technical-manual chapter
+sources. It rejects unlisted paths, traversal and symlink escapes, historical records, generated
+publication duplicates, the manual reading-path and design-history chapters, managed upstream
+content, and arbitrary repository files.
+
 ### Invocation checks
 
 The registered-tool wrapper applies these controls around the tool implementation:
@@ -333,6 +351,9 @@ hand-editing a binding when a guest was cloned or its session material was copie
 - `src/evander/gateway/server.py`, `src/evander/gateway/app.py`, and
   `src/evander/gateway/session_context.py` — MCP registration, middleware, catalog filtering,
   binding, and invocation context.
+- `src/evander/gateway/documentation_tools.py` and
+  `src/evander/admin/services/documentation_service.py` — policy-gated live documentation tools
+  and the fail-closed current-document catalog.
 - `src/evander/session_auth.py` and `src/evander/repositories/mcp_transport_bindings.py` —
   proof-token issuance/verification and persistent transport binding.
 - `src/evander/policy.py`, `src/evander/policy_config.py`, and `src/evander/models.py` — tool

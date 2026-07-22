@@ -1415,6 +1415,31 @@ def test_assistant_profiles_include_read_config_tool() -> None:
     assert ToolName.ASSISTANT_READ_CONFIG in allowed_tools_for_capability_profile("full-admin")
 
 
+def test_assistant_profiles_include_documentation_tools() -> None:
+    documentation_tools = {
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
+    }
+    for profile in ("read-only", "operator-limited", "full-admin"):
+        assert documentation_tools <= set(allowed_tools_for_capability_profile(profile))
+
+
+def test_documentation_tool_is_grantable_without_assistant_metadata(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="ordinary-agent",
+            allowed_tools=[ToolName.DOCUMENTATION_READ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    session = engine.require_tool("ordinary-agent", ToolName.DOCUMENTATION_READ)
+
+    assert session.session_id == "ordinary-agent"
+
+
 def test_assistant_destructive_operation_can_require_approval_gate(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     engine.session_store.upsert_session(

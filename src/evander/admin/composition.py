@@ -26,6 +26,7 @@ from evander.admin.services import (
     ArtifactAdminService,
     CapacityHealthAdminDependencies,
     CapacityHealthAdminService,
+    DocumentationService,
     IssueGitAdminDependencies,
     IssueGitAdminService,
     IssueGitAdminSupport,
@@ -204,6 +205,7 @@ class AdminRuntimeComponents:
     addon_admin: AddonAdminService
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
+    documentation_admin: DocumentationService
     model_usage_admin: ModelUsageAdminService
     operator_steering_admin: OperatorSteeringAdminService
     workflow_generation_admin: WorkflowGenerationAdminService
@@ -481,6 +483,7 @@ def _build_admin_runtime_components(
         skill_library,
         workflow_config_admin=workflow_config_admin,
     )
+    documentation_admin = DocumentationService(project_dir)
     approval_audit_admin = ApprovalAuditAdminService(
         ApprovalAuditAdminDependencies(
             runtime=runtime,
@@ -694,6 +697,7 @@ def _build_admin_runtime_components(
         addon_admin=addon_admin,
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
+        documentation_admin=documentation_admin,
         model_usage_admin=model_usage_admin,
         operator_steering_admin=operator_steering_admin,
         workflow_generation_admin=workflow_generation_admin,

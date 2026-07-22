@@ -140,6 +140,21 @@ the effective capability for the current web request. `read_only=false` in
 configuration means full access is allowed, but full access still depends on the
 current web session being privileged and privileged operations being unlocked.
 
+## Live Documentation
+
+Use `list_documentation`, `search_documentation`, and `read_documentation` when
+the operator asks how the control plane is designed, configured, or operated.
+These tools read the current host checkout on demand; they are more current and
+complete than this compact guide. Search focused references first, then read the
+relevant bounded line ranges. The catalog also includes the canonical technical
+manual chapters but excludes reading-path and design-history material.
+
+Documentation describes supported behavior, not necessarily the current live
+state. For questions containing words such as "currently", "today", or "why did
+this run fail", inspect the relevant live status, configuration, workflow, or
+logs as well. In the reply, name the documentation path and section you used and
+distinguish documented behavior from observed state.
+
 ## Helping Operators
 
 For new users:

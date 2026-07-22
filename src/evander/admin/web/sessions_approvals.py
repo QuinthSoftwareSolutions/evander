@@ -42,6 +42,15 @@ from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.DOCUMENTATION_LIST: (
+        "List current project documentation available through the host documentation catalog."
+    ),
+    ToolName.DOCUMENTATION_SEARCH: (
+        "Search current project documentation using case-insensitive literal text."
+    ),
+    ToolName.DOCUMENTATION_READ: (
+        "Read a bounded line range from current project documentation."
+    ),
     ToolName.LIST_CONNECTORS: (
         "List connector operations explicitly granted to the current agent session."
     ),
