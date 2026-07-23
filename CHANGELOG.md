@@ -10,6 +10,9 @@
   specialist review, or reporting a blocker.
 - Preserved pending pre-upgrade handoffs by deriving their recorded superior from the original
   deliverable notice when the new recipient field has not yet been populated.
+- Preserved direct-handoff decisions as historical facts across later review and promotion state
+  transitions, automatically consumed matching pending handoff notices with the decision, and
+  allowed direct decisions for a selected deliverable even when a sibling follows formal review.
 
 ## 2026-07-23 - Branch Documentation Audit
 

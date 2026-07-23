@@ -1974,7 +1974,7 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     }
 
 
-def test_superior_accepts_direct_deliverable_and_handles_notice_atomically(
+def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -1997,7 +1997,6 @@ def test_superior_accepts_direct_deliverable_and_handles_notice_atomically(
         decision="accepted",
         reason="Evidence and verification are sufficient.",
         request_id="request-accept-deliverable",
-        handled_inbox_item_ids=[notice_id],
     )
     _state, replay = _command_service(repo).decide_deliverable_command(
         session_id="session-lead",
@@ -2005,13 +2004,14 @@ def test_superior_accepts_direct_deliverable_and_handles_notice_atomically(
         decision="accepted",
         reason="Evidence and verification are sufficient.",
         request_id="request-accept-deliverable",
-        handled_inbox_item_ids=[notice_id],
     )
 
     assert replay == accepted
     assert accepted["success"] is True
     assert accepted["decision"] == "accepted"
     assert accepted["task_accepted"] is True
+    assert accepted["handled_inbox_item_ids"] == []
+    assert accepted["automatically_handled_inbox_item_ids"] == [notice_id]
     assert state.inbox[notice_id].state == TeamInboxItemState.HANDLED
     assert state.deliverables["deliverable-accept"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
@@ -2022,6 +2022,194 @@ def test_superior_accepts_direct_deliverable_and_handles_notice_atomically(
     persisted = repo.read().deliverables["deliverable-accept"]
     assert persisted.acceptance_recipient_agent_id == "lead"
     assert persisted.acceptance_decision == decision
+
+
+def test_superior_decision_allows_notice_handled_by_an_alternative_path(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-handled-notice",
+        task_id="task",
+        summary="Ready after the earlier escalation was resolved.",
+        artifact_refs=["artifact-space:/handled-notice"],
+        request_id="request-submit-handled-notice",
+    )
+    notice_id = submitted["created_inbox_item_ids"][0]
+
+    def _handle_notice(state):
+        state.inbox[notice_id].state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_notice)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-decide")
+
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-handled-notice",
+        decision="accepted",
+        request_id="request-decide-handled-notice",
+    )
+
+    assert accepted["success"] is True
+    assert accepted["automatically_handled_inbox_item_ids"] == []
+    assert state.deliverables["deliverable-handled-notice"].state == (
+        TeamRecordState.ACCEPTED
+    )
+
+
+def test_direct_acceptance_decision_survives_later_formal_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-late-review",
+        task_id="task",
+        summary="Ready for direct acceptance.",
+        artifact_refs=["artifact-space:/late-review"],
+        request_id="request-submit-late-review",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept")
+    accepted_state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-late-review",
+        decision="accepted",
+        reason="The direct handoff is acceptable.",
+        request_id="request-accept-before-review",
+    )
+    historical_decision = accepted_state.deliverables[
+        "deliverable-late-review"
+    ].acceptance_decision
+
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        id="review-after-direct-acceptance",
+        deliverable_id="deliverable-late-review",
+        reviewer_agent_id="worker",
+        instructions="Perform the later formal review.",
+        request_id="request-review-after-direct-acceptance",
+    )
+
+    assert accepted["success"] is True
+    assert requested["success"] is True
+    assert state.deliverables["deliverable-late-review"].state == (
+        TeamRecordState.PENDING
+    )
+    assert state.deliverables["deliverable-late-review"].acceptance_decision == (
+        historical_decision
+    )
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_direct_acceptance_decision_survives_promotion_failure(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-promotion",
+        task_id="task",
+        summary="Ready for direct acceptance and promotion.",
+        artifact_refs=["artifact-space:/promotion"],
+        request_id="request-submit-promotion",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept")
+    accepted_state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-promotion",
+        decision="accepted",
+        request_id="request-accept-before-promotion",
+    )
+    historical_decision = accepted_state.deliverables[
+        "deliverable-promotion"
+    ].acceptance_decision
+
+    def _seed_promotion(state):
+        state.git_promotions["promotion-direct-deliverable"] = GitPromotionRecord(
+            id="promotion-direct-deliverable",
+            project_id="project",
+            task_id="task",
+            actor_agent_id="backend",
+            source_branch="agents/backend/task",
+            target_branch="team/team/reviews/deliverable-promotion",
+            promotion_kind="review",
+            deliverable_id="deliverable-promotion",
+        )
+        return state
+
+    repo.update(_seed_promotion)
+    state, failed = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id="promotion-direct-deliverable",
+        success=False,
+        error="review branch promotion failed",
+    )
+
+    assert accepted["success"] is True
+    assert failed["success"] is True
+    assert state.deliverables["deliverable-promotion"].state == TeamRecordState.BLOCKED
+    assert state.deliverables["deliverable-promotion"].acceptance_decision == (
+        historical_decision
+    )
+
+
+def test_direct_decision_ignores_formal_review_on_sibling_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_review_profile(repo)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, direct = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-direct",
+        task_id="task",
+        summary="Independent direct handoff.",
+        artifact_refs=["artifact-space:/direct"],
+        request_id="request-submit-direct",
+    )
+    state, formal = _command_service(repo).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "deliverable-formal",
+            "task_id": "task",
+            "summary": "Independent formal-review handoff.",
+            "artifact_refs": ["artifact-space:/formal"],
+        },
+        reviews=[
+            {
+                "id": "review-formal",
+                "reviewer_agent_id": "worker",
+                "review_profile_id": "profile",
+            }
+        ],
+        request_id="request-submit-formal",
+    )
+    assert direct["waiting_reason"] == "superior_acceptance"
+    assert formal["waiting_reason"] == "review"
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-decide-direct")
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-direct",
+        decision="accepted",
+        request_id="request-decide-direct",
+    )
+
+    assert accepted["success"] is True
+    assert accepted["task_accepted"] is False
+    assert state.deliverables["deliverable-direct"].state == TeamRecordState.ACCEPTED
+    assert state.deliverables["deliverable-formal"].state == TeamRecordState.PENDING
+    assert state.review_requests["review-formal"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
 def test_superior_rejects_direct_deliverable_with_actionable_rework(

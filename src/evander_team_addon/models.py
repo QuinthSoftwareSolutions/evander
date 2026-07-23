@@ -1240,10 +1240,8 @@ class Deliverable(TeamModel):
             raise ValueError(
                 "deliverable acceptance decision must be made by its acceptance recipient"
             )
-        if self.state.value != decision.decision:
-            raise ValueError(
-                "deliverable state must match its acceptance decision"
-            )
+        # The decision records the original direct handoff. Later formal review or
+        # promotion processing may legitimately move the current deliverable state.
         return self
 
 

@@ -35,6 +35,7 @@ from ...models import (
     DeliverableAcceptanceDecision,
     TeamBlockerState,
     TeamBlockerSourceKind,
+    TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
@@ -326,7 +327,6 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             if (
                 deliverable.state != TeamRecordState.PENDING
                 or task.state != TeamTaskState.WAITING_FOR_REVIEW
-                or waiting_reason != "superior_acceptance"
             ):
                 raise TeamCommandValidationError(
                     code="deliverable_not_awaiting_superior",
@@ -429,6 +429,19 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 decided_at=now,
                 reason=normalized_reason,
             )
+            automatically_handled_inbox_item_ids = sorted(
+                item.id
+                for item in state.inbox.values()
+                if item.id not in normalized_handled_ids
+                and item.state == TeamInboxItemState.PENDING
+                and item.recipient_agent_id == agent.id
+                and item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+                and item.payload.get("deliverable_id") == deliverable.id
+            )
+            for inbox_item_id in automatically_handled_inbox_item_ids:
+                item = state.inbox[inbox_item_id]
+                item.state = TeamInboxItemState.HANDLED
+                item.updated_at = now
             _recalculate_project_status(state, task.project_id)
             return TeamCommandApplyResult(
                 response_payload={
@@ -445,6 +458,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     "events": list(side_effects.get("events") or []),
                     "resolved_blocker_ids": list(
                         side_effects.get("resolved_blocker_ids") or []
+                    ),
+                    "automatically_handled_inbox_item_ids": (
+                        automatically_handled_inbox_item_ids
                     ),
                     "intent_recorded": True,
                     "async_effect_pending": bool(
