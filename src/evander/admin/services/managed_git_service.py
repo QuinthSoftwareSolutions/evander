@@ -91,7 +91,7 @@ _B64_ASSIGNMENT_PATTERN = re.compile(
 )
 _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
 _AZURE_PR_DESCRIPTION_MAX_CHARS = 4000
-_AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS = 11
+_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS = 10.0
 _AZURE_PR_SOURCE_CONFIRMATION_INTERVAL_SECONDS = 1.0
 
 
@@ -1973,22 +1973,35 @@ class ManagedGitAdminService:
         iterations_url = (
             f"{api_root}/{quote(pr_id, safe='')}/iterations?api-version=7.1"
         )
-        for attempt in range(_AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS):
-            iterations = self._azure_request_json(iterations_url, auth=auth)
+        deadline = time.monotonic() + _AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS
+        while True:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise latest_mismatch
+            iterations = self._azure_request_json(
+                iterations_url,
+                auth=auth,
+                timeout_seconds=remaining_seconds,
+            )
             current_commit_sha = self._latest_azure_pr_iteration_source_commit(iterations)
-            if current_commit_sha:
-                try:
-                    self._verify_provider_pr_source_commit(
-                        provider="Azure DevOps",
-                        expected_commit_sha=expected_commit_sha,
-                        actual_commit_sha=current_commit_sha,
-                    )
-                    return
-                except ManagedGitConflictError as mismatch:
-                    latest_mismatch = mismatch
-            if attempt + 1 < _AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS:
-                time.sleep(_AZURE_PR_SOURCE_CONFIRMATION_INTERVAL_SECONDS)
-        raise latest_mismatch
+            try:
+                self._verify_provider_pr_source_commit(
+                    provider="Azure DevOps",
+                    expected_commit_sha=expected_commit_sha,
+                    actual_commit_sha=current_commit_sha,
+                )
+                return
+            except ManagedGitConflictError as mismatch:
+                latest_mismatch = mismatch
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise latest_mismatch
+            time.sleep(
+                min(
+                    _AZURE_PR_SOURCE_CONFIRMATION_INTERVAL_SECONDS,
+                    remaining_seconds,
+                )
+            )
 
     @staticmethod
     def _latest_azure_pr_iteration_source_commit(
@@ -1997,16 +2010,22 @@ class ManagedGitAdminService:
         values = iterations.get("value")
         if not isinstance(values, list):
             return None
-        for item in reversed(values):
+        latest: tuple[int, Mapping[str, Any]] | None = None
+        for item in values:
             if not isinstance(item, Mapping):
                 continue
-            source_commit = item.get("sourceRefCommit")
-            if not isinstance(source_commit, Mapping):
+            try:
+                iteration_id = int(str(item.get("id") or "").strip())
+            except ValueError:
                 continue
-            commit_id = str(source_commit.get("commitId") or "").strip()
-            if commit_id:
-                return commit_id
-        return None
+            if latest is None or iteration_id > latest[0]:
+                latest = (iteration_id, item)
+        if latest is None:
+            return None
+        source_commit = latest[1].get("sourceRefCommit")
+        if not isinstance(source_commit, Mapping):
+            return None
+        return str(source_commit.get("commitId") or "").strip() or None
 
     @staticmethod
     def _bounded_azure_pr_description(body: str) -> tuple[str, dict[str, Any]]:
@@ -2233,6 +2252,7 @@ class ManagedGitAdminService:
         payload: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
         method: str | None = None,
         content_type: str = "application/json",
+        timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
         data = json.dumps(payload).encode() if payload is not None else None
         request = Request(
@@ -2246,7 +2266,7 @@ class ManagedGitAdminService:
             },
         )
         try:
-            with urlopen(request, timeout=30) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 parsed = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             raise RuntimeError(f"Azure DevOps PR request failed with HTTP {exc.code}") from exc

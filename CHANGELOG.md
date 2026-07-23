@@ -11,8 +11,8 @@
 
 - Confirmed reused Azure DevOps pull request source revisions through the latest PR iteration when
   `lastMergeSourceCommit` still reflects the preceding push.
-- Kept the confirmation wait bounded and preserved the existing conflict result when the source
-  branch genuinely moves to another commit.
+- Selected the highest iteration ID, bounded confirmation by elapsed time and per-request timeout,
+  and preserved the existing conflict result when the source branch genuinely moves.
 
 ## 2026-07-23 - Agent Log Continuity Across Artifact Operations
 

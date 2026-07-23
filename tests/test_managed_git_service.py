@@ -598,10 +598,19 @@ def test_azure_pr_create_and_reuse_reject_moved_source_branch(
         "lastMergeSourceCommit": {"commitId": current_commit},
     }
     if reuse_existing:
+        now = [0.0]
         monkeypatch.setattr(
             "evander.admin.services.managed_git_service."
-            "_AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS",
-            1,
+            "_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
+            1.0,
+        )
+        monkeypatch.setattr(
+            "evander.admin.services.managed_git_service.time.monotonic",
+            lambda: now[0],
+        )
+        monkeypatch.setattr(
+            "evander.admin.services.managed_git_service.time.sleep",
+            lambda seconds: now.__setitem__(0, now[0] + seconds),
         )
     responses = iter(
         [
@@ -626,8 +635,9 @@ def test_azure_pr_create_and_reuse_reject_moved_source_branch(
         auth: str,
         payload=None,
         method: str | None = None,
+        timeout_seconds: float = 30.0,
     ) -> dict[str, object]:
-        del url, auth, payload
+        del url, auth, payload, timeout_seconds
         methods.append(method)
         return next(responses)
 
@@ -685,12 +695,12 @@ def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
             {
                 "value": [
                     {
-                        "id": 1,
-                        "sourceRefCommit": {"commitId": previous_commit},
-                    },
-                    {
                         "id": 2,
                         "sourceRefCommit": {"commitId": expected_commit},
+                    },
+                    {
+                        "id": 1,
+                        "sourceRefCommit": {"commitId": previous_commit},
                     },
                 ]
             },
@@ -699,6 +709,8 @@ def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
     )
     calls: list[dict[str, object]] = []
     sleeps: list[float] = []
+    timeouts: list[float] = []
+    now = [0.0]
 
     def _fake_azure_request_json(
         url: str,
@@ -706,15 +718,34 @@ def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
         auth: str,
         payload=None,
         method: str | None = None,
+        timeout_seconds: float = 30.0,
     ) -> dict[str, object]:
         del auth
-        calls.append({"url": url, "payload": payload, "method": method})
+        calls.append(
+            {
+                "url": url,
+                "payload": payload,
+                "method": method,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        if "/iterations?" in url:
+            timeouts.append(timeout_seconds)
         return next(responses)
 
     monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
     monkeypatch.setattr(
+        "evander.admin.services.managed_git_service.time.monotonic",
+        lambda: now[0],
+    )
+
+    def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(
         "evander.admin.services.managed_git_service.time.sleep",
-        sleeps.append,
+        _sleep,
     )
 
     result = service._create_or_reuse_azure_pr(
@@ -729,6 +760,7 @@ def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
 
     assert result["created"] is False
     assert sleeps == [1.0]
+    assert timeouts == [10.0, 9.0]
     assert "/pullrequests/19/iterations?api-version=7.1" in str(calls[1]["url"])
     assert "/pullrequests/19/iterations?api-version=7.1" in str(calls[2]["url"])
     assert calls[3]["method"] == "PATCH"
@@ -736,6 +768,242 @@ def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
         "description": "Updated body",
         "title": "Updated title",
     }
+
+
+def test_latest_azure_pr_iteration_source_commit_uses_highest_iteration_id(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+
+    assert (
+        service._latest_azure_pr_iteration_source_commit(
+            {
+                "value": [
+                    {
+                        "id": 3,
+                        "sourceRefCommit": {"commitId": "3" * 40},
+                    },
+                    {
+                        "id": 1,
+                        "sourceRefCommit": {"commitId": "1" * 40},
+                    },
+                    {
+                        "id": 2,
+                        "sourceRefCommit": {"commitId": "2" * 40},
+                    },
+                ]
+            }
+        )
+        == "3" * 40
+    )
+
+
+def test_latest_azure_pr_iteration_source_commit_does_not_fallback_from_unverified_newest(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+
+    assert (
+        service._latest_azure_pr_iteration_source_commit(
+            {
+                "value": [
+                    {
+                        "id": 1,
+                        "sourceRefCommit": {"commitId": "1" * 40},
+                    },
+                    {"id": 2},
+                ]
+            }
+        )
+        is None
+    )
+
+
+def test_azure_pr_reuse_does_not_confirm_older_matching_iteration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "1" * 40
+    previous_commit = "2" * 40
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service."
+        "_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
+        1.0,
+    )
+    service = _service(tmp_path)
+    record = {
+        "canonical_repository_url": "https://dev.azure.com/Org/Project/_git/Repo",
+        "provider": "azure_devops",
+        "directory_path": "root",
+    }
+    pr_item = {
+        "pullRequestId": 19,
+        "url": "https://example/pr/19",
+        "lastMergeSourceCommit": {"commitId": previous_commit},
+    }
+    now = [0.0]
+
+    def _fake_azure_request_json(
+        url: str,
+        *,
+        auth: str,
+        payload=None,
+        method: str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, object]:
+        del auth, payload, method, timeout_seconds
+        if "/iterations?" not in url:
+            return {"value": [pr_item]}
+        return {
+            "value": [
+                {
+                    "id": 1,
+                    "sourceRefCommit": {"commitId": expected_commit},
+                },
+                {"id": 2},
+            ]
+        }
+
+    monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service.time.monotonic",
+        lambda: now[0],
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service.time.sleep",
+        lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    with pytest.raises(
+        ManagedGitConflictError,
+        match="source commit could not be verified",
+    ) as exc_info:
+        service._create_or_reuse_azure_pr(
+            record,
+            destination_branch="feature/issue-42",
+            base_branch="main",
+            expected_commit_sha=expected_commit,
+            title="Updated title",
+            body="Updated body",
+            draft=False,
+        )
+
+    assert exc_info.value.details == {
+        "reason": "provider_pr_source_commit_unverified",
+        "provider": "Azure DevOps",
+        "expected_commit_sha": expected_commit,
+        "current_commit_sha": None,
+    }
+
+
+def test_azure_pr_reuse_confirmation_enforces_wall_clock_request_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "1" * 40
+    current_commit = "2" * 40
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service."
+        "_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
+        2.0,
+    )
+    service = _service(tmp_path)
+    record = {
+        "canonical_repository_url": "https://dev.azure.com/Org/Project/_git/Repo",
+        "provider": "azure_devops",
+        "directory_path": "root",
+    }
+    pr_item = {
+        "pullRequestId": 19,
+        "url": "https://example/pr/19",
+        "lastMergeSourceCommit": {"commitId": current_commit},
+    }
+    now = [100.0]
+    timeouts: list[float] = []
+    calls = 0
+
+    def _fake_azure_request_json(
+        url: str,
+        *,
+        auth: str,
+        payload=None,
+        method: str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, object]:
+        nonlocal calls
+        del auth, payload, method
+        calls += 1
+        if "/iterations?" not in url:
+            return {"value": [pr_item]}
+        timeouts.append(timeout_seconds)
+        now[0] += timeout_seconds
+        return {
+            "value": [
+                {
+                    "id": 1,
+                    "sourceRefCommit": {"commitId": current_commit},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service.time.monotonic",
+        lambda: now[0],
+    )
+
+    with pytest.raises(ManagedGitConflictError, match="source branch moved"):
+        service._create_or_reuse_azure_pr(
+            record,
+            destination_branch="feature/issue-42",
+            base_branch="main",
+            expected_commit_sha=expected_commit,
+            title="Updated title",
+            body="Updated body",
+            draft=False,
+        )
+
+    assert calls == 2
+    assert timeouts == [2.0]
+    assert now[0] == 102.0
+
+
+def test_azure_request_json_uses_explicit_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    timeouts: list[float] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read() -> bytes:
+            return b"{}"
+
+    def _fake_urlopen(request, *, timeout: float):
+        del request
+        timeouts.append(timeout)
+        return _Response()
+
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service.urlopen",
+        _fake_urlopen,
+    )
+
+    assert service._azure_request_json(
+        "https://example.invalid/pr",
+        auth="Basic test",
+        timeout_seconds=2.5,
+    ) == {}
+    assert timeouts == [2.5]
 
 
 def test_azure_pr_reuse_refreshes_metadata_links_work_item_and_returns_web_url(
