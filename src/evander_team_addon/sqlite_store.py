@@ -1056,6 +1056,12 @@ class TeamStateSqliteStore:
                     column_name="criteria_snapshot_json",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="required_outcome_kind_definitions_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 for column_name in (
                     "requested_by_agent_id",
                     "requested_by_actor",

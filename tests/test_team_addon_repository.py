@@ -4873,6 +4873,28 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
                 dismissed_by TEXT,
                 dismissed_reason TEXT
             );
+            CREATE TABLE team_review_requests (
+                id TEXT PRIMARY KEY,
+                deliverable_id TEXT NOT NULL,
+                release_package_id TEXT,
+                candidate_commit_sha TEXT,
+                reviewer_agent_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                review_profile_id TEXT,
+                criteria_snapshot_json TEXT,
+                instructions TEXT,
+                reviewed_commit_sha TEXT,
+                supersedes_review_request_id TEXT,
+                superseded_by_review_request_id TEXT,
+                retry_reason TEXT,
+                retry_requested_by TEXT,
+                block_kind TEXT,
+                retired_at TEXT,
+                retired_by TEXT,
+                retirement_reason TEXT,
+                created_at TEXT,
+                decision_at TEXT
+            );
             """
         )
 
@@ -4936,6 +4958,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "retry_reason" in review_columns
     assert "retry_requested_by" in review_columns
     assert "criteria_snapshot_json" in review_columns
+    assert "required_outcome_kind_definitions_json" in review_columns
     assert {
         "requested_by_agent_id",
         "requested_by_actor",

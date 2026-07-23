@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-23 - Outcome Catalog Migration Repair
+
+- Added the missing SQLite column migration for review outcome-kind snapshots so existing Team
+  databases can upgrade to the configurable outcome catalog.
+
 ## 2026-07-23 - Agent Review Recovery
 
 - Added authorized pending-review withdrawal and project-lead/manager retirement of terminal
