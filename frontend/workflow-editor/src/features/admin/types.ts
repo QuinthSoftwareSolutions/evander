@@ -234,6 +234,7 @@ export type AgentCreateRequest = {
   allowed_script_names?: string[];
   communication_target_ids?: string[];
   email_mailbox_grants?: EmailMailboxGrant[];
+  http_targets?: HttpTargetsPayload;
   discord_channels?: string[];
   teams_channel_allowlist?: string[];
   email_mailboxes?: string[];
@@ -364,6 +365,7 @@ export type AgentPolicyUpdateRequest = {
   approval_notification_target_ids?: string[];
   communication_target_ids?: string[] | null;
   email_mailbox_grants?: EmailMailboxGrant[] | null;
+  http_targets?: HttpTargetsPayload;
   codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
   allowed_script_names?: string[];
   discord_channels?: string[];
@@ -375,6 +377,15 @@ export type AgentPolicyUpdateRequest = {
   email_mailboxes?: string[];
   email_folders?: string[];
   email_folder_allowlist_by_mailbox?: Record<string, string[]>;
+};
+
+export type HttpTargetPayload = {
+  base_url: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type HttpTargetsPayload = {
+  targets: Record<string, HttpTargetPayload>;
 };
 
 export type AgentSessionPolicy = {

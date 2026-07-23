@@ -22,6 +22,7 @@ from evander.admin.services.vm_agent.common import (
 from evander.session_auth import ensure_session_mcp_auth_token
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.admin.services.session_helpers import normalize_http_targets_metadata
 
 
 def _connector_grants_for_admin_agent(
@@ -89,6 +90,10 @@ class VmAgentCreateRequestMixin:
             )
             if model_provider_mode:
                 create_metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
+            if "http_targets" in payload:
+                create_metadata["http_targets"] = normalize_http_targets_metadata(
+                    payload.get("http_targets")
+                )
             resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
                 self.runtime,
                 session_id=self._agent_optional_string(payload, "session_id") or vm_name,
@@ -265,6 +270,8 @@ class VmAgentCreateRequestMixin:
         if worker_url:
             metadata["worker_url"] = worker_url
         metadata["container_worker"] = container_image_selection
+        if "http_targets" in payload:
+            metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
         resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
             self.runtime,
             session_id=session_id,

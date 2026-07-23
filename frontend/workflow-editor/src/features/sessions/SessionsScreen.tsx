@@ -17,6 +17,13 @@ import {
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
 import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
+import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
+import {
+  httpTargetsDraftFromMetadata,
+  httpTargetsPayload,
+  metadataWithoutHttpTargets,
+  type HttpTargetDraftEntry,
+} from "../httpTargets/httpTargetDraft";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 import {
   canToggleWakeScheduleEnabled,
@@ -249,6 +256,9 @@ type SessionPolicyDraft = {
   communicationFileRequireApprovalForSend: boolean;
   webSearchEnabled: boolean;
   metadata: Record<string, unknown>;
+  httpTargets: HttpTargetDraftEntry[];
+  httpTargetsLegacyFallback: boolean;
+  httpTargetsSourceError: string | null;
 };
 
 const POLL_INTERVAL_MS = 10000;
@@ -401,6 +411,7 @@ function normalizeApprovalToolSettings(
 }
 
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
+  const httpTargetsDraft = httpTargetsDraftFromMetadata(session.metadata);
   return {
     allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
     connectorGrants: { ...(session.connector_grants ?? {}) },
@@ -428,7 +439,10 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     communicationFileBlockedExtensions: dedupeStrings(session.communication_file_blocked_extensions ?? []),
     communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
     webSearchEnabled: Boolean(session.web_search_enabled),
-    metadata: { ...(session.metadata ?? {}) },
+    metadata: metadataWithoutHttpTargets(session.metadata),
+    httpTargets: httpTargetsDraft.entries,
+    httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
+    httpTargetsSourceError: httpTargetsDraft.sourceError,
   };
 }
 
@@ -1211,11 +1225,17 @@ export function SessionsScreen() {
     communicationFileRequireApprovalForSend: false,
     webSearchEnabled: false,
     metadata: {},
+    httpTargets: [],
+    httpTargetsLegacyFallback: false,
+    httpTargetsSourceError: null,
   });
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policyBoundSessionId, setPolicyBoundSessionId] = useState("");
   const [policyMetadataError, setPolicyMetadataError] = useState<string | null>(null);
+  const [metadataDirty, setMetadataDirty] = useState(false);
   const [connectorGrantsError, setConnectorGrantsError] = useState<string | null>(null);
+  const [httpTargetsError, setHttpTargetsError] = useState<string | null>(null);
+  const [httpTargetsDirty, setHttpTargetsDirty] = useState(false);
   const [wakePrompt, setWakePrompt] = useState("");
   const [wakeCron, setWakeCron] = useState("");
   const [wakeResumeAt, setWakeResumeAt] = useState("");
@@ -1419,12 +1439,18 @@ export function SessionsScreen() {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyDirty(false);
           setPolicyMetadataError(null);
+          setMetadataDirty(false);
           setConnectorGrantsError(null);
+          setHttpTargetsError(null);
+          setHttpTargetsDirty(false);
           setPolicyBoundSessionId(sessionId);
         } else if (!policyDirty) {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyMetadataError(null);
+          setMetadataDirty(false);
           setConnectorGrantsError(null);
+          setHttpTargetsError(null);
+          setHttpTargetsDirty(false);
         }
         const visibleSchedules = filterVisibleWakeSchedules(payload.wake_schedules, {
           showPastOneTime: showPastOneTimeWakeSchedules,
@@ -1794,6 +1820,7 @@ export function SessionsScreen() {
 
   function sessionPolicyValidationError(): string | null {
     return connectorGrantsError
+      ?? httpTargetsError
       ?? policyMetadataError
       ?? validateLeadingDotExtensions(policyDraft.communicationFileAllowedExtensions, "Allowed extensions")
       ?? validateLeadingDotExtensions(policyDraft.communicationFileBlockedExtensions, "Blocked extensions");
@@ -2017,13 +2044,19 @@ export function SessionsScreen() {
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
               connector_grants: policyDraft.connectorGrants,
-              metadata: policyDraft.metadata,
+              ...(metadataDirty ? { metadata: policyDraft.metadata } : {}),
+              ...(httpTargetsDirty
+                ? { http_targets: httpTargetsPayload(policyDraft.httpTargets) }
+                : {}),
             }),
           },
         );
         setPolicyDirty(false);
         setPolicyMetadataError(null);
+        setMetadataDirty(false);
         setConnectorGrantsError(null);
+        setHttpTargetsError(null);
+        setHttpTargetsDirty(false);
         setPolicyBoundSessionId(selectedSession.session_id);
         savedSections.push("policy");
       }
@@ -2664,6 +2697,28 @@ export function SessionsScreen() {
                     />
                     <span>Web search</span>
                   </label>
+                  <div className="field-stack">
+                    <span>HTTP targets</span>
+                    <HttpTargetsEditor
+                      entries={policyDraft.httpTargets}
+                      onChange={(nextEntries) => {
+                        setPolicyDraft((current) => ({
+                          ...current,
+                          httpTargets: nextEntries,
+                          httpTargetsLegacyFallback: false,
+                          httpTargetsSourceError: null,
+                        }));
+                        setHttpTargetsDirty(true);
+                        setPolicyDirty(true);
+                        setStatus(null);
+                      }}
+                      onValidationChange={setHttpTargetsError}
+                      legacyFallback={policyDraft.httpTargetsLegacyFallback}
+                      sourceError={policyDraft.httpTargetsSourceError}
+                      sessionId={selectedSession.session_id}
+                      disabled={mutationLocked}
+                    />
+                  </div>
                   <div className="field-stack session-communication-files">
                     <span>Communication files</span>
                     <div className="session-communication-file-toggles">
@@ -2766,10 +2821,14 @@ export function SessionsScreen() {
                     </p>
                     <JsonObjectKeyValueEditor
                       value={policyDraft.metadata}
-                      onChange={(nextValue) => updatePolicyDraft({ metadata: nextValue })}
+                      onChange={(nextValue) => {
+                        setMetadataDirty(true);
+                        updatePolicyDraft({ metadata: nextValue });
+                      }}
                       onValidationChange={(error) => {
                         setPolicyMetadataError(error);
                         if (error) {
+                          setMetadataDirty(true);
                           setPolicyDirty(true);
                           setStatus(null);
                         }

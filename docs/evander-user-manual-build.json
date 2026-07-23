@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-07-23T09:06:15.076498+00:00",
+  "generated_at": "2026-07-23T12:07:50.415785+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "23b2c05f1e4db6129ca4731eb01faba2738718ca2136f4612cdedee03b173dfe",
-    "docs/evander-user-manual.html": "6704bdb4daadc7e64ef5d1e923bd16f6b7ecdd56a29a57e920f6d2fc7be52ac2",
-    "docs/evander-user-manual.md": "36714239aa7bbf9d5797429ee08bd6da4d8b5fe5415c607d8ff1f8e1a4893e39",
-    "docs/evander-user-manual.pdf": "a1c36ec7f8bdba5e2f5c4c038b113d8c22bc33510ffa6e77269ad71ae27580f0"
+    "docs/evander-user-manual.docx": "d0267cbb2a6bca541467deb9525826198474241da5b1863f30f2e74b1e167966",
+    "docs/evander-user-manual.html": "4d021061fc1a3c721d6190a7414b76efaf7c789ee9517b9607339025325cc69d",
+    "docs/evander-user-manual.md": "49bf6e39e09535684d3c2dc57fbb804e139afd63b8b3fdc4957263c4b2052435",
+    "docs/evander-user-manual.pdf": "a66bd3b720d999b5a4956c82aebbc93c8d019b3de636fe55bcf30c933561647f"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "be18806f4997932b06a342cb809be5fdfe3113062bbd013bfc0a687af63736b7",
+  "source_fingerprint": "84677414a9d07b02a5b3842c693f4bd37a2a2ee5f045926801f19e34b9c47c2f",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -69,7 +69,7 @@
     "docs/evander-user-manual/chapters/07-mcp-approvals-audit.md": "60e04615aba47bd3c4daaae749246ac7c7d728c2f04421b5b888a2e7d8ae0767",
     "docs/evander-user-manual/chapters/08-workflow-runtime.md": "04d54b7c2d563d9c12ab78a1d0fce434bac2443a490fde5ccae5c61ea2a80939",
     "docs/evander-user-manual/chapters/09-execution-backends.md": "96a6f7aa8846032f71ac2f60b6e59f265af3bbbc2574fc0f9e862a9b710693f6",
-    "docs/evander-user-manual/chapters/10-networking-relays-secrets.md": "767c317db77bbf7c546944a0dff5890a94911057490556055640e6cb1bfb8958",
+    "docs/evander-user-manual/chapters/10-networking-relays-secrets.md": "577bab448b937a058c9b703f10ec8e641e311763b4b91a57551f12938a2fd6e4",
     "docs/evander-user-manual/chapters/11-managed-git-artifacts-consultations.md": "633967a77784f61370171b32900053b5c6d688954dfa51f24f73ff1ba84c9ead",
     "docs/evander-user-manual/chapters/12-issues-provider-integrations.md": "b10d9171aae7c84b77a5fe03f3876083b68237ab31fa5bfaca4f0e648a3ed053",
     "docs/evander-user-manual/chapters/13-communications-and-wakes.md": "2c99826527f17779c88067b3b825bc9507050717f0192d815246d27e693e59d9",
@@ -87,7 +87,7 @@
     "docs/evander-user-manual/chapters/25-team-governance-memory-cost-internals.md": "4071dacfe3f597dcfb906087434554391d4e3ff3188a1afee475690029d14e0d",
     "docs/evander-user-manual/chapters/26-engineering-extension.md": "c39a9d57c8e7bd7ecbf8d2c560fa036c0c0f7fc4e6bb0f32f71a9b5906f1b653",
     "docs/evander-user-manual/chapters/27-design-history.md": "9dead6bb912e52ffd0539a4034898273d91be7c10831e6563a958aac142823a6",
-    "docs/evander-user-manual/chapters/28-system-reference.md": "779b1e6619df4c207d9ae5af65ab923fd0d74aff05cc7bc8040f4fdacb858632",
+    "docs/evander-user-manual/chapters/28-system-reference.md": "5c21280736c099b73a83c3b2720ec46336e3d5fcc470d7bbfbadf8255170740f",
     "docs/evander-user-manual/chapters/29-troubleshooting-decision-tables.md": "da0bdcd0ae27eff071961e18483759ff4f150539012125b2509a26315c55a988",
     "docs/evander-user-manual/chapters/30-glossary.md": "46e18ec05312a452ba85ffd81733e3f49b9f2a5eb6573aa5506150220580c1dc",
     "docs/evander-user-manual/diagrams/01-system-context.mmd": "3ce362341cd03218f3b1c24279c93639defcfe622ed6bb8dc736db460939b649",

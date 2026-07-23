@@ -24,6 +24,7 @@ from evander.models import (
     EmailMailboxAccess,
     EmailMailboxGrant,
     McpToolName,
+    SessionHttpTargetsMetadata,
     SessionManifest,
     ToolName,
     normalize_approval_tool_settings,
@@ -594,6 +595,7 @@ def session_policy_update_from_payload(
         "teams_channels",
         "teams_chat_allowlist",
         "teams_user_allowlist",
+        "http_targets",
         "metadata",
         *SESSION_BOOL_POLICY_FIELDS,
         *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
@@ -711,9 +713,29 @@ def session_policy_update_from_payload(
         metadata = payload.get("metadata")
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be a JSON object")
-        update["metadata"] = dict(metadata)
+        normalized_metadata = dict(metadata)
+        if "http_targets" in normalized_metadata:
+            normalized_metadata["http_targets"] = normalize_http_targets_metadata(
+                normalized_metadata["http_targets"]
+            )
+        elif "http_targets" in session.metadata:
+            normalized_metadata["http_targets"] = session.metadata["http_targets"]
+        update["metadata"] = normalized_metadata
+
+    if "http_targets" in payload:
+        metadata = dict(update.get("metadata", session.metadata))
+        metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
+        update["metadata"] = metadata
 
     return update
+
+
+def normalize_http_targets_metadata(value: object) -> dict[str, Any]:
+    try:
+        normalized = SessionHttpTargetsMetadata.model_validate(value)
+    except ValidationError as exc:
+        raise ValueError(f"http_targets is invalid: {exc}") from exc
+    return normalized.model_dump(mode="json")
 
 
 def wake_eligible_discord_channel_ids(

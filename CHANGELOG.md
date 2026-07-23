@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-23 - Structured Session HTTP Targets
+
+- Added structured HTTP target alias and base-URL editors to agent creation, agent policy editing,
+  and Sessions policy editing so operators no longer need to modify raw session metadata.
+- Validated and narrowly merged canonical HTTP target updates, preserved workflow-owned target
+  metadata, supported legacy APP target conversion, and made an explicitly empty target set deny
+  the legacy fallback.
+
 ## 2026-07-23 - Review and Bokio Duplicate-Check Correctness
 
 - Kept deliverables pending when retired reviews leave unresolved carried findings, and restored

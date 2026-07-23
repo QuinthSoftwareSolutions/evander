@@ -201,10 +201,13 @@ Common tasks:
 6. Unlock privileges before starting any mutation.
 7. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
    details, allowed tools/scripts, communication targets, mailbox-account access, bootstrap
-   options, and optional Codex skills. Container-worker Codex agents can also choose **Metered
-   API** or **ChatGPT subscription** as their usage source.
+   options, optional HTTP targets, and optional Codex skills. Each HTTP target gives the session a
+   named HTTP(S) base URL through the host relay; it does not enable general internet access or
+   supply target credentials. Container-worker Codex agents can also choose **Metered API** or
+   **ChatGPT subscription** as their usage source.
 8. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
-   source applies on the next turn without replacing the session or its thread history.
+   source applies on the next turn without replacing the session or its thread history. HTTP
+   targets can also be added, changed, or removed here.
 9. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
    worker-global account, start or cancel device-code sign-in, and sign out. These account actions
    require both root ownership and an unlocked privileged session because every subscription-mode
@@ -431,14 +434,18 @@ Common tasks:
 14. For a legacy session whose canonical grants are still null, review its inherited/raw
     allowlists and use **Convert to managed grants** deliberately. Missing or null canonical fields
     preserve legacy behavior; an explicit empty list means no access.
-15. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
+15. Configure **HTTP targets** as alias/base-URL pairs when the agent needs REST or browser access
+    to an external application. The UI shows the relay URL template, preserves workflow-owned
+    target metadata, and converts legacy APP environment targets when edited. Removing every row
+    stores an explicit empty target set.
+16. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
-16. Edit connector grants as a connector-to-operation map. A grant exposes only the named
+17. Edit connector grants as a connector-to-operation map. A grant exposes only the named
     operations; it does not expose connector endpoints or authentication material.
-17. Save settings.
-18. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+18. Save settings.
+19. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
-19. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+20. Review recent scheduled wake ledger entries for the selected session, filter by delivery
     status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.

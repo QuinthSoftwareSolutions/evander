@@ -6749,6 +6749,12 @@ cookies</strong>. It does not inject a host secret for the target.</p>
 under <code>metadata.http_targets</code>. A request uses the session and
 alias:</p>
 <pre class="text"><code>$HTTP_TARGET_RELAY_BASE_URL/session/&lt;session-id&gt;/target/&lt;alias&gt;/path</code></pre>
+<p>Operators can manage the same contract without editing raw metadata:
+use <strong>HTTP targets</strong> in the Agents create/edit forms or in
+<strong>Sessions → Model and access</strong>. Each row accepts an alias
+and HTTP(S) base URL. Existing per-target workflow metadata is
+preserved, and clearing all rows writes an explicit empty target set so
+legacy APP environment metadata cannot restore access implicitly.</p>
 <p>The relay:</p>
 <ol type="1">
 <li>authenticates the Evander session token;</li>
@@ -15237,7 +15243,7 @@ is the runtime activity?</td>
 Do not bypass those semantics by rewriting a live pack file from a stale
 checkout.</p>
 <h2 id="287-team-add-on-view-map">28.7 Team Add-on view map</h2>
-<p>The Team Add-on contributes one navigation area with fourteen current
+<p>The Team Add-on contributes one navigation area with fifteen current
 views. There is no separate top-level <strong>Roles</strong> view; roles
 are edited in the <strong>Teams</strong> view.</p>
 <table>
@@ -15290,19 +15296,23 @@ summary</td>
 <td>Sent/received projections over the durable Team inbox</td>
 </tr>
 <tr class="odd">
+<td>Activity</td>
+<td>Redacted dispatch lifecycle and Team tool outcome events</td>
+</tr>
+<tr class="even">
 <td>Governance</td>
 <td>Governance groups, goals, agenda, oversight, and cost rollups</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Planning</td>
 <td>Goals, deliverables, and status-filtered task context for planning
 work</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Timeline</td>
 <td>Time-ordered domain activity</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Org chart</td>
 <td>Visual team, reporting, and governance relationships</td>
 </tr>

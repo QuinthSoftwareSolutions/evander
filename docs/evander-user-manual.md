@@ -2838,6 +2838,11 @@ Each session manifest contains named HTTP-target metadata, normally under `metad
 $HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/path
 ```
 
+Operators can manage the same contract without editing raw metadata: use **HTTP targets** in the
+Agents create/edit forms or in **Sessions → Model and access**. Each row accepts an alias and
+HTTP(S) base URL. Existing per-target workflow metadata is preserved, and clearing all rows writes
+an explicit empty target set so legacy APP environment metadata cannot restore access implicitly.
+
 The relay:
 
 1. authenticates the Evander session token;
@@ -4464,7 +4469,6 @@ The add-on UI currently has these top-level views:
 | **Teams** | Team setup, persistent agents, roles, assignments, and stand-down controls. |
 | **Chat** | Human-operator conversations with one persistent agent. |
 | **Mail** | Sent and received projections over one durable Team inbox collection. |
-| **Activity** | Redacted dispatch lifecycle and Team tool outcome events. |
 | **Governance** | Cross-Team groups, agendas, cost warnings, and directives. |
 | **Planning** | Planning-oriented summaries of goals and work. |
 | **Timeline** | A derived chronological rendering of current Team records. |
@@ -7286,7 +7290,7 @@ Workflow pack changes made in Admin Web are revision- and lock-aware. Do not byp
 
 ## 28.7 Team Add-on view map
 
-The Team Add-on contributes one navigation area with fourteen current views. There is no separate top-level **Roles** view; roles are edited in the **Teams** view.
+The Team Add-on contributes one navigation area with fifteen current views. There is no separate top-level **Roles** view; roles are edited in the **Teams** view.
 
 | View | What it projects |
 |---|---|
@@ -7300,6 +7304,7 @@ The Team Add-on contributes one navigation area with fourteen current views. The
 | Teams | Teams, agents, memberships, responsibilities, roles, and models |
 | Chat | Team chat channels and messages |
 | Mail | Sent/received projections over the durable Team inbox |
+| Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |
 | Planning | Goals, deliverables, and status-filtered task context for planning work |
 | Timeline | Time-ordered domain activity |

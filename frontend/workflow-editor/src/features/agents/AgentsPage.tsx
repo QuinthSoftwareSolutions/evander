@@ -53,6 +53,12 @@ import {
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
 import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
+import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
+import {
+  httpTargetsDraftFromMetadata,
+  httpTargetsPayload,
+  type HttpTargetDraftEntry,
+} from "../httpTargets/httpTargetDraft";
 
 type ActionLogEntry = {
   at: string;
@@ -145,6 +151,9 @@ type AgentPolicyFormState = {
   emailFolderAllowlistByMailbox: Record<string, string[]>;
   emailSendEnabled: boolean;
   codexAuthMode: string;
+  httpTargets: HttpTargetDraftEntry[];
+  httpTargetsLegacyFallback: boolean;
+  httpTargetsSourceError: string | null;
 };
 
 type AgentSkillInstallFormState = {
@@ -212,6 +221,9 @@ function emptyPolicyForm(): AgentPolicyFormState {
     emailFolderAllowlistByMailbox: {},
     emailSendEnabled: false,
     codexAuthMode: "",
+    httpTargets: [],
+    httpTargetsLegacyFallback: false,
+    httpTargetsSourceError: null,
   };
 }
 
@@ -790,6 +802,7 @@ function agentUsesCodex(agent: AgentRecord): boolean {
 
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
+  const httpTargetsDraft = httpTargetsDraftFromMetadata(policy?.metadata);
   const labels = policy?.labels ?? Object.fromEntries(labelsForAgent(agent));
   return {
     model: policy?.model ?? "",
@@ -819,12 +832,16 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     ),
     emailSendEnabled: Boolean(policy?.email_send_enabled),
     codexAuthMode: policy?.codex_auth_mode ?? "",
+    httpTargets: httpTargetsDraft.entries,
+    httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
+    httpTargetsSourceError: httpTargetsDraft.sourceError,
   };
 }
 
 function buildPolicyPayload(
   form: AgentPolicyFormState,
   includeCodexAuthMode = false,
+  includeHttpTargets = false,
 ): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
@@ -842,6 +859,9 @@ function buildPolicyPayload(
       form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
         ? form.codexAuthMode
         : null;
+  }
+  if (includeHttpTargets) {
+    payload.http_targets = httpTargetsPayload(form.httpTargets);
   }
   if (form.communicationTargetIds === null) {
     payload.discord_channels = parseList(form.discordChannels);
@@ -957,6 +977,8 @@ export function AgentsPage() {
   const [inlineValidation, setInlineValidation] = useState("");
   const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
   const [connectorGrantsValidationError, setConnectorGrantsValidationError] = useState<string | null>(null);
+  const [httpTargetsValidationError, setHttpTargetsValidationError] = useState<string | null>(null);
+  const [httpTargetsDirty, setHttpTargetsDirty] = useState(false);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
@@ -1687,6 +1709,8 @@ export function AgentsPage() {
         setEditEmailMailboxOptions([]);
       });
     setConnectorGrantsValidationError(null);
+    setHttpTargetsValidationError(null);
+    setHttpTargetsDirty(false);
     setShowEditForm(true);
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
@@ -1804,6 +1828,10 @@ export function AgentsPage() {
       setInlineValidation(connectorGrantsValidationError);
       return;
     }
+    if (httpTargetsValidationError) {
+      setInlineValidation(httpTargetsValidationError);
+      return;
+    }
     setBusyAction("edit-agent");
     setInlineValidation("");
     try {
@@ -1816,6 +1844,7 @@ export function AgentsPage() {
             buildPolicyPayload(
               editForm,
               selectedAgent.backend === "container_worker_vm" && agentUsesCodex(selectedAgent),
+              httpTargetsDirty,
             ),
           ),
         },
@@ -2369,6 +2398,25 @@ export function AgentsPage() {
                       addLabel="Add label"
                       keyLabel="Key"
                       valueLabel="Value"
+                    />
+                  </div>
+                  <div className="field-stack wide-field">
+                    <span>HTTP targets</span>
+                    <HttpTargetsEditor
+                      entries={editForm.httpTargets}
+                      onChange={(nextEntries) => {
+                        setEditForm((current) => ({
+                          ...current,
+                          httpTargets: nextEntries,
+                          httpTargetsLegacyFallback: false,
+                          httpTargetsSourceError: null,
+                        }));
+                        setHttpTargetsDirty(true);
+                      }}
+                      onValidationChange={setHttpTargetsValidationError}
+                      legacyFallback={editForm.httpTargetsLegacyFallback}
+                      sourceError={editForm.httpTargetsSourceError}
+                      sessionId={sessionPolicyForAgent(selectedAgent)?.session_id ?? null}
                     />
                   </div>
                   <div className="field-stack">

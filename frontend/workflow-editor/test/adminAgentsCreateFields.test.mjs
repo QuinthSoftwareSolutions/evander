@@ -185,6 +185,7 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
     "allowed_script_names",
     "communication_target_ids",
     "email_mailbox_grants",
+    "http_targets",
   ]) {
     assert.match(source, new RegExp(`payload\\.${field}`));
   }
@@ -332,6 +333,7 @@ test("create modal exposes model override and structured initial policy controls
     "Allowed scripts",
     "Communication targets",
     "Email mailbox access",
+    "HTTP targets",
     "Capabilities",
     "Web search",
     "Model",
@@ -342,6 +344,7 @@ test("create modal exposes model override and structured initial policy controls
   }
   assert.match(createModal, /StringMapEditor/);
   assert.match(createModal, /StringListEditor/);
+  assert.match(createModal, /HttpTargetsEditor/);
   assert.match(createModal, /CommunicationTargetCheckboxTable/);
   for (const label of [
     "Discord channels or targets",
@@ -357,6 +360,17 @@ test("create modal exposes model override and structured initial policy controls
   ]) {
     assert.doesNotMatch(createModal, new RegExp(`>${label}<`));
   }
+});
+
+test("agent create and edit use the shared structured HTTP target contract", () => {
+  const payloadSource = buildCreatePayloadSource();
+  assert.match(payloadSource, /initialPolicy\.httpTargets\.length > 0/);
+  assert.match(payloadSource, /payload\.http_targets = httpTargetsPayload\(initialPolicy\.httpTargets\)/);
+  assert.match(agentCreateDialog, /onValidationChange=\{setCreateHttpTargetsValidationError\}/);
+  assert.match(agentsPage, /httpTargetsDraftFromMetadata\(policy\?\.metadata\)/);
+  assert.match(agentsPage, /includeHttpTargets/);
+  assert.match(agentsPage, /payload\.http_targets = httpTargetsPayload\(form\.httpTargets\)/);
+  assert.match(agentsPage, /setHttpTargetsDirty\(true\)/);
 });
 
 test("create modal groups create capabilities and communication targets", () => {

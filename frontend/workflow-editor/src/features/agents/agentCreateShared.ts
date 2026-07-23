@@ -8,6 +8,10 @@ import type {
   AgentCreateRequest,
   EmailMailboxGrant,
 } from "../admin/types";
+import {
+  httpTargetsPayload,
+  type HttpTargetDraftEntry,
+} from "../httpTargets/httpTargetDraft";
 
 export type AgentCreateFormState = {
   backend: AgentBackend;
@@ -39,6 +43,7 @@ export type AgentInitialPolicyFormState = {
   allowedScriptNames: string[];
   communicationTargetIds: string[];
   emailMailboxGrants: EmailMailboxGrant[];
+  httpTargets: HttpTargetDraftEntry[];
 };
 
 export type AgentCreateSubmitMeta = {
@@ -79,6 +84,7 @@ export function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     allowedScriptNames: [],
     communicationTargetIds: [],
     emailMailboxGrants: [],
+    httpTargets: [],
   };
 }
 
@@ -196,6 +202,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
     access: grant.access,
     folders: dedupeStrings(grant.folders),
   }));
+  if (initialPolicy.httpTargets.length > 0) {
+    payload.http_targets = httpTargetsPayload(initialPolicy.httpTargets);
+  }
   return payload;
 }
 

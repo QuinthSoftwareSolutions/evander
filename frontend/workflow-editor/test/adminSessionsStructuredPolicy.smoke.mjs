@@ -34,6 +34,8 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
 
   const policyBodies = [];
   const allowedToolBodies = [];
@@ -78,6 +80,16 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
         team: "ops",
       },
       nullable: null,
+      http_targets: {
+        targets: {
+          api: {
+            base_url: "https://api.example.test/v1",
+            metadata: {
+              owner: "workflow",
+            },
+          },
+        },
+      },
     },
     issue_number: null,
     is_expired: false,
@@ -98,6 +110,7 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   const sessionDetailResponse = {
     session: sessionRecord,
     wake_schedules: [],
+    git_grants: [],
     summary_json: {},
   };
 
@@ -234,7 +247,23 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         policyBodies.push(body);
-        assert.deepEqual(body.metadata, sessionRecord.metadata);
+        assert.deepEqual(body.metadata, {
+          ticket: "INC-123",
+          labels: {
+            team: "ops",
+          },
+          nullable: null,
+        });
+        assert.deepEqual(body.http_targets, {
+          targets: {
+            api: {
+              base_url: "https://api.example.test/v2",
+              metadata: {
+                owner: "workflow",
+              },
+            },
+          },
+        });
         assert.deepEqual(body.approval_required_tools, []);
         sessionRecord.approval_required_tools = body.approval_required_tools;
         await route.fulfill(jsonResponse({ action: "updated", message: "Updated session policy.", session: sessionRecord }));
@@ -262,9 +291,22 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
 
   await ensureSectionsExpanded(page);
   await page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" });
-  await page.locator(".session-list-item.selected").waitFor({ state: "visible" });
+  try {
+    await page.locator(".session-list-item.selected").waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    throw new Error(
+      `Session list did not load. Page errors: ${pageErrors.join(" | ") || "none"}. Body: ${
+        (await page.locator("body").innerText()).slice(0, 2000)
+      }`,
+    );
+  }
 
-  const metadataSection = page.locator(".field-stack").filter({ hasText: "Metadata" });
+  const metadataSection = page.getByText("Metadata", { exact: true }).first().locator("..");
+  const httpTargetsSection = page.getByText("HTTP targets", { exact: true }).first().locator("..");
+  const httpTargetInputs = httpTargetsSection.locator(".http-target-row input");
+  assert.equal(await httpTargetInputs.nth(0).inputValue(), "api");
+  assert.equal(await httpTargetInputs.nth(1).inputValue(), "https://api.example.test/v1");
+  await httpTargetInputs.nth(1).fill("https://api.example.test/v2/");
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
   const promptAgentRow = page.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
   const allowedTool = promptAgentRow.locator(".session-tool-row-main input[type='checkbox']").first();
@@ -278,14 +320,15 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   const metadataValue = metadataLabelsRow.locator("textarea").first();
   await metadataValue.fill("{bad");
   const saveButton = page.getByRole("button", { name: "Save changes" });
-  await saveButton.click();
   await metadataSection.locator(".structured-input-error").waitFor({ state: "visible" });
-  await page.locator(".callout.error-callout").filter({ hasText: "Metadata row 2 contains invalid JSON" }).first().waitFor({ state: "visible" });
+  await page.waitForTimeout(50);
+  await saveButton.click();
+  await page.waitForTimeout(100);
   assert.equal(policyBodies.length, 0);
   await metadataValue.fill('{\n  "team": "ops"\n}');
   await metadataSection.locator(".structured-input-error").waitFor({ state: "hidden" });
 
-  const allowedExtensionsSection = page.locator(".field-stack").filter({ hasText: "Allowed extensions" });
+  const allowedExtensionsSection = page.getByText("Allowed extensions", { exact: true }).first().locator("..");
   const allowedExtensionsInput = allowedExtensionsSection.locator(".string-list-selector-row input").first();
   await allowedExtensionsInput.fill("txt");
   await allowedExtensionsSection.locator(".structured-input-error").filter({ hasText: "Extension must start with a leading dot." }).waitFor({ state: "visible" });
@@ -304,5 +347,11 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(allowedToolBodies.length, 1);
   assert.equal(policyBodies.length, 1);
-  assert.deepEqual(policyBodies[0].metadata, sessionRecord.metadata);
+  assert.deepEqual(policyBodies[0].metadata, {
+    ticket: "INC-123",
+    labels: {
+      team: "ops",
+    },
+    nullable: null,
+  });
 });
