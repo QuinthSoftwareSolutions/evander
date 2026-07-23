@@ -71,6 +71,7 @@ class BokioDuplicateCheckStore:
         *,
         criteria: Mapping[str, Any],
         criteria_digest: str,
+        source_identity: Mapping[str, str],
         source_fingerprint: str,
         total_scanned: int,
         matching_entry_ids: Sequence[str],
@@ -82,14 +83,16 @@ class BokioDuplicateCheckStore:
             connection.execute(
                 """
                 INSERT INTO duplicate_checks (
-                    check_id, criteria_digest, criteria_json, source_fingerprint,
-                    total_scanned, matching_entry_ids_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    check_id, criteria_digest, criteria_json, source_identity_json,
+                    source_fingerprint, total_scanned, matching_entry_ids_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     check_id,
                     criteria_digest,
                     _canonical_json(criteria),
+                    _canonical_json(source_identity),
                     source_fingerprint,
                     int(total_scanned),
                     _canonical_json(list(matching_entry_ids)),
@@ -122,6 +125,7 @@ class BokioDuplicateCheckStore:
                     check_id TEXT PRIMARY KEY,
                     criteria_digest TEXT NOT NULL,
                     criteria_json TEXT NOT NULL,
+                    source_identity_json TEXT NOT NULL DEFAULT '{}',
                     source_fingerprint TEXT NOT NULL,
                     total_scanned INTEGER NOT NULL,
                     matching_entry_ids_json TEXT NOT NULL,
@@ -131,6 +135,19 @@ class BokioDuplicateCheckStore:
                 ON duplicate_checks(criteria_digest, created_at DESC);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(duplicate_checks)"
+                ).fetchall()
+            }
+            if "source_identity_json" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE duplicate_checks
+                    ADD COLUMN source_identity_json TEXT NOT NULL DEFAULT '{}'
+                    """
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -147,7 +164,18 @@ def check_journal_duplicates(
     refresh: bool = False,
 ) -> dict[str, Any]:
     normalized_criteria = normalize_duplicate_criteria(criteria)
-    criteria_digest = sha256(_canonical_json(normalized_criteria).encode("utf-8")).hexdigest()
+    source_identity = {
+        "api_base_url": client.settings.api_base_url.rstrip("/"),
+        "company_id": client.settings.company_id,
+    }
+    criteria_digest = sha256(
+        _canonical_json(
+            {
+                "criteria": normalized_criteria,
+                "source_identity": source_identity,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
     bounded_max_age = min(
         MAX_DUPLICATE_CHECK_MAX_AGE_SECONDS,
         max(0, int(max_age_seconds)),
@@ -170,6 +198,7 @@ def check_journal_duplicates(
     record = store.record(
         criteria=normalized_criteria,
         criteria_digest=criteria_digest,
+        source_identity=source_identity,
         source_fingerprint=sha256(_canonical_json(entries).encode("utf-8")).hexdigest(),
         total_scanned=len(entries),
         matching_entry_ids=matching_ids,
@@ -200,6 +229,7 @@ def normalize_duplicate_criteria(criteria: Mapping[str, Any]) -> dict[str, Any]:
 
 def _list_all_journal_entries(client: BokioClient) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
+    reported_total: int | None = None
     for page in range(1, _MAX_PAGES + 1):
         response = client.list_journal_entries(page=page, page_size=_PAGE_SIZE)
         if not isinstance(response, Mapping):
@@ -212,9 +242,16 @@ def _list_all_journal_entries(client: BokioClient) -> list[dict[str, Any]]:
                 raise BokioDuplicateCheckError("Bokio journal-entry items must be objects")
             entries.append(dict(item))
         total_items = _optional_nonnegative_int(response.get("totalItems"))
-        if not raw_items or len(raw_items) < _PAGE_SIZE:
-            break
-        if total_items is not None and len(entries) >= total_items:
+        if total_items is not None:
+            reported_total = total_items
+        if reported_total is not None:
+            if len(entries) >= reported_total:
+                break
+            if not raw_items:
+                raise BokioDuplicateCheckError(
+                    "Bokio journal-entry pagination ended before totalItems was reached"
+                )
+        elif not raw_items or len(raw_items) < _PAGE_SIZE:
             break
     else:  # pragma: no cover - defensive API runaway guard
         raise BokioDuplicateCheckError("Bokio journal-entry pagination exceeded 10000 pages")
@@ -263,6 +300,7 @@ def _record_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "check_id": check_id,
         "criteria": json.loads(str(row["criteria_json"])),
         "criteria_digest": str(row["criteria_digest"]),
+        "source_identity": json.loads(str(row["source_identity_json"])),
         "source_fingerprint": str(row["source_fingerprint"]),
         "total_scanned": int(row["total_scanned"]),
         "matching_entry_ids": json.loads(str(row["matching_entry_ids_json"])),

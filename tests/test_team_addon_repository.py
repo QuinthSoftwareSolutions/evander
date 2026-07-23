@@ -8760,6 +8760,64 @@ def test_operator_review_retirement_is_explicit_and_preserves_the_blocked_attemp
     assert state.projects["project"].status == ProjectStatus.ACTIVE
 
 
+def test_retiring_review_does_not_accept_deliverable_with_open_carried_findings(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable-v1", task_id="task")
+    admin = _team_admin_service(repo)
+    state = admin.record_review_request(
+        review_request_id="review-rejected",
+        deliverable_id="deliverable-v1",
+        reviewer_agent_id="worker",
+    )
+    state = admin.record_review_decision(
+        review_request_id="review-rejected",
+        state=TeamRecordState.REJECTED,
+        findings=["The original deliverable still has an unresolved finding."],
+        expected_revision=state.revision,
+    )
+    state = admin.record_deliverable(
+        deliverable_id="deliverable-v2",
+        task_id="task",
+        producer_agent_id="backend",
+        summary="Reworked deliverable.",
+        supersedes_deliverable_id="deliverable-v1",
+        expected_revision=state.revision,
+    )
+    assert any(
+        finding.state == "open"
+        for finding in state.deliverables["deliverable-v2"].carried_findings
+    )
+    state = admin.record_review_request(
+        review_request_id="review-accepted",
+        deliverable_id="deliverable-v2",
+        reviewer_agent_id="lead",
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="review-to-retire",
+        deliverable_id="deliverable-v2",
+        reviewer_agent_id="worker",
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_decision(
+        review_request_id="review-accepted",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=state.revision,
+    )
+
+    state = admin.retire_review_request(
+        review_request_id="review-to-retire",
+        reason="This unrelated review is no longer required.",
+        expected_revision=state.revision,
+    )
+
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
 def test_outcome_task_rejects_report_only_deliverable_and_completes_from_accepted_outcome(
     tmp_path: Path,
 ) -> None:
@@ -8918,6 +8976,55 @@ def test_request_review_implicitly_selects_profile_by_deliverable_outcome(
     assert state.review_requests[result["review_request_id"]].review_profile_id == (
         "action-review"
     )
+
+
+def test_submit_deliverable_for_review_implicitly_selects_profile_by_outcome(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_review_profile(
+        repo,
+        profile_id="action-review",
+        applicable_role_ids=["project__worker"],
+        required_outcome_kinds=["prepared_action"],
+    )
+    _seed_review_profile(
+        repo,
+        profile_id="evidence-review",
+        applicable_role_ids=["project__worker"],
+        required_outcome_kinds=["evidence_match"],
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-submit-outcome-profile",
+    )
+
+    state, result = _command_service(repo).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "task_id": "task",
+            "summary": "Prepared action.",
+            "outcomes": [
+                {
+                    "kind": "prepared_action",
+                    "reference_ids": ["prepared-action-1"],
+                }
+            ],
+        },
+        reviews=[
+            {
+                "reviewer_agent_id": "worker",
+                "instructions": "Review the matching outcome.",
+            }
+        ],
+        request_id="request-submit-outcome-profile",
+    )
+
+    assert result["success"] is True
+    review_id = result["created_review_request_ids"][0]
+    assert state.review_requests[review_id].review_profile_id == "action-review"
 
 
 def test_submit_deliverable_for_review_command_enqueues_reviewer_wake(

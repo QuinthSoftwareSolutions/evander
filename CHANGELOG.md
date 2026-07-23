@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23 - Review and Bokio Duplicate-Check Correctness
+
+- Kept deliverables pending when retired reviews leave unresolved carried findings, and restored
+  outcome-aware implicit review-profile selection for atomic deliverable submissions.
+- Made Bokio duplicate checks follow reported pagination totals and scoped cached durable evidence
+  to the configured company and API endpoint.
+
 ## 2026-07-23 - Team Outcome And Recovery Reliability
 
 - Added explicit outcome contracts for tasks, structured deliverable outcomes,

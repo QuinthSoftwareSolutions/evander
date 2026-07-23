@@ -31,6 +31,7 @@ from .types import (
 )
 from .validators import _require_command_agent
 from ...models import (
+    Deliverable,
     TeamBlockerSourceKind,
     TeamRecordState,
     TeamState,
@@ -270,10 +271,20 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     message="reviews must contain at least one review request",
                     correction_context={"field": "reviews"},
                 )
+            provisional_deliverable = Deliverable(
+                id=deliverable_id,
+                task_id=task.id,
+                producer_agent_id=agent.id,
+                summary=normalized_deliverable["summary"],
+                outcomes=normalized_deliverable["outcomes"],
+                supersedes_deliverable_id=normalized_deliverable.get(
+                    "supersedes_deliverable_id"
+                ),
+            )
             planned_reviews = _plan_command_review_requests_for_deliverable(
                 state,
                 actor=agent,
-                deliverable_id=deliverable_id,
+                deliverable=provisional_deliverable,
                 task=task,
                 reviews=normalized_reviews,
                 request_id=normalized_request_id,

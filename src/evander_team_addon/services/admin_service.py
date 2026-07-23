@@ -3164,23 +3164,33 @@ class TeamAdminService:
             elif current_reviews and all(
                 item.state == TeamRecordState.ACCEPTED for item in current_reviews
             ):
-                deliverable.state = TeamRecordState.ACCEPTED
-                task_deliverables = _active_task_deliverables(state_model, task)
-                if all(item.state == TeamRecordState.ACCEPTED for item in task_deliverables):
-                    if task.task_kind == TeamTaskKind.OUTCOME:
-                        task.completion = TaskCompletion(
-                            kind=TaskCompletionKind.DELIVERED,
-                            summary=(
-                                "Accepted deliverables satisfied the task outcome contract."
-                            ),
-                            outcome_reference_ids=[
-                                reference_id
-                                for item in task_deliverables
-                                for outcome in item.outcomes
-                                for reference_id in outcome.reference_ids
-                            ],
-                        )
-                    _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
+                if any(
+                    finding.state == "open"
+                    for finding in deliverable.carried_findings
+                ):
+                    deliverable.state = TeamRecordState.PENDING
+                    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+                else:
+                    deliverable.state = TeamRecordState.ACCEPTED
+                    task_deliverables = _active_task_deliverables(state_model, task)
+                    if all(
+                        item.state == TeamRecordState.ACCEPTED
+                        for item in task_deliverables
+                    ):
+                        if task.task_kind == TeamTaskKind.OUTCOME:
+                            task.completion = TaskCompletion(
+                                kind=TaskCompletionKind.DELIVERED,
+                                summary=(
+                                    "Accepted deliverables satisfied the task outcome contract."
+                                ),
+                                outcome_reference_ids=[
+                                    reference_id
+                                    for item in task_deliverables
+                                    for outcome in item.outcomes
+                                    for reference_id in outcome.reference_ids
+                                ],
+                            )
+                        _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
             elif current_reviews:
                 deliverable.state = TeamRecordState.PENDING
                 _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)

@@ -1251,6 +1251,103 @@ def test_bokio_mcp_checks_all_journal_pages_and_reuses_durable_evidence(
     assert len(requests) == 4
 
 
+def test_bokio_duplicate_check_follows_total_items_past_short_page(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = int(request.url.params["page"])
+        return httpx.Response(
+            200,
+            json={
+                "totalItems": 3,
+                "items": (
+                    [
+                        {"id": "entry-1", "title": "Unrelated"},
+                        {"id": "entry-2", "title": "Unrelated"},
+                    ]
+                    if page == 1
+                    else [{"id": "entry-match", "title": "Office receipt"}]
+                ),
+            },
+        )
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_check_journal_duplicates"],
+    )
+
+    result = server.tools["bokio_check_journal_duplicates"](
+        criteria={"title": "Office receipt"},
+        session_id="session-1",
+    )["result"]
+
+    assert result["total_scanned"] == 3
+    assert result["matching_entry_ids"] == ["entry-match"]
+    assert [request.url.params["page"] for request in requests] == ["1", "2"]
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "changed_value"),
+    [
+        ("BOKIO_COMPANY_ID", "company-2"),
+        ("BOKIO_API_BASE_URL", "https://api-two.example/v1"),
+    ],
+)
+def test_bokio_duplicate_check_cache_is_scoped_to_source_identity(
+    tmp_path: Path,
+    monkeypatch,
+    environment_name: str,
+    changed_value: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "totalItems": 1,
+                "items": [{"id": f"entry-{len(requests)}", "date": "2026-07-01"}],
+            },
+        )
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_API_BASE_URL", "https://api-one.example/v1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_check_journal_duplicates"],
+    )
+    arguments = {
+        "criteria": {"date": "2026-07-01"},
+        "session_id": "session-1",
+    }
+
+    first = server.tools["bokio_check_journal_duplicates"](**arguments)["result"]
+    monkeypatch.setenv(environment_name, changed_value)
+    second = server.tools["bokio_check_journal_duplicates"](**arguments)["result"]
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is False
+    assert first["check_id"] != second["check_id"]
+    assert first["source_identity"] != second["source_identity"]
+    assert len(requests) == 2
+    assert (
+        BokioDuplicateCheckStore(tmp_path).get(second["check_id"])[
+            "source_identity"
+        ]
+        == second["source_identity"]
+    )
+
+
 def test_bokio_duplicate_check_requires_exact_permission_and_supported_criteria(
     tmp_path: Path,
     monkeypatch,

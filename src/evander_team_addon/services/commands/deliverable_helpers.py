@@ -322,11 +322,12 @@ def _plan_command_review_requests_for_deliverable(
     state: TeamState,
     *,
     actor: PersistentAgent,
-    deliverable_id: str,
+    deliverable: Deliverable,
     task: AgentTask,
     reviews: Sequence[Mapping[str, Any]],
     request_id: str,
 ) -> list[dict[str, Any]]:
+    deliverable_id = deliverable.id
     reserved_review_ids: set[str] = set(state.review_requests)
     planned: list[dict[str, Any]] = []
     for review_request in reviews:
@@ -347,7 +348,7 @@ def _plan_command_review_requests_for_deliverable(
             expected_team_id=actor.team_id or "",
             project_id=task.project_id,
             reviewer=reviewer,
-            deliverable=state.deliverables.get(deliverable_id),
+            deliverable=deliverable,
         )
         if profile_error is not None:
             raise TeamCommandValidationError(
