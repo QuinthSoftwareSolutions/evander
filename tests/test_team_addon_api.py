@@ -2463,6 +2463,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "firstEditableField?.focus()" in script.text
     assert "refreshSelects({ includeEditForm = false } = {})" in script.text
     assert "elements.editForm?.contains(select)" in script.text
+    assert 'select.dataset.options === "review-profile-edit-outcome-kinds"' in script.text
+    assert "function reviewProfileEditOutcomeOptions(select)" in script.text
+    assert "state.projects[text(profile.project_id)] || null" in script.text
     assert "gitToBareRepo" not in script.text
     assert "managed_repo_id" in script.text
     assert "managed_repo_directory_path: git.directory_path" in script.text

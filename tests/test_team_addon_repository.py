@@ -9902,6 +9902,93 @@ def test_outcome_kind_archive_requires_active_review_profiles_to_release_it(
     ].archived is True
 
 
+def test_outcome_kind_archive_rejects_nonterminal_task_contract_references(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    _seed_outcome_kind(repo, "prepared_action")
+    state = admin.create_or_reprioritize_task(
+        task_id="active-outcome-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=10,
+        title="Prepare an action",
+        description="Produce the configured durable outcome.",
+        created_by_agent_id="lead",
+        task_kind=TeamTaskKind.OUTCOME,
+        outcome_contract={"required_outcome_kinds": ["prepared_action"]},
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="used by nonterminal task active-outcome-task"):
+        admin.update_outcome_kind_definition(
+            definition_id="outcome-kind-prepared_action",
+            archived=True,
+            expected_revision=state.revision,
+        )
+
+    assert repo.read().outcome_kind_definitions[
+        "outcome-kind-prepared_action"
+    ].archived is False
+
+
+def test_team_wide_review_profile_snapshots_target_project_outcome_override(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_outcome_kind_definition(
+        definition_id="team-prepared-action",
+        team_id="team",
+        project_id=None,
+        kind="prepared_action",
+        name="Team prepared action",
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_outcome_kind_definition(
+        definition_id="project-prepared-action",
+        team_id="team",
+        project_id="project",
+        kind="prepared_action",
+        name="Project prepared action",
+        expected_revision=state.revision,
+    )
+    _seed_task(repo, task_id="project-outcome-review-task")
+    state = admin.record_deliverable(
+        deliverable_id="project-outcome-deliverable",
+        task_id="project-outcome-review-task",
+        producer_agent_id="backend",
+        summary="Prepared the project-specific action.",
+        outcomes=[
+            {
+                "kind": "prepared_action",
+                "reference_ids": ["prepared-action:123"],
+            }
+        ],
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_review_profile(
+        profile_id="team-outcome-review-profile",
+        team_id="team",
+        name="Team outcome review",
+        required_outcome_kinds=["prepared_action"],
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="project-outcome-review",
+        deliverable_id="project-outcome-deliverable",
+        reviewer_agent_id="worker",
+        review_profile_id="team-outcome-review-profile",
+        expected_revision=state.revision,
+    )
+
+    snapshot = state.review_requests[
+        "project-outcome-review"
+    ].required_outcome_kind_definitions[0]
+    assert snapshot.name == "Project prepared action"
+
+
 def test_outcome_task_rejects_evidence_only_deliverable_and_allows_evidenced_noop(
     tmp_path: Path,
 ) -> None:

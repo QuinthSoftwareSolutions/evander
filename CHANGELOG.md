@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-23 - Outcome Catalog Review Fixes
+
+- Prevented archival of outcome kinds that are still required or forbidden by nonterminal tasks.
+- Snapshotted team-wide review profile requirements from the reviewed project so project outcome
+  overrides remain authoritative for deliverable and release reviews.
+- Kept review-profile outcome selections scoped to the profile being edited, including configured
+  values that are no longer active, so unrelated project focus cannot silently clear them.
+
 ## 2026-07-23 - Outcome Catalog Migration Repair
 
 - Added the missing SQLite column migration for review outcome-kind snapshots so existing Team

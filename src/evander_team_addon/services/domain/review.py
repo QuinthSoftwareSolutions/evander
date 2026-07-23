@@ -281,6 +281,7 @@ def _apply_review_request(
         required_outcome_kind_definitions=snapshot_review_profile_outcomes(
             state,
             profile=profile,
+            project_id=project_id,
         ),
         instructions=instructions,
         reviewed_commit_sha=reviewed_commit_sha,
@@ -415,7 +416,11 @@ def retry_blocked_review(
             )
         ),
         required_outcome_kind_definitions=(
-            snapshot_review_profile_outcomes(state, profile=profile)
+            snapshot_review_profile_outcomes(
+                state,
+                profile=profile,
+                project_id=task.project_id,
+            )
             if profile is not None
             else [
                 definition.model_copy(deep=True)

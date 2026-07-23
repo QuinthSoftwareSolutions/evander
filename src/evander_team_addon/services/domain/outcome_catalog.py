@@ -12,6 +12,7 @@ from ...models import (
     RolePermission,
     TaskOutcomeContract,
     TeamState,
+    TeamTaskState,
     effective_outcome_kind_definitions,
     effective_role_permissions,
     outcome_kind_snapshots,
@@ -119,13 +120,14 @@ def snapshot_review_profile_outcomes(
     state: TeamState,
     *,
     profile: ReviewProfile | None,
+    project_id: str | None,
 ) -> list[OutcomeKindSnapshot]:
     if profile is None:
         return []
     return outcome_kind_snapshots(
         state,
         team_id=profile.team_id,
-        project_id=profile.project_id,
+        project_id=project_id,
         kinds=profile.required_outcome_kinds,
         include_archived=profile.archived,
     )
@@ -163,6 +165,30 @@ def active_outcome_kind_references(
     definition: OutcomeKindDefinition,
 ) -> list[str]:
     references: list[str] = []
+    terminal_task_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+    }
+    for task in state.tasks.values():
+        if task.state in terminal_task_states or task.outcome_contract is None:
+            continue
+        contract = task.outcome_contract
+        if definition.kind not in (
+            contract.required_outcome_kinds + contract.forbidden_outcome_kinds
+        ):
+            continue
+        project = state.projects.get(task.project_id)
+        if project is None or project.team_id != definition.team_id:
+            continue
+        effective = resolve_outcome_kind_definition(
+            state,
+            team_id=project.team_id,
+            project_id=project.id,
+            kind=definition.kind,
+        )
+        if effective is not None and effective.id == definition.id:
+            references.append(f"nonterminal task {task.id}")
     for profile in state.review_profiles.values():
         if profile.archived or definition.kind not in profile.required_outcome_kinds:
             continue

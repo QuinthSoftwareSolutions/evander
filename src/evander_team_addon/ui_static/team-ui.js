@@ -12578,6 +12578,9 @@ function buildSelectOptionSets() {
 }
 
 function optionsForSelect(select, optionSets) {
+  if (select.dataset.options === "review-profile-edit-outcome-kinds") {
+    return reviewProfileEditOutcomeOptions(select);
+  }
   if (select.dataset.options === "project-lead-agents") {
     return projectLeadAgentOptions(select);
   }
@@ -12591,6 +12594,44 @@ function optionsForSelect(select, optionSets) {
     return agentEditSuperiorOptions(select);
   }
   return optionSets[select.dataset.options] || [];
+}
+
+function reviewProfileEditOutcomeOptions(select) {
+  const profileId = text(select.form?.dataset.editId);
+  const profile = state.review_profiles?.[profileId];
+  if (!profile) {
+    return [];
+  }
+  const project = state.projects[text(profile.project_id)] || null;
+  const definitions = project
+    ? effectiveOutcomeKindsForProject(project)
+    : values(state.outcome_kind_definitions)
+        .filter((definition) =>
+          text(definition.team_id) === text(profile.team_id)
+          && !definition.project_id
+          && !definition.archived
+        )
+        .sort((left, right) => text(left.kind).localeCompare(text(right.kind)) || byId(left, right));
+  const definitionsByKind = new Map(
+    definitions.map((definition) => [text(definition.kind), definition]),
+  );
+  (profile.required_outcome_kinds || []).forEach((kind) => {
+    const normalizedKind = text(kind);
+    if (!normalizedKind || definitionsByKind.has(normalizedKind)) {
+      return;
+    }
+    definitionsByKind.set(normalizedKind, {
+      kind: normalizedKind,
+      name: normalizedKind,
+      archived: true,
+    });
+  });
+  return Array.from(definitionsByKind.values())
+    .sort((left, right) => text(left.kind).localeCompare(text(right.kind)) || byId(left, right))
+    .map((definition) => [
+      definition.kind,
+      `${definition.name} (${definition.kind})${definition.archived ? " - archived" : ""}`,
+    ]);
 }
 
 function agentEditTeamId(select) {
@@ -14881,9 +14922,6 @@ function renderEditFields(type, record) {
     `;
   }
   if (type === "review-profile") {
-    const outcomeOptionSet = record.project_id
-      ? "project-outcome-kinds"
-      : "team-outcome-kinds";
     return `
       ${readonlyField("Profile ID", record.id)}
       ${readonlyField("Team", record.team_id)}
@@ -14891,7 +14929,7 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
       ${multiSelectField("Applicable roles", "applicable_role_ids", "roles", record.applicable_role_ids || [], { size: 4 })}
-      ${multiSelectField("Required outcome kinds", "required_outcome_kinds", outcomeOptionSet, record.required_outcome_kinds || [], { size: 4 })}
+      ${multiSelectField("Required outcome kinds", "required_outcome_kinds", "review-profile-edit-outcome-kinds", record.required_outcome_kinds || [], { size: 4 })}
       ${renderReviewProfileCriteriaEditor(record.criteria || [])}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;

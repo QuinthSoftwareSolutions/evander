@@ -74,6 +74,7 @@ def _create_release_review(
         required_outcome_kind_definitions=snapshot_review_profile_outcomes(
             state,
             profile=profile,
+            project_id=release.project_id,
         ),
         reviewed_commit_sha=candidate_commit_sha,
         state=TeamRecordState.PENDING,

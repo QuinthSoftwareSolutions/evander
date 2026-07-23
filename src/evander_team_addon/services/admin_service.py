@@ -3176,6 +3176,7 @@ class TeamAdminService:
                 required_outcome_kind_definitions=snapshot_review_profile_outcomes(
                     state_model,
                     profile=profile,
+                    project_id=task.project_id,
                 ),
                 instructions=instructions,
                 reviewed_commit_sha=(
