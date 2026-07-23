@@ -5414,7 +5414,8 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
 
     class FakeContainerBackend:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, int, str | None]] = []
+            self.page_calls: list[tuple[str, int, int, str | None, str | None]] = []
+            self.snapshot_calls: list[tuple[str, int, str | None]] = []
 
         def get_log_snapshot(
             self,
@@ -5423,14 +5424,44 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
             lines: int = 50,
             mode: str | None = None,
         ) -> str:
-            self.calls.append((target, lines, mode))
+            self.snapshot_calls.append((target, lines, mode))
+            raise AssertionError("execution aggregation should use bounded paged log reads")
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            self.page_calls.append((target, limit, offset, query, mode))
             if target == "exec-artifact":
-                return (
+                text = (
                     "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__\n"
                     '{"success":true,"destination_path":"team-artifact-imports/report"}\n'
                     "__EVANDER_ARTIFACT_EFFECT_JSON_END__\n"
                 )
-            return "agent reasoning line 1\nagent reasoning line 2\n"
+            else:
+                text = "\n".join(
+                    f"agent reasoning line {line_number}" for line_number in range(1, 1001)
+                )
+            lines = text.splitlines()
+            end_index = max(0, len(lines) - offset)
+            start_index = max(0, end_index - limit)
+            page_lines = lines[start_index:end_index]
+            return {
+                "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
+                "limit": limit,
+                "offset": offset,
+                "returned_lines": len(page_lines),
+                "total_lines": len(lines),
+                "start_line": start_index + 1 if page_lines else 0,
+                "end_line": end_index if page_lines else 0,
+                "has_more_before": start_index > 0,
+                "query": query,
+            }
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
@@ -5447,16 +5478,17 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
 
     assert "execution=exec-artifact" in latest_page["text"]
     assert "__EVANDER_ARTIFACT_EFFECT_JSON_END__" in latest_page["text"]
-    assert "agent reasoning line 2" in latest_page["text"]
+    assert "agent reasoning line 1000" in latest_page["text"]
     assert "session transcript" not in latest_page["text"]
     assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
-    assert latest_page["total_lines"] == 8
+    assert latest_page["total_lines"] is None
     assert latest_page["view"] == "executions"
-    assert fake_backend.calls == [
-        ("exec-artifact", 0, "execution"),
-        ("exec-agent", 0, "execution"),
+    assert fake_backend.page_calls == [
+        ("exec-artifact", 6, 0, None, "execution"),
+        ("exec-agent", 1, 0, None, "execution"),
     ]
+    assert fake_backend.snapshot_calls == []
 
     older_page = service.vm_agent_admin.get_admin_agent_log_page(
         "session-1",
@@ -5465,19 +5497,20 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
         offset=int(latest_page["returned_lines"]),
     )
 
-    assert "execution=exec-agent" in older_page["text"]
-    assert "agent reasoning line 1" in older_page["text"]
+    assert "agent reasoning line 990" in older_page["text"]
+    assert "agent reasoning line 999" in older_page["text"]
     assert "exec-artifact" not in older_page["text"]
     assert "session transcript" not in older_page["text"]
     assert "augmented" not in older_page["text"]
-    assert older_page["has_more_before"] is False
+    assert older_page["has_more_before"] is True
     assert older_page["view"] == "executions"
-    assert fake_backend.calls == [
-        ("exec-artifact", 0, "execution"),
-        ("exec-agent", 0, "execution"),
-        ("exec-artifact", 0, "execution"),
-        ("exec-agent", 0, "execution"),
+    assert fake_backend.page_calls == [
+        ("exec-artifact", 6, 0, None, "execution"),
+        ("exec-agent", 1, 0, None, "execution"),
+        ("exec-artifact", 16, 0, None, "execution"),
+        ("exec-agent", 11, 0, None, "execution"),
     ]
+    assert fake_backend.snapshot_calls == []
 
 
 def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_logs(

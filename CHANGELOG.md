@@ -20,6 +20,8 @@
   when a newer, short artifact operation would otherwise replace the visible agent transcript.
 - Preserved bounded line-window pagination so older execution history remains available through
   **Load older** without eagerly reading the whole session history.
+- Bounded live-refresh transfers as well as rendered output by reading only each execution's
+  required tail through the worker's paged log API.
 
 ## 2026-07-23 - Team Artifact Handoffs
 
