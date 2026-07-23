@@ -79,9 +79,57 @@ type WorkerListResponse = {
 
 type DraftValue = string | boolean;
 type WorkerDraft = Record<string, DraftValue>;
+type WorkerStatusFilter = "all" | "running" | "stopped" | "failed";
 
 const POLL_INTERVAL_MS = 5000;
 const LOG_LINES = 200;
+
+function workerStatus(worker: WorkerSummary): { label: string; className: "failed" | "running" | "idle" } {
+  if (worker.failed) {
+    return { label: "failed", className: "failed" };
+  }
+  if (worker.running) {
+    return { label: "running", className: "running" };
+  }
+  return { label: worker.active_state || "inactive", className: "idle" };
+}
+
+function normalizedWorkerSearch(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+function workerMatchesStatus(worker: WorkerSummary, statusFilter: WorkerStatusFilter): boolean {
+  if (statusFilter === "failed") return worker.failed;
+  if (statusFilter === "running") return worker.running && !worker.failed;
+  if (statusFilter === "stopped") return !worker.running && !worker.failed;
+  return true;
+}
+
+function workerSearchText(worker: WorkerSummary): string {
+  return [
+    worker.worker_id,
+    worker.name,
+    worker.unit,
+    worker.active_state,
+    worker.sub_state,
+    worker.result,
+    worker.unit_file_state,
+    worker.description,
+    worker.detail,
+  ].filter(Boolean).join(" ").toLocaleLowerCase();
+}
+
+function workerHoverSummary(worker: WorkerSummary): string {
+  return [
+    `Worker id: ${worker.worker_id}`,
+    `Unit: ${worker.unit}`,
+    `State: ${worker.active_state}${worker.sub_state ? ` / ${worker.sub_state}` : ""}`,
+    `Result: ${worker.result ?? "n/a"}`,
+    `Unit file: ${worker.unit_file_state ?? "n/a"}`,
+    `Main PID: ${worker.main_pid ?? "n/a"}`,
+    worker.detail ? `Detail: ${worker.detail}` : null,
+  ].filter((value): value is string => Boolean(value)).join("\n");
+}
 
 function normalizeFieldValue(field: WorkerConfigField, value: unknown): DraftValue {
   if (field.kind === "bool") {
@@ -183,6 +231,8 @@ export function WorkersScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<WorkerStatusFilter>("all");
 
   async function loadWorkers(preferredWorkerId?: string, currentWorkerId?: string) {
     const payload = await fetchJson<WorkerListResponse>("/api/workers");
@@ -263,7 +313,18 @@ export function WorkersScreen() {
     () => workers.find((worker) => worker.worker_id === selectedWorkerId) ?? detail?.summary ?? null,
     [detail?.summary, selectedWorkerId, workers],
   );
-  const workerCountLabel = `${workers.length} ${workers.length === 1 ? "worker" : "workers"}`;
+  const visibleWorkers = useMemo(() => {
+    const query = normalizedWorkerSearch(searchQuery);
+    return workers.filter(
+      (worker) =>
+        workerMatchesStatus(worker, statusFilter)
+        && (!query || workerSearchText(worker).includes(query)),
+    );
+  }, [searchQuery, statusFilter, workers]);
+  const filtersActive = Boolean(normalizedWorkerSearch(searchQuery)) || statusFilter !== "all";
+  const workerCountLabel = filtersActive
+    ? `${visibleWorkers.length} of ${workers.length} workers`
+    : `${workers.length} ${workers.length === 1 ? "worker" : "workers"}`;
   const mutationLocked = !privilegedUnlocked;
 
   async function reloadSelectedWorker(options?: { preserveDraft?: boolean }) {
@@ -439,7 +500,7 @@ export function WorkersScreen() {
   }
 
   return (
-    <div className="feature-page">
+    <div className="feature-page workers-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
@@ -456,39 +517,79 @@ export function WorkersScreen() {
           </button>
         </div>
         {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to start, stop, or save worker settings.</div> : null}
-        <div className="panel section-panel">
-          <div className="feature-list-title-row">
-            <strong>Fleet</strong>
-            <span className="panel-meta">{workerCountLabel}</span>
-          </div>
-          <div className="feature-list-meta">Systemd-backed host services and background workers.</div>
-          <div className="feature-list-meta">Select one to inspect unit health, configuration, and the current journal tail.</div>
-        </div>
-        <div className="feature-list">
-          {workers.map((worker) => (
-            <button
-              key={worker.worker_id}
-              type="button"
-              className={`feature-list-item${worker.worker_id === selectedWorkerId ? " selected" : ""}`}
-              onClick={() => handleSelectWorker(worker.worker_id)}
-              disabled={loading && worker.worker_id === selectedWorkerId}
+        <div className="config-field-grid workers-filter-grid">
+          <label className="field-stack">
+            <span>Find worker</span>
+            <input
+              type="search"
+              value={searchQuery}
+              placeholder="Name, unit, or status"
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+          </label>
+          <label className="field-stack">
+            <span>Status</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as WorkerStatusFilter)}
             >
-              <div className="feature-list-title-row">
-                <span>{worker.name}</span>
-                <span className={`status-pill state-${worker.failed ? "failed" : worker.running ? "running" : "idle"}`}>
-                  {worker.failed ? "failed" : worker.running ? "running" : worker.active_state}
-                </span>
-              </div>
-              <div className="feature-list-meta">{worker.unit}</div>
-              <div className="feature-list-meta">
-                {worker.sub_state ?? "unknown"}
-                {worker.main_pid ? ` · pid ${worker.main_pid}` : ""}
-              </div>
+              <option value="all">All states</option>
+              <option value="running">Running</option>
+              <option value="stopped">Stopped</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+        </div>
+        <div className="workers-list-summary" aria-live="polite">
+          <span>{workerCountLabel}</span>
+          {filtersActive ? (
+            <button
+              type="button"
+              className="text-button compact"
+              onClick={() => {
+                setSearchQuery("");
+                setStatusFilter("all");
+              }}
+            >
+              Clear filters
             </button>
-          ))}
+          ) : null}
+        </div>
+        <div className="feature-list worker-list" aria-label="Host workers">
+          {visibleWorkers.map((worker) => {
+            const status = workerStatus(worker);
+            return (
+              <Tooltip
+                key={worker.worker_id}
+                content={workerHoverSummary(worker)}
+                className="worker-list-item-tooltip"
+                triggerClassName="worker-list-item-tooltip-trigger"
+                bubbleClassName="worker-list-item-tooltip-bubble"
+                inline={false}
+              >
+                <button
+                  type="button"
+                  className={`feature-list-item worker-list-item${worker.worker_id === selectedWorkerId ? " selected" : ""}`}
+                  aria-label={`${worker.name}, ${status.label}`}
+                  onClick={() => handleSelectWorker(worker.worker_id)}
+                  disabled={loading && worker.worker_id === selectedWorkerId}
+                >
+                  <div className="feature-list-title-row worker-list-item-row">
+                    <strong>{worker.name}</strong>
+                    <span className={`status-pill state-${status.className}`}>
+                      {status.label}
+                    </span>
+                  </div>
+                </button>
+              </Tooltip>
+            );
+          })}
           {loading && workers.length === 0 ? <div className="empty-state">Loading workers…</div> : null}
           {!loading && workers.length === 0 ? (
             <div className="empty-state">No workers are available yet. Check host services or refresh after startup.</div>
+          ) : null}
+          {!loading && workers.length > 0 && visibleWorkers.length === 0 ? (
+            <div className="empty-state">No workers match the current search and status filters.</div>
           ) : null}
         </div>
       </section>
@@ -565,8 +666,8 @@ export function WorkersScreen() {
               </p>
             </div>
             {selectedSummary ? (
-              <span className={`status-pill state-${selectedSummary.failed ? "failed" : selectedSummary.running ? "running" : "idle"}`}>
-                {selectedSummary.failed ? "failed" : selectedSummary.running ? "running" : selectedSummary.active_state}
+              <span className={`status-pill state-${workerStatus(selectedSummary).className}`}>
+                {workerStatus(selectedSummary).label}
               </span>
             ) : null}
           </div>
@@ -578,6 +679,8 @@ export function WorkersScreen() {
               <div><span>Active state</span><strong>{selectedSummary.active_state}</strong></div>
               <div><span>Sub state</span><strong>{selectedSummary.sub_state ?? "n/a"}</strong></div>
               <div><span>Result</span><strong>{selectedSummary.result ?? "n/a"}</strong></div>
+              <div><span>Unit file</span><strong>{selectedSummary.unit_file_state ?? "n/a"}</strong></div>
+              <div><span>Detail</span><strong>{selectedSummary.detail ?? "n/a"}</strong></div>
             </div>
           ) : (
             <div className="empty-state">Select a worker to inspect it.</div>

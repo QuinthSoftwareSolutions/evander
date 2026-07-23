@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23 - Focused Worker Navigation
+
+- Replaced the Workers fleet summary and tall service cards with worker search, status filtering,
+  compact name/status rows, and hover or focus diagnostics.
+- Kept the independently scrollable list and expanded the selected-worker overview with unit-file
+  state and diagnostic detail.
+
 ## 2026-07-23 - Azure DevOps PR Source Confirmation
 
 - Confirmed reused Azure DevOps pull request source revisions through the latest PR iteration when

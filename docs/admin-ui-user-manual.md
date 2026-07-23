@@ -707,14 +707,19 @@ The Workers tab manages host background worker services and worker-global settin
 Common tasks:
 
 1. Open **Workers**.
-2. Select a worker service from the left list.
-3. Inspect active state, sub-state, result, unit name, main PID, global settings, and recent
+2. Use **Find worker** to search names, IDs, units, states, descriptions, or diagnostic detail, and
+   use **Status** to isolate running, stopped, or failed services.
+3. Browse the compact, independently scrollable worker list. Each row shows only the worker name
+   and service status; hover or focus it for unit, state, result, unit-file, PID, and detail.
+4. Select a worker service from the left list.
+5. Inspect active state, sub-state, result, unit name, unit-file state, main PID, diagnostic detail,
+   global settings, and recent
    journal tail.
-4. Unlock privileges before starting, stopping, or saving worker settings.
-5. Use the start/stop toolbar action to change service state.
-6. Edit fields in **Global settings** when the worker exposes an editable schema.
-7. Click the save icon to write worker-global settings back to the host config file.
-8. Use **Reload log** to refresh the current journal tail.
+6. Unlock privileges before starting, stopping, or saving worker settings.
+7. Use the start/stop toolbar action to change service state.
+8. Edit fields in **Global settings** when the worker exposes an editable schema.
+9. Click the save icon to write worker-global settings back to the host config file.
+10. Use **Reload log** to refresh the current journal tail.
 
 If a worker configuration save reports a revision conflict, reload the worker settings first. The
 draft remains visible so you can reapply intentional changes after reviewing the newer server copy.

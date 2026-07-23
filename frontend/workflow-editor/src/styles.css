@@ -6438,6 +6438,67 @@ select {
   overflow-y: auto;
 }
 
+.workers-filter-grid {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 0.45rem;
+}
+
+.workers-page .feature-sidebar .field-stack input,
+.workers-page .feature-sidebar .field-stack select {
+  border-radius: 0;
+}
+
+.workers-list-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-height: 2rem;
+  margin-bottom: 0.35rem;
+  color: #6d5c4c;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.worker-list-item-tooltip,
+.worker-list-item-tooltip-trigger {
+  display: block;
+  width: 100%;
+}
+
+.worker-list-item-tooltip-bubble {
+  white-space: pre-line;
+}
+
+.worker-list-item {
+  width: 100%;
+  min-height: 2.45rem;
+  padding: 0.38rem 0.5rem;
+}
+
+.worker-list-item-row {
+  min-width: 0;
+}
+
+.worker-list-item strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-list-item .status-pill {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.42rem;
+  font-size: 0.68rem;
+}
+
+.workers-page .feature-content {
+  padding-top: 0.8rem;
+}
+
 .vm-agent-log {
   display: block;
   min-height: 18rem;
