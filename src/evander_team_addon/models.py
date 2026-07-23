@@ -98,6 +98,24 @@ class TeamRecordState(str, Enum):
     BLOCKED = "blocked"
 
 
+class ReviewBlockKind(str, Enum):
+    DEPENDENCY = "dependency"
+    INPUT_UNAVAILABLE = "input_unavailable"
+    POLICY = "policy"
+    SYSTEM = "system"
+    UNSPECIFIED = "unspecified"
+
+
+class TeamTaskKind(str, Enum):
+    OUTCOME = "outcome"
+    SUPPORT = "support"
+
+
+class TaskCompletionKind(str, Enum):
+    DELIVERED = "delivered"
+    EVIDENCED_NOOP = "evidenced_noop"
+
+
 class TeamCaseStatus(str, Enum):
     OPEN = "open"
     TRIAGE = "triage"
@@ -861,6 +879,64 @@ class TeamCase(TeamModel):
         return dict(value)
 
 
+class TaskOutcomeContract(TeamModel):
+    required_outcome_kinds: list[str] = Field(default_factory=list)
+    match: Literal["any", "all"] = "all"
+    allow_evidenced_noop: bool = False
+    forbidden_effect_kinds: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "required_outcome_kinds",
+        "forbidden_effect_kinds",
+        mode="before",
+    )
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_contract(self) -> "TaskOutcomeContract":
+        if not self.required_outcome_kinds and not self.allow_evidenced_noop:
+            raise ValueError(
+                "outcome contract requires required_outcome_kinds or "
+                "allow_evidenced_noop"
+            )
+        overlap = set(self.required_outcome_kinds).intersection(
+            self.forbidden_effect_kinds
+        )
+        if overlap:
+            raise ValueError(
+                "outcome kinds cannot be both required and forbidden: "
+                + ", ".join(sorted(overlap))
+            )
+        return self
+
+
+class TaskCompletion(TeamModel):
+    kind: TaskCompletionKind
+    summary: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    outcome_reference_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _required_summary(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("evidence_refs", "outcome_reference_ids", mode="before")
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> "TaskCompletion":
+        if self.kind == TaskCompletionKind.EVIDENCED_NOOP and not self.evidence_refs:
+            raise ValueError("evidenced_noop completion requires evidence_refs")
+        if self.kind == TaskCompletionKind.DELIVERED and not self.outcome_reference_ids:
+            raise ValueError("delivered completion requires outcome_reference_ids")
+        return self
+
+
 class AgentTask(TeamModel):
     id: str
     owner_agent_id: str
@@ -868,6 +944,9 @@ class AgentTask(TeamModel):
     case_id: str | None = None
     priority: int = Field(ge=0)
     state: TeamTaskState = TeamTaskState.PENDING
+    task_kind: TeamTaskKind = TeamTaskKind.SUPPORT
+    outcome_contract: TaskOutcomeContract | None = None
+    completion: TaskCompletion | None = None
     state_entered_at: datetime = Field(default_factory=utc_now)
     title: str
     description: str
@@ -928,6 +1007,12 @@ class AgentTask(TeamModel):
             raise ValueError("task cannot be its own parent")
         if self.id in self.dependency_task_ids:
             raise ValueError("task cannot depend on itself")
+        if self.task_kind == TeamTaskKind.OUTCOME and self.outcome_contract is None:
+            raise ValueError("outcome task requires outcome_contract")
+        if self.task_kind == TeamTaskKind.SUPPORT and self.outcome_contract is not None:
+            raise ValueError("support task cannot define outcome_contract")
+        if self.task_kind == TeamTaskKind.SUPPORT and self.completion is not None:
+            raise ValueError("support task cannot define structured completion")
         return self
 
 
@@ -1051,6 +1136,30 @@ class DeliverableReviewManifest(TeamModel):
         return _unique_text_list(value, info.field_name)
 
 
+class DeliverableOutcome(TeamModel):
+    kind: str
+    reference_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _required_kind(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("reference_ids", "evidence_refs", mode="before")
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> "DeliverableOutcome":
+        if not self.reference_ids and not self.evidence_refs:
+            raise ValueError(
+                "deliverable outcome requires reference_ids or evidence_refs"
+            )
+        return self
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -1061,10 +1170,14 @@ class Deliverable(TeamModel):
     review_request_ids: list[str] = Field(default_factory=list)
     git_refs: DeliverableGitRefs = Field(default_factory=DeliverableGitRefs)
     verification: DeliverableVerification | None = None
+    outcomes: list[DeliverableOutcome] = Field(default_factory=list)
     carried_findings: list[ReviewFindingRecord] = Field(default_factory=list)
     review_manifest: DeliverableReviewManifest | None = None
     supersedes_deliverable_id: str | None = None
     superseded_by_deliverable_id: str | None = None
+    supersession_reason: str | None = None
+    superseded_at: datetime | None = None
+    superseded_by_actor: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("id", "task_id", "producer_agent_id", "summary", mode="before")
@@ -1075,6 +1188,8 @@ class Deliverable(TeamModel):
     @field_validator(
         "supersedes_deliverable_id",
         "superseded_by_deliverable_id",
+        "supersession_reason",
+        "superseded_by_actor",
         mode="before",
     )
     @classmethod
@@ -1139,6 +1254,7 @@ class ReviewProfile(TeamModel):
     description: str = ""
     applicable_role_ids: list[str] = Field(default_factory=list)
     criteria: list[ReviewProfileCriterion] = Field(default_factory=list)
+    required_outcome_kinds: list[str] = Field(default_factory=list)
     archived: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1157,6 +1273,11 @@ class ReviewProfile(TeamModel):
     @classmethod
     def _applicable_role_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value, "applicable_role_ids")
+
+    @field_validator("required_outcome_kinds", mode="before")
+    @classmethod
+    def _required_outcome_kinds(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "required_outcome_kinds")
 
     @model_validator(mode="after")
     def _validate_criterion_ids(self) -> "ReviewProfile":
@@ -1192,6 +1313,10 @@ class ReviewRequest(TeamModel):
     superseded_by_review_request_id: str | None = None
     retry_reason: str | None = None
     retry_requested_by: str | None = None
+    block_kind: ReviewBlockKind | None = None
+    retired_at: datetime | None = None
+    retired_by: str | None = None
+    retirement_reason: str | None = None
     created_at: datetime | None = None
     decision_at: datetime | None = None
 
@@ -1216,6 +1341,8 @@ class ReviewRequest(TeamModel):
         "superseded_by_review_request_id",
         "retry_reason",
         "retry_requested_by",
+        "retired_by",
+        "retirement_reason",
         mode="before",
     )
     @classmethod
@@ -1235,13 +1362,26 @@ class ReviewRequest(TeamModel):
             self.retry_reason is None or self.retry_requested_by is None
         ):
             raise ValueError(
-                "superseding release review requires retry_reason and retry_requested_by"
+                "superseding review requires retry_reason and retry_requested_by"
             )
         if self.criteria_snapshot is not None:
             _ensure_unique(
                 [criterion.id for criterion in self.criteria_snapshot],
                 "review criteria snapshot",
             )
+        retirement_fields = (
+            self.retired_at,
+            self.retired_by,
+            self.retirement_reason,
+        )
+        if any(value is not None for value in retirement_fields) and not all(
+            value is not None for value in retirement_fields
+        ):
+            raise ValueError(
+                "retired review request requires retired_at, retired_by, and retirement_reason"
+            )
+        if self.block_kind is not None and self.state != TeamRecordState.BLOCKED:
+            raise ValueError("review block_kind is only valid when state is blocked")
         return self
 
 
@@ -3119,19 +3259,28 @@ class TeamState(TeamModel):
                 elif previous.id == deliverable.id:
                     errors.append(f"deliverable {deliverable.id} cannot supersede itself")
                 else:
-                    if previous.task_id != deliverable.task_id:
+                    previous_task = self.tasks.get(previous.task_id)
+                    replacement_task = self.tasks.get(deliverable.task_id)
+                    if (
+                        previous_task is not None
+                        and replacement_task is not None
+                        and previous_task.project_id != replacement_task.project_id
+                    ):
                         errors.append(
                             f"deliverable {deliverable.id} supersedes deliverable "
-                            f"{previous.id} from another task"
+                            f"{previous.id} from another project"
                         )
                     if previous.superseded_by_deliverable_id != deliverable.id:
                         errors.append(
                             f"deliverable {deliverable.id} supersedes deliverable "
                             f"{previous.id} without a reciprocal superseded_by link"
                         )
-                    if previous.state != TeamRecordState.REJECTED:
+                    if previous.state not in {
+                        TeamRecordState.REJECTED,
+                        TeamRecordState.BLOCKED,
+                    }:
                         errors.append(
-                            f"deliverable {deliverable.id} supersedes non-rejected "
+                            f"deliverable {deliverable.id} supersedes non-rejected/non-blocked "
                             f"deliverable {previous.id}"
                         )
             if deliverable.superseded_by_deliverable_id is not None:
@@ -3144,19 +3293,29 @@ class TeamState(TeamModel):
                 elif replacement.id == deliverable.id:
                     errors.append(f"deliverable {deliverable.id} cannot supersede itself")
                 else:
-                    if replacement.task_id != deliverable.task_id:
+                    predecessor_task = self.tasks.get(deliverable.task_id)
+                    replacement_task = self.tasks.get(replacement.task_id)
+                    if (
+                        predecessor_task is not None
+                        and replacement_task is not None
+                        and predecessor_task.project_id != replacement_task.project_id
+                    ):
                         errors.append(
                             f"deliverable {deliverable.id} is superseded by deliverable "
-                            f"{replacement.id} from another task"
+                            f"{replacement.id} from another project"
                         )
                     if replacement.supersedes_deliverable_id != deliverable.id:
                         errors.append(
                             f"deliverable {deliverable.id} is superseded by deliverable "
                             f"{replacement.id} without a reciprocal supersedes link"
                         )
-                    if deliverable.state != TeamRecordState.REJECTED:
+                    if deliverable.state not in {
+                        TeamRecordState.REJECTED,
+                        TeamRecordState.BLOCKED,
+                    }:
                         errors.append(
-                            f"non-rejected deliverable {deliverable.id} cannot be superseded"
+                            f"non-rejected/non-blocked deliverable {deliverable.id} "
+                            "cannot be superseded"
                         )
 
     def _validate_review_profiles(self, errors: list[str]) -> None:
@@ -3222,6 +3381,28 @@ class TeamState(TeamModel):
                 errors.append(
                     f"review request {review.id} has a criteria snapshot but no review profile"
                 )
+            if review.supersedes_review_request_id is not None:
+                previous = self.review_requests.get(review.supersedes_review_request_id)
+                if previous is None or (
+                    previous.deliverable_id != review.deliverable_id
+                    or previous.release_package_id != review.release_package_id
+                ):
+                    errors.append(f"review request {review.id} supersedes an invalid review")
+                elif previous.superseded_by_review_request_id != review.id:
+                    errors.append(
+                        f"review request {review.id} has non-reciprocal supersession lineage"
+                    )
+            if review.superseded_by_review_request_id is not None:
+                successor = self.review_requests.get(review.superseded_by_review_request_id)
+                if successor is None or (
+                    successor.deliverable_id != review.deliverable_id
+                    or successor.release_package_id != review.release_package_id
+                ):
+                    errors.append(f"review request {review.id} has an invalid successor")
+                elif successor.supersedes_review_request_id != review.id:
+                    errors.append(
+                        f"review request {review.id} has non-reciprocal successor lineage"
+                    )
             if review.criteria and review.review_profile_id is None:
                 errors.append(
                     f"review request {review.id} has criterion results but no review profile"

@@ -116,6 +116,7 @@ TEAM_VIEW_IDS = (
     "people",
     "chat",
     "mail",
+    "activity",
     "governance",
     "planning",
     "timeline",
@@ -273,6 +274,7 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
 TEAM_VIEW_COLLECTIONS["mail"] = {"teams", "roles", "agents"}
+TEAM_VIEW_COLLECTIONS["activity"] = {"teams", "roles", "agents"}
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "teams",
     "governance_groups",
@@ -402,6 +404,124 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_inbox_history(request: Request) -> JSONResponse:
         return JSONResponse(_inbox_history_payload_for_request(request, repository.read()))
+
+    async def get_dispatch_events(request: Request) -> JSONResponse:
+        state = repository.read()
+        team_id = _query_text(request, "team_id")
+        agent_id = _query_text(request, "agent_id")
+        dispatch_id = _query_text(request, "dispatch_id")
+        tool_name = _query_text(request, "tool_name")
+        status = _query_text(request, "status")
+        search_text = _query_text(request, "q")
+        limit = _query_limited_int(
+            request,
+            "limit",
+            default=100,
+            max_value=200,
+        )
+        offset = _query_non_negative_int(request, "offset", default=0)
+        rows = repository.list_dispatch_activity(
+            dispatch_id=dispatch_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            newest_first=True,
+        )
+        if team_id:
+            team_agent_ids = {
+                agent.id for agent in state.agents.values() if agent.team_id == team_id
+            }
+            rows = [row for row in rows if row.agent_id in team_agent_ids]
+        if status:
+            rows = [row for row in rows if row.status.value == status]
+        if search_text:
+            needle = search_text.casefold()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in " ".join(
+                    value
+                    for value in (
+                        row.id,
+                        row.dispatch_id or "",
+                        row.agent_id or "",
+                        row.tool_name,
+                        row.error_code or "",
+                        row.error_message or "",
+                        row.correction_context_summary or "",
+                    )
+                ).casefold()
+            ]
+        total_count = len(rows)
+        page = rows[offset : offset + limit]
+
+        def _event_payload(row: Any) -> dict[str, Any]:
+            agent = state.agents.get(row.agent_id or "")
+            if row.tool_name == "team_dispatch_started":
+                kind = "dispatch_started"
+                summary = "Dispatch started"
+            elif row.tool_name == "team_dispatch_finished":
+                kind = "dispatch_finished"
+                summary = (
+                    "Dispatch finished with progress"
+                    if row.progress_classification != "none"
+                    else "Dispatch finished without recorded progress"
+                )
+            elif row.status.value == "failure":
+                kind = "tool_failed"
+                summary = row.error_message or f"{row.tool_name} failed"
+            else:
+                kind = "tool_completed"
+                summary = f"{row.tool_name} completed"
+            return {
+                "id": row.id,
+                "dispatch_id": row.dispatch_id,
+                "agent_id": row.agent_id,
+                "agent_display_name": (
+                    (agent.display_name or agent.id)
+                    if agent is not None
+                    else row.agent_id
+                ),
+                "team_id": agent.team_id if agent is not None else None,
+                "kind": kind,
+                "tool_name": (
+                    None
+                    if row.tool_name
+                    in {"team_dispatch_started", "team_dispatch_finished"}
+                    else row.tool_name
+                ),
+                "status": row.status.value,
+                "progress_classification": row.progress_classification,
+                "summary": summary,
+                "error_code": row.error_code,
+                "correction_context_summary": row.correction_context_summary,
+                "occurred_at": row.created_at.isoformat(),
+            }
+
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "generated_at": utc_now().isoformat(),
+                "retention_days": 30,
+                "filters": {
+                    key: value
+                    for key, value in {
+                        "team_id": team_id,
+                        "agent_id": agent_id,
+                        "dispatch_id": dispatch_id,
+                        "tool_name": tool_name,
+                        "status": status,
+                        "q": search_text,
+                    }.items()
+                    if value is not None
+                },
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(page) < total_count,
+                "events": [_event_payload(row) for row in page],
+            }
+        )
 
     async def get_view(request: Request) -> JSONResponse:
         view = request.path_params["view"]
@@ -1894,6 +2014,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 parent_task_id=_optional(payload, "parent_task_id"),
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
+                task_kind=_optional(payload, "task_kind"),
+                outcome_contract=_optional_object(payload, "outcome_contract"),
+                set_outcome_contract="outcome_contract" in payload,
                 expected_revision=expected_revision,
             ),
             create_collection="tasks",
@@ -1942,6 +2065,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 producer_agent_id=_required(payload, "producer_agent_id"),
                 summary=_required(payload, "summary"),
                 artifact_refs=_optional_string_list(payload, "artifact_refs"),
+                outcomes=_optional_list(payload, "outcomes"),
                 state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
                 expected_revision=expected_revision,
             ),
@@ -2002,6 +2126,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 findings=_optional_string_list(payload, "findings"),
                 criteria=criteria,
                 finding_resolutions=finding_resolutions,
+                expected_revision=expected_revision,
+            ),
+            target_collection="review_requests",
+            target_id=review_request_id,
+        )
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def retire_review_request(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        review_request_id = request.path_params["review_request_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.retire_review_request(
+                review_request_id=review_request_id,
+                reason=_required(payload, "reason"),
+                operator_actor_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
                 expected_revision=expected_revision,
             ),
             target_collection="review_requests",
@@ -2095,6 +2238,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 description=_optional(payload, "description") or "",
                 applicable_role_ids=_optional_string_list(payload, "applicable_role_ids"),
                 criteria=criteria,
+                required_outcome_kinds=(
+                    _optional_string_list(payload, "required_outcome_kinds")
+                    if "required_outcome_kinds" in payload
+                    else None
+                ),
                 expected_revision=expected_revision,
             ),
             create_collection="review_profiles",
@@ -2133,6 +2281,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     else None
                 ),
                 criteria=criteria,
+                required_outcome_kinds=(
+                    _optional_string_list(payload, "required_outcome_kinds")
+                    if "required_outcome_kinds" in payload
+                    else None
+                ),
                 archived=raw_archived if isinstance(raw_archived, bool) else None,
                 project_id=_optional(payload, "project_id"),
                 set_project_id=has_project,
@@ -2417,6 +2570,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/state", get_state, methods=["GET"]),
         route("/state/stream", stream_state, methods=["GET"]),
         route("/inbox", get_inbox_history, methods=["GET"]),
+        route("/dispatch-events", get_dispatch_events, methods=["GET"]),
         route("/templates", list_templates, methods=["GET"]),
         route(
             "/templates/{template_id}",
@@ -2590,6 +2744,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/review-requests/{review_request_id}/decision",
             decide_review_request,
+            methods=["POST"],
+        ),
+        route(
+            "/review-requests/{review_request_id}/retire",
+            retire_review_request,
             methods=["POST"],
         ),
         route(
@@ -2801,6 +2960,14 @@ def _team_state_payload_for_request(
         session_records=session_records,
         agent_execution_records=agent_execution_records,
     )
+    from .services.domain.project_status import project_blocking_sources
+
+    for project_id, project_payload in payload.get("projects", {}).items():
+        if isinstance(project_payload, dict):
+            project_payload["blocking_sources"] = project_blocking_sources(
+                state,
+                project_id,
+            )
     _add_team_resource_tokens(payload, state)
     if not _can_view_all_team_chats(auth, request):
         identity = _operator_identity_from_request(auth, request)

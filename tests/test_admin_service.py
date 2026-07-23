@@ -2329,6 +2329,14 @@ def test_create_container_agent_accepts_explicit_default_image_reference(
             "backend": "container_worker_vm",
             "session_id": "default-image-session",
             "container_image": "runner-base:latest",
+            "http_targets": {
+                "targets": {
+                    "docs": {
+                        "base_url": "https://docs.example.test/",
+                        "metadata": {"owner": "operator"},
+                    }
+                }
+            },
         }
     )
 
@@ -2352,6 +2360,14 @@ def test_create_container_agent_accepts_explicit_default_image_reference(
     assert manifest.metadata["container_worker"] == {
         "image": "runner-base:latest",
         "image_alias": None,
+    }
+    assert manifest.metadata["http_targets"] == {
+        "targets": {
+            "docs": {
+                "base_url": "https://docs.example.test",
+                "metadata": {"owner": "operator"},
+            }
+        }
     }
 
 
@@ -2464,6 +2480,13 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
             "vm_name": "lab-vm",
             "vm_image": "gpu",
             "model_provider_mode": "local_openai",
+            "http_targets": {
+                "targets": {
+                    "api": {
+                        "allowed_base_url": "https://api.example.test/v1/",
+                    }
+                }
+            },
         }
     )
 
@@ -2472,6 +2495,14 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
     assert result["vm_image_alias"] == "gpu"
     assert captured["metadata"] == {
         "model_provider_mode": "local_openai",
+        "http_targets": {
+            "targets": {
+                "api": {
+                    "base_url": "https://api.example.test/v1",
+                    "metadata": {},
+                }
+            }
+        },
         "libvirt_vm_template": {
             "image_ref": "ubuntu-24.04-gpu.img",
             "template_alias": "gpu",
@@ -13150,6 +13181,94 @@ def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
     assert result["status"] == "updated"
     assert updated is not None
     assert updated.teams_chat_allowlist == ["chat:chat-4"]
+
+
+def test_admin_http_target_updates_are_validated_and_preserve_other_metadata(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-http-targets",
+            vm_id="vm-http-targets",
+            allowed_tools=[],
+            metadata={
+                "keep": {"workflow": "current"},
+                "example_app": {
+                    "environments": {
+                        "legacy": {"base_url": "https://legacy.example.test"}
+                    }
+                },
+                "http_targets": {
+                    "targets": {
+                        "old": {
+                            "base_url": "https://old.example.test",
+                            "metadata": {"owner": "workflow"},
+                        }
+                    }
+                },
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.operations_admin.update_session_policy(
+        "agent-http-targets",
+        {
+            "http_targets": {
+                "targets": {
+                    "api": {
+                        "allowed_base_url": "https://api.example.test/v1/",
+                        "metadata": {"owner": "workflow"},
+                    }
+                }
+            }
+        },
+    )
+
+    assert result.success is True
+    updated = service.runtime.session_repository.get_session("agent-http-targets")
+    assert updated is not None
+    assert updated.metadata["keep"] == {"workflow": "current"}
+    assert updated.metadata["http_targets"] == {
+        "targets": {
+            "api": {
+                "base_url": "https://api.example.test/v1",
+                "metadata": {"owner": "workflow"},
+            }
+        }
+    }
+
+    service.operations_admin.update_session_policy(
+        "agent-http-targets",
+        {"metadata": {"keep": {"operator": "edited"}}},
+    )
+    updated = service.runtime.session_repository.get_session("agent-http-targets")
+    assert updated is not None
+    assert updated.metadata["keep"] == {"operator": "edited"}
+    assert updated.http_target("api").base_url == "https://api.example.test/v1"
+
+    agent_result = service.vm_agent_admin.update_admin_agent(
+        "vm-http-targets",
+        payload={"http_targets": {"targets": {}}},
+    )
+    assert agent_result["status"] == "updated"
+    updated = service.runtime.session_repository.get_session("agent-http-targets")
+    assert updated is not None
+    assert updated.metadata["http_targets"] == {"targets": {}}
+    assert updated.http_targets_metadata().targets == {}
+
+    with pytest.raises(ValueError, match="http_targets is invalid"):
+        service.vm_agent_admin.update_admin_agent(
+            "vm-http-targets",
+            payload={
+                "http_targets": {
+                    "targets": {
+                        "bad": {"base_url": "file:///tmp/not-allowed"},
+                    }
+                }
+            },
+        )
 
 
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:

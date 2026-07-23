@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
@@ -87,6 +86,7 @@ from .mcp import (
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -99,6 +99,7 @@ from .mcp import (
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
@@ -186,7 +187,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 17
+TEAM_AGENT_GUIDANCE_VERSION = 18
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -195,7 +196,8 @@ TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS = 3
 TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS = 1.0
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
+_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "seg_"
+_ARTIFACT_SPACE_COMPONENT_MAX_BYTES = 96
 _ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
 _TEAM_REVIEW_ARTIFACT_ID_DEFAULT = "bundle"
 
@@ -4250,11 +4252,11 @@ def _import_review_artifact_version(
     )
     provider.initialize(
         ArtifactImportPublishedEffectDefinition(
-            id=(
-                "team-review-artifact-import-"
-                f"{_artifact_space_path_segment(review_request_id, 'review_request_id')}-"
-                f"{_artifact_space_path_segment(artifact_id, 'artifact_id')}-"
-                f"{ref_version_segment}"
+            id=_bounded_generated_identifier(
+                "team-review-artifact-import-",
+                review_request_id,
+                artifact_id,
+                ref_version_segment,
             ),
             display_name="Import Team review artifact",
             type="effect:artifact:import-published",
@@ -4315,7 +4317,10 @@ def _review_artifact_ref_version_segment(
         artifact_space_version_id,
         "artifact_space_version_id",
     )
-    return f"ref-{ref_hash}-{version_segment}"
+    candidate = f"ref-{ref_hash}-{version_segment}"
+    if len(candidate.encode("utf-8")) <= _ARTIFACT_SPACE_COMPONENT_MAX_BYTES:
+        return candidate
+    return _bounded_generated_identifier(f"ref-{ref_hash}-", artifact_space_version_id)
 
 
 def _artifact_space_path_segment(value: str, field_name: str) -> str:
@@ -4324,10 +4329,33 @@ def _artifact_space_path_segment(value: str, field_name: str) -> str:
         _ARTIFACT_SPACE_SAFE_SEGMENT_RE.fullmatch(text)
         and text not in {".", ".."}
         and not text.startswith(_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX)
+        and len(text.encode("utf-8")) <= _ARTIFACT_SPACE_COMPONENT_MAX_BYTES
     ):
         return text
-    encoded = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
-    return f"{_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX}{encoded}"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("._-") or "value"
+    suffix = f"-{digest}"
+    prefix = _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX
+    available = _ARTIFACT_SPACE_COMPONENT_MAX_BYTES - len((prefix + suffix).encode("ascii"))
+    readable = readable.encode("utf-8")[:available].decode("utf-8", errors="ignore").rstrip("._-")
+    return f"{prefix}{readable or 'value'}{suffix}"
+
+
+def _bounded_generated_identifier(prefix: str, *parts: str) -> str:
+    normalized_prefix = _required_text(prefix, "prefix")
+    if len(normalized_prefix.encode("utf-8")) >= _ARTIFACT_SPACE_COMPONENT_MAX_BYTES:
+        raise ValueError("generated identifier prefix exceeds the component byte budget")
+    source = "-".join(_required_text(part, "identifier part") for part in parts)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "-", source).strip("._-") or "value"
+    suffix = f"-{digest}"
+    available = _ARTIFACT_SPACE_COMPONENT_MAX_BYTES - len(
+        (normalized_prefix + suffix).encode("ascii")
+    )
+    readable = readable.encode("utf-8")[:available].decode("utf-8", errors="ignore").rstrip(
+        "._-"
+    )
+    return f"{normalized_prefix}{readable or 'value'}{suffix}"
 
 
 def _ensure_deliverable_artifact_space_version(
@@ -4619,12 +4647,20 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Deliverables may include verification with status passed, failed, "
         "partial, not_run, or unknown plus a short summary. Use not_run when "
         "test tooling or required services were unavailable.\n"
+        "- Outcome tasks include an outcome_contract. Submit structured outcomes "
+        "with durable reference_ids; reports and artifacts are supporting evidence "
+        "and do not satisfy an outcome contract by themselves. Finish an allowed "
+        "existing-record no-op with structured evidenced_noop completion evidence.\n"
         "- When responding to a review_rejected inbox item, create a revised "
         "deliverable with supersedes_deliverable_id set to the "
         "payload's supersedes_deliverable_id.\n"
         f"- Use {TEAM_DECIDE_REVIEW_TOOL} only for review requests assigned to "
         "you. Accepting a review is what cascades to deliverable/task acceptance "
         "once all attached reviews are accepted.\n"
+        f"- Use {TEAM_RETRY_REVIEW_TOOL} to replace a current blocked review "
+        "attempt after its dependency or system problem is corrected. Use "
+        f"{TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL} when an accepted replacement "
+        "must retire a blocked or rejected predecessor across tasks.\n"
         "- During manager fallback, routing_gaps take priority. If a gap says an "
         "idle profile-eligible reviewer has review work, create a fresh "
         f"{TEAM_REQUEST_REVIEW_TOOL} call for that reviewer instead of accepting "
@@ -4665,6 +4701,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "FYI updates that can be batched, normal for ordinary coordination, and "
         "high only for urgent blockers. Low-priority inbox may be delivered with "
         "other work instead of waking the recipient immediately.\n"
+        "- Before a terminal action, re-read any high-priority inbox item that "
+        "arrived during the current dispatch and include its id in "
+        "handled_inbox_item_ids. Terminal tools reject stale dispatch context "
+        "instead of silently ignoring a newer instruction.\n"
         f"- Use {TEAM_REPORT_BLOCKER_TOOL} when you cannot proceed. A blocker is "
         "durably assigned to the nearest available superior; do not rely on a "
         "prose-only progress report for escalation.\n"

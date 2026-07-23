@@ -947,6 +947,10 @@ def resolve_blocker(
         actor_agent_id,
     }
     terminal_reference_ids = list(blocker.terminal_reference_ids)
+    for reference_id in reference_ids or []:
+        if reference_id not in terminal_reference_ids:
+            terminal_reference_ids.append(reference_id)
+    blocker.terminal_reference_ids = terminal_reference_ids
     blocker.state = TeamBlockerState.RESOLVED
     blocker.route = TeamBlockerRoute.RESOLVED
     blocker.delegate_agent_id = None

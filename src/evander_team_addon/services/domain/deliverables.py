@@ -149,8 +149,13 @@ def _superseded_deliverable_for_rework(
             f"{deliverable.producer_agent_id}; only that producer or current "
             f"task owner {task.owner_agent_id} may supersede it"
         )
-    if deliverable.state != TeamRecordState.REJECTED:
-        raise ValueError(f"supersedes_deliverable_id {deliverable.id} is not rejected")
+    if deliverable.state not in {
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    }:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} is not rejected or blocked"
+        )
     if deliverable.superseded_by_deliverable_id is not None:
         raise ValueError(
             f"supersedes_deliverable_id {deliverable.id} is already superseded by "

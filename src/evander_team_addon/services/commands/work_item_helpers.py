@@ -123,6 +123,8 @@ def _normalize_task_creation_command_payload(
     state: TeamTaskState | str,
     parent_task_id: str | None,
     dependency_task_ids: Sequence[str] | None,
+    task_kind: str = "support",
+    outcome_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _normalize_task_creation_mapping(
         {
@@ -136,6 +138,10 @@ def _normalize_task_creation_command_payload(
             "state": state.value if isinstance(state, TeamTaskState) else state,
             "parent_task_id": parent_task_id,
             "dependency_task_ids": list(dependency_task_ids or []),
+            "task_kind": task_kind,
+            "outcome_contract": (
+                dict(outcome_contract) if outcome_contract is not None else None
+            ),
         },
         field_name="task",
     )
@@ -161,6 +167,12 @@ def _normalize_task_creation_mapping(
         "dependency_task_ids": _unique_text_list(
             item.get("dependency_task_ids") or [],
             "dependency_task_ids",
+        ),
+        "task_kind": _optional_text(item.get("task_kind")) or "support",
+        "outcome_contract": (
+            dict(item["outcome_contract"])
+            if isinstance(item.get("outcome_contract"), Mapping)
+            else item.get("outcome_contract")
         ),
     }
 
@@ -226,6 +238,8 @@ def _normalize_task_update_command_fields(**fields: object) -> dict[str, Any]:
             normalized[name] = value
         elif name in {"title", "description", "owner_agent_id"}:
             normalized[name] = _optional_text(value)
+        elif name == "completion":
+            normalized[name] = dict(value) if isinstance(value, Mapping) else value
         elif name == "dependency_task_ids":
             normalized[name] = _unique_text_list(value, "dependency_task_ids")
     return normalized

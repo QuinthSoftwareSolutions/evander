@@ -25,6 +25,7 @@ from evander_bokio_addon.client import (
     settings_from_context,
 )
 from evander_bokio_addon.evidence import BokioEvidenceError, BokioEvidenceStore
+from evander_bokio_addon.duplicate_checks import BokioDuplicateCheckStore
 from evander_bokio_addon.mcp import (
     MCP_TOOL_CATALOG,
     MCP_TOOL_NAMES,
@@ -1167,6 +1168,115 @@ def test_bokio_mcp_lists_and_gets_customers_and_suppliers(
         "pageSize": "10",
         "query": "name~Supplier",
     }
+
+
+def test_bokio_mcp_checks_all_journal_pages_and_reuses_durable_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    first_page = [
+        {
+            "id": f"entry-{index}",
+            "date": "2026-07-01",
+            "title": "Unrelated",
+            "items": [{"accountNumber": 1930, "amount": 1}],
+        }
+        for index in range(100)
+    ]
+    first_page[42] = {
+        "id": "entry-match",
+        "accountingDate": "2026-07-01",
+        "title": "Office receipt",
+        "items": [{"accountNumber": 1930, "debit": "125.00"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = int(request.url.params["page"])
+        return httpx.Response(
+            200,
+            json={
+                "totalItems": 101,
+                "items": first_page
+                if page == 1
+                else [
+                    {
+                        "id": "entry-101",
+                        "date": "2026-07-02",
+                        "items": [{"accountNumber": 1930, "debit": 125}],
+                    }
+                ],
+            },
+        )
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_check_journal_duplicates"],
+    )
+    arguments = {
+        "criteria": {
+            "date": "2026-07-01",
+            "account": "1930",
+            "amount": 125,
+            "title": "office receipt",
+        },
+        "session_id": "session-1",
+    }
+
+    first = server.tools["bokio_check_journal_duplicates"](**arguments)["result"]
+    cached = server.tools["bokio_check_journal_duplicates"](**arguments)["result"]
+
+    assert first["cache_hit"] is False
+    assert first["total_scanned"] == 101
+    assert first["matching_entry_ids"] == ["entry-match"]
+    assert first["evidence_ref"].startswith("bokio-duplicate-check:")
+    assert cached == {**first, "cache_hit": True}
+    assert len(requests) == 2
+    assert [request.url.params["page"] for request in requests] == ["1", "2"]
+    assert (
+        BokioDuplicateCheckStore(tmp_path).get(first["check_id"])["source_fingerprint"]
+        == first["source_fingerprint"]
+    )
+
+    refreshed = server.tools["bokio_check_journal_duplicates"](
+        **arguments,
+        refresh=True,
+    )["result"]
+    assert refreshed["cache_hit"] is False
+    assert refreshed["check_id"] != first["check_id"]
+    assert len(requests) == 4
+
+
+def test_bokio_duplicate_check_requires_exact_permission_and_supported_criteria(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid or denied checks must not call Bokio")
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    denied = _register_bokio_mcp(tmp_path / "denied", allowed_tools=[])
+    with pytest.raises(ToolError, match="bokio_check_journal_duplicates"):
+        denied.tools["bokio_check_journal_duplicates"](
+            criteria={"date": "2026-07-01"},
+            session_id="session-1",
+        )
+
+    allowed = _register_bokio_mcp(
+        tmp_path / "allowed",
+        allowed_tools=["bokio_check_journal_duplicates"],
+    )
+    with pytest.raises(ToolError, match="unsupported duplicate criterion"):
+        allowed.tools["bokio_check_journal_duplicates"](
+            criteria={"unknown": "value"},
+            session_id="session-1",
+        )
 
 
 def test_bokio_mcp_lists_and_gets_remote_uploads_with_separate_permissions(

@@ -183,6 +183,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
         )
 
     def update_feature_branch_command(
@@ -439,6 +440,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
         )
 
     def recover_release_command(

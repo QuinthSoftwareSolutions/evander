@@ -145,6 +145,7 @@ setup_app = typer.Typer(
     help="Guided first-run setup for the Evander control plane.",
     invoke_without_command=True,
 )
+team_app = typer.Typer(help="Inspect Team Add-on runtime activity.")
 app.add_typer(directories_app, name="directories")
 app.add_typer(git_repos_app, name="git-repos", rich_help_panel="Health and State")
 app.add_typer(wake_schedules_app, name="wake-schedules")
@@ -153,6 +154,7 @@ app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions
 app.add_typer(execution_app, name="execution", rich_help_panel="VM Operations")
 app.add_typer(connectors_app, name="connectors", rich_help_panel="Health and State")
 app.add_typer(setup_app, name="setup", rich_help_panel="Health and State")
+app.add_typer(team_app, name="team", rich_help_panel="Health and State")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
 DirectoryOption = Annotated[
@@ -211,6 +213,79 @@ def _load_host_config_from_option(config: Path):
     return load_host_bootstrap_config(
         runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
     )
+
+
+@team_app.command("dispatch-tail")
+def team_dispatch_tail(
+    dispatch_id: Annotated[
+        str | None,
+        typer.Option("--dispatch-id", help="Filter to one Team dispatch id."),
+    ] = None,
+    agent_id: Annotated[
+        str | None,
+        typer.Option("--agent-id", help="Filter to one persistent agent id."),
+    ] = None,
+    tool_name: Annotated[
+        str | None,
+        typer.Option("--tool-name", help="Filter to one Team tool name."),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=500, help="Maximum initial events."),
+    ] = 100,
+    follow: Annotated[
+        bool,
+        typer.Option("--follow/--no-follow", help="Continue polling for new events."),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit one JSON object per line."),
+    ] = False,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    """Tail redacted, structured Team dispatch and tool activity."""
+
+    from evander_team_addon.repository import TeamStateRepository
+
+    runtime_dir, _legacy = _bootstrap_inputs(config)
+    repository = TeamStateRepository(runtime_dir)
+    seen: set[str] = set()
+    first = True
+    try:
+        while True:
+            rows = repository.list_dispatch_activity(
+                dispatch_id=dispatch_id,
+                agent_id=agent_id,
+                tool_name=tool_name,
+                limit=limit,
+                newest_first=True,
+            )
+            pending = [row for row in reversed(rows) if row.id not in seen]
+            for row in pending:
+                payload = row.model_dump(mode="json")
+                if json_output:
+                    typer.echo(json.dumps(payload, separators=(",", ":"), default=str))
+                else:
+                    occurred_at = payload.get("created_at") or ""
+                    actor = payload.get("agent_id") or payload.get("caller_identity")
+                    status = payload.get("status")
+                    dispatch = payload.get("dispatch_id") or "-"
+                    detail = payload.get("error_message") or payload.get(
+                        "correction_context_summary"
+                    )
+                    line = (
+                        f"{occurred_at} {status} {actor} {dispatch} "
+                        f"{payload.get('tool_name')}"
+                    )
+                    typer.echo(f"{line} - {detail}" if detail else line)
+                seen.add(row.id)
+            if not follow:
+                return
+            if first:
+                first = False
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        return
 
 
 def _build_execution_backend_from_option(config: Path):

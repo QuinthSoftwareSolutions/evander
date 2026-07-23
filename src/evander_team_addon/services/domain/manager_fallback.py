@@ -129,6 +129,8 @@ def _manager_fallback_summary_payload(
             review
             for review in state.review_requests.values()
             if review.deliverable_id in visible_deliverable_ids
+            and review.superseded_by_review_request_id is None
+            and review.retired_at is None
         ),
         key=lambda item: (item.created_at or now, item.id),
     )
@@ -723,6 +725,8 @@ def _manager_fallback_review_decision_guard_error(
         item
         for item in state.review_requests.values()
         if item.deliverable_id in visible_deliverable_ids
+        and item.superseded_by_review_request_id is None
+        and item.retired_at is None
     ]
     visible_pending_inbox = sorted(
         (

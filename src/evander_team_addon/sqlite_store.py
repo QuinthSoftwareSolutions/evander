@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 27
+SQLITE_SCHEMA_VERSION = 29
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -135,6 +135,7 @@ class TeamStateSqliteStore:
         tool_name: str | None = None,
         request_id: str | None = None,
         limit: int | None = None,
+        newest_first: bool = False,
     ) -> list[TeamDispatchActivity]:
         with self._lock:
             with self._connect() as connection:
@@ -149,6 +150,7 @@ class TeamStateSqliteStore:
                     tool_name=tool_name,
                     request_id=request_id,
                     limit=limit,
+                    newest_first=newest_first,
                 )
 
     @classmethod
@@ -165,6 +167,7 @@ class TeamStateSqliteStore:
         tool_name: str | None = None,
         request_id: str | None = None,
         limit: int | None = None,
+        newest_first: bool = False,
     ) -> list[TeamDispatchActivity]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -185,7 +188,11 @@ class TeamStateSqliteStore:
         query = "SELECT * FROM team_dispatch_activity"
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY created_at, id"
+        query += (
+            " ORDER BY created_at DESC, id DESC"
+            if newest_first
+            else " ORDER BY created_at, id"
+        )
         if limit is not None:
             query += " LIMIT ?"
             params.append(max(0, int(limit)))
@@ -506,6 +513,11 @@ class TeamStateSqliteStore:
     ) -> TeamDispatchActivity:
         record = TeamDispatchActivity.model_validate(activity)
         payload = record.model_dump(mode="json")
+        retention_cutoff = utc_now() - timedelta(days=30)
+        connection.execute(
+            "DELETE FROM team_dispatch_activity WHERE created_at < ?",
+            (_datetime_text(retention_cutoff),),
+        )
         connection.execute(
             """
             INSERT INTO team_dispatch_activity(
@@ -914,6 +926,17 @@ class TeamStateSqliteStore:
                     column_name="case_id",
                     definition="TEXT",
                 )
+                for column_name, definition in (
+                    ("task_kind", "TEXT NOT NULL DEFAULT 'support'"),
+                    ("outcome_contract_json", "TEXT"),
+                    ("completion_json", "TEXT"),
+                ):
+                    _ensure_column(
+                        connection,
+                        table_name="team_tasks",
+                        column_name=column_name,
+                        definition=definition,
+                    )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
@@ -932,11 +955,28 @@ class TeamStateSqliteStore:
                     column_name="superseded_by_deliverable_id",
                     definition="TEXT",
                 )
+                for column_name, definition in (
+                    ("supersession_reason", "TEXT"),
+                    ("superseded_at", "TEXT"),
+                    ("superseded_by_actor", "TEXT"),
+                ):
+                    _ensure_column(
+                        connection,
+                        table_name="team_deliverables",
+                        column_name=column_name,
+                        definition=definition,
+                    )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
                     column_name="verification_json",
                     definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="outcomes_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 for column_name in (
                     "submitted_commit_sha",
@@ -970,6 +1010,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_review_profiles",
+                    column_name="required_outcome_kinds_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_review_requests",
                     column_name="release_package_id",
                     definition="TEXT",
@@ -991,6 +1037,10 @@ class TeamStateSqliteStore:
                     "superseded_by_review_request_id",
                     "retry_reason",
                     "retry_requested_by",
+                    "block_kind",
+                    "retired_at",
+                    "retired_by",
+                    "retirement_reason",
                 ):
                     _ensure_column(
                         connection,
@@ -1942,6 +1992,17 @@ class TeamStateSqliteStore:
                 "case_id": row["case_id"],
                 "priority": row["priority"],
                 "state": row["state"],
+                "task_kind": row["task_kind"],
+                "outcome_contract": (
+                    _json_loads(row["outcome_contract_json"])
+                    if row["outcome_contract_json"] is not None
+                    else None
+                ),
+                "completion": (
+                    _json_loads(row["completion_json"])
+                    if row["completion_json"] is not None
+                    else None
+                ),
                 "state_entered_at": row["state_entered_at"]
                 or row["updated_at"]
                 or row["created_at"],
@@ -1964,9 +2025,9 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    created_at, updated_at
+                    task_kind, outcome_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -1981,6 +2042,17 @@ class TeamStateSqliteStore:
                     task.get("created_by_agent_id"),
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
+                    task.get("task_kind", "support"),
+                    (
+                        _json_dumps(task.get("outcome_contract"))
+                        if task.get("outcome_contract") is not None
+                        else None
+                    ),
+                    (
+                        _json_dumps(task.get("completion"))
+                        if task.get("completion") is not None
+                        else None
+                    ),
                     task["created_at"],
                     task["updated_at"],
                 ),
@@ -2043,6 +2115,7 @@ class TeamStateSqliteStore:
                     if row["verification_json"] is not None
                     else None
                 ),
+                "outcomes": _json_loads(row["outcomes_json"]),
                 "carried_findings": _json_loads(row["carried_findings_json"]),
                 "review_manifest": (
                     _json_loads(row["review_manifest_json"])
@@ -2051,6 +2124,9 @@ class TeamStateSqliteStore:
                 ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
                 "superseded_by_deliverable_id": row["superseded_by_deliverable_id"],
+                "supersession_reason": row["supersession_reason"],
+                "superseded_at": row["superseded_at"],
+                "superseded_by_actor": row["superseded_by_actor"],
                 "created_at": row["created_at"],
             }
 
@@ -2066,9 +2142,10 @@ class TeamStateSqliteStore:
                     submitted_commit_sha, reviewed_commit_sha, feature_commit_sha,
                     release_commit_sha, verification_json, supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
-                    review_manifest_json, created_at
+                    review_manifest_json, supersession_reason, superseded_at,
+                    superseded_by_actor, outcomes_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2099,6 +2176,10 @@ class TeamStateSqliteStore:
                         if deliverable.get("review_manifest") is not None
                         else None
                     ),
+                    deliverable.get("supersession_reason"),
+                    deliverable.get("superseded_at"),
+                    deliverable.get("superseded_by_actor"),
+                    _json_dumps(deliverable.get("outcomes", [])),
                     deliverable["created_at"],
                 ),
             )
@@ -2156,6 +2237,9 @@ class TeamStateSqliteStore:
                 "description": row["description"],
                 "applicable_role_ids": roles.get(row["id"], []),
                 "criteria": criteria.get(row["id"], []),
+                "required_outcome_kinds": _json_loads(
+                    row["required_outcome_kinds_json"]
+                ),
                 "archived": _bool(row["archived"]),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -2167,9 +2251,10 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_review_profiles(
-                    id, team_id, project_id, name, description, archived, created_at, updated_at
+                    id, team_id, project_id, name, description, archived,
+                    required_outcome_kinds_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     profile["id"],
@@ -2178,6 +2263,7 @@ class TeamStateSqliteStore:
                     profile["name"],
                     profile.get("description", ""),
                     _int_bool(profile.get("archived")),
+                    _json_dumps(profile.get("required_outcome_kinds", [])),
                     profile["created_at"],
                     profile["updated_at"],
                 ),
@@ -2249,6 +2335,10 @@ class TeamStateSqliteStore:
                 "superseded_by_review_request_id": row["superseded_by_review_request_id"],
                 "retry_reason": row["retry_reason"],
                 "retry_requested_by": row["retry_requested_by"],
+                "block_kind": row["block_kind"],
+                "retired_at": row["retired_at"],
+                "retired_by": row["retired_by"],
+                "retirement_reason": row["retirement_reason"],
                 "created_at": row["created_at"],
                 "decision_at": row["decision_at"],
             }
@@ -2264,9 +2354,10 @@ class TeamStateSqliteStore:
                     instructions,
                     reviewed_commit_sha, supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
-                    retry_requested_by, created_at, decision_at
+                    retry_requested_by, block_kind, retired_at, retired_by,
+                    retirement_reason, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2287,6 +2378,10 @@ class TeamStateSqliteStore:
                     request.get("superseded_by_review_request_id"),
                     request.get("retry_reason"),
                     request.get("retry_requested_by"),
+                    request.get("block_kind"),
+                    request.get("retired_at"),
+                    request.get("retired_by"),
+                    request.get("retirement_reason"),
                     request.get("created_at"),
                     request.get("decision_at"),
                 ),
@@ -3233,6 +3328,7 @@ class TeamStateSqliteCommandTransaction:
         tool_name: str | None = None,
         request_id: str | None = None,
         limit: int | None = None,
+        newest_first: bool = False,
     ) -> list[TeamDispatchActivity]:
         return self._store._list_dispatch_activity(
             self._connection,
@@ -3245,6 +3341,7 @@ class TeamStateSqliteCommandTransaction:
             tool_name=tool_name,
             request_id=request_id,
             limit=limit,
+            newest_first=newest_first,
         )
 
     def enqueue_outbox_record(
@@ -3962,6 +4059,9 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     created_by_agent_id TEXT,
     created_by_actor TEXT,
     parent_task_id TEXT,
+    task_kind TEXT NOT NULL DEFAULT 'support',
+    outcome_contract_json TEXT,
+    completion_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -4004,10 +4104,14 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     feature_commit_sha TEXT,
     release_commit_sha TEXT,
     verification_json TEXT,
+    outcomes_json TEXT NOT NULL DEFAULT '[]',
     carried_findings_json TEXT NOT NULL DEFAULT '[]',
     review_manifest_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
+    supersession_reason TEXT,
+    superseded_at TEXT,
+    superseded_by_actor TEXT,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_deliverables_task_state ON team_deliverables(task_id, state, id);
@@ -4041,6 +4145,7 @@ CREATE TABLE IF NOT EXISTS team_review_profiles (
     name TEXT NOT NULL,
     description TEXT NOT NULL,
     archived INTEGER NOT NULL,
+    required_outcome_kinds_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -4079,6 +4184,10 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     superseded_by_review_request_id TEXT,
     retry_reason TEXT,
     retry_requested_by TEXT,
+    block_kind TEXT,
+    retired_at TEXT,
+    retired_by TEXT,
+    retirement_reason TEXT,
     created_at TEXT,
     decision_at TEXT
 );

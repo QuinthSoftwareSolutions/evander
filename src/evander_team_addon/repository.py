@@ -127,6 +127,7 @@ class TeamStateRepository:
         tool_name: str | None = None,
         request_id: str | None = None,
         limit: int | None = None,
+        newest_first: bool = False,
     ) -> list[TeamDispatchActivity]:
         return self._dispatch_activity_repository.list_dispatch_activity(
             dispatch_id=dispatch_id,
@@ -138,6 +139,7 @@ class TeamStateRepository:
             tool_name=tool_name,
             request_id=request_id,
             limit=limit,
+            newest_first=newest_first,
         )
 
     def normalized_payload_digest(self, payload: Mapping[str, Any]) -> str:

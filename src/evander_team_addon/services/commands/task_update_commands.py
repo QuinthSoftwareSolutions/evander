@@ -20,9 +20,14 @@ from .work_item_helpers import (
 )
 from ...models import (
     TeamBlockerSourceKind,
+    TeamBlockerState,
+    TeamInboxItemState,
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    TeamTaskKind,
+    TaskCompletion,
+    TaskCompletionKind,
     _unique_text_list,
 )
 from ..domain.agent_access import (
@@ -65,6 +70,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
         description: object = _UNSET,
         owner_agent_id: object = _UNSET,
         dependency_task_ids: object = _UNSET,
+        completion: object = _UNSET,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -79,6 +85,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             description=description,
             owner_agent_id=owner_agent_id,
             dependency_task_ids=dependency_task_ids,
+            completion=completion,
         )
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
@@ -123,6 +130,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 isinstance(new_owner_id, str) and new_owner_id != task.owner_agent_id
             )
             has_dependency_edit = "dependency_task_ids" in normalized_updates
+            has_completion = "completion" in normalized_updates
             subordinate_finish_allowed = (
                 has_state
                 and not has_priority
@@ -137,7 +145,13 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 )
             )
             if (
-                (has_state or has_priority or has_title or has_description)
+                (
+                    has_state
+                    or has_priority
+                    or has_title
+                    or has_description
+                    or has_completion
+                )
                 and not is_owner
                 and not subordinate_finish_allowed
             ):
@@ -175,6 +189,162 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                             "allowed_states": _MCP_TASK_UPDATE_STATE_VALUES,
                         },
                     )
+                if next_state == TeamTaskState.FINISHED:
+                    parsed_completion: TaskCompletion | None = None
+                    if has_completion:
+                        try:
+                            parsed_completion = TaskCompletion.model_validate(
+                                normalized_updates["completion"]
+                            )
+                        except ValueError as exc:
+                            raise TeamCommandValidationError(
+                                code="invalid_task_completion",
+                                message=str(exc),
+                            ) from exc
+                    elif task.completion is not None:
+                        parsed_completion = task.completion
+                    if task.task_kind == TeamTaskKind.OUTCOME:
+                        contract = task.outcome_contract
+                        if contract is None:  # pragma: no cover - model invariant
+                            raise TeamCommandValidationError(
+                                code="missing_task_outcome_contract",
+                                message=f"outcome task {task.id} has no outcome contract",
+                            )
+                        if parsed_completion is None:
+                            raise TeamCommandValidationError(
+                                code="task_outcome_completion_required",
+                                message=(
+                                    f"outcome task {task.id} requires completion with "
+                                    "delivered references or an evidenced no-op"
+                                ),
+                                correction_context={
+                                    "task_id": task.id,
+                                    "required_outcome_kinds": (
+                                        contract.required_outcome_kinds
+                                    ),
+                                    "allow_evidenced_noop": (
+                                        contract.allow_evidenced_noop
+                                    ),
+                                },
+                            )
+                        if (
+                            parsed_completion.kind
+                            == TaskCompletionKind.EVIDENCED_NOOP
+                            and not contract.allow_evidenced_noop
+                        ):
+                            raise TeamCommandValidationError(
+                                code="task_evidenced_noop_not_allowed",
+                                message=(
+                                    f"outcome task {task.id} does not allow an "
+                                    "evidenced no-op"
+                                ),
+                            )
+                        if parsed_completion.kind == TaskCompletionKind.DELIVERED:
+                            accepted_deliverables = [
+                                deliverable
+                                for deliverable in state_model.deliverables.values()
+                                if deliverable.task_id == task.id
+                                and deliverable.superseded_by_deliverable_id is None
+                                and deliverable.state == TeamRecordState.ACCEPTED
+                            ]
+                            outcome_kinds = {
+                                outcome.kind
+                                for deliverable in accepted_deliverables
+                                for outcome in deliverable.outcomes
+                            }
+                            outcome_reference_ids = {
+                                reference_id
+                                for deliverable in accepted_deliverables
+                                for outcome in deliverable.outcomes
+                                for reference_id in outcome.reference_ids
+                            }
+                            missing_references = sorted(
+                                set(parsed_completion.outcome_reference_ids)
+                                - outcome_reference_ids
+                            )
+                            required = set(contract.required_outcome_kinds)
+                            kinds_satisfied = (
+                                bool(required.intersection(outcome_kinds))
+                                if contract.match == "any"
+                                else required.issubset(outcome_kinds)
+                            )
+                            if missing_references or (
+                                required and not kinds_satisfied
+                            ):
+                                raise TeamCommandValidationError(
+                                    code="task_outcome_contract_unsatisfied",
+                                    message=(
+                                        f"accepted deliverables for outcome task "
+                                        f"{task.id} do not satisfy its completion"
+                                    ),
+                                    correction_context={
+                                        "missing_outcome_reference_ids": (
+                                            missing_references
+                                        ),
+                                        "required_outcome_kinds": sorted(required),
+                                        "accepted_outcome_kinds": sorted(
+                                            outcome_kinds
+                                        ),
+                                    },
+                                )
+                    elif has_completion:
+                        raise TeamCommandValidationError(
+                            code="support_task_completion_not_allowed",
+                            message=(
+                                "structured completion is only valid for outcome tasks"
+                            ),
+                        )
+                    active_deliverables = [
+                        deliverable
+                        for deliverable in state_model.deliverables.values()
+                        if deliverable.task_id == task.id
+                        and deliverable.superseded_by_deliverable_id is None
+                    ]
+                    active_deliverable_ids = {
+                        deliverable.id for deliverable in active_deliverables
+                    }
+                    blocked_deliverable_ids = [
+                        deliverable.id
+                        for deliverable in active_deliverables
+                        if deliverable.state == TeamRecordState.BLOCKED
+                    ]
+                    blocked_review_ids = [
+                        review.id
+                        for review in state_model.review_requests.values()
+                        if review.deliverable_id in active_deliverable_ids
+                        and review.superseded_by_review_request_id is None
+                        and review.retired_at is None
+                        and review.state == TeamRecordState.BLOCKED
+                    ]
+                    open_blocker_ids = [
+                        blocker.id
+                        for blocker in state_model.blockers.values()
+                        if blocker.task_id == task.id
+                        and blocker.state == TeamBlockerState.OPEN
+                    ]
+                    if (
+                        blocked_deliverable_ids
+                        or blocked_review_ids
+                        or open_blocker_ids
+                    ):
+                        raise TeamCommandValidationError(
+                            code="task_completion_blocked_by_active_sources",
+                            message=(
+                                f"task {task.id} cannot be finished while active blocked "
+                                "deliverables, reviews, or blockers remain"
+                            ),
+                            correction_context={
+                                "task_id": task.id,
+                                "blocked_deliverable_ids": blocked_deliverable_ids,
+                                "blocked_review_request_ids": blocked_review_ids,
+                                "open_blocker_ids": open_blocker_ids,
+                                "recovery_tools": [
+                                    "team_retry_review",
+                                    "team_link_deliverable_replacement",
+                                    "team_update_blocker",
+                                ],
+                            },
+                        )
             if has_owner_reassignment and isinstance(new_owner_id, str):
                 reassignment_error = _task_owner_reassignment_error(
                     state_model,
@@ -252,6 +422,13 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 if task.description != normalized_updates["description"]:
                     task.description = normalized_updates["description"]
                     changed = True
+            if has_completion:
+                completion_value = TaskCompletion.model_validate(
+                    normalized_updates["completion"]
+                )
+                if task.completion != completion_value:
+                    task.completion = completion_value
+                    changed = True
             if has_owner_reassignment and isinstance(new_owner_id, str):
                 old_owner_id = task.owner_agent_id
                 task.owner_agent_id = new_owner_id
@@ -289,6 +466,9 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "created_blocker_ids": [],
                 "created_inbox_item_ids": [],
                 "events": [],
+                "resolved_blocker_ids": [],
+                "resolved_blocker_event_ids": [],
+                "automatically_handled_inbox_item_ids": [],
             }
             blocker_domain_ids: list[str] = []
             if (
@@ -321,6 +501,12 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     source_kind=TeamBlockerSourceKind.TASK,
                     source_id=task.id,
                 ):
+                    pending_blocker_inbox_ids = [
+                        item.id
+                        for item in state_model.inbox.values()
+                        if item.state == TeamInboxItemState.PENDING
+                        and item.payload.get("blocker_id") == blocker.id
+                    ]
                     event = resolve_blocker(
                         state_model,
                         blocker=blocker,
@@ -331,6 +517,11 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         now=now,
                     )
                     blocker_domain_ids.extend([blocker.id, event.id])
+                    response_payload["resolved_blocker_ids"].append(blocker.id)
+                    response_payload["resolved_blocker_event_ids"].append(event.id)
+                    response_payload["automatically_handled_inbox_item_ids"].extend(
+                        pending_blocker_inbox_ids
+                    )
             if changed and task.state in _NON_TERMINAL_TASK_STATES:
                 _append_agent_wake_requested_event(
                     state_model,
@@ -359,6 +550,9 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+            reject_stale_high_priority_inbox=(
+                normalized_updates.get("state") == TeamTaskState.FINISHED.value
+            ),
         )
 
     def update_goal_command(
@@ -454,6 +648,9 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+            reject_stale_high_priority_inbox=(
+                normalized_state == TeamRecordState.ACCEPTED.value
+            ),
         )
 
 

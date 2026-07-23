@@ -27,6 +27,7 @@ from ...models import (
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
     TeamIdempotencyRecord,
+    TeamInboxPriority,
     TeamInboxItemState,
     TeamState,
     _unique_text_list,
@@ -72,6 +73,7 @@ class TeamCommandExecutor:
             TeamCommandApplyResult,
         ],
         require_active_dispatch: bool,
+        reject_stale_high_priority_inbox: bool = False,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_context = _normalize_team_command_context(context)
         normalized_handled_ids = _unique_text_list(
@@ -132,10 +134,18 @@ class TeamCommandExecutor:
                     )
 
             try:
-                self._validate_command_handled_inbox_items(
+                if reject_stale_high_priority_inbox:
+                    self._validate_dispatch_freshness(
+                        state,
+                        resolved=resolved,
+                        handled_inbox_item_ids=normalized_handled_ids,
+                    )
+                pending_handled_ids, already_handled_ids = (
+                    self._validate_command_handled_inbox_items(
                     state,
                     resolved=resolved,
                     handled_inbox_item_ids=normalized_handled_ids,
+                    )
                 )
                 apply_result = apply_command(state, resolved)
             except TeamCommandValidationError as exc:
@@ -166,14 +176,19 @@ class TeamCommandExecutor:
                 )
 
             now = utc_now()
-            for inbox_item_id in normalized_handled_ids:
+            for inbox_item_id in pending_handled_ids:
                 item = state.inbox[inbox_item_id]
                 item.state = TeamInboxItemState.HANDLED
                 item.updated_at = now
 
-            next_state = state.model_copy(
-                update={"revision": state.revision + 1, "updated_at": now},
-                deep=True,
+            state_changed = apply_result.state_changed or bool(pending_handled_ids)
+            next_state = (
+                state.model_copy(
+                    update={"revision": state.revision + 1, "updated_at": now},
+                    deep=True,
+                )
+                if state_changed
+                else state
             )
             validated = TeamState.model_validate(next_state.model_dump(mode="json"))
             payload.clear()
@@ -188,7 +203,8 @@ class TeamCommandExecutor:
                 state=validated,
                 context=normalized_context,
                 activity_id=activity_id,
-                handled_inbox_item_ids=normalized_handled_ids,
+                handled_inbox_item_ids=pending_handled_ids,
+                already_handled_inbox_item_ids=already_handled_ids,
                 apply_result=apply_result,
             )
             activity_progress_classification = (
@@ -237,6 +253,59 @@ class TeamCommandExecutor:
             return validated, response
 
         return self._repository.store.update_object_with_command_transaction(_transaction)
+
+    def _validate_dispatch_freshness(
+        self,
+        state: TeamState,
+        *,
+        resolved: _ResolvedTeamCommandContext,
+        handled_inbox_item_ids: Sequence[str],
+    ) -> None:
+        if resolved.agent is None or resolved.runtime is None:
+            return
+        last_wake_at = getattr(resolved.runtime, "last_wake_at", None)
+        if last_wake_at is None:
+            return
+        handled = set(handled_inbox_item_ids)
+        newer_items = sorted(
+            (
+                item
+                for item in state.inbox.values()
+                if item.recipient_agent_id == resolved.agent.id
+                and item.state == TeamInboxItemState.PENDING
+                and item.priority == TeamInboxPriority.HIGH
+                and item.id not in handled
+                and _ensure_utc(item.created_at) > _ensure_utc(last_wake_at)
+            ),
+            key=lambda item: (item.created_at, item.id),
+        )
+        if not newer_items:
+            return
+        raise TeamCommandValidationError(
+            code="stale_dispatch_context",
+            message=(
+                "new high-priority inbox work arrived after this dispatch wake "
+                "snapshot; read it and include its id in handled_inbox_item_ids "
+                "before performing the terminal action"
+            ),
+            correction_context={
+                "dispatch_id": resolved.dispatch_id,
+                "last_wake_at": _ensure_utc(last_wake_at).isoformat(),
+                "newer_high_priority_inbox_items": [
+                    {
+                        "id": item.id,
+                        "item_type": item.item_type.value,
+                        "task_id": item.task_id,
+                        "created_at": item.created_at.isoformat(),
+                        "kind": item.payload.get("kind"),
+                        "summary": item.payload.get("summary")
+                        or item.payload.get("message")
+                        or item.payload.get("question"),
+                    }
+                    for item in newer_items
+                ],
+            },
+        )
 
     def _resolve_team_command_context(
         self,
@@ -504,14 +573,16 @@ class TeamCommandExecutor:
         *,
         resolved: _ResolvedTeamCommandContext,
         handled_inbox_item_ids: Sequence[str],
-    ) -> None:
+    ) -> tuple[list[str], list[str]]:
         if not handled_inbox_item_ids:
-            return
+            return [], []
         if resolved.agent is None:
             raise TeamCommandValidationError(
                 code="invalid_inbox_scope",
                 message="handled_inbox_item_ids requires an agent caller",
             )
+        pending: list[str] = []
+        already_handled: list[str] = []
         for inbox_item_id in handled_inbox_item_ids:
             item = state.inbox.get(inbox_item_id)
             if item is None:
@@ -530,15 +601,11 @@ class TeamCommandExecutor:
                         "caller_agent_id": resolved.agent.id,
                     },
                 )
-            if item.state != TeamInboxItemState.PENDING:
-                raise TeamCommandValidationError(
-                    code="inbox_item_not_pending",
-                    message=f"inbox item {inbox_item_id} is {item.state.value}",
-                    correction_context={
-                        "inbox_item_id": inbox_item_id,
-                        "state": item.state.value,
-                    },
-                )
+            if item.state == TeamInboxItemState.PENDING:
+                pending.append(inbox_item_id)
+            else:
+                already_handled.append(inbox_item_id)
+        return pending, already_handled
 
     def _append_command_failure_activity(
         self,

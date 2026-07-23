@@ -753,6 +753,11 @@ class TeamAgentActionService:
                     state_model.deliverables[deliverable.id] = deliverable
                     if superseded_deliverable is not None:
                         superseded_deliverable.superseded_by_deliverable_id = deliverable.id
+                        superseded_deliverable.supersession_reason = (
+                            "Rework deliverable submitted."
+                        )
+                        superseded_deliverable.superseded_at = deliverable.created_at
+                        superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                     now = utc_now()
                     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)

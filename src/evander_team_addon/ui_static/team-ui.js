@@ -1,4 +1,5 @@
 import { createTeamMailController } from "./team-mail.js";
+import { createTeamActivityController } from "./team-activity.js";
 
 const API_BASE = "/api/addons/team-addon";
 
@@ -96,6 +97,7 @@ const teamViewIds = new Set([
   "people",
   "chat",
   "mail",
+  "activity",
   "governance",
   "planning",
   "timeline",
@@ -276,6 +278,14 @@ const elements = {
   mailList: document.querySelector("#mail-list"),
   mailPagination: document.querySelector("#mail-pagination"),
   mailReader: document.querySelector("#mail-reader"),
+  activityTeamFilter: document.querySelector("#activity-team-filter"),
+  activityAgentFilter: document.querySelector("#activity-agent-filter"),
+  activityStatusFilter: document.querySelector("#activity-status-filter"),
+  activityDispatchFilter: document.querySelector("#activity-dispatch-filter"),
+  activitySearchInput: document.querySelector("#activity-search-input"),
+  activityStatus: document.querySelector("#activity-status"),
+  activityList: document.querySelector("#activity-list"),
+  activityPagination: document.querySelector("#activity-pagination"),
   teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
   teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
   governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
@@ -510,6 +520,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindGovernanceAgendaVisibilityToggle();
   bindInboxPopoverPositioning();
   mailController.bind();
+  activityController.bind();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplateSetupFields();
   });
@@ -636,6 +647,24 @@ const mailController = createTeamMailController({
   humanizeToken,
   taskStateLabel,
   inboxItemLabels,
+});
+
+const activityController = createTeamActivityController({
+  apiBase: API_BASE,
+  documentRoot: document,
+  elements,
+  getState: () => state,
+  isActive: () => activeTeamView === "activity",
+  teamFetch,
+  responseText,
+  text,
+  values,
+  byId,
+  agentLabel,
+  renderSelectOptions,
+  escapeHtml,
+  escapeAttr,
+  humanizeToken,
 });
 
 const timelineTypeOrder = [
@@ -3013,6 +3042,9 @@ function mergeResourceTokens(existing, incoming) {
 function scheduleAuxiliaryLoadsForView(view) {
   if (view === "mail") {
     void mailController.load();
+  }
+  if (view === "activity") {
+    void activityController.load();
   }
   if (view !== "chat") {
     void loadCosts();

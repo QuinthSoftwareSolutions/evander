@@ -367,6 +367,14 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   Bokio association state from Evander's durable local evidence store; they do not
   query Bokio's remote uploads. `bokio_stage_evidence_for_workspace` can make
   previously retained evidence available to a new session as an artifact.
+- `bokio_check_journal_duplicates` scans every page of the journal-entry list and
+  matches a non-empty combination of `date`, `account`, `amount`, `title`,
+  `invoice_number`, and `receipt_number`. It returns the number of entries
+  inspected, matching entry IDs, a source fingerprint, and a durable
+  `bokio-duplicate-check:...` evidence reference. Equivalent checks reuse evidence
+  for 15 minutes by default; set `refresh=true` to force a new scan. The durable
+  records live in
+  `runtime/addons/bokio-addon/duplicate-checks/duplicate-checks.db`.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
   creates an entry and attaches one or more evidence records with a durable
@@ -460,9 +468,9 @@ integration index.
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
 add-on API under `/api/addons/team-addon/`; it does not add team-specific views
-or models to Evander core Admin Web pages. The current UI has fourteen top-level
+or models to Evander core Admin Web pages. The current UI has fifteen top-level
 views: **Workspace**, **Operations**, **Delivery**, **Memory**, **Projects**,
-**Task board**, **Cases**, **Teams**, **Chat**, **Mail**, **Governance**,
+**Task board**, **Cases**, **Teams**, **Chat**, **Mail**, **Activity**, **Governance**,
 **Planning**, **Timeline**, and **Org chart**. Review requests, review profiles,
 deliverables, release packages, and Git promotion state are grouped inside
 **Delivery**. Team setup, persistent agents, roles, and stand-down controls are
@@ -534,6 +542,16 @@ one persistent agent, and use Mail to inspect the sent and received projections
 over Team's single durable inbox collection, including handling state and
 message context. `team_chats.read_all` applies only to other operators' Chat
 histories; it does not grant broader Agent Mail access.
+
+The separate Activity view is a redacted operational tail over Team's durable
+dispatch-activity ledger. It shows dispatch start/finish and Team tool
+success/failure events without tool arguments, tool results, session IDs, or
+model reasoning. Operators can filter it by team, agent, dispatch, status, tool,
+or search text. The same data is available from
+`GET /api/addons/team-addon/dispatch-events` and
+`evander-cli team dispatch-tail [--follow] [--json]`. Activity rows are retained
+for 30 days; Mail remains the correspondence history and is not merged into this
+operational stream.
 
 ### Team Memory
 
@@ -937,6 +955,8 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_import_artifact`
 - `team_request_review`
 - `team_decide_review`
+- `team_retry_review`
+- `team_link_deliverable_replacement`
 - `team_publish_review_branch`
 - `team_update_feature_branch`
 - `team_request_release`
@@ -1154,6 +1174,35 @@ and populated with criteria rows. Review requests can attach a profile and
 instructions; review decisions can then record per-criterion outcomes. Archived
 profiles remain visible for history but cannot be assigned to new review
 requests through either Team MCP tools or the Admin API.
+
+Tasks that must produce an external or durable result can use
+`task_kind: outcome` and an `outcome_contract`. The contract names required
+deliverable outcome kinds, chooses `all` or `any` matching, can forbid outcome
+kinds, and may explicitly allow an evidence-backed no-op. Deliverables carry
+structured outcome kinds, durable reference IDs, and evidence references. A
+report-only deliverable cannot satisfy an outcome task, and a review profile can
+require specific outcome kinds before review is requested or accepted. Ordinary
+coordination tasks remain `task_kind: support` and finish without inventing a
+deliverable. When several profiles apply to the same reviewer role, their
+required outcome kinds also select the implicit profile; callers still pass
+`review_profile_id` when more than one matching profile remains.
+
+Review decisions are immutable attempts. A blocked non-release review records a
+`block_kind` and can be retried with `team_retry_review`; the successor is linked
+to the preserved attempt and becomes the only current review. A blocked or
+rejected deliverable can be replaced by a normal same-task rework submission, or
+a project lead/manager can explicitly link an accepted cross-task replacement
+with `team_link_deliverable_replacement`. An operator can retire one erroneous
+current non-release review through
+`POST /api/addons/team-addon/review-requests/{id}/retire`. Migrations never infer
+or repair these relationships automatically, so historical blocked records stay
+blocked until an explicit retry, replacement, retirement, or blocker resolution.
+
+Terminal commands reject a stale dispatch snapshot when a newer high-priority
+inbox item arrived after the agent woke. The agent must read the item and include
+its ID in `handled_inbox_item_ids` in the same command. Re-sending already handled
+IDs and resolving an already-resolved blocker with compatible evidence are
+successful no-ops, with `applied: false` and no Team-state revision bump.
 
 ### Deterministic Git Branch Naming
 

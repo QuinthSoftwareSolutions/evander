@@ -26,6 +26,7 @@ from ..models import (
     runtime_operations_payload,
     task_payload_with_derived,
 )
+from .domain.project_status import project_blocking_sources
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
@@ -328,6 +329,10 @@ class TeamReadService:
             task.state.value
             for task in self._state.tasks.values()
             if task.project_id == project.id and self._task_visible(task)
+        )
+        payload["blocking_sources"] = project_blocking_sources(
+            self._state,
+            project.id,
         )
         return _without_none(payload)
 
@@ -860,6 +865,9 @@ class TeamReadService:
                 "name": project.name,
                 "lead_agent_id": project.lead_agent_id,
                 "status": project.status.value,
+                "blocking_source_count": len(
+                    project_blocking_sources(self._state, project.id)
+                ),
                 "goal_count": len(project.goals),
                 "has_git": project.git is not None,
                 "updated_at": _json_value(project.updated_at),

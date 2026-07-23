@@ -38,6 +38,7 @@ class TeamDispatchActivityRepository:
         tool_name: str | None = None,
         request_id: str | None = None,
         limit: int | None = None,
+        newest_first: bool = False,
     ) -> list[TeamDispatchActivity]:
         return self._store.list_dispatch_activity(
             dispatch_id=dispatch_id,
@@ -49,6 +50,7 @@ class TeamDispatchActivityRepository:
             tool_name=tool_name,
             request_id=request_id,
             limit=limit,
+            newest_first=newest_first,
         )
 
 

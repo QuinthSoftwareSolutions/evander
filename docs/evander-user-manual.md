@@ -4464,6 +4464,7 @@ The add-on UI currently has these top-level views:
 | **Teams** | Team setup, persistent agents, roles, assignments, and stand-down controls. |
 | **Chat** | Human-operator conversations with one persistent agent. |
 | **Mail** | Sent and received projections over one durable Team inbox collection. |
+| **Activity** | Redacted dispatch lifecycle and Team tool outcome events. |
 | **Governance** | Cross-Team groups, agendas, cost warnings, and directives. |
 | **Planning** | Planning-oriented summaries of goals and work. |
 | **Timeline** | A derived chronological rendering of current Team records. |

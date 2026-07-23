@@ -101,7 +101,9 @@ from evander_team_addon.providers import (
     TeamUpdateCaseEffectProvider,
     TeamWakeDueAgentsEffectProvider,
     TeamWakeGovernanceManagersEffectProvider,
+    _artifact_space_path_segment,
     _build_prompt,
+    _review_artifact_destination_path,
     _publish_deliverable_artifact_bundle,
     _publish_team_events,
 )
@@ -1029,6 +1031,14 @@ def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> Non
     backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
     task_payload = backend_lease["tasks"][0]
     assert backend_lease["cases"][0]["id"] == "case"
+    assert backend_lease["projects"][0]["goals"] == [
+        {
+            "id": "goal",
+            "description": "Ship work",
+            "state": "pending",
+        }
+    ]
+    assert backend_lease["projects"][0]["blocking_sources"] == []
     assert task_payload["case_id"] == "case"
     assert task_payload["dependency_status"] == "satisfied"
     assert task_payload["child_task_ids"] == []
@@ -1447,6 +1457,35 @@ def test_wake_due_agents_provider_preserves_active_governance_tools(
         *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
         *GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ]
+
+
+def test_artifact_import_path_segments_are_bounded_and_stable() -> None:
+    long_id = "deliverable-" + ("very-long-human-readable-id-" * 20)
+
+    first = _artifact_space_path_segment(long_id, "deliverable_id")
+    second = _artifact_space_path_segment(long_id, "deliverable_id")
+    other = _artifact_space_path_segment(long_id + "other", "deliverable_id")
+
+    assert first == second
+    assert first != other
+    assert first.startswith("seg_deliverable-")
+    assert len(first.encode("utf-8")) <= 96
+    assert _artifact_space_path_segment("short-safe-id", "deliverable_id") == "short-safe-id"
+
+
+def test_review_artifact_destination_bounds_every_identifier_component() -> None:
+    destination = _review_artifact_destination_path(
+        review_request_id="review-" + ("x" * 500),
+        deliverable_id="deliverable-" + ("y" * 500),
+        artifact_space_path="team/project/deliverable",
+        artifact_id="artifact-" + ("z" * 500),
+        artifact_space_version_id="version-" + ("v" * 500),
+    )
+
+    components = destination.split("/")
+    assert components[0] == "team-review-inputs"
+    assert all(len(component.encode("utf-8")) <= 96 for component in components)
+    assert len(set(components[1:4])) == 3
 
 
 def test_wake_due_agents_provider_imports_review_artifact_refs(

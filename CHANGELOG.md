@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-23 - Team Outcome And Recovery Reliability
+
+- Added explicit outcome contracts for tasks, structured deliverable outcomes,
+  review-profile outcome requirements, and evidence-backed no-op completion so
+  operational work cannot finish with a report in place of its required result.
+- Added immutable blocked-review retry, deliverable replacement lineage,
+  operator review retirement, exact project blocking sources, blocked-task
+  completion guards, late high-priority handoff protection, and idempotent inbox
+  and blocker replay behavior.
+- Included project goals and blockers in wake context, preserved sole urgent
+  directive detail, bounded generated artifact path segments, and added a
+  separate redacted Activity view/API/CLI tail with 30-day retention.
+- Added paginated Bokio journal duplicate checks with durable evidence,
+  source fingerprints, matching entry IDs, and a 15-minute reuse window.
+
 ## 2026-07-23 - Session-Owned Pull Request Tracking
 
 - Recorded session-backed pull requests under the session's canonical directory instead of the

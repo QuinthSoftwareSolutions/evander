@@ -187,7 +187,7 @@ Workflow pack changes made in Admin Web are revision- and lock-aware. Do not byp
 
 ## 28.7 Team Add-on view map
 
-The Team Add-on contributes one navigation area with fourteen current views. There is no separate top-level **Roles** view; roles are edited in the **Teams** view.
+The Team Add-on contributes one navigation area with fifteen current views. There is no separate top-level **Roles** view; roles are edited in the **Teams** view.
 
 | View | What it projects |
 |---|---|
@@ -201,6 +201,7 @@ The Team Add-on contributes one navigation area with fourteen current views. The
 | Teams | Teams, agents, memberships, responsibilities, roles, and models |
 | Chat | Team chat channels and messages |
 | Mail | Sent/received projections over the durable Team inbox |
+| Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |
 | Planning | Goals, deliverables, and status-filtered task context for planning work |
 | Timeline | Time-ordered domain activity |

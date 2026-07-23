@@ -25,6 +25,7 @@ from ...models import (
     AgentInboxItem,
     AgentTask,
     Deliverable,
+    DeliverableOutcome,
     PersistentAgent,
     ReviewRequest,
     TeamInboxItemType,
@@ -90,6 +91,13 @@ def _normalize_deliverable_submission_mapping(
             "agent_branch": _optional_text(git_refs.get("agent_branch")),
             "commit_sha": _optional_text(git_refs.get("commit_sha")),
         },
+        "outcomes": [
+            DeliverableOutcome.model_validate(outcome).model_dump(mode="json")
+            for outcome in _list_of_mappings(
+                payload.get("outcomes"),
+                f"{field_name}.outcomes",
+            )
+        ],
     }
     verification = _normalize_deliverable_verification_mapping(
         payload.get("verification"),
@@ -135,6 +143,7 @@ def _normalize_review_decision_mapping(
             f"{field_name}.review_request_id",
         ),
         "state": _required_text(payload.get("state"), f"{field_name}.state"),
+        "block_kind": _optional_text(payload.get("block_kind")),
         "findings": _string_list(payload.get("findings"), f"{field_name}.findings"),
         "criteria": [
             {
@@ -338,6 +347,7 @@ def _plan_command_review_requests_for_deliverable(
             expected_team_id=actor.team_id or "",
             project_id=task.project_id,
             reviewer=reviewer,
+            deliverable=state.deliverables.get(deliverable_id),
         )
         if profile_error is not None:
             raise TeamCommandValidationError(
@@ -485,6 +495,45 @@ def _validate_command_deliverable_submission_pre_publication(
         )
         _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
         _deliverable_verification_from_payload(deliverable.get("verification"))
+        outcomes = [
+            DeliverableOutcome.model_validate(outcome)
+            for outcome in _list_of_mappings(
+                deliverable.get("outcomes"),
+                "outcomes",
+            )
+        ]
+        contract = task.outcome_contract
+        if contract is not None:
+            outcome_kinds = {outcome.kind for outcome in outcomes}
+            forbidden = sorted(
+                outcome_kinds.intersection(contract.forbidden_effect_kinds)
+            )
+            if forbidden:
+                raise ValueError(
+                    "deliverable includes forbidden outcome kinds: "
+                    + ", ".join(forbidden)
+                )
+            required = set(contract.required_outcome_kinds)
+            satisfied = (
+                bool(required.intersection(outcome_kinds))
+                if contract.match == "any"
+                else required.issubset(outcome_kinds)
+            )
+            if required and not satisfied:
+                raise ValueError(
+                    "deliverable does not satisfy task outcome contract; required "
+                    f"{contract.match}: {', '.join(sorted(required))}"
+                )
+            missing_required_references = sorted(
+                outcome.kind
+                for outcome in outcomes
+                if outcome.kind in required and not outcome.reference_ids
+            )
+            if missing_required_references:
+                raise ValueError(
+                    "required task outcomes must include reference_ids: "
+                    + ", ".join(missing_required_references)
+                )
     except GitWorkContextValidationError as exc:
         raise TeamCommandValidationError(
             code=exc.code,
@@ -569,6 +618,13 @@ def _apply_command_deliverable_submission(
         )
         git_refs = _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
         verification = _deliverable_verification_from_payload(deliverable.get("verification"))
+        outcomes = [
+            DeliverableOutcome.model_validate(outcome)
+            for outcome in _list_of_mappings(
+                deliverable.get("outcomes"),
+                "outcomes",
+            )
+        ]
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",
@@ -591,6 +647,7 @@ def _apply_command_deliverable_submission(
         artifact_refs=artifact_refs,
         git_refs=git_refs,
         verification=verification,
+        outcomes=outcomes,
         state=TeamRecordState.PENDING,
         supersedes_deliverable_id=supersedes_deliverable_id,
         carried_findings=(
@@ -606,6 +663,9 @@ def _apply_command_deliverable_submission(
     state.deliverables[new_deliverable.id] = new_deliverable
     if superseded_deliverable is not None:
         superseded_deliverable.superseded_by_deliverable_id = new_deliverable.id
+        superseded_deliverable.supersession_reason = "Rework deliverable submitted."
+        superseded_deliverable.superseded_at = new_deliverable.created_at
+        superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
     task.deliverable_ids = _append_unique(task.deliverable_ids, new_deliverable.id)
     now = utc_now()
     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
