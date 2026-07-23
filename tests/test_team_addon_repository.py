@@ -9267,6 +9267,17 @@ def test_pending_review_withdrawal_preserves_history_and_routes_direct_acceptanc
         task_id="task",
         producer_agent_id="backend",
     )
+    repo.update(
+        lambda state: setattr(
+            state.deliverables["deliverable"],
+            "verification",
+            DeliverableVerification(
+                status="partial",
+                summary="Focused checks passed; the full suite was not run.",
+                evidence_refs=["artifact-space:/verification/focused-checks"],
+            ),
+        )
+    )
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-request-review")
     state, requested = _command_service(repo).request_review_command(
         session_id="session-lead",
@@ -9319,6 +9330,11 @@ def test_pending_review_withdrawal_preserves_history_and_routes_direct_acceptanc
         and item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
         and item.payload.get("deliverable_id") == "deliverable"
     )
+    assert notice.payload["verification"] == {
+        "status": "partial",
+        "summary": "Focused checks passed; the full suite was not run.",
+        "evidence_refs": ["artifact-space:/verification/focused-checks"],
+    }
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-direct-accept")
     state, accepted = _command_service(repo).decide_deliverable_command(
         session_id="session-lead",
@@ -9448,6 +9464,160 @@ def test_operator_review_retirement_is_explicit_and_preserves_the_blocked_attemp
     assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
     assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
     assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_other_team_manager_cannot_withdraw_or_retire_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_team(
+        team_id="other-team",
+        name="Other Team",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    admin.record_review_request(
+        review_request_id="review",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="other-manager",
+        dispatch_id="dispatch-cross-team-withdraw",
+    )
+    unchanged, denied_withdrawal = _command_service(repo).withdraw_review_command(
+        session_id="session-other-manager",
+        review_request_id="review",
+        reason="This review belongs to a different Team.",
+        request_id="request-cross-team-withdraw",
+    )
+
+    assert denied_withdrawal["success"] is False
+    assert "not permitted" in denied_withdrawal["errors"][0]["message"]
+    assert unchanged.review_requests["review"].retired_at is None
+
+    admin.record_review_decision(
+        review_request_id="review",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=repo.read().revision,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="other-manager",
+        dispatch_id="dispatch-cross-team-retire",
+    )
+    unchanged, denied_retirement = _command_service(repo).retire_review_command(
+        session_id="session-other-manager",
+        review_request_id="review",
+        reason="This terminal review also belongs to a different Team.",
+        request_id="request-cross-team-retire",
+    )
+
+    assert denied_retirement["success"] is False
+    assert "project lead or team manager" in denied_retirement["errors"][0]["message"]
+    assert unchanged.review_requests["review"].retired_at is None
+
+
+def test_project_lead_can_retire_admin_created_terminal_review_without_decision_at(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="review-accepted",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        state=TeamRecordState.ACCEPTED,
+    )
+    assert state.review_requests["review-accepted"].decision_at is None
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-retire-terminal")
+    state, retired = _command_service(repo).retire_review_command(
+        session_id="session-lead",
+        review_request_id="review-accepted",
+        reason="The imported terminal review was attached in error.",
+        request_id="request-retire-terminal-without-timestamp",
+    )
+
+    assert retired["success"] is True
+    assert state.review_requests["review-accepted"].state == TeamRecordState.ACCEPTED
+    assert state.review_requests["review-accepted"].decision_at is None
+    assert state.review_requests["review-accepted"].retired_at is not None
+
+
+@pytest.mark.parametrize(
+    ("blocker_source_kind", "blocker_source_id"),
+    [("task", "task"), ("deliverable", "deliverable")],
+)
+def test_withdrawing_reopened_review_preserves_active_acceptance_blocker(
+    tmp_path: Path,
+    blocker_source_kind: str,
+    blocker_source_id: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable",
+        task_id="task",
+        summary="Ready for direct acceptance.",
+        request_id="request-submit-before-review",
+    )
+    assert submitted["success"] is True
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept")
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        decision="accepted",
+        request_id="request-accept-before-review",
+    )
+    assert accepted["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-request-review")
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Perform a late specialist review.",
+        request_id="request-reopen-for-review",
+    )
+    review_id = requested["review_request_id"]
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-report-blocker")
+    state, reported = _command_service(repo).report_blocker_command(
+        session_id="session-backend",
+        source_kind=blocker_source_kind,
+        source_id=blocker_source_id,
+        summary="Acceptance is blocked by unresolved evidence.",
+        request_id=f"request-report-{blocker_source_kind}-blocker",
+    )
+    blocker_id = reported["blocker_id"]
+    assert state.blockers[blocker_id].state == TeamBlockerState.OPEN
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-withdraw-review")
+    state, withdrawn = _command_service(repo).withdraw_review_command(
+        session_id="session-lead",
+        review_request_id=review_id,
+        reason="The late specialist review is no longer needed.",
+        request_id=f"request-withdraw-with-{blocker_source_kind}-blocker",
+    )
+
+    assert withdrawn["success"] is True
+    assert state.blockers[blocker_id].state == TeamBlockerState.OPEN
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.BLOCKED
 
 
 def test_withdrawing_review_does_not_accept_deliverable_with_open_carried_findings(

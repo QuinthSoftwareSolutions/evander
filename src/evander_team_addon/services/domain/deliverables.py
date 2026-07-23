@@ -13,6 +13,8 @@ from ...models import (
     DeliverableGitRefs,
     DeliverableOutcome,
     DeliverableVerification,
+    TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamRecordState,
     TeamState,
     TeamTaskKind,
@@ -223,6 +225,28 @@ def _active_task_deliverables(
     ]
 
 
+def _active_deliverable_acceptance_blocker_ids(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+) -> list[str]:
+    """Return blockers that prevent accepting a deliverable and its task."""
+
+    return sorted(
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and (
+            blocker.task_id == task.id
+            or (
+                blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+                and blocker.source_id == deliverable.id
+            )
+        )
+    )
+
+
 def _accept_deliverable_and_maybe_task(
     state: TeamState,
     *,
@@ -265,5 +289,6 @@ __all__ = [
     "_validate_deliverable_outcomes_against_task_contract",
     "_superseded_deliverable_for_rework",
     "_active_task_deliverables",
+    "_active_deliverable_acceptance_blocker_ids",
     "_accept_deliverable_and_maybe_task",
 ]

@@ -33,7 +33,6 @@ from .validators import _require_command_agent
 from ...models import (
     Deliverable,
     DeliverableAcceptanceDecision,
-    TeamBlockerState,
     TeamBlockerSourceKind,
     TeamInboxItemState,
     TeamInboxItemType,
@@ -54,6 +53,7 @@ from ..domain.agent_access import _is_project_lead_for, _is_team_manager
 from ..domain.blockers import resolve_active_blockers_for_source
 from ..domain.deliverables import (
     _accept_deliverable_and_maybe_task,
+    _active_deliverable_acceptance_blocker_ids,
     _deliverable_submission_next_action_hints,
     _validate_deliverable_outcomes_against_task_contract,
 )
@@ -347,17 +347,10 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             created_inbox_ids: list[str] = []
             side_effects: dict[str, Any] = {"created_inbox_item_ids": created_inbox_ids}
             if normalized_decision == "accepted":
-                active_blocker_ids = sorted(
-                    blocker.id
-                    for blocker in state.blockers.values()
-                    if blocker.state == TeamBlockerState.OPEN
-                    and (
-                        blocker.task_id == task.id
-                        or (
-                            blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
-                            and blocker.source_id == deliverable.id
-                        )
-                    )
+                active_blocker_ids = _active_deliverable_acceptance_blocker_ids(
+                    state,
+                    deliverable=deliverable,
+                    task=task,
                 )
                 if active_blocker_ids:
                     raise TeamCommandValidationError(

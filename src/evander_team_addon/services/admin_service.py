@@ -3255,7 +3255,11 @@ class TeamAdminService:
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
             if review.retired_at is not None:
-                action = "withdrawn" if review.decision_at is None else "retired"
+                action = (
+                    "withdrawn"
+                    if review.state == TeamRecordState.PENDING
+                    else "retired"
+                )
                 raise ValueError(
                     f"review {review.id} was {action} and cannot receive a decision"
                 )

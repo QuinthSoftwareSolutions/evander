@@ -48,6 +48,7 @@ from .common import (
 )
 from .deliverables import (
     _accept_deliverable_and_maybe_task,
+    _active_deliverable_acceptance_blocker_ids,
     _deliverable_verification_payload,
 )
 from .manager_fallback import _manager_fallback_review_decision_guard_error
@@ -63,6 +64,20 @@ _TERMINAL_REVIEW_STATES = frozenset(
         TeamRecordState.BLOCKED,
     }
 )
+
+
+def _is_team_manager_for_task_project(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    task: AgentTask,
+) -> bool:
+    project = state.projects.get(task.project_id)
+    return bool(
+        project is not None
+        and actor.team_id == project.team_id
+        and _is_team_manager(state, actor)
+    )
 
 
 def _review_profile_for_request(
@@ -516,7 +531,7 @@ def withdraw_pending_review(
             or actor.id == deliverable.producer_agent_id
             or _supervises(state, actor.id, deliverable.producer_agent_id)
             or _is_project_lead_for(state, actor.id, task.project_id)
-            or _is_team_manager(state, actor)
+            or _is_team_manager_for_task_project(state, actor=actor, task=task)
         )
         if not permitted:
             raise ValueError(
@@ -551,11 +566,11 @@ def retire_terminal_review(
         state,
         review_request_id=review_request_id,
     )
-    if review.state not in _TERMINAL_REVIEW_STATES or review.decision_at is None:
-        raise ValueError("only a terminal decided review may be retired")
+    if review.state not in _TERMINAL_REVIEW_STATES:
+        raise ValueError("only a terminal review may be retired")
     if actor is not None and not (
         _is_project_lead_for(state, actor.id, task.project_id)
-        or _is_team_manager(state, actor)
+        or _is_team_manager_for_task_project(state, actor=actor, task=task)
     ):
         raise ValueError(
             f"agent {actor.id} must be the project lead or team manager "
@@ -689,6 +704,11 @@ def _recalculate_deliverable_after_review_closure(
     now: datetime,
 ) -> None:
     current_reviews = _current_deliverable_reviews(state, deliverable)
+    active_acceptance_blocker_ids = _active_deliverable_acceptance_blocker_ids(
+        state,
+        deliverable=deliverable,
+        task=task,
+    )
     if any(review.state == TeamRecordState.BLOCKED for review in current_reviews):
         deliverable.state = TeamRecordState.BLOCKED
         _set_task_state(task, TeamTaskState.BLOCKED, now=now)
@@ -701,6 +721,9 @@ def _recalculate_deliverable_after_review_closure(
         if any(finding.state == "open" for finding in deliverable.carried_findings):
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        elif active_acceptance_blocker_ids:
+            deliverable.state = TeamRecordState.PENDING
+            _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         else:
             _accept_deliverable_and_maybe_task(
                 state,
@@ -719,12 +742,16 @@ def _recalculate_deliverable_after_review_closure(
         deliverable.acceptance_decision is not None
         and deliverable.acceptance_decision.decision == "accepted"
     ):
-        _accept_deliverable_and_maybe_task(
-            state,
-            deliverable=deliverable,
-            task=task,
-            now=now,
-        )
+        if active_acceptance_blocker_ids:
+            deliverable.state = TeamRecordState.PENDING
+            _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        else:
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+            )
     else:
         _route_to_superior_acceptance(
             state,
@@ -771,6 +798,20 @@ def _route_to_superior_acceptance(
     )
     if existing is not None:
         return
+    payload: dict[str, Any] = {
+        "kind": "superior_acceptance_requested",
+        "deliverable_id": deliverable.id,
+        "task_id": task.id,
+        "producer_agent_id": producer.id,
+        "acceptance_recipient_agent_id": recipient_id,
+        "summary": deliverable.summary,
+        "artifact_refs": list(deliverable.artifact_refs),
+        "available_decisions": ["accepted", "rejected"],
+        "available_alternatives": ["request_review", "report_blocker"],
+    }
+    verification_payload = _deliverable_verification_payload(deliverable)
+    if verification_payload is not None:
+        payload["verification"] = verification_payload
     item = AgentInboxItem(
         id=f"inbox-{uuid4().hex}",
         recipient_agent_id=recipient_id,
@@ -779,17 +820,7 @@ def _route_to_superior_acceptance(
         item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
         response_requested=True,
         priority=TeamInboxPriority.LOW,
-        payload={
-            "kind": "superior_acceptance_requested",
-            "deliverable_id": deliverable.id,
-            "task_id": task.id,
-            "producer_agent_id": producer.id,
-            "acceptance_recipient_agent_id": recipient_id,
-            "summary": deliverable.summary,
-            "artifact_refs": list(deliverable.artifact_refs),
-            "available_decisions": ["accepted", "rejected"],
-            "available_alternatives": ["request_review", "report_blocker"],
-        },
+        payload=payload,
         created_at=now,
         updated_at=now,
     )
@@ -866,7 +897,11 @@ def _apply_review_decision(
         )
         return None
     if review.retired_at is not None:
-        action = "withdrawn" if review.decision_at is None else "retired"
+        action = (
+            "withdrawn"
+            if review.state == TeamRecordState.PENDING
+            else "retired"
+        )
         result["errors"].append(
             f"review {review_request_id} was {action} and cannot receive a decision"
         )

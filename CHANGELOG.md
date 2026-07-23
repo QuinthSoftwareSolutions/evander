@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-23 - Team Review Lifecycle Hardening
+
+- Scoped review withdrawal and retirement by Team so managers cannot mutate another Team's work.
+- Preserved active task and deliverable blockers when closing a review would otherwise restore
+  prior acceptance.
+- Allowed terminal operator-created reviews without a decision timestamp to be retired, and
+  included deliverable verification evidence when withdrawal reroutes work to superior acceptance.
+
 ## 2026-07-23 - Outcome Catalog Review Fixes
 
 - Prevented archival of outcome kinds that are still required or forbidden by nonterminal tasks.
