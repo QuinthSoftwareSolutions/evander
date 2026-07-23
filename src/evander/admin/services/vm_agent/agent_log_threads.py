@@ -279,26 +279,11 @@ class VmAgentThreadLogMixin:
 
         normalized_query = str(query or "").strip()
         sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        if not normalized_query and offset == 0:
-            page = _log_page_from_end(
-                self._container_execution_log_chunk(
-                    worker_backend,
-                    sorted_records[-1],
-                    lines=0,
-                    mode="execution",
-                ),
-                limit=limit,
-                offset=0,
-            )
-            if len(sorted_records) > 1:
-                page["has_more_before"] = True
-                page["total_lines"] = None
-                page["start_line"] = None
-                page["end_line"] = None
-            return page
 
         chunks: list[str] = []
         truncated_before = False
+        # A short auxiliary execution, such as an artifact import, must not hide the
+        # preceding agent transcript. Read backward until the requested window is full.
         target_lines = max(1, limit) + max(0, offset) + 1
         line_count = 0
         records_to_read = (

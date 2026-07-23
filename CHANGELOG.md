@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23 - Agent Log Continuity Across Artifact Operations
+
+- Kept filling the Agents page's latest execution-log window from preceding session executions
+  when a newer, short artifact operation would otherwise replace the visible agent transcript.
+- Preserved bounded line-window pagination so older execution history remains available through
+  **Load older** without eagerly reading the whole session history.
+
 ## 2026-07-23 - Team Artifact Handoffs
 
 - Added `team_import_artifact` so an active Team agent can permission-check an

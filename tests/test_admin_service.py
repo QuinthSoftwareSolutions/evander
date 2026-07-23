@@ -5365,7 +5365,7 @@ def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch
     assert page["has_more_before"] is True
 
 
-def test_get_admin_agent_log_page_container_session_pages_across_runs(
+def test_get_admin_agent_log_page_container_session_fills_latest_page_across_runs(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -5389,9 +5389,9 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     )
     repository.put(
         ContainerWorkerExecutionRecord(
-            execution_id="exec-old",
+            execution_id="exec-agent",
             session_id="session-1",
-            worker_job_id="job-old",
+            worker_job_id="job-agent",
             worker_url="http://worker.test",
             target_name="target-1",
             started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
@@ -5401,9 +5401,9 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     )
     repository.put(
         ContainerWorkerExecutionRecord(
-            execution_id="exec-new",
+            execution_id="exec-artifact",
             session_id="session-1",
-            worker_job_id="job-new",
+            worker_job_id="job-artifact",
             worker_url="http://worker.test",
             target_name="target-1",
             started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
@@ -5424,9 +5424,13 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
             mode: str | None = None,
         ) -> str:
             self.calls.append((target, lines, mode))
-            if target == "exec-new":
-                return "new line 1\nnew line 2\n"
-            return "old line 1\nold line 2\n"
+            if target == "exec-artifact":
+                return (
+                    "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__\n"
+                    '{"success":true,"destination_path":"team-artifact-imports/report"}\n'
+                    "__EVANDER_ARTIFACT_EFFECT_JSON_END__\n"
+                )
+            return "agent reasoning line 1\nagent reasoning line 2\n"
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
@@ -5438,18 +5442,21 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     latest_page = service.vm_agent_admin.get_admin_agent_log_page(
         "session-1",
         backend="container_worker_vm",
-        limit=50,
+        limit=6,
     )
 
-    assert "execution=exec-new" in latest_page["text"]
-    assert "new line 2" in latest_page["text"]
-    assert "exec-old" not in latest_page["text"]
+    assert "execution=exec-artifact" in latest_page["text"]
+    assert "__EVANDER_ARTIFACT_EFFECT_JSON_END__" in latest_page["text"]
+    assert "agent reasoning line 2" in latest_page["text"]
     assert "session transcript" not in latest_page["text"]
     assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
-    assert latest_page["total_lines"] is None
+    assert latest_page["total_lines"] == 8
     assert latest_page["view"] == "executions"
-    assert fake_backend.calls == [("exec-new", 0, "execution")]
+    assert fake_backend.calls == [
+        ("exec-artifact", 0, "execution"),
+        ("exec-agent", 0, "execution"),
+    ]
 
     older_page = service.vm_agent_admin.get_admin_agent_log_page(
         "session-1",
@@ -5458,17 +5465,18 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
         offset=int(latest_page["returned_lines"]),
     )
 
-    assert "execution=exec-old" in older_page["text"]
-    assert "old line 2" in older_page["text"]
-    assert "exec-new" not in older_page["text"]
+    assert "execution=exec-agent" in older_page["text"]
+    assert "agent reasoning line 1" in older_page["text"]
+    assert "exec-artifact" not in older_page["text"]
     assert "session transcript" not in older_page["text"]
     assert "augmented" not in older_page["text"]
     assert older_page["has_more_before"] is False
     assert older_page["view"] == "executions"
     assert fake_backend.calls == [
-        ("exec-new", 0, "execution"),
-        ("exec-new", 0, "execution"),
-        ("exec-old", 0, "execution"),
+        ("exec-artifact", 0, "execution"),
+        ("exec-agent", 0, "execution"),
+        ("exec-artifact", 0, "execution"),
+        ("exec-agent", 0, "execution"),
     ]
 
 
