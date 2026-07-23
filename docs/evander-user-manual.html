@@ -11704,6 +11704,13 @@ occurs before the final Team state transaction because it crosses
 service boundaries. If publication succeeds but the Team mutation fails,
 the artifact may be orphaned until the same command is replayed or an
 operator cleans it up deliberately.</p>
+<p>For an ordinary task or inbox handoff, the recipient can call
+<code>team_import_artifact</code> with an <code>artifact-space:</code>
+ref. The host checks the calling <code>team-agent:&lt;id&gt;</code> read
+grant and imports the latest requested artifact version into that
+caller&#39;s own <code>/artifacts/team-artifact-imports/...</code> tree. A
+path under another agent&#39;s <code>/home/agent</code> or
+<code>/artifacts</code> tree is never a shared path.</p>
 <p>Reviewer wakes import referenced review artifacts to a bounded path
 below:</p>
 <p><code>/artifacts/team-review-inputs/&lt;review&gt;/&lt;deliverable&gt;/...</code></p>
@@ -11875,6 +11882,8 @@ deliverable review.</p>
 <ul>
 <li><code>team_submit_deliverable</code>;</li>
 <li><code>team_submit_deliverable_for_review</code>;</li>
+<li><code>team_import_artifact</code> for permission-checked ordinary
+artifact handoffs;</li>
 <li><code>team_request_review</code>;</li>
 <li><code>team_decide_review</code>;</li>
 <li>delivery list/get tools;</li>
@@ -11904,9 +11913,11 @@ root.</td>
 </tr>
 <tr class="even">
 <td>Artifact ref exists but bytes are unavailable</td>
-<td>Metadata was recorded without publication, or permission/version
-access failed.</td>
-<td>Inspect the artifact-space record and reviewer import error.</td>
+<td>Metadata was recorded without publication, permission/version access
+failed, or an ordinary recipient has not imported it yet.</td>
+<td>Inspect the artifact-space record; for ordinary handoffs call
+<code>team_import_artifact</code>, and for reviews inspect the reviewer
+import error.</td>
 </tr>
 <tr class="odd">
 <td>Git context mismatch</td>

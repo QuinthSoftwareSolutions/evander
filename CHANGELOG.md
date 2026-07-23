@@ -24,6 +24,8 @@
   access.
 - Wired ordinary imports through the supported admin provider adapter so default libvirt Team
   sessions have the session lookup, VM copy, and VM execution ports required to materialize files.
+- Moved the artifact-import guidance into the manual's canonical Chapter 22 source and regenerated
+  every published format so the checked-in build record remains current.
 
 ## 2026-07-23 - Team Task Completion and Review Semantics
 
