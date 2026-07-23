@@ -40,6 +40,12 @@ The core interface exposes:
 
 Use the selected directory as part of every diagnosis. Directory inheritance changes effective provider, policy, communication-target, workflow, and repository visibility. A root owner can see more than a project-scoped workflow maintainer; comparing their screens without noting scope is misleading.
 
+Session IDs are durable control-plane identities. Creating a session fails when that ID already
+exists rather than replacing its manifest. Supported deletion revokes the session's managed-Git
+grants and bindings and removes its legacy PR-routing entries plus matching feedback cursors/items;
+it does not delete the provider-side pull request or comments. Record those effects before
+recreating an ID during recovery.
+
 ## Authentication, authorization, and privileged unlock
 
 Signing in, being permitted to change a project, and temporarily unlocking a sensitive host operation are three separate decisions. A user may be able to see a page without being able to change it, or be able to change ordinary project settings without being able to perform a sensitive host action.

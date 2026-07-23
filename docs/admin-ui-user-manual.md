@@ -240,6 +240,10 @@ Notes:
   Use **Threads** when you need the Codex conversation grouped by thread ID. The thread view is
   available only for container-worker sessions; VM-backed agents continue to show their normal
   agent output.
+- The latest **Executions** window fills from preceding executions when a newer auxiliary run,
+  such as an artifact import, is too short to fill the view. **Load older** continues backward
+  across that combined execution history. Refresh and paging use bounded worker log-page reads;
+  they do not eagerly transfer every historical execution log.
 - Some actions are unavailable until privileged operations are unlocked.
 
 ## Approvals
@@ -418,7 +422,10 @@ Common tasks:
 5. Unlock privileges before editing.
 6. Use the extend action to renew expiry.
 7. Use revoke to deny further guest access before expiry.
-8. Use delete only when you intend to remove saved local session state.
+8. Use delete only when you intend to remove saved local session state. Deletion also revokes the
+   session's managed-Git bindings and removes its legacy PR-routing entries plus the matching
+   feedback cursors/items, so a later session cannot inherit historical PR state by reusing the
+   same ID.
 9. Edit the model field when a session needs a different model for future resume/prompt work.
 10. Toggle allowed tools and **Require approval** for tools that should queue human decisions.
     Tools are grouped by domain; Team Add-on tools are distinct from Microsoft Teams application
@@ -520,6 +527,8 @@ Common tasks:
    unwritable delete quarantine fail closed; health details remain operator-only. A delete-enabled
    check creates and immediately removes a private quarantine probe.
 6. Grant the resource's capabilities from Agent creation, Agent policy, or Sessions policy.
+   Granting capabilities to an existing libvirt session also enables the matching dedicated Host
+   Directory tools while preserving its other allowed tools.
 7. Review **Quarantine recovery** after agent deletes. Restore only when the original relative
    destination is absent.
 8. Use **Purge permanently** only after confirming the recovery ID and path. V1 never purges

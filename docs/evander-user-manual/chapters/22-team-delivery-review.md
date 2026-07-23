@@ -33,6 +33,7 @@ An operator will usually start with the summary, verification result, artifacts,
 > - stable artifact references;
 > - a persistent Git work-context ID and derived agent branch/commit;
 > - verification status, summary, and evidence refs;
+> - structured outcome kinds, durable reference IDs, and outcome evidence refs;
 > - supersession links;
 > - review findings and state.
 >
@@ -45,6 +46,23 @@ For Northstar, Imani's first telemetry retry deliverable might contain:
 - an artifact with the retry-state-machine trace;
 - verification status <code>passed</code>;
 - a concise summary of backoff, jitter, idempotency, and exhaustion behavior.
+
+## Outcome contracts prevent report-only completion
+
+Some tasks exist to coordinate or acknowledge work; others must create a durable external result.
+Team records the distinction on the task instead of relying on wording in its description.
+
+A <code>support</code> task can finish directly without inventing a deliverable. An
+<code>outcome</code> task carries an <code>outcome_contract</code> that names required and
+forbidden outcome kinds, chooses whether any or all required kinds must be present, and may
+explicitly permit an evidence-backed no-op.
+
+Deliverables for outcome tasks include typed outcomes. Each submitted outcome must carry durable
+<code>reference_ids</code>; evidence refs can support that result but cannot replace its identity.
+A review profile can require outcome kinds before the review is requested or accepted. When no new
+external effect is correct, use an <code>evidenced_noop</code> task completion with evidence refs,
+and only when the contract allows it. A prose report or evidence-only deliverable does not satisfy
+an outcome contract.
 
 ## Artifact publication boundary
 
@@ -88,13 +106,28 @@ The branch remains internal evidence at this stage. Review does not publish it t
 >
 > The branch is evidence inside the managed bare repository, not a canonical publication. Promotion begins only through the reviewed Git flows in Chapter 24.
 
-## Submitting and requesting review
+## Submitting, superior acceptance, and formal review
 
-The producer submits the evidence, then asks the appropriate reviewer or reviewers to assess it. A combined action can do both when that is the intended handoff. Team prevents accidental duplicate active reviews of the same deliverable by the same reviewer.
+The producer submits the evidence, then chooses the handoff the task actually requires:
+
+- <code>team_submit_deliverable</code> sends a deliverable notice to the producer's direct
+  superior. The task exposes <code>waiting_reason: superior_acceptance</code>; this is not formal
+  review work.
+- <code>team_submit_deliverable_for_review</code> submits the evidence and creates the intended
+  formal review handoff in one command.
+- <code>team_request_review</code> attaches a formal review to an existing deliverable.
+
+A top-level agent with no direct superior cannot use the superior-acceptance form. It must use
+formal review for a reviewable deliverable, or finish support/coordination work directly without
+manufacturing one. Team prevents accidental duplicate active reviews of the same deliverable by
+the same reviewer.
 
 A review may be requested by an authorized producer, supervisor, project lead, or Team manager. The assigned reviewer must be active, in the same Team, and compatible with any selected review profile.
 
-Review profiles can apply by project and role and define required and optional criteria. Archived profiles cannot be assigned to new reviews. Use profiles for repeatable policy such as:
+Review profiles can apply by project and role, define required and optional criteria, and require
+specific outcome kinds. Archived profiles cannot be assigned to new reviews. When more than one
+profile matches a reviewer, delivered outcome kinds narrow the implicit choice; an ambiguous
+remainder requires an explicit profile ID. Use profiles for repeatable policy such as:
 
 | Criterion | Requirement for telemetry retry |
 |---|---|
@@ -107,7 +140,10 @@ Creating the same active review for one deliverable and reviewer is replay-safe:
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
 >
-> <code>team_submit_deliverable</code> records evidence and changes the task to <code>waiting_for_review</code>. The combined <code>team_submit_deliverable_for_review</code> can submit and create the intended handoff without a redundant intermediate notice.
+> Both submission paths record evidence and change the task to
+> <code>waiting_for_review</code>. The derived <code>waiting_reason</code> distinguishes
+> <code>superior_acceptance</code> from <code>review</code>, so UI labels and manager routing do
+> not treat an ordinary superior notice as an unassigned reviewer gap.
 >
 > Workflow authors can use <code>trigger:team:deliverable-created</code> and one <code>effect:team:create-review-request</code> node per required reviewer/profile. The trigger owns its cursor and suppresses old deliverables when first enabled, avoiding an accidental historical review storm.
 
@@ -123,7 +159,7 @@ For a profiled review, every required criterion must be present and passed. Opti
 
 A deliverable becomes accepted only when:
 
-- all active attached reviews are accepted; and
+- all current, non-retired attached reviews are accepted; and
 - no carried review finding remains open.
 
 When every current required deliverable for the task is accepted, the task can become accepted. Project status and goals then recalculate under their own rules.
@@ -146,6 +182,20 @@ An accepted later review can resolve only findings owned by its same review prof
 Use <code>blocked</code> when the review process or evidence access cannot proceed, not when the candidate is known to be defective. For an ordinary deliverable review, blocked state propagates blocking state to the deliverable/task and preserves a concrete blocker.
 
 Release-review blocked behavior is stricter and retry-oriented; Chapter 24 distinguishes it from candidate rejection.
+
+A blocked non-release review can be retried with <code>team_retry_review</code>. Retry preserves
+the blocked attempt, links a new pending successor, reopens the deliverable, and resolves the
+obsolete review blocker. Do not overwrite the original decision.
+
+A rejected or blocked deliverable can be replaced by a same-task rework submission. When an
+accepted deliverable from another task is the intentional replacement, an authorized project
+lead or manager can link it explicitly with <code>team_link_deliverable_replacement</code>.
+Migration does not guess replacement lineage.
+
+An unlocked operator can retire an erroneous current non-release review through
+<code>POST /api/addons/team-addon/review-requests/{id}/retire</code>, with a reason and expected
+revision. Retirement keeps the terminal attempt in history and removes it from the current review
+set. It does not accept a deliverable that still carries open findings.
 
 ## Multi-review cascades
 
@@ -183,10 +233,14 @@ The distinction operators should remember is that **seeing a review is not the s
 > - <code>team_import_artifact</code> for permission-checked ordinary artifact handoffs;
 > - <code>team_request_review</code>;
 > - <code>team_decide_review</code>;
+> - <code>team_retry_review</code>;
+> - <code>team_link_deliverable_replacement</code>;
 > - delivery list/get tools;
 > - Git promotion and release tools covered in Chapter 24.
 >
-> Admin routes provide revision-checked operator create/edit/decision paths. Workflow providers add deliverable-created triggering and deterministic review-request creation. All paths reuse the same repository invariants.
+> Admin routes provide revision-checked operator create/edit/decision paths and explicit review
+> retirement. Workflow providers add deliverable-created triggering and deterministic
+> review-request creation. All paths reuse the same repository invariants.
 
 ## Decision and state failures
 
@@ -200,6 +254,10 @@ The distinction operators should remember is that **seeing a review is not the s
 | Second decision refused | Review decisions are immutable. | Create the appropriate successor deliverable/review; do not overwrite history. |
 | Task stays waiting after one acceptance | Another active review or open carried finding remains. | Inspect the complete current deliverable review set. |
 | Rejected task has no useful next step | Findings were vague. | Preserve evidence and create concrete, testable findings in the review decision. |
+| Outcome deliverable rejected before review | Its outcome kind is missing, forbidden, or lacks a durable reference ID. | Match the task contract and identify the actual external record; do not substitute prose or evidence-only output. |
+| Blocked review remains current after recovery | Immutable history needs an explicit successor. | Use <code>team_retry_review</code> with a recovery reason. |
+| Retirement does not accept the deliverable | Another current review or carried finding still blocks acceptance. | Inspect the current review set and resolve findings through their owning profile. |
+| Plain submission has no recipient | The producer has no direct superior for superior acceptance. | Use formal review, or finish support work directly when no deliverable is required. |
 
 ## Troubleshooting and handoff
 
@@ -214,8 +272,9 @@ Do not edit a terminal review or force the task state merely because one accepta
 1. Confirm the task, active dispatch, and task-specific Git context.
 2. Run proportionate verification and record honest status.
 3. Publish artifacts from safe paths or attach existing stable refs.
-4. Submit one deliverable with a stable request ID.
-5. Request the required reviewers/profiles, or use the combined submission command.
+4. For an outcome task, record the required outcome kinds and durable reference IDs.
+5. Choose superior acceptance or formal review deliberately; use the combined submission command
+   when formal review is already known.
 6. Mark related inbox items handled atomically.
 
 ### Reviewer
@@ -231,14 +290,16 @@ Do not edit a terminal review or force the task state merely because one accepta
 1. In **Delivery**, trace task → current deliverable → all active reviews → findings.
 2. Match each review to its profile, reviewer, evidence refs, and reviewed commit.
 3. When a cascade looks stuck, inspect open findings before changing task state.
-4. Reconcile orphaned published artifacts deliberately.
-5. Do not “fix” history by editing terminal review records.
+4. Retry, replace, or retire through the explicit recovery surface; do not rewrite a terminal
+   attempt.
+5. Reconcile orphaned published artifacts deliberately.
 
 ## Source trail
 
-- <code>src/evander_team_addon/models.py</code> — deliverable, verification, review, profile, criterion, finding, and supersession models.
+- <code>src/evander_team_addon/models.py</code> — task outcome contracts/completions plus deliverable, verification, review, profile, criterion, finding, and supersession models.
 - <code>src/evander_team_addon/services/commands/deliverable_submission_commands.py</code> and <code>review_commands.py</code> — submission, request authority, deduplication, and immutable decisions.
-- <code>src/evander_team_addon/services/domain/deliverables.py</code>, <code>review.py</code>, and <code>git_work_contexts.py</code> — acceptance cascades, findings, artifact/Git evidence, and context validation.
+- <code>src/evander_team_addon/services/commands/task_update_commands.py</code> — outcome-completion and blocked-source guards.
+- <code>src/evander_team_addon/services/domain/deliverables.py</code>, <code>review.py</code>, and <code>git_work_contexts.py</code> — outcome validation, acceptance cascades, retries, findings, artifact/Git evidence, and context validation.
 - <code>src/evander_team_addon/providers.py</code> — deliverable trigger, review-request effect, artifact import, and wake prompt projection.
 - <code>src/evander_team_addon/mcp.py</code> and <code>api.py</code> — grouped delivery tools and operator routes.
 - <code>docs/addons.md</code> — artifact publication, review profiles, rework findings, and release handoff.

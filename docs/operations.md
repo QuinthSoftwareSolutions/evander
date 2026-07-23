@@ -70,6 +70,18 @@ Before debugging individual scripts or services, run the consolidated host statu
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
 
+## Session Manifest Operations
+
+`evander-cli create-session` creates a new identity and fails if that session ID already exists; it
+does not overwrite or silently recycle an earlier manifest. Use the supported renew, revoke,
+policy-edit, or delete operation for an existing session.
+
+Deleting a session removes more than the manifest. The service revokes all of that session's
+managed-Git grants and bindings, prunes its legacy `runtime/pr-map.json` entries, and removes the
+matching feedback cursors and items from `runtime/pr-feedback-store.json`. This prevents a newly
+created session with the same ID from inheriting historical repository or pull-request routing.
+Deletion does not remove provider-side pull requests or comments.
+
 ## Connector Operations
 
 Use Admin Web **Connectors** to inspect the effective directory configuration, verify whether each
@@ -2194,6 +2206,10 @@ live provider APIs.
   feedback still publishes by default; set `suppress_agent_authored_feedback`
   only for workflows that should store those comments without emitting wake
   events.
+  For a session-bound legacy entry, the current session manifest's
+  `directory_path` is authoritative for routing and filtering; an older
+  directory value persisted in `pr-map.json` is only a fallback when the
+  session no longer resolves.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start evander-discord-wake.service`

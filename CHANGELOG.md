@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-23 - Branch Documentation Audit
+
+- Aligned the Team operator guide and technical manual with outcome contracts, superior acceptance,
+  review rejection/retry/replacement/retirement behavior, and Bokio duplicate-check pagination and
+  cache scope.
+- Documented cross-execution agent-log continuity, session-owned PR routing and cleanup, reused
+  Azure PR source confirmation, live Host Directory grant reconciliation, and the refactored
+  managed-Git and consultation service boundaries.
+
 ## 2026-07-23 - Outcome Contract and Host Grant Review Fixes
 
 - Applied outcome-contract kind and durable-reference validation to both agent and Admin

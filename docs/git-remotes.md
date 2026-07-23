@@ -197,7 +197,10 @@ PR-note lookup reads only the note attached to the pinned commit. It does not wa
 Publication fetches the upstream destination into an operation-local ref, requires that destination
 to be an ancestor of the approved SHA, and pushes the exact SHA with an explicit lease. Operations
 for the same destination serialize; unrelated destinations can proceed concurrently. PR creation
-reuses an existing PR for the same source/destination when possible.
+reuses an existing PR for the same source/destination when possible. Azure DevOps may briefly
+report the preceding source commit in `lastMergeSourceCommit` after a push. Before accepting a
+reused PR, Evander checks the highest-ID PR iteration for the expected source commit within a
+bounded confirmation window; a genuinely moved source still returns a conflict.
 
 ## Temporary worktrees
 

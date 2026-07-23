@@ -91,6 +91,7 @@ To an operator, a task is the clearest answer to “who owns the next concrete p
 > - dependency tasks;
 > - case;
 > - deliverables;
+> - task kind, outcome contract, and structured completion;
 > - metadata and timestamps.
 
 Task state has a deliberate review-aware lifecycle:
@@ -101,8 +102,8 @@ Task state has a deliberate review-aware lifecycle:
 | <code>in_progress</code> | The owner is working or reworking it. |
 | <code>blocked</code> | Work cannot proceed without a named dependency or intervention. |
 | <code>waiting_for_review</code> | Evidence has been submitted and active review remains. |
-| <code>finished</code> | Work was marked finished but has not completed the acceptance cascade. |
-| <code>accepted</code> | Required deliverables and reviews have accepted the task outcome. |
+| <code>finished</code> | Support work was completed directly, or an outcome task recorded a validated completion. |
+| <code>accepted</code> | Required deliverables and reviews accepted the task's durable outcome. |
 | <code>rejected</code> | The task outcome was rejected under the applicable transition. |
 
 The state payload derives child IDs, subtask counts, dependency status, and blockers. A task whose dependencies are waiting or blocked is not ready merely because its own state says pending.
@@ -110,6 +111,26 @@ The state payload derives child IDs, subtask counts, dependency status, and bloc
 Only authorized agents may create a root task. An owner may decompose assigned work into child tasks within policy, and <code>team_create_tasks</code> provides one validated batch mutation. Batch validation happens before commit, so a bad item does not leave a half-created plan.
 
 Task graphs cannot contain parent or dependency cycles. Dependencies and parents remain within the project. A deliverable, review, or Git work context cannot silently migrate a task to another project.
+
+### Support work and outcome work
+
+Team distinguishes coordination from work that must produce a durable external result:
+
+- a <code>support</code> task is administrative, delegation, coordination, acknowledgement, or
+  other work that can finish directly without manufacturing a deliverable;
+- an <code>outcome</code> task has an <code>outcome_contract</code> naming required and forbidden
+  outcome kinds, choosing <code>all</code> or <code>any</code> matching, and optionally allowing
+  an evidence-backed no-op.
+
+An outcome deliverable records typed outcomes with durable reference IDs and optional evidence
+refs. A report alone does not satisfy the contract. Every submitted outcome for an outcome task
+must identify the durable record it represents. When the work genuinely has no new external
+effect, <code>evidenced_noop</code> completion is valid only if the contract allows it and the
+completion includes evidence refs. A <code>delivered</code> completion must point to outcomes on
+accepted current deliverables that satisfy the contract.
+
+These rules apply to both agent and operator command paths. A task also cannot be hidden by
+marking it finished while a current deliverable, review, or blocker remains blocked.
 
 ![Team task board showing telemetry-retry work by lane](../../assets/evander-user-manual/screenshots/team-task-board.png)
 

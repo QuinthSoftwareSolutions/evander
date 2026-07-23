@@ -367,13 +367,16 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   Bokio association state from Evander's durable local evidence store; they do not
   query Bokio's remote uploads. `bokio_stage_evidence_for_workspace` can make
   previously retained evidence available to a new session as an artifact.
-- `bokio_check_journal_duplicates` scans every page of the journal-entry list and
-  matches a non-empty combination of `date`, `account`, `amount`, `title`,
-  `invoice_number`, and `receipt_number`. It returns the number of entries
-  inspected, matching entry IDs, a source fingerprint, and a durable
-  `bokio-duplicate-check:...` evidence reference. Equivalent checks reuse evidence
-  for 15 minutes by default; set `refresh=true` to force a new scan. The durable
-  records live in
+- `bokio_check_journal_duplicates` follows Bokio's reported `totalItems` through
+  every required journal-entry page and matches a non-empty combination of
+  `date`, `account`, `amount`, `title`, `invoice_number`, and `receipt_number`.
+  It fails closed if pagination ends before that total is reached. The result
+  includes the number of entries inspected, matching entry IDs, a source
+  fingerprint, and a durable `bokio-duplicate-check:...` evidence reference.
+  Equivalent checks reuse evidence for 15 minutes by default, but the cache key
+  includes the configured company ID and API base URL so evidence cannot cross
+  Bokio companies or endpoints; set `refresh=true` to force a new scan. The
+  durable records live in
   `runtime/addons/bokio-addon/duplicate-checks/duplicate-checks.db`.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
@@ -1026,6 +1029,15 @@ Team mutation. Paths are checked for safety, publication is replay-idempotent,
 and Team state stores the resulting stable artifact references. If publication
 succeeds but the final mutation fails, operators should treat the published
 artifact as an orphan until it is linked by a replay or cleaned up intentionally.
+`team_submit_deliverable` is a superior-acceptance handoff: it requires the
+producer to have a direct superior, sends that superior a deliverable notice,
+and exposes `waiting_reason: superior_acceptance`. It does not create formal
+review work. Use `team_submit_deliverable_for_review` or `team_request_review`
+when an assigned reviewer and review policy must decide the result. A top-level
+agent with no direct superior must use formal review for a deliverable, or use
+`team_update_task state=finished` for support/coordination work that produces no
+reviewable result.
+
 For ordinary task, status-request, question, or progress-report handoffs, the
 recipient can pass an `artifact-space:` ref to `team_import_artifact`. The tool
 checks that artifact space's read grant for the calling `team-agent:<id>`, selects
@@ -1138,11 +1150,13 @@ and the same cascade backs both the `team_decide_review` MCP tool and the
 `POST /review-requests/{id}/decision` Admin API endpoint:
 
 - **accepted** — the review is accepted. The deliverable becomes accepted only
-  when **all** of its review requests are accepted. The task becomes accepted
-  only when every deliverable on that task is accepted (multi-review and
-  multi-deliverable tasks are held back until the last one lands).
-- **rejected** — the review and deliverable are rejected and the task is set to
-  `blocked`.
+  when **all current, non-retired** review requests are accepted and no carried
+  finding remains open. The task becomes accepted only when every current
+  deliverable on that task is accepted (multi-review and multi-deliverable tasks
+  are held back until the last one lands).
+- **rejected** — the review and deliverable are rejected, findings are preserved,
+  the task returns to `in_progress`, and the owner receives an actionable rework
+  notice.
 - **blocked** — the review, deliverable, and task are all set to `blocked`.
 
 Every decision stamps `decision_at` and triggers
@@ -1187,6 +1201,13 @@ deliverable. When several profiles apply to the same reviewer role, their
 required outcome kinds also select the implicit profile; callers still pass
 `review_profile_id` when more than one matching profile remains.
 
+Every outcome submitted for an outcome task must carry durable `reference_ids`;
+evidence-only completion belongs on the explicit `evidenced_noop` task
+completion path and is accepted only when the contract allows it. Finishing an
+outcome task with `delivered` completion must point to outcomes on accepted,
+current deliverables that satisfy the contract. A task cannot be finished while
+an active deliverable, review, or blocker is blocked.
+
 Review decisions are immutable attempts. A blocked non-release review records a
 `block_kind` and can be retried with `team_retry_review`; the successor is linked
 to the preserved attempt and becomes the only current review. A blocked or
@@ -1197,6 +1218,8 @@ current non-release review through
 `POST /api/addons/team-addon/review-requests/{id}/retire`. Migrations never infer
 or repair these relationships automatically, so historical blocked records stay
 blocked until an explicit retry, replacement, retirement, or blocker resolution.
+Retirement removes the erroneous attempt from the current review set but does
+not erase it or accept a deliverable that still has open carried findings.
 
 Terminal commands reject a stale dispatch snapshot when a newer high-priority
 inbox item arrived after the agent woke. The agent must read the item and include

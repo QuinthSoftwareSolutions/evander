@@ -154,6 +154,8 @@ In Admin Web:
 3. Run **Check health** before granting it to sessions or selecting it in a workflow.
 4. Use the structured Host Directory selector in Agent creation, Agent policy, or Sessions policy
    to grant only required capabilities.
+   Reconciliation of an existing libvirt session adds the dedicated tools implied by those grants
+   without removing its unrelated allowed tools.
 5. Review **Quarantine recovery** for relative path, deleting session, time, and recovery ID.
 6. Restore when the original destination is absent, or explicitly confirm permanent purge.
 

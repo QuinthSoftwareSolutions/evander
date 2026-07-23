@@ -144,7 +144,7 @@ Publication is equally strict. When Northstar Platform's release agent publishes
 3. Push the exact approved SHA with an explicit destination lease.
 4. Serialize operations for the same destination while allowing unrelated destinations to proceed.
 
-This makes a race visible instead of letting stale automation overwrite a newer upstream branch. PR creation may reuse an existing PR for the same source/destination, but it does not weaken the exact-SHA push contract.
+This makes a race visible instead of letting stale automation overwrite a newer upstream branch. PR creation may reuse an existing PR for the same source/destination, but it does not weaken the exact-SHA push contract. Azure DevOps can briefly leave <code>lastMergeSourceCommit</code> on the preceding push; Evander confirms the expected SHA against the highest-ID PR iteration within a bounded window before accepting the reused PR. A source branch that genuinely moved still produces a conflict.
 
 ### Ephemeral host worktrees
 
@@ -168,6 +168,8 @@ delete approval, and enabled state. Session `host_directory_grants` select exact
 `list`/`import`/`delete` capabilities. The dedicated MCP tools resolve every component relative to
 an already-open directory descriptor; parent traversal, symlinks, special files, and
 mount-boundary crossings are rejected. Agent responses never contain the configured root.
+When an existing libvirt session is reconciled with new Host Directory grants, Evander adds the
+dedicated tools implied by those capabilities while preserving its unrelated allowed tools.
 The Admin health operation opens the root and, when `delete` is enabled, creates and removes a
 private quarantine probe so an unwritable recovery area fails before agents receive access.
 
@@ -283,10 +285,10 @@ For a legacy mirror deployment, do not improvise a partial conversion. Stop trig
 
 ## Source trail
 
-- `src/evander/admin/services/managed_git_service.py` — registry identity, ref transactions, restricted SSH integration, worktrees, publication, maintenance, and migration.
+- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, maintenance, and migration.
 - `scripts/git_ssh_command_wrapper.sh`, `scripts/guest/push_agent.sh`, and `scripts/guest/sync_base.sh` — guest capability and helper enforcement.
 - `src/evander/session_artifacts.py`, `src/evander/effects/providers/artifacts.py`, and `src/evander/published_artifacts.py` — safe artifact paths, publication, and immutable storage.
 - `src/evander/artifact_spaces.py` and `src/evander/admin/services/artifact_service.py` — logical spaces, grants, versions, and revision checking.
-- `src/evander/consultations.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` — persisted consultations, one-time result submission, worker lifecycle, and cleanup.
+- `src/evander/consultations.py`, `src/evander/code_consultation_service.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` — persisted consultations, one-time result submission, worker lifecycle, and cleanup behind the shared domain service.
 - `docs/git-remotes.md` and `docs/operations.md` — supported managed-Git and consultation runbooks.
-- `tests/test_managed_git_service.py`, `tests/test_managed_git_workflow_contract.py`, `tests/test_published_artifacts.py`, `tests/test_artifact_spaces.py`, and `tests/test_consultations.py` — current contract coverage.
+- `tests/test_managed_git_service.py`, `tests/test_managed_git_runtime_service.py`, `tests/test_managed_git_worktree_service.py`, `tests/test_managed_git_workflow_contract.py`, `tests/test_published_artifacts.py`, `tests/test_artifact_spaces.py`, and `tests/test_consultations.py` — current contract coverage.

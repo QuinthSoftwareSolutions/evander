@@ -225,7 +225,8 @@ UI state is a projection. For a disputed operational fact, prefer the Team Admin
 | Execution abstraction | `src/evander/execution/` |
 | VM lifecycle | `src/evander/vm/` plus `scripts/*_vm.sh` |
 | Container worker | `src/evander/worker_daemon.py`, `ansible/worker.yml` |
-| Managed Git | `src/evander/admin/services/managed_git_service.py` |
+| Managed Git | `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, `managed_git_worktree_service.py`, and `managed_git_common.py` |
+| Code consultations | `src/evander/code_consultation_service.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` |
 | Relays | `src/evander/relays/` |
 | Communications | `src/evander/messaging/` |
 | Core providers | `src/evander/providers/` |

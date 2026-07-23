@@ -2592,6 +2592,13 @@ Do not erase a `cleanup_failed` record to make a dashboard look tidy. It is the 
 
 Chat Assistant mappings are also backend-aware. Libvirt uses one global assistant VM/session with distinct per-user agent thread IDs. Container execution uses a distinct assistant session per user. The durable mapping in `runtime/chat-assistant-session-mappings.json` makes concurrent “open chat” and “first message” initialization converge instead of creating duplicates.
 
+Admin Web offers **Executions** and **Threads** log views for container-worker sessions.
+Executions are raw worker job logs; Threads group the Codex conversation by thread ID. The latest
+Executions window reads backward across preceding runs when a short auxiliary execution, such as an
+artifact import, would otherwise hide the agent transcript. **Load older** continues through that
+combined history. Live refresh and paging request bounded log pages from the worker rather than
+transferring every historical execution log.
+
 ## Administrator runbook
 
 Start with the broad control-plane view:
@@ -3095,7 +3102,7 @@ Publication is equally strict. When Northstar Platform's release agent publishes
 3. Push the exact approved SHA with an explicit destination lease.
 4. Serialize operations for the same destination while allowing unrelated destinations to proceed.
 
-This makes a race visible instead of letting stale automation overwrite a newer upstream branch. PR creation may reuse an existing PR for the same source/destination, but it does not weaken the exact-SHA push contract.
+This makes a race visible instead of letting stale automation overwrite a newer upstream branch. PR creation may reuse an existing PR for the same source/destination, but it does not weaken the exact-SHA push contract. Azure DevOps can briefly leave <code>lastMergeSourceCommit</code> on the preceding push; Evander confirms the expected SHA against the highest-ID PR iteration within a bounded window before accepting the reused PR. A source branch that genuinely moved still produces a conflict.
 
 ### Ephemeral host worktrees
 
@@ -3119,6 +3126,8 @@ delete approval, and enabled state. Session `host_directory_grants` select exact
 `list`/`import`/`delete` capabilities. The dedicated MCP tools resolve every component relative to
 an already-open directory descriptor; parent traversal, symlinks, special files, and
 mount-boundary crossings are rejected. Agent responses never contain the configured root.
+When an existing libvirt session is reconciled with new Host Directory grants, Evander adds the
+dedicated tools implied by those capabilities while preserving its unrelated allowed tools.
 The Admin health operation opens the root and, when `delete` is enabled, creates and removes a
 private quarantine probe so an unwritable recovery area fails before agents receive access.
 
@@ -3234,13 +3243,13 @@ For a legacy mirror deployment, do not improvise a partial conversion. Stop trig
 
 ## Source trail
 
-- `src/evander/admin/services/managed_git_service.py` — registry identity, ref transactions, restricted SSH integration, worktrees, publication, maintenance, and migration.
+- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, maintenance, and migration.
 - `scripts/git_ssh_command_wrapper.sh`, `scripts/guest/push_agent.sh`, and `scripts/guest/sync_base.sh` — guest capability and helper enforcement.
 - `src/evander/session_artifacts.py`, `src/evander/effects/providers/artifacts.py`, and `src/evander/published_artifacts.py` — safe artifact paths, publication, and immutable storage.
 - `src/evander/artifact_spaces.py` and `src/evander/admin/services/artifact_service.py` — logical spaces, grants, versions, and revision checking.
-- `src/evander/consultations.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` — persisted consultations, one-time result submission, worker lifecycle, and cleanup.
+- `src/evander/consultations.py`, `src/evander/code_consultation_service.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` — persisted consultations, one-time result submission, worker lifecycle, and cleanup behind the shared domain service.
 - `docs/git-remotes.md` and `docs/operations.md` — supported managed-Git and consultation runbooks.
-- `tests/test_managed_git_service.py`, `tests/test_managed_git_workflow_contract.py`, `tests/test_published_artifacts.py`, `tests/test_artifact_spaces.py`, and `tests/test_consultations.py` — current contract coverage.
+- `tests/test_managed_git_service.py`, `tests/test_managed_git_runtime_service.py`, `tests/test_managed_git_worktree_service.py`, `tests/test_managed_git_workflow_contract.py`, `tests/test_published_artifacts.py`, `tests/test_artifact_spaces.py`, and `tests/test_consultations.py` — current contract coverage.
 
 
 # 12. Issues and Provider Integrations
@@ -3372,7 +3381,10 @@ snapshot and rerun the check—not treat an earlier clean report as permission t
 >    publishes new-feedback or completion events idempotently.
 > 2. **Legacy PR-map bindings.** Older sessions may be associated with entries in
 >    `runtime/pr-map.json`. This compatibility path remains readable, but new workflow design should
->    prefer explicit PR triggers and managed repository identity.
+>    prefer explicit PR triggers and managed repository identity. While the session still exists,
+>    its manifest's current directory is authoritative over an older directory persisted in the
+>    binding. Supported session deletion prunes that session's PR-map entries and matching feedback
+>    cursors/items so a reused session ID cannot inherit the historical stream.
 >
 > The ADO worker owns Azure DevOps review feedback and completion pickup. It does not own general
 > work-item intake. GitHub PR reads, replies, and publication use their provider services; do not
@@ -4039,6 +4051,12 @@ The core interface exposes:
 - chat and operator steering where enabled.
 
 Use the selected directory as part of every diagnosis. Directory inheritance changes effective provider, policy, communication-target, workflow, and repository visibility. A root owner can see more than a project-scoped workflow maintainer; comparing their screens without noting scope is misleading.
+
+Session IDs are durable control-plane identities. Creating a session fails when that ID already
+exists rather than replacing its manifest. Supported deletion revokes the session's managed-Git
+grants and bindings and removes its legacy PR-routing entries plus matching feedback cursors/items;
+it does not delete the provider-side pull request or comments. Record those effects before
+recreating an ID during recovery.
 
 ## Authentication, authorization, and privileged unlock
 
@@ -4729,6 +4747,7 @@ To an operator, a task is the clearest answer to “who owns the next concrete p
 > - dependency tasks;
 > - case;
 > - deliverables;
+> - task kind, outcome contract, and structured completion;
 > - metadata and timestamps.
 
 Task state has a deliberate review-aware lifecycle:
@@ -4739,8 +4758,8 @@ Task state has a deliberate review-aware lifecycle:
 | <code>in_progress</code> | The owner is working or reworking it. |
 | <code>blocked</code> | Work cannot proceed without a named dependency or intervention. |
 | <code>waiting_for_review</code> | Evidence has been submitted and active review remains. |
-| <code>finished</code> | Work was marked finished but has not completed the acceptance cascade. |
-| <code>accepted</code> | Required deliverables and reviews have accepted the task outcome. |
+| <code>finished</code> | Support work was completed directly, or an outcome task recorded a validated completion. |
+| <code>accepted</code> | Required deliverables and reviews accepted the task's durable outcome. |
 | <code>rejected</code> | The task outcome was rejected under the applicable transition. |
 
 The state payload derives child IDs, subtask counts, dependency status, and blockers. A task whose dependencies are waiting or blocked is not ready merely because its own state says pending.
@@ -4748,6 +4767,26 @@ The state payload derives child IDs, subtask counts, dependency status, and bloc
 Only authorized agents may create a root task. An owner may decompose assigned work into child tasks within policy, and <code>team_create_tasks</code> provides one validated batch mutation. Batch validation happens before commit, so a bad item does not leave a half-created plan.
 
 Task graphs cannot contain parent or dependency cycles. Dependencies and parents remain within the project. A deliverable, review, or Git work context cannot silently migrate a task to another project.
+
+### Support work and outcome work
+
+Team distinguishes coordination from work that must produce a durable external result:
+
+- a <code>support</code> task is administrative, delegation, coordination, acknowledgement, or
+  other work that can finish directly without manufacturing a deliverable;
+- an <code>outcome</code> task has an <code>outcome_contract</code> naming required and forbidden
+  outcome kinds, choosing <code>all</code> or <code>any</code> matching, and optionally allowing
+  an evidence-backed no-op.
+
+An outcome deliverable records typed outcomes with durable reference IDs and optional evidence
+refs. A report alone does not satisfy the contract. Every submitted outcome for an outcome task
+must identify the durable record it represents. When the work genuinely has no new external
+effect, <code>evidenced_noop</code> completion is valid only if the contract allows it and the
+completion includes evidence refs. A <code>delivered</code> completion must point to outcomes on
+accepted current deliverables that satisfy the contract.
+
+These rules apply to both agent and operator command paths. A task also cannot be hidden by
+marking it finished while a current deliverable, review, or blocker remains blocked.
 
 ![Team task board showing telemetry-retry work by lane](assets/evander-user-manual/screenshots/team-task-board.png)
 
@@ -5536,6 +5575,7 @@ An operator will usually start with the summary, verification result, artifacts,
 > - stable artifact references;
 > - a persistent Git work-context ID and derived agent branch/commit;
 > - verification status, summary, and evidence refs;
+> - structured outcome kinds, durable reference IDs, and outcome evidence refs;
 > - supersession links;
 > - review findings and state.
 >
@@ -5548,6 +5588,23 @@ For Northstar, Imani's first telemetry retry deliverable might contain:
 - an artifact with the retry-state-machine trace;
 - verification status <code>passed</code>;
 - a concise summary of backoff, jitter, idempotency, and exhaustion behavior.
+
+## Outcome contracts prevent report-only completion
+
+Some tasks exist to coordinate or acknowledge work; others must create a durable external result.
+Team records the distinction on the task instead of relying on wording in its description.
+
+A <code>support</code> task can finish directly without inventing a deliverable. An
+<code>outcome</code> task carries an <code>outcome_contract</code> that names required and
+forbidden outcome kinds, chooses whether any or all required kinds must be present, and may
+explicitly permit an evidence-backed no-op.
+
+Deliverables for outcome tasks include typed outcomes. Each submitted outcome must carry durable
+<code>reference_ids</code>; evidence refs can support that result but cannot replace its identity.
+A review profile can require outcome kinds before the review is requested or accepted. When no new
+external effect is correct, use an <code>evidenced_noop</code> task completion with evidence refs,
+and only when the contract allows it. A prose report or evidence-only deliverable does not satisfy
+an outcome contract.
 
 ## Artifact publication boundary
 
@@ -5591,13 +5648,28 @@ The branch remains internal evidence at this stage. Review does not publish it t
 >
 > The branch is evidence inside the managed bare repository, not a canonical publication. Promotion begins only through the reviewed Git flows in Chapter 24.
 
-## Submitting and requesting review
+## Submitting, superior acceptance, and formal review
 
-The producer submits the evidence, then asks the appropriate reviewer or reviewers to assess it. A combined action can do both when that is the intended handoff. Team prevents accidental duplicate active reviews of the same deliverable by the same reviewer.
+The producer submits the evidence, then chooses the handoff the task actually requires:
+
+- <code>team_submit_deliverable</code> sends a deliverable notice to the producer's direct
+  superior. The task exposes <code>waiting_reason: superior_acceptance</code>; this is not formal
+  review work.
+- <code>team_submit_deliverable_for_review</code> submits the evidence and creates the intended
+  formal review handoff in one command.
+- <code>team_request_review</code> attaches a formal review to an existing deliverable.
+
+A top-level agent with no direct superior cannot use the superior-acceptance form. It must use
+formal review for a reviewable deliverable, or finish support/coordination work directly without
+manufacturing one. Team prevents accidental duplicate active reviews of the same deliverable by
+the same reviewer.
 
 A review may be requested by an authorized producer, supervisor, project lead, or Team manager. The assigned reviewer must be active, in the same Team, and compatible with any selected review profile.
 
-Review profiles can apply by project and role and define required and optional criteria. Archived profiles cannot be assigned to new reviews. Use profiles for repeatable policy such as:
+Review profiles can apply by project and role, define required and optional criteria, and require
+specific outcome kinds. Archived profiles cannot be assigned to new reviews. When more than one
+profile matches a reviewer, delivered outcome kinds narrow the implicit choice; an ambiguous
+remainder requires an explicit profile ID. Use profiles for repeatable policy such as:
 
 | Criterion | Requirement for telemetry retry |
 |---|---|
@@ -5610,7 +5682,10 @@ Creating the same active review for one deliverable and reviewer is replay-safe:
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
 >
-> <code>team_submit_deliverable</code> records evidence and changes the task to <code>waiting_for_review</code>. The combined <code>team_submit_deliverable_for_review</code> can submit and create the intended handoff without a redundant intermediate notice.
+> Both submission paths record evidence and change the task to
+> <code>waiting_for_review</code>. The derived <code>waiting_reason</code> distinguishes
+> <code>superior_acceptance</code> from <code>review</code>, so UI labels and manager routing do
+> not treat an ordinary superior notice as an unassigned reviewer gap.
 >
 > Workflow authors can use <code>trigger:team:deliverable-created</code> and one <code>effect:team:create-review-request</code> node per required reviewer/profile. The trigger owns its cursor and suppresses old deliverables when first enabled, avoiding an accidental historical review storm.
 
@@ -5626,7 +5701,7 @@ For a profiled review, every required criterion must be present and passed. Opti
 
 A deliverable becomes accepted only when:
 
-- all active attached reviews are accepted; and
+- all current, non-retired attached reviews are accepted; and
 - no carried review finding remains open.
 
 When every current required deliverable for the task is accepted, the task can become accepted. Project status and goals then recalculate under their own rules.
@@ -5649,6 +5724,20 @@ An accepted later review can resolve only findings owned by its same review prof
 Use <code>blocked</code> when the review process or evidence access cannot proceed, not when the candidate is known to be defective. For an ordinary deliverable review, blocked state propagates blocking state to the deliverable/task and preserves a concrete blocker.
 
 Release-review blocked behavior is stricter and retry-oriented; Chapter 24 distinguishes it from candidate rejection.
+
+A blocked non-release review can be retried with <code>team_retry_review</code>. Retry preserves
+the blocked attempt, links a new pending successor, reopens the deliverable, and resolves the
+obsolete review blocker. Do not overwrite the original decision.
+
+A rejected or blocked deliverable can be replaced by a same-task rework submission. When an
+accepted deliverable from another task is the intentional replacement, an authorized project
+lead or manager can link it explicitly with <code>team_link_deliverable_replacement</code>.
+Migration does not guess replacement lineage.
+
+An unlocked operator can retire an erroneous current non-release review through
+<code>POST /api/addons/team-addon/review-requests/{id}/retire</code>, with a reason and expected
+revision. Retirement keeps the terminal attempt in history and removes it from the current review
+set. It does not accept a deliverable that still carries open findings.
 
 ## Multi-review cascades
 
@@ -5686,10 +5775,14 @@ The distinction operators should remember is that **seeing a review is not the s
 > - <code>team_import_artifact</code> for permission-checked ordinary artifact handoffs;
 > - <code>team_request_review</code>;
 > - <code>team_decide_review</code>;
+> - <code>team_retry_review</code>;
+> - <code>team_link_deliverable_replacement</code>;
 > - delivery list/get tools;
 > - Git promotion and release tools covered in Chapter 24.
 >
-> Admin routes provide revision-checked operator create/edit/decision paths. Workflow providers add deliverable-created triggering and deterministic review-request creation. All paths reuse the same repository invariants.
+> Admin routes provide revision-checked operator create/edit/decision paths and explicit review
+> retirement. Workflow providers add deliverable-created triggering and deterministic
+> review-request creation. All paths reuse the same repository invariants.
 
 ## Decision and state failures
 
@@ -5703,6 +5796,10 @@ The distinction operators should remember is that **seeing a review is not the s
 | Second decision refused | Review decisions are immutable. | Create the appropriate successor deliverable/review; do not overwrite history. |
 | Task stays waiting after one acceptance | Another active review or open carried finding remains. | Inspect the complete current deliverable review set. |
 | Rejected task has no useful next step | Findings were vague. | Preserve evidence and create concrete, testable findings in the review decision. |
+| Outcome deliverable rejected before review | Its outcome kind is missing, forbidden, or lacks a durable reference ID. | Match the task contract and identify the actual external record; do not substitute prose or evidence-only output. |
+| Blocked review remains current after recovery | Immutable history needs an explicit successor. | Use <code>team_retry_review</code> with a recovery reason. |
+| Retirement does not accept the deliverable | Another current review or carried finding still blocks acceptance. | Inspect the current review set and resolve findings through their owning profile. |
+| Plain submission has no recipient | The producer has no direct superior for superior acceptance. | Use formal review, or finish support work directly when no deliverable is required. |
 
 ## Troubleshooting and handoff
 
@@ -5717,8 +5814,9 @@ Do not edit a terminal review or force the task state merely because one accepta
 1. Confirm the task, active dispatch, and task-specific Git context.
 2. Run proportionate verification and record honest status.
 3. Publish artifacts from safe paths or attach existing stable refs.
-4. Submit one deliverable with a stable request ID.
-5. Request the required reviewers/profiles, or use the combined submission command.
+4. For an outcome task, record the required outcome kinds and durable reference IDs.
+5. Choose superior acceptance or formal review deliberately; use the combined submission command
+   when formal review is already known.
 6. Mark related inbox items handled atomically.
 
 ### Reviewer
@@ -5734,14 +5832,16 @@ Do not edit a terminal review or force the task state merely because one accepta
 1. In **Delivery**, trace task → current deliverable → all active reviews → findings.
 2. Match each review to its profile, reviewer, evidence refs, and reviewed commit.
 3. When a cascade looks stuck, inspect open findings before changing task state.
-4. Reconcile orphaned published artifacts deliberately.
-5. Do not “fix” history by editing terminal review records.
+4. Retry, replace, or retire through the explicit recovery surface; do not rewrite a terminal
+   attempt.
+5. Reconcile orphaned published artifacts deliberately.
 
 ## Source trail
 
-- <code>src/evander_team_addon/models.py</code> — deliverable, verification, review, profile, criterion, finding, and supersession models.
+- <code>src/evander_team_addon/models.py</code> — task outcome contracts/completions plus deliverable, verification, review, profile, criterion, finding, and supersession models.
 - <code>src/evander_team_addon/services/commands/deliverable_submission_commands.py</code> and <code>review_commands.py</code> — submission, request authority, deduplication, and immutable decisions.
-- <code>src/evander_team_addon/services/domain/deliverables.py</code>, <code>review.py</code>, and <code>git_work_contexts.py</code> — acceptance cascades, findings, artifact/Git evidence, and context validation.
+- <code>src/evander_team_addon/services/commands/task_update_commands.py</code> — outcome-completion and blocked-source guards.
+- <code>src/evander_team_addon/services/domain/deliverables.py</code>, <code>review.py</code>, and <code>git_work_contexts.py</code> — outcome validation, acceptance cascades, retries, findings, artifact/Git evidence, and context validation.
 - <code>src/evander_team_addon/providers.py</code> — deliverable trigger, review-request effect, artifact import, and wake prompt projection.
 - <code>src/evander_team_addon/mcp.py</code> and <code>api.py</code> — grouped delivery tools and operator routes.
 - <code>docs/addons.md</code> — artifact publication, review profiles, rework findings, and release handoff.
@@ -7363,7 +7463,8 @@ UI state is a projection. For a disputed operational fact, prefer the Team Admin
 | Execution abstraction | `src/evander/execution/` |
 | VM lifecycle | `src/evander/vm/` plus `scripts/*_vm.sh` |
 | Container worker | `src/evander/worker_daemon.py`, `ansible/worker.yml` |
-| Managed Git | `src/evander/admin/services/managed_git_service.py` |
+| Managed Git | `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, `managed_git_worktree_service.py`, and `managed_git_common.py` |
+| Code consultations | `src/evander/code_consultation_service.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` |
 | Relays | `src/evander/relays/` |
 | Communications | `src/evander/messaging/` |
 | Core providers | `src/evander/providers/` |
