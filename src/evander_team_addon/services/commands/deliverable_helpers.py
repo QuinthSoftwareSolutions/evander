@@ -620,6 +620,9 @@ def _apply_command_deliverable_submission(
         verification=verification,
         outcomes=outcomes,
         state=TeamRecordState.PENDING,
+        acceptance_recipient_agent_id=(
+            agent.reports_to_agent_id if not suppress_superior_notice else None
+        ),
         supersedes_deliverable_id=supersedes_deliverable_id,
         carried_findings=(
             [
@@ -646,9 +649,15 @@ def _apply_command_deliverable_submission(
     if not suppress_superior_notice and agent.reports_to_agent_id is not None:
         inbox_id = f"inbox-{uuid4().hex}"
         payload = {
+            "kind": "superior_acceptance_requested",
             "deliverable_id": new_deliverable.id,
+            "task_id": task.id,
+            "producer_agent_id": agent.id,
+            "acceptance_recipient_agent_id": agent.reports_to_agent_id,
             "summary": new_deliverable.summary,
             "artifact_refs": list(new_deliverable.artifact_refs),
+            "available_decisions": ["accepted", "rejected"],
+            "available_alternatives": ["request_review", "report_blocker"],
         }
         verification_payload = _deliverable_verification_payload(new_deliverable)
         if verification_payload is not None:

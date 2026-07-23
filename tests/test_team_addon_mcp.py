@@ -24,6 +24,7 @@ from evander_team_addon.mcp import (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -353,10 +354,16 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert set(MCP_TOOL_NAMES).issubset(visible)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
+    decide_deliverable_description = (
+        tools[TEAM_DECIDE_DELIVERABLE_TOOL].description or ""
+    )
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
+    assert "Only the superior recorded on that handoff" in decide_deliverable_description
+    assert "rejection requires a concrete reason" in decide_deliverable_description
+    assert "team_decide_review" in decide_deliverable_description
     assert "not required merely because team_submit_deliverable included git_refs" in (
         publish_description
     )

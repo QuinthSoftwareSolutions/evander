@@ -26,6 +26,7 @@ from evander_team_addon.mcp import (
     ORDINARY_TEAM_MCP_TOOL_NAMES,
     READ_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
@@ -1301,6 +1302,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "do not manufacture a routing report deliverable" in guidance
     assert "needs acceptance by your direct superior" in guidance
     assert "This always moves the task to waiting_for_review" in guidance
+    assert "use team_decide_deliverable to accept or reject it" in guidance
+    assert "Rejection requires a concrete reason" in guidance
     assert "Do not accept or reject someone else's task" in guidance
     assert "Use team_decide_review only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
@@ -2590,6 +2593,58 @@ def test_build_prompt_allows_root_tasks_for_create_root_task_permission(
     assert "effective permissions include create_root_task" in prompt
     assert "You may create top-level tasks with team_create_task or team_create_tasks" in prompt
     assert "You may NOT create top-level tasks" not in prompt
+
+
+def test_build_prompt_instructs_superior_to_decide_direct_deliverable_notice(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state = repo.read()
+    notice = AgentInboxItem(
+        id="inbox-direct-deliverable",
+        recipient_agent_id="lead",
+        sender_agent_id="backend",
+        task_id="task",
+        item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+        response_requested=True,
+        priority=TeamInboxPriority.LOW,
+        payload={
+            "kind": "superior_acceptance_requested",
+            "deliverable_id": "deliverable-direct",
+            "task_id": "task",
+            "summary": "Backend work is ready.",
+            "available_decisions": ["accepted", "rejected"],
+            "available_alternatives": ["request_review", "report_blocker"],
+        },
+    )
+    lease = {
+        "agent": state.agents["lead"].model_dump(mode="json"),
+        "reason": "inbox",
+        "superior_agent_id": state.agents["lead"].reports_to_agent_id,
+        "subordinate_agent_ids": ["backend"],
+        "subordinates": [state.agents["backend"].model_dump(mode="json")],
+        "tasks": [],
+        "projects": [state.projects["project"].model_dump(mode="json")],
+        "inbox": [notice.model_dump(mode="json")],
+        "release_packages": [],
+    }
+
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+
+    assert "Superior deliverable decisions for this wake:" in prompt
+    assert (
+        "deliverable-direct (notice inbox-direct-deliverable, task task)" in prompt
+    )
+    assert TEAM_DECIDE_DELIVERABLE_TOOL in prompt
+    assert "decision accepted or rejected" in prompt
+    assert "A rejection must state a concrete reason" in prompt
+    assert "If specialist review is required" in prompt
+    assert "If evidence or a dependency prevents any decision" in prompt
+    assert "do not call team_decide_deliverable" in prompt
+    payload = context["inbox"][0]["payload"]
+    assert payload["available_decisions"] == ["accepted", "rejected"]
+    assert payload["available_alternatives"] == ["request_review", "report_blocker"]
 
 
 def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:

@@ -955,6 +955,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_revoke_stand_down`
 - `team_submit_deliverable`
 - `team_submit_deliverable_for_review`
+- `team_decide_deliverable`
 - `team_import_artifact`
 - `team_request_review`
 - `team_decide_review`
@@ -1032,8 +1033,17 @@ artifact as an orphan until it is linked by a replay or cleaned up intentionally
 `team_submit_deliverable` is a superior-acceptance handoff: it requires the
 producer to have a direct superior, sends that superior a deliverable notice,
 and exposes `waiting_reason: superior_acceptance`. It does not create formal
-review work. Use `team_submit_deliverable_for_review` or `team_request_review`
-when an assigned reviewer and review policy must decide the result. A top-level
+review work. The notice records the receiving superior, who uses
+`team_decide_deliverable` to accept or reject the exact deliverable while
+atomically handling the notice. Acceptance can cascade to task acceptance when
+all active deliverables are accepted. Rejection requires a concrete reason,
+marks the deliverable rejected, returns the task to `in_progress`, and creates
+an actionable rework item for the owner.
+
+The receiving superior can instead use `team_request_review` when specialist or
+policy review is needed, or `team_report_blocker` when evidence or a dependency
+prevents a decision. Once formal review is attached, `team_decide_deliverable`
+cannot bypass it; assigned reviewers must use `team_decide_review`. A top-level
 agent with no direct superior must use formal review for a deliverable, or use
 `team_update_task state=finished` for support/coordination work that produces no
 reviewable result.

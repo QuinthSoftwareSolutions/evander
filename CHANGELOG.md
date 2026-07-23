@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-23 - Superior Deliverable Decisions
+
+- Added `team_decide_deliverable` so the direct superior recorded on a plain deliverable handoff
+  can accept it or reject it with a concrete reason, atomically handle the notice, and preserve
+  the decision in Team state.
+- Kept formal review authoritative once attached, returned rejected handoffs to the task owner as
+  actionable rework, and added wake-specific guidance for accepting, rejecting, requesting
+  specialist review, or reporting a blocker.
+- Preserved pending pre-upgrade handoffs by deriving their recorded superior from the original
+  deliverable notice when the new recipient field has not yet been populated.
+
 ## 2026-07-23 - Branch Documentation Audit
 
 - Aligned the Team operator guide and technical manual with outcome contracts, superior acceptance,

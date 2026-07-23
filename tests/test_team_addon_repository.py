@@ -1960,11 +1960,212 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     ]
     assert len(notices) == 1
     assert notices[0].recipient_agent_id == "lead"
+    assert state.deliverables["deliverable-1"].acceptance_recipient_agent_id == "lead"
+    assert notices[0].payload["kind"] == "superior_acceptance_requested"
+    assert notices[0].payload["available_decisions"] == ["accepted", "rejected"]
+    assert notices[0].payload["available_alternatives"] == [
+        "request_review",
+        "report_blocker",
+    ]
     assert notices[0].payload["verification"] == {
         "status": "not_run",
         "summary": "pytest is unavailable in this VM.",
         "evidence_refs": [],
     }
+
+
+def test_superior_accepts_direct_deliverable_and_handles_notice_atomically(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-accept",
+        task_id="task",
+        summary="Ready for direct acceptance.",
+        artifact_refs=["artifact-space:/teams/team/projects/project/deliverables/accept"],
+        request_id="request-submit-accept",
+    )
+    notice_id = submitted["created_inbox_item_ids"][0]
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept")
+
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-accept",
+        decision="accepted",
+        reason="Evidence and verification are sufficient.",
+        request_id="request-accept-deliverable",
+        handled_inbox_item_ids=[notice_id],
+    )
+    _state, replay = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-accept",
+        decision="accepted",
+        reason="Evidence and verification are sufficient.",
+        request_id="request-accept-deliverable",
+        handled_inbox_item_ids=[notice_id],
+    )
+
+    assert replay == accepted
+    assert accepted["success"] is True
+    assert accepted["decision"] == "accepted"
+    assert accepted["task_accepted"] is True
+    assert state.inbox[notice_id].state == TeamInboxItemState.HANDLED
+    assert state.deliverables["deliverable-accept"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+    decision = state.deliverables["deliverable-accept"].acceptance_decision
+    assert decision is not None
+    assert decision.decision == "accepted"
+    assert decision.decided_by_agent_id == "lead"
+    persisted = repo.read().deliverables["deliverable-accept"]
+    assert persisted.acceptance_recipient_agent_id == "lead"
+    assert persisted.acceptance_decision == decision
+
+
+def test_superior_rejects_direct_deliverable_with_actionable_rework(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-reject",
+        task_id="task",
+        summary="Ready for inspection.",
+        artifact_refs=["artifact-space:/teams/team/projects/project/deliverables/reject"],
+        request_id="request-submit-reject",
+    )
+    notice_id = submitted["created_inbox_item_ids"][0]
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-reject")
+
+    with pytest.raises(ValueError, match="reason is required"):
+        _command_service(repo).decide_deliverable_command(
+            session_id="session-lead",
+            deliverable_id="deliverable-reject",
+            decision="rejected",
+            request_id="request-reject-without-reason",
+        )
+
+    state, rejected = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-reject",
+        decision="rejected",
+        reason="The migration evidence is missing.",
+        request_id="request-reject-deliverable",
+        handled_inbox_item_ids=[notice_id],
+    )
+
+    assert rejected["success"] is True
+    assert rejected["created_inbox_item_ids"]
+    assert len(rejected["created_inbox_item_ids"]) == 1
+    assert rejected["events"][0]["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert rejected["events"][0]["payload"]["agent_id"] == "backend"
+    assert rejected["outbox_record_ids"]
+    assert state.inbox[notice_id].state == TeamInboxItemState.HANDLED
+    assert state.deliverables["deliverable-reject"].state == TeamRecordState.REJECTED
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    decision = state.deliverables["deliverable-reject"].acceptance_decision
+    assert decision is not None
+    assert decision.decision == "rejected"
+    assert decision.reason == "The migration evidence is missing."
+    rework = state.inbox[rejected["created_inbox_item_ids"][0]]
+    assert rework.recipient_agent_id == "backend"
+    assert rework.payload["kind"] == "superior_acceptance_rejected"
+    assert rework.payload["supersedes_deliverable_id"] == "deliverable-reject"
+    assert rework.payload["reason"] == "The migration evidence is missing."
+
+
+def test_superior_decision_migrates_legacy_notice_recipient(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-legacy",
+        task_id="task",
+        summary="Submitted before the recipient field existed.",
+        artifact_refs=["artifact-space:/legacy"],
+        request_id="request-submit-legacy",
+    )
+    notice_id = submitted["created_inbox_item_ids"][0]
+
+    def _make_legacy(state):
+        state.deliverables["deliverable-legacy"].acceptance_recipient_agent_id = None
+        notice = state.inbox[notice_id]
+        notice.payload.pop("kind", None)
+        notice.payload.pop("available_decisions", None)
+        notice.payload.pop("available_alternatives", None)
+
+    repo.update(_make_legacy)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept-legacy")
+
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-legacy",
+        decision="accepted",
+        request_id="request-accept-legacy",
+        handled_inbox_item_ids=[notice_id],
+    )
+
+    assert accepted["success"] is True
+    assert state.deliverables["deliverable-legacy"].acceptance_recipient_agent_id == "lead"
+    assert state.deliverables["deliverable-legacy"].acceptance_decision is not None
+
+
+def test_direct_deliverable_decision_rejects_wrong_superior_and_formal_review_path(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-review",
+        task_id="task",
+        summary="Ready for routing.",
+        artifact_refs=["artifact-space:/teams/team/projects/project/deliverables/review"],
+        request_id="request-submit-review",
+    )
+    notice_id = submitted["created_inbox_item_ids"][0]
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-manager")
+    _state, forbidden = _command_service(repo).decide_deliverable_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-review",
+        decision="accepted",
+        request_id="request-manager-accept",
+    )
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "deliverable_decision_forbidden"
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-route-review")
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        id="review-direct-handoff",
+        deliverable_id="deliverable-review",
+        reviewer_agent_id="worker",
+        instructions="Check the handoff evidence.",
+        request_id="request-route-review",
+        handled_inbox_item_ids=[notice_id],
+    )
+    assert requested["success"] is True
+    assert state.inbox[notice_id].state == TeamInboxItemState.HANDLED
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-direct-after-review")
+    unchanged, blocked = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-review",
+        decision="accepted",
+        request_id="request-direct-after-review",
+    )
+    assert blocked["success"] is False
+    assert blocked["errors"][0]["code"] == "formal_review_required"
+    assert unchanged.deliverables["deliverable-review"].state == TeamRecordState.PENDING
+    assert unchanged.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
 def test_submit_deliverable_command_requires_direct_superior_before_publication(
@@ -2165,6 +2366,7 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     assert result["deliverable_id"] == "deliverable-1"
     assert result["created_review_request_ids"] == ["review-1"]
     assert result["waiting_reason"] == "review"
+    assert state.deliverables["deliverable-1"].acceptance_recipient_agent_id is None
     assert [
         item.id
         for item in state.inbox.values()

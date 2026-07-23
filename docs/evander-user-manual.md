@@ -5552,11 +5552,12 @@ Suppose the implementation agent finishes Northstar's telemetry-retry change. �
 
 A **review request** points to that deliverable rather than to the task in general. The reviewer can accept it, reject it with findings, or say that the review is blocked because the evidence or process is unavailable. If the producer corrects a defect, the correction becomes a new deliverable. The rejected attempt remains visible, so a later reader can understand what changed and why.
 
-This gives an operator a simple path to follow:
+This gives an operator two explicit decision paths to follow:
 
 ```text
-task -> submitted deliverable -> one or more reviews
-     -> accepted result, blocked review, or a new rework deliverable
+task -> submitted deliverable
+     -> direct superior -> accepted result or a new rework deliverable
+     -> formal review(s) -> accepted result, blocked review, or a new rework deliverable
 ```
 
 The key question is always **“Which exact deliverable and code version did this decision cover?”**
@@ -5576,6 +5577,7 @@ An operator will usually start with the summary, verification result, artifacts,
 > - a persistent Git work-context ID and derived agent branch/commit;
 > - verification status, summary, and evidence refs;
 > - structured outcome kinds, durable reference IDs, and outcome evidence refs;
+> - the direct-acceptance recipient and that superior's immutable decision, when applicable;
 > - supersession links;
 > - review findings and state.
 >
@@ -5654,7 +5656,8 @@ The producer submits the evidence, then chooses the handoff the task actually re
 
 - <code>team_submit_deliverable</code> sends a deliverable notice to the producer's direct
   superior. The task exposes <code>waiting_reason: superior_acceptance</code>; this is not formal
-  review work.
+  review work. That recorded recipient uses <code>team_decide_deliverable</code> to accept or
+  reject the exact handoff and handles the notice in the same command.
 - <code>team_submit_deliverable_for_review</code> submits the evidence and creates the intended
   formal review handoff in one command.
 - <code>team_request_review</code> attaches a formal review to an existing deliverable.
@@ -5663,6 +5666,13 @@ A top-level agent with no direct superior cannot use the superior-acceptance for
 formal review for a reviewable deliverable, or finish support/coordination work directly without
 manufacturing one. Team prevents accidental duplicate active reviews of the same deliverable by
 the same reviewer.
+
+For a direct handoff, acceptance can cascade to task acceptance once every active deliverable is
+accepted. Rejection requires a concrete reason, returns the task to <code>in_progress</code>, and
+queues actionable rework for the owner. The superior can request specialist review instead, or
+report a blocker when evidence or a dependency prevents a decision. Once a formal review is
+attached, the direct decision command cannot bypass it; the assigned reviewer path becomes
+authoritative.
 
 A review may be requested by an authorized producer, supervisor, project lead, or Team manager. The assigned reviewer must be active, in the same Team, and compatible with any selected review profile.
 
@@ -5772,6 +5782,7 @@ The distinction operators should remember is that **seeing a review is not the s
 >
 > - <code>team_submit_deliverable</code>;
 > - <code>team_submit_deliverable_for_review</code>;
+> - <code>team_decide_deliverable</code> for the superior recorded on a direct handoff;
 > - <code>team_import_artifact</code> for permission-checked ordinary artifact handoffs;
 > - <code>team_request_review</code>;
 > - <code>team_decide_review</code>;

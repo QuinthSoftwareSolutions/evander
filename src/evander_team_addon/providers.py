@@ -82,8 +82,10 @@ from .mcp import (
     TEAM_CREATE_CASE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_GET_DELIVERABLE_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
@@ -187,7 +189,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 18
+TEAM_AGENT_GUIDANCE_VERSION = 19
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -4626,6 +4628,13 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "to waiting_for_review and sends the superior a deliverable notice. Use "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} when the deliverable should "
         "immediately be handed to a reviewer.\n"
+        f"- When a deliverable_notice hands a direct subordinate's deliverable to "
+        f"you for superior acceptance, use {TEAM_DECIDE_DELIVERABLE_TOOL} to accept "
+        "or reject it and handle that notice in the same call. Rejection requires "
+        f"a concrete reason. Use {TEAM_REQUEST_REVIEW_TOOL} instead when specialist "
+        f"review is needed, or {TEAM_REPORT_BLOCKER_TOOL} when evidence or a "
+        "dependency prevents a decision. Do not use the direct decision tool once "
+        "formal review requests exist.\n"
         "- For non-Git deliverables, stage files under /artifacts and pass paths "
         f"relative to /artifacts to {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}. The Team runtime publishes "
@@ -4885,6 +4894,7 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         if context.get("blockers")
         else ""
     )
+    superior_acceptance_section = _superior_acceptance_guidance(context)
     context_json = json.dumps(context, sort_keys=True, indent=2)
     return (
         "Continue your assigned team-agent work.\n"
@@ -4911,6 +4921,7 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         f"{git_release_sequence_section}"
         f"{manager_fallback_section}"
         f"{blocker_section}"
+        f"{superior_acceptance_section}"
         f"Team context JSON:\n{context_json}\n\n"
         "MCP action surface:\n"
         "- Call the appropriate Team MCP tool for each state change, handoff, "
@@ -4919,6 +4930,54 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         "before finishing.\n"
         f"- Use {TEAM_MARK_INBOX_HANDLED_TOOL} for inbox items that are handled "
         "without needing a reply.\n"
+    )
+
+
+def _superior_acceptance_guidance(context: Mapping[str, Any]) -> str:
+    handoffs: list[tuple[str, str, str | None]] = []
+    for item in context.get("inbox") or []:
+        if not isinstance(item, Mapping) or item.get("item_type") != "deliverable_notice":
+            continue
+        payload = item.get("payload")
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("kind") not in {None, "superior_acceptance_requested"}
+        ):
+            continue
+        inbox_item_id = _optional_text(item.get("id"))
+        deliverable_id = _optional_text(payload.get("deliverable_id"))
+        if inbox_item_id is None or deliverable_id is None:
+            continue
+        handoffs.append(
+            (
+                deliverable_id,
+                inbox_item_id,
+                _optional_text(item.get("task_id") or payload.get("task_id")),
+            )
+        )
+    if not handoffs:
+        return ""
+    labels = ", ".join(
+        (
+            f"{deliverable_id} (notice {inbox_item_id}, task {task_id})"
+            if task_id is not None
+            else f"{deliverable_id} (notice {inbox_item_id})"
+        )
+        for deliverable_id, inbox_item_id, task_id in handoffs
+    )
+    return (
+        "Superior deliverable decisions for this wake:\n"
+        f"- Pending direct handoffs: {labels}.\n"
+        f"- Inspect evidence with {TEAM_GET_DELIVERABLE_TOOL} when needed, then call "
+        f"{TEAM_DECIDE_DELIVERABLE_TOOL} with decision accepted or rejected. Include "
+        "the matching notice id in handled_inbox_item_ids so the decision and inbox "
+        "handling are atomic. A rejection must state a concrete reason.\n"
+        f"- If specialist review is required, call {TEAM_REQUEST_REVIEW_TOOL} and "
+        "handle the notice in that call. If evidence or a dependency prevents any "
+        f"decision, call {TEAM_REPORT_BLOCKER_TOOL} and handle the notice there.\n"
+        f"- If formal review requests already exist, do not call "
+        f"{TEAM_DECIDE_DELIVERABLE_TOOL}; handle the stale direct notice and follow "
+        f"the assigned review path with {TEAM_DECIDE_REVIEW_TOOL}.\n\n"
     )
 
 

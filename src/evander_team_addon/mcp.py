@@ -6,7 +6,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -93,6 +93,7 @@ TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
 TEAM_REVOKE_STAND_DOWN_TOOL = "team_revoke_stand_down"
 TEAM_SUBMIT_DELIVERABLE_TOOL = "team_submit_deliverable"
 TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL = "team_submit_deliverable_for_review"
+TEAM_DECIDE_DELIVERABLE_TOOL = "team_decide_deliverable"
 TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL = "team_link_deliverable_replacement"
 TEAM_REQUEST_REVIEW_TOOL = "team_request_review"
 TEAM_DECIDE_REVIEW_TOOL = "team_decide_review"
@@ -155,6 +156,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
@@ -222,6 +224,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
@@ -266,6 +269,7 @@ MCP_TOOL_NAMES = (
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
@@ -285,6 +289,10 @@ MCP_TOOL_NAMES = (
     *READ_TEAM_MCP_TOOL_NAMES,
 )
 _MCP_TOOL_CATALOG_DESCRIPTIONS = {
+    TEAM_DECIDE_DELIVERABLE_TOOL: (
+        "Accept or reject a direct deliverable handoff as its recorded superior; "
+        "formal review decisions remain separate."
+    ),
     TEAM_REPLY_TO_CHAT_TOOL: (
         "Reply to the specific human operator message that started the current Team Chat "
         "dispatch. Available only while that dispatch is active; use "
@@ -1535,6 +1543,50 @@ def _register_slice7_tools(
             "context. Call team_publish_review_branch separately only when a "
             "durable review branch is needed. Requires task_id, summary, and "
             "request_id."
+        ),
+    )
+
+    def team_decide_deliverable(
+        deliverable_id: str,
+        decision: Literal["accepted", "rejected"],
+        request_id: str,
+        reason: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_DECIDE_DELIVERABLE_TOOL,
+        )
+        try:
+            _state, result = deliverable_commands.decide_deliverable_command(
+                session_id=caller.session_id,
+                deliverable_id=deliverable_id,
+                decision=decision,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_decide_deliverable,
+        name=TEAM_DECIDE_DELIVERABLE_TOOL,
+        description=(
+            "Accept or reject a deliverable handed directly to the caller for "
+            "superior acceptance. Only the superior recorded on that handoff can "
+            "decide it. Acceptance can complete the task; rejection requires a "
+            "concrete reason and returns the task to its owner for rework. Include "
+            "the matching deliverable_notice id in handled_inbox_item_ids. Do not "
+            "use this for a deliverable with formal review requests; use "
+            "team_decide_review for an assigned review instead. Requires "
+            "deliverable_id, decision, and request_id."
         ),
     )
 

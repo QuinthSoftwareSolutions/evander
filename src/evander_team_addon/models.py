@@ -1160,6 +1160,29 @@ class DeliverableOutcome(TeamModel):
         return self
 
 
+class DeliverableAcceptanceDecision(TeamModel):
+    decision: Literal["accepted", "rejected"]
+    decided_by_agent_id: str
+    decided_at: datetime = Field(default_factory=utc_now)
+    reason: str | None = None
+
+    @field_validator("decided_by_agent_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _rejection_requires_reason(self) -> "DeliverableAcceptanceDecision":
+        if self.decision == "rejected" and self.reason is None:
+            raise ValueError("rejected deliverable decisions require a reason")
+        return self
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -1173,6 +1196,8 @@ class Deliverable(TeamModel):
     outcomes: list[DeliverableOutcome] = Field(default_factory=list)
     carried_findings: list[ReviewFindingRecord] = Field(default_factory=list)
     review_manifest: DeliverableReviewManifest | None = None
+    acceptance_recipient_agent_id: str | None = None
+    acceptance_decision: DeliverableAcceptanceDecision | None = None
     supersedes_deliverable_id: str | None = None
     superseded_by_deliverable_id: str | None = None
     supersession_reason: str | None = None
@@ -1190,6 +1215,7 @@ class Deliverable(TeamModel):
         "superseded_by_deliverable_id",
         "supersession_reason",
         "superseded_by_actor",
+        "acceptance_recipient_agent_id",
         mode="before",
     )
     @classmethod
@@ -1200,6 +1226,25 @@ class Deliverable(TeamModel):
     @classmethod
     def _text_lists(cls, value: object, info) -> list[str]:
         return _unique_text_list(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_acceptance_decision(self) -> "Deliverable":
+        decision = self.acceptance_decision
+        if decision is None:
+            return self
+        if self.acceptance_recipient_agent_id is None:
+            raise ValueError(
+                "deliverable acceptance decisions require an acceptance recipient"
+            )
+        if decision.decided_by_agent_id != self.acceptance_recipient_agent_id:
+            raise ValueError(
+                "deliverable acceptance decision must be made by its acceptance recipient"
+            )
+        if self.state.value != decision.decision:
+            raise ValueError(
+                "deliverable state must match its acceptance decision"
+            )
+        return self
 
 
 class GitWorkContext(TeamModel):

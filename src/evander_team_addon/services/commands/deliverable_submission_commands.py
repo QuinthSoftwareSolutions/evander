@@ -32,26 +32,36 @@ from .types import (
 from .validators import _require_command_agent
 from ...models import (
     Deliverable,
+    DeliverableAcceptanceDecision,
+    TeamBlockerState,
     TeamBlockerSourceKind,
+    TeamInboxItemType,
+    TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
     _unique_text_list,
+    deliverable_requires_formal_review,
     task_payload_with_derived,
 )
 from ..domain.common import (
     _optional_text,
     _required_text,
+    _set_task_state,
 )
 from ..domain.agent_access import _is_project_lead_for, _is_team_manager
 from ..domain.blockers import resolve_active_blockers_for_source
 from ..domain.deliverables import (
+    _accept_deliverable_and_maybe_task,
     _deliverable_submission_next_action_hints,
+    _validate_deliverable_outcomes_against_task_contract,
 )
 from ..domain.project_status import _recalculate_project_status
 from ..domain.review import (
     _apply_review_request,
     _review_request_was_created,
 )
+from ..domain.review_handoff import queue_actionable_inbox_item
 from ..domain.work_due import (
     _mark_agent_work_due,
 )
@@ -186,6 +196,266 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     "progress_made": True,
                 },
                 created_domain_ids=[deliverable_id, *created_inbox_ids],
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
+    def decide_deliverable_command(
+        self,
+        *,
+        session_id: str,
+        deliverable_id: str,
+        decision: str,
+        request_id: str,
+        reason: str | None = None,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_decision = _required_text(decision, "decision").lower()
+        if normalized_decision not in {"accepted", "rejected"}:
+            raise ValueError("decision must be accepted or rejected")
+        normalized_reason = _optional_text(reason)
+        if normalized_decision == "rejected" and normalized_reason is None:
+            raise ValueError("reason is required when decision is rejected")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        normalized_payload = {
+            "deliverable_id": _required_text(deliverable_id, "deliverable_id"),
+            "decision": normalized_decision,
+            "reason": normalized_reason,
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": _optional_text(correlation_id),
+            "causation_id": _optional_text(causation_id),
+        }
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_decide_deliverable",
+            request_id=normalized_request_id,
+            correlation_id=normalized_payload["correlation_id"],
+            causation_id=normalized_payload["causation_id"],
+            progress_classification="deliverable_decision",
+        )
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, "team_decide_deliverable")
+            deliverable = state.deliverables.get(normalized_payload["deliverable_id"])
+            if deliverable is None:
+                raise TeamCommandValidationError(
+                    code="deliverable_not_found",
+                    message=(
+                        f"deliverable {normalized_payload['deliverable_id']} does not exist"
+                    ),
+                )
+            task = state.tasks.get(deliverable.task_id)
+            if task is None:
+                raise TeamCommandValidationError(
+                    code="deliverable_task_not_found",
+                    message=f"deliverable {deliverable.id} references a missing task",
+                )
+            acceptance_recipient_agent_id = deliverable.acceptance_recipient_agent_id
+            if acceptance_recipient_agent_id is None:
+                legacy_notice_recipients = {
+                    item.recipient_agent_id
+                    for item in state.inbox.values()
+                    if item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+                    and item.payload.get("deliverable_id") == deliverable.id
+                }
+                if len(legacy_notice_recipients) == 1:
+                    acceptance_recipient_agent_id = next(
+                        iter(legacy_notice_recipients)
+                    )
+            if acceptance_recipient_agent_id != agent.id:
+                raise TeamCommandValidationError(
+                    code="deliverable_decision_forbidden",
+                    message=(
+                        f"deliverable {deliverable.id} was handed to "
+                        f"{acceptance_recipient_agent_id or 'no superior'}; "
+                        f"agent {agent.id} cannot decide it"
+                    ),
+                    correction_context={
+                        "acceptance_recipient_agent_id": acceptance_recipient_agent_id,
+                    },
+                )
+            if deliverable.acceptance_decision is not None:
+                raise TeamCommandValidationError(
+                    code="deliverable_already_decided",
+                    message=f"deliverable {deliverable.id} already has a decision",
+                    correction_context={
+                        "decision": deliverable.acceptance_decision.decision,
+                        "decided_by_agent_id": (
+                            deliverable.acceptance_decision.decided_by_agent_id
+                        ),
+                    },
+                )
+            if deliverable.superseded_by_deliverable_id is not None:
+                raise TeamCommandValidationError(
+                    code="deliverable_superseded",
+                    message=(
+                        f"deliverable {deliverable.id} was superseded by "
+                        f"{deliverable.superseded_by_deliverable_id}"
+                    ),
+                )
+            if deliverable_requires_formal_review(deliverable):
+                raise TeamCommandValidationError(
+                    code="formal_review_required",
+                    message=(
+                        f"deliverable {deliverable.id} has a formal review path; "
+                        "decide its assigned review requests instead"
+                    ),
+                    correction_context={
+                        "review_request_ids": list(deliverable.review_request_ids),
+                        "recommended_tool": "team_decide_review",
+                    },
+                )
+            waiting_reason = task_payload_with_derived(state, task)["waiting_reason"]
+            if (
+                deliverable.state != TeamRecordState.PENDING
+                or task.state != TeamTaskState.WAITING_FOR_REVIEW
+                or waiting_reason != "superior_acceptance"
+            ):
+                raise TeamCommandValidationError(
+                    code="deliverable_not_awaiting_superior",
+                    message=(
+                        f"deliverable {deliverable.id} is not awaiting direct "
+                        "superior acceptance"
+                    ),
+                    correction_context={
+                        "deliverable_state": deliverable.state.value,
+                        "task_state": task.state.value,
+                        "waiting_reason": waiting_reason,
+                    },
+                )
+
+            now = utc_now()
+            if deliverable.acceptance_recipient_agent_id is None:
+                deliverable.acceptance_recipient_agent_id = acceptance_recipient_agent_id
+            created_inbox_ids: list[str] = []
+            side_effects: dict[str, Any] = {"created_inbox_item_ids": created_inbox_ids}
+            if normalized_decision == "accepted":
+                active_blocker_ids = sorted(
+                    blocker.id
+                    for blocker in state.blockers.values()
+                    if blocker.state == TeamBlockerState.OPEN
+                    and (
+                        blocker.task_id == task.id
+                        or (
+                            blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+                            and blocker.source_id == deliverable.id
+                        )
+                    )
+                )
+                if active_blocker_ids:
+                    raise TeamCommandValidationError(
+                        code="deliverable_acceptance_blocked",
+                        message=(
+                            f"deliverable {deliverable.id} cannot be accepted while "
+                            "its task has active blockers"
+                        ),
+                        correction_context={"active_blocker_ids": active_blocker_ids},
+                    )
+                try:
+                    _validate_deliverable_outcomes_against_task_contract(
+                        task,
+                        deliverable.outcomes,
+                    )
+                except ValueError as exc:
+                    raise TeamCommandValidationError(
+                        code="deliverable_outcome_contract_failed",
+                        message=str(exc),
+                        correction_context={
+                            "deliverable_id": deliverable.id,
+                            "task_id": task.id,
+                        },
+                    ) from None
+                task_accepted = _accept_deliverable_and_maybe_task(
+                    state,
+                    deliverable=deliverable,
+                    task=task,
+                    now=now,
+                )
+            else:
+                deliverable.state = TeamRecordState.REJECTED
+                _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+                task.updated_at = now
+                task_accepted = False
+                queue_actionable_inbox_item(
+                    state,
+                    recipient_agent_id=task.owner_agent_id,
+                    sender_agent_id=agent.id,
+                    task_id=task.id,
+                    priority=TeamInboxPriority.NORMAL,
+                    payload={
+                        "kind": "superior_acceptance_rejected",
+                        "deliverable_id": deliverable.id,
+                        "supersedes_deliverable_id": deliverable.id,
+                        "task_id": task.id,
+                        "summary": "Superior rejected the deliverable; revise and resubmit.",
+                        "reason": normalized_reason,
+                        "artifact_refs": list(deliverable.artifact_refs),
+                    },
+                    result=side_effects,
+                    now=now,
+                )
+                resolve_active_blockers_for_source(
+                    state,
+                    source_kind=TeamBlockerSourceKind.DELIVERABLE,
+                    source_id=deliverable.id,
+                    actor_agent_id=agent.id,
+                    dispatch_id=resolved.dispatch_id,
+                    note="Superior rejected the deliverable for rework.",
+                    reference_ids=[deliverable.id],
+                    result=side_effects,
+                    now=now,
+                )
+
+            deliverable.acceptance_decision = DeliverableAcceptanceDecision(
+                decision=normalized_decision,
+                decided_by_agent_id=agent.id,
+                decided_at=now,
+                reason=normalized_reason,
+            )
+            _recalculate_project_status(state, task.project_id)
+            return TeamCommandApplyResult(
+                response_payload={
+                    "deliverable_id": deliverable.id,
+                    "decision": normalized_decision,
+                    "reason": normalized_reason,
+                    "deliverable_state": deliverable.state.value,
+                    "task_id": task.id,
+                    "task_state": task.state.value,
+                    "task_accepted": task_accepted,
+                    "created_inbox_item_ids": list(
+                        side_effects.get("created_inbox_item_ids") or []
+                    ),
+                    "events": list(side_effects.get("events") or []),
+                    "resolved_blocker_ids": list(
+                        side_effects.get("resolved_blocker_ids") or []
+                    ),
+                    "intent_recorded": True,
+                    "async_effect_pending": bool(
+                        side_effects.get("created_inbox_item_ids")
+                    ),
+                    "progress_made": True,
+                },
+                created_domain_ids=list(
+                    side_effects.get("created_inbox_item_ids") or []
+                ),
+                progress_classification="deliverable_decision",
             )
 
         return self._execute_team_command(

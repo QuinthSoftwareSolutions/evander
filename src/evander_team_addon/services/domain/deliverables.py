@@ -4,6 +4,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from datetime import datetime
 from typing import Any
 from ...git_naming import validate_branch_name
 from ...models import (
@@ -14,12 +15,17 @@ from ...models import (
     DeliverableVerification,
     TeamRecordState,
     TeamState,
+    TeamTaskKind,
+    TeamTaskState,
+    TaskCompletion,
+    TaskCompletionKind,
 )
 
 from .common import (
     _optional_mapping,
     _optional_text,
     _required_text,
+    _set_task_state,
     _string_list,
 )
 
@@ -215,6 +221,38 @@ def _active_task_deliverables(
     ]
 
 
+def _accept_deliverable_and_maybe_task(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+    now: datetime,
+) -> bool:
+    """Accept one deliverable and close its task when every active product is accepted."""
+
+    deliverable.state = TeamRecordState.ACCEPTED
+    task_deliverables = _active_task_deliverables(state, task)
+    if not task_deliverables or not all(
+        item.state == TeamRecordState.ACCEPTED for item in task_deliverables
+    ):
+        return False
+    if task.task_kind == TeamTaskKind.OUTCOME:
+        outcome_reference_ids = [
+            reference_id
+            for item in task_deliverables
+            for outcome in item.outcomes
+            for reference_id in outcome.reference_ids
+        ]
+        task.completion = TaskCompletion(
+            kind=TaskCompletionKind.DELIVERED,
+            summary="Accepted deliverables satisfied the task outcome contract.",
+            outcome_reference_ids=outcome_reference_ids,
+        )
+    _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
+    task.updated_at = now
+    return True
+
+
 __all__ = [
     "_DELIVERABLE_VERIFICATION_STATUSES",
     "_deliverable_git_refs_from_payload",
@@ -225,4 +263,5 @@ __all__ = [
     "_validate_deliverable_outcomes_against_task_contract",
     "_superseded_deliverable_for_rework",
     "_active_task_deliverables",
+    "_accept_deliverable_and_maybe_task",
 ]

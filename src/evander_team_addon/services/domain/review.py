@@ -21,10 +21,7 @@ from ...models import (
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
-    TeamTaskKind,
     TeamTaskState,
-    TaskCompletion,
-    TaskCompletionKind,
 )
 
 from .agent_access import (
@@ -46,7 +43,7 @@ from .common import (
     utc_now,
 )
 from .deliverables import (
-    _active_task_deliverables,
+    _accept_deliverable_and_maybe_task,
     _deliverable_verification_payload,
 )
 from .manager_fallback import _manager_fallback_review_decision_guard_error
@@ -942,28 +939,12 @@ def _cascade_review_decision(
             finding.state == "resolved" for finding in deliverable.carried_findings
         )
         if all_accepted and no_open_findings:
-            deliverable.state = TeamRecordState.ACCEPTED
-            task_deliverables = _active_task_deliverables(state, task)
-            if task_deliverables and all(
-                item.state == TeamRecordState.ACCEPTED for item in task_deliverables
-            ):
-                if task.task_kind == TeamTaskKind.OUTCOME:
-                    outcome_reference_ids = [
-                        reference_id
-                        for item in task_deliverables
-                        for outcome in item.outcomes
-                        for reference_id in outcome.reference_ids
-                    ]
-                    task.completion = TaskCompletion(
-                        kind=TaskCompletionKind.DELIVERED,
-                        summary=(
-                            "Accepted deliverables satisfied the task outcome "
-                            "contract."
-                        ),
-                        outcome_reference_ids=outcome_reference_ids,
-                    )
-                _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
-                task.updated_at = now
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+            )
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)

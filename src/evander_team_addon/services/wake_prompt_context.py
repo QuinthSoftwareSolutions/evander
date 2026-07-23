@@ -1030,6 +1030,8 @@ _PAYLOAD_TEXT_KEYS = {
 _PAYLOAD_LIST_KEYS = {
     "artifact_paths",
     "artifact_refs",
+    "available_alternatives",
+    "available_decisions",
     "criteria",
     "deliverable_ids",
     "findings",

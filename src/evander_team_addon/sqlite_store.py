@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 29
+SQLITE_SCHEMA_VERSION = 30
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1000,6 +1000,18 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_deliverables",
                     column_name="review_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="acceptance_recipient_agent_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="acceptance_decision_json",
                     definition="TEXT",
                 )
                 _ensure_column(
@@ -2122,6 +2134,14 @@ class TeamStateSqliteStore:
                     if row["review_manifest_json"] is not None
                     else None
                 ),
+                "acceptance_recipient_agent_id": row[
+                    "acceptance_recipient_agent_id"
+                ],
+                "acceptance_decision": (
+                    _json_loads(row["acceptance_decision_json"])
+                    if row["acceptance_decision_json"] is not None
+                    else None
+                ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
                 "superseded_by_deliverable_id": row["superseded_by_deliverable_id"],
                 "supersession_reason": row["supersession_reason"],
@@ -2142,10 +2162,11 @@ class TeamStateSqliteStore:
                     submitted_commit_sha, reviewed_commit_sha, feature_commit_sha,
                     release_commit_sha, verification_json, supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
-                    review_manifest_json, supersession_reason, superseded_at,
+                    review_manifest_json, acceptance_recipient_agent_id,
+                    acceptance_decision_json, supersession_reason, superseded_at,
                     superseded_by_actor, outcomes_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2174,6 +2195,12 @@ class TeamStateSqliteStore:
                     (
                         _json_dumps(deliverable.get("review_manifest"))
                         if deliverable.get("review_manifest") is not None
+                        else None
+                    ),
+                    deliverable.get("acceptance_recipient_agent_id"),
+                    (
+                        _json_dumps(deliverable.get("acceptance_decision"))
+                        if deliverable.get("acceptance_decision") is not None
                         else None
                     ),
                     deliverable.get("supersession_reason"),
@@ -4107,6 +4134,8 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     outcomes_json TEXT NOT NULL DEFAULT '[]',
     carried_findings_json TEXT NOT NULL DEFAULT '[]',
     review_manifest_json TEXT,
+    acceptance_recipient_agent_id TEXT,
+    acceptance_decision_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
     supersession_reason TEXT,
