@@ -169,6 +169,7 @@ class AgentProjectAssignmentKind(str, Enum):
 
 class RolePermission(str, Enum):
     CREATE_ROOT_TASK = "create_root_task"
+    MANAGE_OUTCOME_KINDS = "manage_outcome_kinds"
     PREPARE_BOOKKEEPING_ACTION = "prepare_bookkeeping_action"
     REQUEST_PAYMENT_PREPARATION = "request_payment_preparation"
     REQUEST_RELEASE = "request_release"
@@ -879,15 +880,71 @@ class TeamCase(TeamModel):
         return dict(value)
 
 
+class OutcomeKindSnapshot(TeamModel):
+    kind: str
+    name: str
+    description: str = ""
+    reference_requirements: str = ""
+    evidence_requirements: str = ""
+
+    @field_validator("kind", "name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "description",
+        "reference_requirements",
+        "evidence_requirements",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+
+class OutcomeKindDefinition(OutcomeKindSnapshot):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    archived: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "team_id", mode="before")
+    @classmethod
+    def _required_identity(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def _optional_project_id(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    def snapshot(self) -> OutcomeKindSnapshot:
+        return OutcomeKindSnapshot.model_validate(
+            self.model_dump(
+                include={
+                    "kind",
+                    "name",
+                    "description",
+                    "reference_requirements",
+                    "evidence_requirements",
+                }
+            )
+        )
+
+
 class TaskOutcomeContract(TeamModel):
     required_outcome_kinds: list[str] = Field(default_factory=list)
     match: Literal["any", "all"] = "all"
     allow_evidenced_noop: bool = False
-    forbidden_effect_kinds: list[str] = Field(default_factory=list)
+    forbidden_outcome_kinds: list[str] = Field(default_factory=list)
+    outcome_kind_definitions: list[OutcomeKindSnapshot] = Field(default_factory=list)
 
     @field_validator(
         "required_outcome_kinds",
-        "forbidden_effect_kinds",
+        "forbidden_outcome_kinds",
         mode="before",
     )
     @classmethod
@@ -902,7 +959,7 @@ class TaskOutcomeContract(TeamModel):
                 "allow_evidenced_noop"
             )
         overlap = set(self.required_outcome_kinds).intersection(
-            self.forbidden_effect_kinds
+            self.forbidden_outcome_kinds
         )
         if overlap:
             raise ValueError(
@@ -1140,6 +1197,7 @@ class DeliverableOutcome(TeamModel):
     kind: str
     reference_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
+    definition_snapshot: OutcomeKindSnapshot | None = None
 
     @field_validator("kind", mode="before")
     @classmethod
@@ -1349,6 +1407,9 @@ class ReviewRequest(TeamModel):
     findings: list[str] = Field(default_factory=list)
     review_profile_id: str | None = None
     criteria_snapshot: list[ReviewProfileCriterion] | None = None
+    required_outcome_kind_definitions: list[OutcomeKindSnapshot] = Field(
+        default_factory=list
+    )
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
@@ -2485,6 +2546,9 @@ class TeamState(TeamModel):
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
+    outcome_kind_definitions: dict[str, OutcomeKindDefinition] = Field(
+        default_factory=dict
+    )
     review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     blockers: dict[str, TeamBlocker] = Field(default_factory=dict)
@@ -2679,6 +2743,7 @@ class TeamState(TeamModel):
         self._validate_tasks(errors)
         self._validate_task_graph(errors)
         self._validate_deliverables(errors)
+        self._validate_outcome_kind_definitions(errors)
         self._validate_review_profiles(errors)
         self._validate_reviews(errors)
         self._validate_inbox(errors)
@@ -2715,6 +2780,7 @@ class TeamState(TeamModel):
             "tasks",
             "deliverables",
             "review_requests",
+            "outcome_kind_definitions",
             "review_profiles",
             "inbox",
             "blockers",
@@ -3099,6 +3165,36 @@ class TeamState(TeamModel):
                 errors.append(f"task {task.id} references missing project {task.project_id}")
             elif not task_is_terminal and owner is not None and owner.team_id != project.team_id:
                 errors.append(f"task {task.id} owner {owner.id} is outside project team")
+            if project is not None and task.outcome_contract is not None:
+                contract = task.outcome_contract
+                referenced_kinds = (
+                    contract.required_outcome_kinds
+                    + contract.forbidden_outcome_kinds
+                )
+                for kind in referenced_kinds:
+                    if (
+                        resolve_outcome_kind_definition(
+                            self,
+                            team_id=project.team_id,
+                            project_id=project.id,
+                            kind=kind,
+                            include_archived=True,
+                        )
+                        is None
+                    ):
+                        errors.append(
+                            f"task {task.id} references unknown outcome kind {kind}"
+                        )
+                snapshot_kinds = {
+                    definition.kind
+                    for definition in contract.outcome_kind_definitions
+                }
+                missing_snapshots = sorted(set(referenced_kinds) - snapshot_kinds)
+                if missing_snapshots:
+                    errors.append(
+                        f"task {task.id} is missing outcome kind definition snapshots: "
+                        + ", ".join(missing_snapshots)
+                    )
             if task.case_id is not None:
                 case = self.cases.get(task.case_id)
                 if case is None:
@@ -3248,10 +3344,32 @@ class TeamState(TeamModel):
 
     def _validate_deliverables(self, errors: list[str]) -> None:
         for deliverable in self.deliverables.values():
-            if deliverable.task_id not in self.tasks:
+            task = self.tasks.get(deliverable.task_id)
+            if task is None:
                 errors.append(
                     f"deliverable {deliverable.id} references missing task {deliverable.task_id}"
                 )
+            else:
+                project = self.projects.get(task.project_id)
+                if project is not None:
+                    for outcome in deliverable.outcomes:
+                        definition = resolve_outcome_kind_definition(
+                            self,
+                            team_id=project.team_id,
+                            project_id=project.id,
+                            kind=outcome.kind,
+                            include_archived=True,
+                        )
+                        if definition is None:
+                            errors.append(
+                                f"deliverable {deliverable.id} references unknown "
+                                f"outcome kind {outcome.kind}"
+                            )
+                        if outcome.definition_snapshot is None:
+                            errors.append(
+                                f"deliverable {deliverable.id} outcome {outcome.kind} "
+                                "is missing its definition snapshot"
+                            )
             if deliverable.producer_agent_id not in self.agents:
                 errors.append(
                     f"deliverable {deliverable.id} references missing producer "
@@ -3361,6 +3479,39 @@ class TeamState(TeamModel):
                             "cannot be superseded"
                         )
 
+    def _validate_outcome_kind_definitions(self, errors: list[str]) -> None:
+        seen_scopes: set[tuple[str, str | None, str]] = set()
+        for definition in self.outcome_kind_definitions.values():
+            if definition.team_id not in self.teams:
+                errors.append(
+                    f"outcome kind {definition.id} references missing team "
+                    f"{definition.team_id}"
+                )
+            if definition.project_id is not None:
+                project = self.projects.get(definition.project_id)
+                if project is None:
+                    errors.append(
+                        f"outcome kind {definition.id} references missing project "
+                        f"{definition.project_id}"
+                    )
+                elif project.team_id != definition.team_id:
+                    errors.append(
+                        f"outcome kind {definition.id} project {project.id} belongs "
+                        f"to team {project.team_id}"
+                    )
+            scope = (
+                definition.team_id,
+                definition.project_id,
+                definition.kind,
+            )
+            if scope in seen_scopes:
+                errors.append(
+                    "duplicate outcome kind definition for "
+                    f"{definition.kind} in "
+                    f"{definition.project_id or definition.team_id}"
+                )
+            seen_scopes.add(scope)
+
     def _validate_review_profiles(self, errors: list[str]) -> None:
         for profile in self.review_profiles.values():
             if profile.team_id not in self.teams:
@@ -3391,6 +3542,21 @@ class TeamState(TeamModel):
                     errors.append(
                         f"review profile {profile.id} role {role.id} belongs to project "
                         f"{role.project_id}"
+                    )
+            for kind in profile.required_outcome_kinds:
+                if (
+                    resolve_outcome_kind_definition(
+                        self,
+                        team_id=profile.team_id,
+                        project_id=profile.project_id,
+                        kind=kind,
+                        include_archived=profile.archived,
+                    )
+                    is None
+                ):
+                    errors.append(
+                        f"review profile {profile.id} references unknown outcome kind "
+                        f"{kind}"
                     )
 
     def _validate_reviews(self, errors: list[str]) -> None:
@@ -3974,6 +4140,74 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
     payload["subtask_counts"] = state.subtask_counts(task.id)
     payload["waiting_reason"] = _task_waiting_reason(state, task)
     return payload
+
+
+def effective_outcome_kind_definitions(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str | None,
+    include_archived: bool = False,
+) -> dict[str, OutcomeKindDefinition]:
+    effective: dict[str, OutcomeKindDefinition] = {}
+    for definition in sorted(
+        state.outcome_kind_definitions.values(),
+        key=lambda item: (item.project_id is not None, item.id),
+    ):
+        if definition.team_id != team_id:
+            continue
+        if definition.project_id not in {None, project_id}:
+            continue
+        if definition.project_id is not None and project_id is None:
+            continue
+        if definition.archived and not include_archived:
+            effective.pop(definition.kind, None)
+            continue
+        effective[definition.kind] = definition
+    return effective
+
+
+def resolve_outcome_kind_definition(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str | None,
+    kind: str,
+    include_archived: bool = False,
+) -> OutcomeKindDefinition | None:
+    return effective_outcome_kind_definitions(
+        state,
+        team_id=team_id,
+        project_id=project_id,
+        include_archived=include_archived,
+    ).get(kind)
+
+
+def outcome_kind_snapshots(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str | None,
+    kinds: Sequence[str],
+    include_archived: bool = False,
+) -> list[OutcomeKindSnapshot]:
+    snapshots: list[OutcomeKindSnapshot] = []
+    missing: list[str] = []
+    for kind in _unique_text_list(list(kinds), "outcome kinds"):
+        definition = resolve_outcome_kind_definition(
+            state,
+            team_id=team_id,
+            project_id=project_id,
+            kind=kind,
+            include_archived=include_archived,
+        )
+        if definition is None:
+            missing.append(kind)
+        else:
+            snapshots.append(definition.snapshot())
+    if missing:
+        raise ValueError("unknown or archived outcome kinds: " + ", ".join(missing))
+    return snapshots
 
 
 def deliverable_requires_formal_review(deliverable: Deliverable) -> bool:

@@ -98,6 +98,16 @@ TEAM_LIST_PROJECTS_TOOL = getattr(
     "team_list_projects",
 )
 TEAM_GET_PROJECT_TOOL = getattr(team_mcp, "TEAM_GET_PROJECT_TOOL", "team_get_project")
+TEAM_LIST_OUTCOME_KINDS_TOOL = getattr(
+    team_mcp,
+    "TEAM_LIST_OUTCOME_KINDS_TOOL",
+    "team_list_outcome_kinds",
+)
+TEAM_GET_OUTCOME_KIND_TOOL = getattr(
+    team_mcp,
+    "TEAM_GET_OUTCOME_KIND_TOOL",
+    "team_get_outcome_kind",
+)
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = getattr(
     team_mcp,
     "TEAM_LIST_RUNTIME_ATTENTION_TOOL",
@@ -126,6 +136,8 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
+    TEAM_LIST_OUTCOME_KINDS_TOOL,
+    TEAM_GET_OUTCOME_KIND_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
     TEAM_LIST_BLOCKERS_TOOL,
     TEAM_GET_BLOCKER_TOOL,
@@ -203,6 +215,25 @@ def _seed_read_tool_state(runtime_dir: Path) -> TeamStateRepository:
         lead_session_id="session-beta-lead",
         worker_agent_id="beta-dev",
         worker_session_id="session-beta-dev",
+    )
+    admin.create_outcome_kind_definition(
+        definition_id="alpha-outcome-prepared-action",
+        team_id="alpha",
+        project_id="alpha-project",
+        kind="prepared_action",
+        name="Prepared action",
+        description="A durable action ready for approval.",
+        reference_requirements="Reference the prepared action ID.",
+        evidence_requirements="Cite validation evidence.",
+        expected_revision=repo.read().revision,
+    )
+    admin.create_outcome_kind_definition(
+        definition_id="beta-outcome-private",
+        team_id="beta",
+        project_id="beta-project",
+        kind="private_beta_outcome",
+        name="Private beta outcome",
+        expected_revision=repo.read().revision,
     )
     _seed_read_records(repo)
     return repo
@@ -441,6 +472,11 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         (TEAM_LIST_RELEASE_PACKAGES_TOOL, {}, "alpha-release"),
         (TEAM_LIST_AGENTS_TOOL, {}, "alpha-dev"),
         (TEAM_LIST_PROJECTS_TOOL, {}, "alpha-project"),
+        (
+            TEAM_LIST_OUTCOME_KINDS_TOOL,
+            {"project_id": "alpha-project"},
+            "alpha-outcome-prepared-action",
+        ),
         (TEAM_LIST_BLOCKERS_TOOL, {}, alpha_blocker_id),
     ]
     for tool_name, arguments, expected_id in list_calls:
@@ -496,6 +532,11 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         (TEAM_GET_AGENT_TOOL, {"agent_id": "alpha-dev"}, "alpha-dev"),
         (TEAM_GET_MY_IDENTITY_TOOL, {}, "alpha-dev"),
         (TEAM_GET_PROJECT_TOOL, {"project_id": "alpha-project"}, "alpha-project"),
+        (
+            TEAM_GET_OUTCOME_KIND_TOOL,
+            {"definition_id": "alpha-outcome-prepared-action"},
+            "alpha-outcome-prepared-action",
+        ),
         (TEAM_GET_BLOCKER_TOOL, {"blocker_id": alpha_blocker_id}, alpha_blocker_id),
     ]
     for tool_name, arguments, expected_id in get_calls:
@@ -508,6 +549,14 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         assert _item(result)["id"] == expected_id
 
     assert repo.read().revision == before_revision
+    _call_denied_or_not_found(
+        server,
+        TEAM_GET_OUTCOME_KIND_TOOL,
+        {
+            "session_id": "session-alpha-dev",
+            "definition_id": "beta-outcome-private",
+        },
+    )
 
 
 def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient_session(

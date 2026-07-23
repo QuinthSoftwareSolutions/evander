@@ -117,6 +117,9 @@ from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import TeamEphemeralCommandService
+from evander_team_addon.services.wake_prompt_context import (
+    build_compact_wake_context,
+)
 from evander_team_addon.workflow_packs import team_runtime_v1
 
 ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
@@ -919,6 +922,61 @@ def test_repository_leases_due_agents_and_applies_action(tmp_path: Path) -> None
     assert next(iter(state.inbox.values())).recipient_agent_id == "lead"
 
 
+def test_agent_lease_and_wake_context_include_effective_outcome_catalog(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).create_outcome_kind_definition(
+        definition_id="outcome-kind-prepared-action",
+        team_id="team",
+        project_id=None,
+        kind="prepared_action",
+        name="Prepared action",
+        description="A durable action ready for an external approval step.",
+        reference_requirements="Reference the prepared action ID.",
+        evidence_requirements="Cite the validation evidence.",
+        expected_revision=repo.read().revision,
+    )
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["outcome_kinds"] == [
+        {
+            "id": "outcome-kind-prepared-action",
+            "team_id": "team",
+            "project_id": None,
+            "kind": "prepared_action",
+            "name": "Prepared action",
+            "description": "A durable action ready for an external approval step.",
+            "reference_requirements": "Reference the prepared action ID.",
+            "evidence_requirements": "Cite the validation evidence.",
+            "archived": False,
+            "created_at": leases[0]["outcome_kinds"][0]["created_at"],
+            "updated_at": leases[0]["outcome_kinds"][0]["updated_at"],
+            "inherited": True,
+            "effective_project_id": "project",
+        }
+    ]
+    context = build_compact_wake_context(leases[0])
+    assert context["outcome_kinds"] == [
+        {
+            "id": "outcome-kind-prepared-action",
+            "team_id": "team",
+            "project_id": None,
+            "effective_project_id": "project",
+            "kind": "prepared_action",
+            "name": "Prepared action",
+            "description": "A durable action ready for an external approval step.",
+            "reference_requirements": "Reference the prepared action ID.",
+            "evidence_requirements": "Cite the validation evidence.",
+            "inherited": True,
+        }
+    ]
+
+
 def test_manager_fallback_not_leased_while_team_member_is_awake(
     tmp_path: Path,
 ) -> None:
@@ -1305,14 +1363,14 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "use team_decide_deliverable to accept or reject it" in guidance
     assert "Rejection requires a concrete reason" in guidance
     assert "Do not accept or reject someone else's task" in guidance
-    assert "Use team_decide_review only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
     assert "override_routing_gap_reason" in guidance
     assert "Release requests stand alone" in guidance
     assert "git_refs.review_branch or git_refs.agent_branch" in guidance
     assert "failed feature or release promotion" in guidance
     assert "allowed agents/... ref" in guidance
-    assert "supersedes_deliverable_id" in guidance
+    assert "Review decisions and findings are durable history" in guidance
+    assert "lifecycle actions never waive findings" in guidance
     assert "item_type operator_directive" in guidance
     assert "response_requested is false" in guidance
     assert "no-op replies" in guidance

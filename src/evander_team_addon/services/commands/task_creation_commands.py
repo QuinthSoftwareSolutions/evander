@@ -41,7 +41,23 @@ from ..domain.common import (
     _required_text,
 )
 from ..domain.project_status import _recalculate_project_status
+from ..domain.outcome_catalog import snapshot_task_outcome_contract
 from ..domain.wake import _append_agent_wake_requested_event
+
+
+def _creation_with_outcome_definition_snapshots(
+    state: TeamState,
+    creation: Mapping[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(creation)
+    contract = creation.get("outcome_contract")
+    if isinstance(contract, Mapping):
+        enriched["outcome_contract"] = snapshot_task_outcome_contract(
+            state,
+            project_id=_required_text(creation.get("project_id"), "project_id"),
+            contract=contract,
+        ).model_dump(mode="json")
+    return enriched
 
 
 class TeamTaskCreationCommandService(TeamCommandExecutor):
@@ -109,7 +125,10 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             plan = _command_plan_task_creation(
                 state,
                 actor=agent,
-                creation=creation,
+                creation=_creation_with_outcome_definition_snapshots(
+                    state,
+                    creation,
+                ),
                 reserved_task_ids=set(),
             )
             graph_errors = _task_creation_batch_graph_errors(
@@ -206,7 +225,10 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 plan = _command_plan_task_creation(
                     state,
                     actor=agent,
-                    creation=creation,
+                    creation=_creation_with_outcome_definition_snapshots(
+                        state,
+                        creation,
+                    ),
                     reserved_task_ids=reserved_task_ids,
                 )
                 reserved_task_ids.add(plan.task_id)

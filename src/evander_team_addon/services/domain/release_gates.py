@@ -25,6 +25,7 @@ from ...models import (
 from .common import _append_unique, _required_text, utc_now
 from .blockers import open_release_blocker, resolve_active_blockers_for_source
 from .review_handoff import queue_actionable_inbox_item
+from .outcome_catalog import snapshot_review_profile_outcomes
 
 
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
@@ -70,6 +71,10 @@ def _create_release_review(
         reviewer_agent_id=reviewer.id,
         review_profile_id=profile.id,
         criteria_snapshot=[criterion.model_copy(deep=True) for criterion in profile.criteria],
+        required_outcome_kind_definitions=snapshot_review_profile_outcomes(
+            state,
+            profile=profile,
+        ),
         reviewed_commit_sha=candidate_commit_sha,
         state=TeamRecordState.PENDING,
         supersedes_review_request_id=supersedes.id if supersedes is not None else None,
@@ -112,6 +117,11 @@ def _queue_release_review_handoff(
             "name": profile.name,
             "description": profile.description,
             "criteria": [criterion.model_dump(mode="json") for criterion in profile.criteria],
+            "required_outcome_kinds": list(profile.required_outcome_kinds),
+            "outcome_kind_definitions": [
+                definition.model_dump(mode="json")
+                for definition in review.required_outcome_kind_definitions
+            ],
         },
     }
     if review.supersedes_review_request_id is not None:

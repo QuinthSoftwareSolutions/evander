@@ -32,6 +32,7 @@ from ..models import (
     GovernanceGoal,
     GovernanceGroup,
     GitWorkContext,
+    OutcomeKindDefinition,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -64,6 +65,7 @@ from ..models import (
     TeamTaskKind,
     TeamTaskState,
     _ensure_unique,
+    outcome_kind_snapshots,
     _unique_text_list,
     agent_project_ids,
     release_package_payload_with_derived,
@@ -85,6 +87,12 @@ from .domain.case_task import (
     _sync_case_task_link,
     _unlink_task_from_case,
     _validate_case_scope,
+)
+from .domain.outcome_catalog import (
+    active_outcome_kind_references,
+    snapshot_deliverable_outcomes,
+    snapshot_review_profile_outcomes,
+    snapshot_task_outcome_contract,
 )
 from .domain.blockers import (
     active_blockers_for_source,
@@ -2062,6 +2070,15 @@ class TeamAdminService:
         def _mutate(state_model: TeamState) -> TeamState:
             nonlocal created, effective_task_id
             now = utc_now()
+            effective_outcome_contract = (
+                snapshot_task_outcome_contract(
+                    state_model,
+                    project_id=normalized_project_id,
+                    contract=normalized_outcome_contract,
+                )
+                if normalized_outcome_contract is not None
+                else None
+            )
             if normalized_task_id is not None and normalized_task_id in state_model.tasks:
                 task = state_model.tasks[normalized_task_id]
                 effective_task_id = task.id
@@ -2086,7 +2103,7 @@ class TeamAdminService:
                 if normalized_task_kind is not None:
                     task.task_kind = normalized_task_kind
                 if set_outcome_contract or outcome_contract is not None:
-                    task.outcome_contract = normalized_outcome_contract
+                    task.outcome_contract = effective_outcome_contract
                 task.updated_at = now
                 if task.state in _NON_TERMINAL_TASK_STATES:
                     _mark_agent_work_due(
@@ -2123,7 +2140,7 @@ class TeamAdminService:
                 parent_task_id=parent_task_id,
                 dependency_task_ids=dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
-                outcome_contract=normalized_outcome_contract,
+                outcome_contract=effective_outcome_contract,
                 created_at=now,
                 updated_at=now,
             )
@@ -2413,6 +2430,11 @@ class TeamAdminService:
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
+            snapshotted_outcomes = snapshot_deliverable_outcomes(
+                state_model,
+                project_id=task.project_id,
+                outcomes=normalized_outcomes,
+            )
             superseded_deliverable = _superseded_deliverable_for_rework(
                 state_model,
                 task=task,
@@ -2421,7 +2443,7 @@ class TeamAdminService:
             )
             _validate_deliverable_outcomes_against_task_contract(
                 task,
-                normalized_outcomes,
+                snapshotted_outcomes,
             )
             effective_deliverable_id = normalized_deliverable_id or _generated_id(
                 prefix="deliverable",
@@ -2435,7 +2457,7 @@ class TeamAdminService:
                 producer_agent_id=normalized_producer_agent_id,
                 summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
-                outcomes=normalized_outcomes,
+                outcomes=snapshotted_outcomes,
                 state=state,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
                 carried_findings=(
@@ -2461,6 +2483,122 @@ class TeamAdminService:
             task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
             task.updated_at = utc_now()
             return state_model
+
+        return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def create_outcome_kind_definition(
+        self,
+        *,
+        definition_id: str | None,
+        team_id: str,
+        project_id: str | None,
+        kind: str,
+        name: str,
+        description: str = "",
+        reference_requirements: str = "",
+        evidence_requirements: str = "",
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_id = _optional_text(definition_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_project_id = _optional_text(project_id)
+        normalized_kind = _required_text(kind, "kind")
+        normalized_name = _required_text(name, "name")
+
+        def _mutate(state: TeamState) -> TeamState:
+            _require_present(state.teams, normalized_team_id, "team")
+            if normalized_project_id is not None:
+                project = _require_present(
+                    state.projects,
+                    normalized_project_id,
+                    "project",
+                )
+                if project.team_id != normalized_team_id:
+                    raise ValueError(
+                        f"project {project.id} does not belong to team "
+                        f"{normalized_team_id}"
+                    )
+            for existing in state.outcome_kind_definitions.values():
+                if (
+                    existing.team_id == normalized_team_id
+                    and existing.project_id == normalized_project_id
+                    and existing.kind == normalized_kind
+                ):
+                    raise ValueError(
+                        f"outcome kind {normalized_kind} already exists in "
+                        f"{normalized_project_id or normalized_team_id}"
+                    )
+            effective_id = normalized_id or _generated_id(
+                prefix="outcome-kind",
+                labels=[
+                    normalized_project_id or normalized_team_id,
+                    normalized_kind,
+                ],
+                existing_ids=state.outcome_kind_definitions,
+            )
+            _require_absent(
+                state.outcome_kind_definitions,
+                effective_id,
+                "outcome kind definition",
+            )
+            now = utc_now()
+            state.outcome_kind_definitions[effective_id] = OutcomeKindDefinition(
+                id=effective_id,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                kind=normalized_kind,
+                name=normalized_name,
+                description=description,
+                reference_requirements=reference_requirements,
+                evidence_requirements=evidence_requirements,
+                created_at=now,
+                updated_at=now,
+            )
+            return state
+
+        return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def update_outcome_kind_definition(
+        self,
+        *,
+        definition_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        reference_requirements: str | None = None,
+        evidence_requirements: str | None = None,
+        archived: bool | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_id = _required_text(definition_id, "definition_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            definition = _require_present(
+                state.outcome_kind_definitions,
+                normalized_id,
+                "outcome kind definition",
+            )
+            if archived is True:
+                references = active_outcome_kind_references(
+                    state,
+                    definition=definition,
+                )
+                if references:
+                    raise ValueError(
+                        f"outcome kind {definition.kind} is used by "
+                        + ", ".join(references)
+                    )
+            if name is not None:
+                definition.name = _required_text(name, "name")
+            if description is not None:
+                definition.description = description
+            if reference_requirements is not None:
+                definition.reference_requirements = reference_requirements
+            if evidence_requirements is not None:
+                definition.evidence_requirements = evidence_requirements
+            if archived is not None:
+                definition.archived = archived
+            definition.updated_at = utc_now()
+            return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
 
@@ -2512,6 +2650,13 @@ class TeamAdminService:
             for role_id in profile.applicable_role_ids:
                 role = _require_present(state.roles, role_id, "role")
                 _validate_role_filter_assignment(role, profile=profile)
+            if not profile.archived:
+                outcome_kind_snapshots(
+                    state,
+                    team_id=profile.team_id,
+                    project_id=profile.project_id,
+                    kinds=profile.required_outcome_kinds,
+                )
             state.review_profiles[profile.id] = profile
             return state
 
@@ -2562,6 +2707,13 @@ class TeamAdminService:
             for role_id in profile.applicable_role_ids:
                 role = _require_present(state.roles, role_id, "role")
                 _validate_role_filter_assignment(role, profile=profile)
+            if not profile.archived:
+                outcome_kind_snapshots(
+                    state,
+                    team_id=profile.team_id,
+                    project_id=profile.project_id,
+                    kinds=profile.required_outcome_kinds,
+                )
             profile.updated_at = utc_now()
             return state
 
@@ -2624,6 +2776,18 @@ class TeamAdminService:
             for profile in template.review_profiles
         }
         used_review_profile_ids.update(review_profile_ids.values())
+        used_outcome_kind_ids = set(current_state.outcome_kind_definitions)
+        outcome_kind_ids = {
+            definition.kind: _unique_id_from_base(
+                _materialized_template_record_id(
+                    project_id if definition.project_scoped else team_id,
+                    f"outcome-kind-{definition.kind}",
+                ),
+                existing_ids=used_outcome_kind_ids,
+            )
+            for definition in template.outcome_kinds
+        }
+        used_outcome_kind_ids.update(outcome_kind_ids.values())
         used_task_ids = set(current_state.tasks)
         task_ids = {
             task.id: _unique_id_from_base(
@@ -2667,6 +2831,7 @@ class TeamAdminService:
             *role_ids.values(),
             *[role_input["agent_id"] for role_input in role_inputs.values()],
             *goal_ids.values(),
+            *outcome_kind_ids.values(),
             *review_profile_ids.values(),
             *task_ids.values(),
         ]
@@ -2685,6 +2850,10 @@ class TeamAdminService:
             "role_ids": role_ids,
             "agent_ids": {key: value["agent_id"] for key, value in role_inputs.items()},
             "goal_ids": [goal_ids[goal.id] for goal in template.project_goals],
+            "outcome_kind_definition_ids": [
+                outcome_kind_ids[definition.kind]
+                for definition in template.outcome_kinds
+            ],
             "review_profile_ids": [
                 review_profile_ids[profile.id] for profile in template.review_profiles
             ],
@@ -2710,6 +2879,12 @@ class TeamAdminService:
                     state.review_profiles,
                     review_profile_ids[profile.id],
                     "review profile",
+                )
+            for definition in template.outcome_kinds:
+                _require_absent(
+                    state.outcome_kind_definitions,
+                    outcome_kind_ids[definition.kind],
+                    "outcome kind definition",
                 )
             for task in template.tasks:
                 _require_absent(state.tasks, task_ids[task.id], "task")
@@ -2825,6 +3000,29 @@ class TeamAdminService:
             state.projects[project_id].updated_at = now
             state.teams[team_id].updated_at = now
 
+            for definition_template in template.outcome_kinds:
+                definition = OutcomeKindDefinition(
+                    id=outcome_kind_ids[definition_template.kind],
+                    team_id=team_id,
+                    project_id=(
+                        project_id
+                        if definition_template.project_scoped
+                        else None
+                    ),
+                    kind=definition_template.kind,
+                    name=definition_template.name,
+                    description=definition_template.description,
+                    reference_requirements=(
+                        definition_template.reference_requirements
+                    ),
+                    evidence_requirements=(
+                        definition_template.evidence_requirements
+                    ),
+                    created_at=now,
+                    updated_at=now,
+                )
+                state.outcome_kind_definitions[definition.id] = definition
+
             for profile_template in template.review_profiles:
                 profile = ReviewProfile(
                     id=review_profile_ids[profile_template.id],
@@ -2838,6 +3036,9 @@ class TeamAdminService:
                     criteria=[
                         criterion.model_copy(deep=True) for criterion in profile_template.criteria
                     ],
+                    required_outcome_kinds=list(
+                        profile_template.required_outcome_kinds
+                    ),
                     created_at=now,
                     updated_at=now,
                 )
@@ -2968,6 +3169,10 @@ class TeamAdminService:
                 state=state,
                 findings=findings or [],
                 review_profile_id=effective_review_profile_id,
+                required_outcome_kind_definitions=snapshot_review_profile_outcomes(
+                    state_model,
+                    profile=profile,
+                ),
                 instructions=instructions,
                 reviewed_commit_sha=(
                     deliverable.git_refs.reviewed_commit_sha

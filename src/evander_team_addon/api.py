@@ -138,6 +138,7 @@ TEAM_STATE_COLLECTION_KEYS = (
     "tasks",
     "deliverables",
     "review_requests",
+    "outcome_kind_definitions",
     "review_profiles",
     "inbox",
     "blockers",
@@ -173,6 +174,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "tasks",
         "deliverables",
         "review_requests",
+        "outcome_kind_definitions",
         "review_profiles",
         "blockers",
         "blocker_events",
@@ -186,6 +188,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agents",
         "tasks",
         "deliverables",
+        "outcome_kind_definitions",
         "review_profiles",
         "release_packages",
         "blockers",
@@ -232,6 +235,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "tasks",
         "deliverables",
         "review_requests",
+        "outcome_kind_definitions",
         "review_profiles",
         "release_packages",
         "blockers",
@@ -286,6 +290,7 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "tasks",
     "deliverables",
     "review_requests",
+    "outcome_kind_definitions",
     "review_profiles",
     "inbox",
     "action_records",
@@ -2221,6 +2226,101 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             extra={"resolved_blocker": result["blocker"]},
         )
 
+    async def create_outcome_kind_definition(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        definition_id = _optional(payload, "id") or _optional(
+            payload,
+            "definition_id",
+        )
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.create_outcome_kind_definition(
+                definition_id=definition_id,
+                team_id=_required(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                kind=_required(payload, "kind"),
+                name=_required(payload, "name"),
+                description=_optional(payload, "description") or "",
+                reference_requirements=(
+                    _optional(payload, "reference_requirements") or ""
+                ),
+                evidence_requirements=(
+                    _optional(payload, "evidence_requirements") or ""
+                ),
+                expected_revision=expected_revision,
+            ),
+            create_collection="outcome_kind_definitions",
+            create_id=definition_id,
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
+
+    async def patch_outcome_kind_definition(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        raw_archived = payload.get("archived")
+        definition_id = request.path_params["definition_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.update_outcome_kind_definition(
+                definition_id=definition_id,
+                name=_optional(payload, "name"),
+                description=_optional_present_text(payload, "description"),
+                reference_requirements=_optional_present_text(
+                    payload,
+                    "reference_requirements",
+                ),
+                evidence_requirements=_optional_present_text(
+                    payload,
+                    "evidence_requirements",
+                ),
+                archived=raw_archived if isinstance(raw_archived, bool) else None,
+                expected_revision=expected_revision,
+            ),
+            target_collection="outcome_kind_definitions",
+            target_id=definition_id,
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+        )
+
+    async def list_outcome_kind_definitions(
+        _request: Request,
+    ) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "outcome_kind_definitions": [
+                    definition.model_dump(mode="json")
+                    for definition in state.outcome_kind_definitions.values()
+                ],
+            }
+        )
+
+    async def get_outcome_kind_definition(
+        request: Request,
+    ) -> JSONResponse:
+        state = repository.read()
+        definition = state.outcome_kind_definitions.get(
+            request.path_params["definition_id"]
+        )
+        if definition is None:
+            return JSONResponse(
+                {"error": "outcome kind definition not found"},
+                status_code=404,
+            )
+        return JSONResponse(definition.model_dump(mode="json"))
+
     async def create_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         criteria = [
@@ -2770,6 +2870,26 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "/blockers/{blocker_id}/resolve",
             resolve_terminal_blocker,
             methods=["POST"],
+        ),
+        route(
+            "/outcome-kinds",
+            create_outcome_kind_definition,
+            methods=["POST"],
+        ),
+        route(
+            "/outcome-kinds",
+            list_outcome_kind_definitions,
+            methods=["GET"],
+        ),
+        route(
+            "/outcome-kinds/{definition_id}",
+            get_outcome_kind_definition,
+            methods=["GET"],
+        ),
+        route(
+            "/outcome-kinds/{definition_id}",
+            patch_outcome_kind_definition,
+            methods=["PATCH"],
         ),
         route("/review-profiles", create_review_profile, methods=["POST"]),
         route("/review-profiles", list_review_profiles, methods=["GET"]),

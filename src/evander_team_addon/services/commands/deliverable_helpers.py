@@ -61,6 +61,7 @@ from ..domain.git_work_contexts import (
     bind_deliverable_git_refs_to_work_context,
 )
 from ..domain.project_status import _recalculate_project_status
+from ..domain.outcome_catalog import snapshot_deliverable_outcomes
 from ..domain.review import _review_profile_for_request
 from ..domain.work_due import _mark_agent_work_due
 
@@ -504,6 +505,11 @@ def _validate_command_deliverable_submission_pre_publication(
                 "outcomes",
             )
         ]
+        outcomes = snapshot_deliverable_outcomes(
+            state,
+            project_id=task.project_id,
+            outcomes=outcomes,
+        )
         _validate_deliverable_outcomes_against_task_contract(task, outcomes)
     except GitWorkContextValidationError as exc:
         raise TeamCommandValidationError(
@@ -596,6 +602,11 @@ def _apply_command_deliverable_submission(
                 "outcomes",
             )
         ]
+        outcomes = snapshot_deliverable_outcomes(
+            state,
+            project_id=task.project_id,
+            outcomes=outcomes,
+        )
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",

@@ -58,6 +58,7 @@ from evander_team_addon.models import (
     TeamTaskKind,
     TeamTaskState,
     agent_project_ids,
+    effective_outcome_kind_definitions,
     project_lead_agent_id,
 )
 from evander_team_addon.repository import (
@@ -97,6 +98,7 @@ from evander_team_addon.services.commands import (
     TeamMemoryCommandService,
     TeamNoteCommandService,
     TeamOperatorEscalationCommandService,
+    TeamOutcomeCatalogCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
@@ -133,6 +135,7 @@ class _TeamCommandTestHarness(
     TeamReviewCommandService,
     TeamGitReleaseCommandService,
     TeamEphemeralCommandService,
+    TeamOutcomeCatalogCommandService,
 ):
     """Local test harness for cases that intentionally span command families."""
 
@@ -4942,6 +4945,109 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
 
 
+def test_repository_migrates_legacy_task_and_deliverable_outcome_kinds(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_outcome_kind(repo, "legacy_action")
+    _seed_outcome_kind(repo, "legacy_report")
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-create-legacy-outcome-task",
+    )
+    state, created = _command_service(repo).create_task_command(
+        session_id="session-lead",
+        task_id="legacy-outcome-task",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Create the legacy action",
+        description="Exercise the pre-catalog persisted shape.",
+        task_kind="outcome",
+        outcome_contract={
+            "required_outcome_kinds": ["legacy_action"],
+            "forbidden_outcome_kinds": ["legacy_report"],
+        },
+        request_id="request-create-legacy-outcome-task",
+    )
+    assert created["success"] is True
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-submit-legacy-outcome",
+    )
+    state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="legacy-outcome-task",
+        summary="Created the legacy action.",
+        outcomes=[
+            {
+                "kind": "legacy_action",
+                "reference_ids": ["legacy-action:123"],
+            }
+        ],
+        request_id="request-submit-legacy-outcome",
+    )
+    assert submitted["success"] is True
+    deliverable_id = submitted["deliverable_id"]
+
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        task_contract = json.loads(
+            connection.execute(
+                "SELECT outcome_contract_json FROM team_tasks WHERE id = ?",
+                ("legacy-outcome-task",),
+            ).fetchone()[0]
+        )
+        task_contract.pop("outcome_kind_definitions", None)
+        task_contract["forbidden_effect_kinds"] = task_contract.pop(
+            "forbidden_outcome_kinds"
+        )
+        outcomes = json.loads(
+            connection.execute(
+                "SELECT outcomes_json FROM team_deliverables WHERE id = ?",
+                (deliverable_id,),
+            ).fetchone()[0]
+        )
+        for outcome in outcomes:
+            outcome.pop("definition_snapshot", None)
+        connection.execute("DELETE FROM team_outcome_kind_definitions")
+        connection.execute(
+            "UPDATE team_tasks SET outcome_contract_json = ? WHERE id = ?",
+            (json.dumps(task_contract), "legacy-outcome-task"),
+        )
+        connection.execute(
+            "UPDATE team_deliverables SET outcomes_json = ? WHERE id = ?",
+            (json.dumps(outcomes), deliverable_id),
+        )
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = '30'
+            WHERE key = 'sqlite_schema_version'
+            """
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert {
+        definition.kind
+        for definition in migrated.outcome_kind_definitions.values()
+    } == {"legacy_action", "legacy_report"}
+    contract = migrated.tasks["legacy-outcome-task"].outcome_contract
+    assert contract is not None
+    assert contract.forbidden_outcome_kinds == ["legacy_report"]
+    assert {
+        definition.kind for definition in contract.outcome_kind_definitions
+    } == {"legacy_action", "legacy_report"}
+    assert (
+        migrated.deliverables[deliverable_id]
+        .outcomes[0]
+        .definition_snapshot.kind
+        == "legacy_action"
+    )
+
+
 def test_repository_migrates_global_chat_conversation_unique_constraint(
     tmp_path: Path,
 ) -> None:
@@ -6111,6 +6217,10 @@ def test_repository_materializes_accounting_department_without_git(
         "tax_compliance_reviewer",
     }
     assert result["goal_ids"] == [f"{result['project_id']}-bookkeeping-operations"]
+    assert result["outcome_kind_definition_ids"] == [
+        f"{result['project_id']}-outcome-kind-evidence_match",
+        f"{result['project_id']}-outcome-kind-bokio_prepared_action",
+    ]
     assert result["review_profile_ids"] == [f"{result['project_id']}-bookkeeping-action-review"]
     assert result["task_ids"] == [
         f"{result['project_id']}-process-inbox-receipts",
@@ -6190,6 +6300,11 @@ def test_repository_materializes_accounting_department_without_git(
         result["role_ids"]["invoice_reviewer"],
         result["role_ids"]["tax_compliance_reviewer"],
     ]
+    assert profile.required_outcome_kinds == ["bokio_prepared_action"]
+    assert {
+        state.outcome_kind_definitions[definition_id].kind
+        for definition_id in result["outcome_kind_definition_ids"]
+    } == {"evidence_match", "bokio_prepared_action"}
     assert [criterion.id for criterion in profile.criteria] == [
         "supporting_documentation",
         "bokio_mapping",
@@ -9212,6 +9327,7 @@ def test_outcome_task_rejects_report_only_deliverable_and_completes_from_accepte
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _seed_outcome_kind(repo, "bokio_prepared_action")
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-outcome-task")
     state, created = _command_service(repo).create_task_command(
         session_id="session-lead",
@@ -9284,10 +9400,315 @@ def test_outcome_task_rejects_report_only_deliverable_and_completes_from_accepte
     assert task.completion.outcome_reference_ids == ["bokio-prepared-action-123"]
 
 
+def test_outcome_catalog_management_is_grant_and_scope_gated(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    commands = _command_service(repo)
+    admin = _team_admin_service(repo)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="manager",
+        dispatch_id="dispatch-manager-outcome-catalog",
+    )
+
+    unchanged, denied = commands.create_outcome_kind_command(
+        session_id="session-manager",
+        team_id="team",
+        kind="prepared_action",
+        name="Prepared action",
+        request_id="request-manager-outcome-kind-denied",
+    )
+
+    assert denied["success"] is False
+    assert denied["errors"][0]["code"] == "outcome_kind_management_forbidden"
+    assert unchanged.outcome_kind_definitions == {}
+
+    admin.update_role(
+        role_id="team__manager",
+        permissions=[
+            RolePermission.CREATE_ROOT_TASK,
+            RolePermission.MANAGE_OUTCOME_KINDS,
+        ],
+        expected_revision=repo.read().revision,
+    )
+    state, created = commands.create_outcome_kind_command(
+        session_id="session-manager",
+        team_id="team",
+        kind="prepared_action",
+        name="Team prepared action",
+        description="Produce a persistent action that another system can execute.",
+        request_id="request-manager-outcome-kind",
+    )
+
+    assert created["success"] is True
+    team_definition_id = created["outcome_kind_definition_id"]
+    inherited = effective_outcome_kind_definitions(
+        state,
+        team_id="team",
+        project_id="project",
+    )
+    assert inherited["prepared_action"].id == team_definition_id
+
+    admin.update_role(
+        role_id="project__backend",
+        permissions=[RolePermission.MANAGE_OUTCOME_KINDS],
+        expected_revision=repo.read().revision,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-backend-outcome-catalog",
+    )
+    unchanged, denied = commands.create_outcome_kind_command(
+        session_id="session-backend",
+        team_id="team",
+        project_id="project",
+        kind="backend_only",
+        name="Backend-only outcome",
+        request_id="request-backend-outcome-kind-denied",
+    )
+    assert denied["success"] is False
+    assert denied["errors"][0]["code"] == "outcome_kind_management_forbidden"
+    assert "backend_only" not in effective_outcome_kind_definitions(
+        unchanged,
+        team_id="team",
+        project_id="project",
+    )
+
+    admin.update_role(
+        role_id="project__project-lead",
+        permissions=[
+            RolePermission.CREATE_ROOT_TASK,
+            RolePermission.MANAGE_OUTCOME_KINDS,
+        ],
+        expected_revision=repo.read().revision,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-lead-outcome-catalog",
+    )
+    state, overridden = commands.create_outcome_kind_command(
+        session_id="session-lead",
+        team_id="team",
+        project_id="project",
+        kind="prepared_action",
+        name="Project-specific prepared action",
+        request_id="request-lead-outcome-kind",
+    )
+    assert overridden["success"] is True
+    project_definition_id = overridden["outcome_kind_definition_id"]
+    effective = effective_outcome_kind_definitions(
+        state,
+        team_id="team",
+        project_id="project",
+    )
+    assert effective["prepared_action"].id == project_definition_id
+
+    state, archived = commands.archive_outcome_kind_command(
+        session_id="session-lead",
+        definition_id=project_definition_id,
+        request_id="request-archive-project-outcome-kind",
+    )
+    assert archived["success"] is True
+    assert "prepared_action" not in effective_outcome_kind_definitions(
+        state,
+        team_id="team",
+        project_id="project",
+    )
+    assert (
+        effective_outcome_kind_definitions(
+            state,
+            team_id="team",
+            project_id="project",
+            include_archived=True,
+        )["prepared_action"].id
+        == project_definition_id
+    )
+
+
+def test_outcome_tasks_reject_unknown_catalog_kinds(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    with pytest.raises(ValueError, match="unknown or archived outcome kinds"):
+        _team_admin_service(repo).create_or_reprioritize_task(
+            task_id="unknown-outcome-task",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=10,
+            title="Produce an undefined outcome",
+            description="This task must not create an ad hoc outcome vocabulary.",
+            task_kind=TeamTaskKind.OUTCOME,
+            outcome_contract={
+                "required_outcome_kinds": ["invented_at_task_creation"],
+            },
+            expected_revision=repo.read().revision,
+        )
+
+    assert "unknown-outcome-task" not in repo.read().tasks
+
+
+def test_outcome_definition_snapshots_preserve_task_deliverable_and_review_semantics(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    _seed_outcome_kind(repo, "prepared_action")
+    _seed_outcome_kind(repo, "evidence_match")
+    definition_id = "outcome-kind-prepared_action"
+    initial_name = repo.read().outcome_kind_definitions[definition_id].name
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-create-snapshotted-task",
+    )
+    state, created = _command_service(repo).create_task_command(
+        session_id="session-lead",
+        task_id="snapshotted-task",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Prepare an action",
+        description="Produce a durable action using the current definition.",
+        task_kind="outcome",
+        outcome_contract={
+            "required_outcome_kinds": ["prepared_action"],
+            "match": "all",
+        },
+        request_id="request-create-snapshotted-task",
+    )
+    assert created["success"] is True
+    assert (
+        state.tasks["snapshotted-task"]
+        .outcome_contract.outcome_kind_definitions[0]
+        .name
+        == initial_name
+    )
+
+    state = admin.update_outcome_kind_definition(
+        definition_id=definition_id,
+        name="Prepared action v2",
+        expected_revision=state.revision,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-submit-snapshotted-outcome",
+    )
+    state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="snapshotted-task",
+        summary="Prepared the durable action.",
+        outcomes=[
+            {
+                "kind": "prepared_action",
+                "reference_ids": ["prepared-action:123"],
+                "evidence_refs": ["validation:123"],
+            }
+        ],
+        request_id="request-submit-snapshotted-outcome",
+    )
+    assert submitted["success"] is True
+    deliverable_id = submitted["deliverable_id"]
+    assert (
+        state.deliverables[deliverable_id].outcomes[0].definition_snapshot.name
+        == "Prepared action v2"
+    )
+
+    state = admin.create_review_profile(
+        profile_id="outcome-review-profile",
+        team_id="team",
+        project_id="project",
+        name="Outcome review",
+        required_outcome_kinds=["prepared_action"],
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="snapshotted-review",
+        deliverable_id=deliverable_id,
+        reviewer_agent_id="worker",
+        review_profile_id="outcome-review-profile",
+        expected_revision=state.revision,
+    )
+    state = admin.update_review_profile(
+        profile_id="outcome-review-profile",
+        required_outcome_kinds=["prepared_action", "evidence_match"],
+        expected_revision=state.revision,
+    )
+    state = admin.update_outcome_kind_definition(
+        definition_id=definition_id,
+        name="Prepared action v3",
+        expected_revision=state.revision,
+    )
+
+    assert (
+        state.tasks["snapshotted-task"]
+        .outcome_contract.outcome_kind_definitions[0]
+        .name
+        == initial_name
+    )
+    assert (
+        state.deliverables[deliverable_id].outcomes[0].definition_snapshot.name
+        == "Prepared action v2"
+    )
+    assert (
+        state.review_requests["snapshotted-review"]
+        .required_outcome_kind_definitions[0]
+        .name
+        == "Prepared action v2"
+    )
+    assert [
+        definition.kind
+        for definition in state.review_requests[
+            "snapshotted-review"
+        ].required_outcome_kind_definitions
+    ] == ["prepared_action"]
+
+
+def test_outcome_kind_archive_requires_active_review_profiles_to_release_it(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    _seed_outcome_kind(repo, "prepared_action")
+    state = admin.create_review_profile(
+        profile_id="active-outcome-profile",
+        team_id="team",
+        project_id="project",
+        name="Active outcome profile",
+        required_outcome_kinds=["prepared_action"],
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="used by review profile"):
+        admin.update_outcome_kind_definition(
+            definition_id="outcome-kind-prepared_action",
+            archived=True,
+            expected_revision=state.revision,
+        )
+
+    state = admin.update_review_profile(
+        profile_id="active-outcome-profile",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.update_outcome_kind_definition(
+        definition_id="outcome-kind-prepared_action",
+        archived=True,
+        expected_revision=state.revision,
+    )
+
+    assert state.outcome_kind_definitions[
+        "outcome-kind-prepared_action"
+    ].archived is True
+
+
 def test_outcome_task_rejects_evidence_only_deliverable_and_allows_evidenced_noop(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _seed_outcome_kind(repo, "existing_record")
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-noop-task")
     state, created = _command_service(repo).create_task_command(
         session_id="session-lead",
@@ -9388,6 +9809,8 @@ def test_request_review_implicitly_selects_profile_by_deliverable_outcome(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
+    _seed_outcome_kind(repo, "prepared_action")
+    _seed_outcome_kind(repo, "evidence_match")
     _team_admin_service(repo).record_deliverable(
         deliverable_id="deliverable",
         task_id="task",
@@ -13613,6 +14036,8 @@ def _seed_review_profile(
     criteria: list[ReviewProfileCriterion] | None = None,
     required_outcome_kinds: list[str] | None = None,
 ) -> None:
+    for kind in required_outcome_kinds or []:
+        _seed_outcome_kind(repo, kind, project_id=project_id)
     _team_admin_service(repo).create_review_profile(
         profile_id=profile_id,
         team_id="team",
@@ -13635,6 +14060,32 @@ def _seed_review_profile(
     )
 
 
+def _seed_outcome_kind(
+    repo: TeamStateRepository,
+    kind: str,
+    *,
+    project_id: str | None = "project",
+) -> None:
+    state = repo.read()
+    if any(
+        definition.team_id == "team"
+        and definition.project_id == project_id
+        and definition.kind == kind
+        for definition in state.outcome_kind_definitions.values()
+    ):
+        return
+    _team_admin_service(repo).create_outcome_kind_definition(
+        definition_id=f"outcome-kind-{kind}",
+        team_id="team",
+        project_id=project_id,
+        kind=kind,
+        name=kind.replace("_", " ").title(),
+        description=f"Definition for {kind}.",
+        reference_requirements="Provide a durable reference.",
+        evidence_requirements="Provide supporting evidence.",
+    )
+
+
 def test_create_update_archive_review_profile(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_review_profile(repo, required_outcome_kinds=["prepared_action"])
@@ -13648,6 +14099,7 @@ def test_create_update_archive_review_profile(tmp_path: Path) -> None:
     assert profile.applicable_role_ids == ["project__backend", "project__worker"]
     assert profile.archived is False
 
+    _seed_outcome_kind(repo, "final_action")
     state = _team_admin_service(repo).update_review_profile(
         profile_id="profile",
         name="Renamed review",

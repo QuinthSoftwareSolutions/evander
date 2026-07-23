@@ -82,11 +82,13 @@ from .mcp import (
     TEAM_CREATE_CASE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_GET_DELIVERABLE_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_LIST_OUTCOME_KINDS_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
@@ -189,7 +191,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 19
+TEAM_AGENT_GUIDANCE_VERSION = 20
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -4660,6 +4662,13 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "with durable reference_ids; reports and artifacts are supporting evidence "
         "and do not satisfy an outcome contract by themselves. Finish an allowed "
         "existing-record no-op with structured evidenced_noop completion evidence.\n"
+        f"- Outcome kinds are a controlled vocabulary. Inspect the wake context or "
+        f"use {TEAM_LIST_OUTCOME_KINDS_TOOL} before creating an outcome task; do "
+        "not invent kind strings. Use support tasks when no durable external result "
+        "is required. If no suitable kind exists and your role has "
+        "manage_outcome_kinds, create a project-scoped definition with "
+        f"{TEAM_CREATE_OUTCOME_KIND_TOOL}; otherwise escalate the catalog gap to "
+        "your operator.\n"
         "- When responding to a review_rejected inbox item, create a revised "
         "deliverable with supersedes_deliverable_id set to the "
         "payload's supersedes_deliverable_id.\n"
@@ -7146,6 +7155,18 @@ def _filtered_team_state_payload(
         for key, value in filtered.get("review_requests", {}).items()
         if value.get("deliverable_id") in visible_deliverable_ids
         and value.get("reviewer_agent_id") in visible_agent_ids
+    }
+    filtered["outcome_kind_definitions"] = {
+        key: value
+        for key, value in filtered.get(
+            "outcome_kind_definitions",
+            {},
+        ).items()
+        if value.get("team_id") in visible_team_ids
+        and (
+            value.get("project_id") is None
+            or value.get("project_id") in visible_project_ids
+        )
     }
     filtered["review_profiles"] = {
         key: {

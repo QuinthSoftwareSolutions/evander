@@ -47,6 +47,7 @@ from .deliverables import (
     _deliverable_verification_payload,
 )
 from .manager_fallback import _manager_fallback_review_decision_guard_error
+from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
 
 
@@ -262,6 +263,10 @@ def _apply_review_request(
         reviewer_agent_id=reviewer_id,
         state=TeamRecordState.PENDING,
         review_profile_id=profile_id,
+        required_outcome_kind_definitions=snapshot_review_profile_outcomes(
+            state,
+            profile=profile,
+        ),
         instructions=instructions,
         reviewed_commit_sha=reviewed_commit_sha,
         created_at=now,
@@ -305,6 +310,11 @@ def _apply_review_request(
                     "required": criterion.required,
                 }
                 for criterion in profile.criteria
+            ],
+            "required_outcome_kinds": list(profile.required_outcome_kinds),
+            "outcome_kind_definitions": [
+                definition.model_dump(mode="json")
+                for definition in review.required_outcome_kind_definitions
             ],
         }
     queue_actionable_inbox_item(
@@ -388,6 +398,14 @@ def retry_blocked_review(
                 else None
             )
         ),
+        required_outcome_kind_definitions=(
+            snapshot_review_profile_outcomes(state, profile=profile)
+            if profile is not None
+            else [
+                definition.model_copy(deep=True)
+                for definition in current.required_outcome_kind_definitions
+            ]
+        ),
         instructions=(
             f"Retry blocked review {current.id}. Reason: {normalized_reason}"
         ),
@@ -433,6 +451,11 @@ def retry_blocked_review(
             "description": profile.description,
             "criteria": [
                 criterion.model_dump(mode="json") for criterion in profile.criteria
+            ],
+            "required_outcome_kinds": list(profile.required_outcome_kinds),
+            "outcome_kind_definitions": [
+                definition.model_dump(mode="json")
+                for definition in retry.required_outcome_kind_definitions
             ],
         }
     queue_actionable_inbox_item(

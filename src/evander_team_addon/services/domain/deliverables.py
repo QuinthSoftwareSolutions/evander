@@ -137,7 +137,9 @@ def _validate_deliverable_outcomes_against_task_contract(
         return
 
     outcome_kinds = {outcome.kind for outcome in outcomes}
-    forbidden = sorted(outcome_kinds.intersection(contract.forbidden_effect_kinds))
+    forbidden = sorted(
+        outcome_kinds.intersection(contract.forbidden_outcome_kinds)
+    )
     if forbidden:
         raise ValueError("deliverable includes forbidden outcome kinds: " + ", ".join(forbidden))
 

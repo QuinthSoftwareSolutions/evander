@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-07-23 - Configurable Team Outcome Catalog
+
+- Added first-class team-wide and project-specific outcome-kind definitions with names,
+  plain-language semantics, durable-reference requirements, evidence requirements, project
+  override behavior, and archival.
+- Made the effective catalog visible to every project agent through Team read tools, lease and
+  wake context, and manager guidance; unknown or archived outcome kinds are rejected instead of
+  silently becoming ad hoc conventions.
+- Added the configurable `manage_outcome_kinds` role permission. Only a structurally matching
+  Team manager or project lead with that permission may mutate definitions through Team tools;
+  unlocked operators retain catalog administration through the Team API and Projects UI.
+- Snapshotted effective definitions into task outcome contracts, deliverable outcomes, and review
+  requests so later catalog edits do not change the historical meaning of existing work.
+- Migrated pre-catalog local task, deliverable, and review data into explicit definitions and
+  renamed the unreleased `forbidden_effect_kinds` contract field to
+  `forbidden_outcome_kinds`.
+
 ## 2026-07-23 - Superior Deliverable Decisions
 
 - Added `team_decide_deliverable` so the direct superior recorded on a plain deliverable handoff

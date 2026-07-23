@@ -452,9 +452,9 @@ the document to Bokio.
 ## Team Module Guidance
 
 A hierarchical agent-team module should live as an add-on outside Evander core.
-Team, manager, project lead, task, deliverable, review, and release-package
-schemas belong in that package. Only generic hooks that are useful to other
-add-ons should be proposed for Evander core.
+Team, manager, project lead, task, outcome-kind, deliverable, review, and
+release-package schemas belong in that package. Only generic hooks that are
+useful to other add-ons should be proposed for Evander core.
 
 The bundled `evander_team_addon` package provides the initial state-model layer
 for this pattern. It ships an `addon.json` manifest beside its `__init__.py`, so
@@ -597,13 +597,17 @@ name, optional project scope, default ephemeral policy, and permission list for
 that role. The Admin API exposes role CRUD at `/api/addons/team-addon/roles`,
 and the bundled UI includes role create/edit forms inside the `Teams` view;
 there is no separate top-level `Roles` view. Bundled
-permissions include `create_root_task`, `prepare_bookkeeping_action`,
-`review_bookkeeping_action`, `request_payment_preparation`, and
-`request_release`; release authorization checks the agent's role permission
-rather than an exact role name. The built-in `auto-dev-squad` template grants
-`request_release` to its project-scoped release-operator role, and the
-`accounting-department` template grants the bookkeeping permissions to its
-preparation and review roles.
+permissions include `create_root_task`, `manage_outcome_kinds`,
+`prepare_bookkeeping_action`, `review_bookkeeping_action`,
+`request_payment_preparation`, and `request_release`; authorization checks the
+agent's effective role permissions rather than exact role names.
+`manage_outcome_kinds` is deliberately not granted by default. A Team manager
+with a team-scoped grant may manage team-wide definitions, while a Team manager
+or project lead with an effective project-scoped grant may manage that project's
+definitions. The built-in `auto-dev-squad` template grants `request_release` to
+its project-scoped release-operator role, and the `accounting-department`
+template grants the bookkeeping permissions to its preparation and review
+roles.
 
 ### Case And Ticket Tracking
 
@@ -742,7 +746,10 @@ criteria for `scope`, `tests`, `risk`, and `handoff`. The accounting template
 seeds one bookkeeping-operations goal, five starter tasks for receipt,
 supplier-invoice, payment, and tax-compliance work, and one review profile with
 criteria for supporting documentation, Bokio mapping, tax treatment, and the
-human-approval boundary. Generated goal, task, and review-profile ids are
+human-approval boundary. It also defines the project outcome kinds
+`evidence_match` and `bokio_prepared_action`; the bookkeeping-action review
+profile requires the latter. Generated goal, outcome-kind, task, and
+review-profile ids are
 prefixed with the concrete `project.id`, so separate projects can be
 materialized from the same template without colliding.
 
@@ -947,6 +954,9 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_update_case`
 - `team_create_task`
 - `team_create_tasks`
+- `team_create_outcome_kind`
+- `team_update_outcome_kind`
+- `team_archive_outcome_kind`
 - `team_update_task`
 - `team_report_blocker`
 - `team_update_blocker`
@@ -1199,17 +1209,64 @@ instructions; review decisions can then record per-criterion outcomes. Archived
 profiles remain visible for history but cannot be assigned to new review
 requests through either Team MCP tools or the Admin API.
 
-Tasks that must produce an external or durable result can use
+#### Outcome Kinds, Outcome Tasks, And Deliverables
+
+In simple terms, an outcome kind is the team's shared definition of what
+"done" can mean. A support task asks an agent to help, investigate, coordinate,
+or report. An outcome task asks the agent to leave a particular durable result
+behind. The manager chooses from the project's known outcome kinds when creating
+that task. The agent then submits a deliverable that identifies the result,
+points to the durable thing that now exists, and supplies the evidence needed
+to verify it. A review can impose an additional reusable checklist before that
+deliverable is accepted.
+
+The complete relationship is:
+
+```text
+team/project outcome catalog
+  -> task outcome contract (definition snapshot)
+    -> deliverable outcome + durable references (definition snapshot)
+      -> review profile requirements
+        -> review request (definition snapshot)
+          -> accepted deliverable
+            -> accepted/completed task
+```
+
+Technically, `TeamState.outcome_kind_definitions` is a scoped catalog. Each
+definition stores a stable `kind`, display name, description,
+`reference_requirements`, and `evidence_requirements`. A project-specific
+definition overrides a team-wide definition with the same `kind`. Archiving that
+project definition intentionally hides the inherited team-wide kind for that
+project until the override is restored or replaced. Historical records remain
+valid because task contracts, deliverable outcomes, and review requests store
+immutable semantic snapshots rather than looking up mutable catalog text later.
+
+All project agents can inspect the effective catalog with
+`team_list_outcome_kinds` and `team_get_outcome_kind`; effective definitions are
+also included in bounded lease and wake context. Catalog mutations use
+`team_create_outcome_kind`, `team_update_outcome_kind`, and
+`team_archive_outcome_kind`. Those commands require both structural authority
+(Team manager or matching project lead) and the configurable
+`manage_outcome_kinds` role permission. Without that grant, an agent should ask
+its manager or operator to define the missing kind. Operators can manage the
+same records from the Projects UI or:
+
+- `GET`/`POST /api/addons/team-addon/outcome-kinds`
+- `GET`/`PATCH /api/addons/team-addon/outcome-kinds/{definition_id}`
+
+Tasks that must produce an external or durable result use
 `task_kind: outcome` and an `outcome_contract`. The contract names required
-deliverable outcome kinds, chooses `all` or `any` matching, can forbid outcome
-kinds, and may explicitly allow an evidence-backed no-op. Deliverables carry
-structured outcome kinds, durable reference IDs, and evidence references. A
-report-only deliverable cannot satisfy an outcome task, and a review profile can
-require specific outcome kinds before review is requested or accepted. Ordinary
-coordination tasks remain `task_kind: support` and finish without inventing a
-deliverable. When several profiles apply to the same reviewer role, their
-required outcome kinds also select the implicit profile; callers still pass
-`review_profile_id` when more than one matching profile remains.
+catalog kinds, chooses `all` or `any` matching, can list
+`forbidden_outcome_kinds`, and may explicitly allow an evidence-backed no-op.
+Unknown or archived kinds are rejected. Deliverables carry structured outcome
+kinds, durable reference IDs, evidence references, and the applicable definition
+snapshot. A report-only deliverable cannot satisfy an outcome task, and a review
+profile can require specific active catalog kinds before review is requested or
+accepted. Ordinary coordination tasks remain `task_kind: support` and finish
+without inventing a deliverable. When several profiles apply to the same
+reviewer role, their required outcome kinds also select the implicit profile;
+callers still pass `review_profile_id` when more than one matching profile
+remains.
 
 Every outcome submitted for an outcome task must carry durable `reference_ids`;
 evidence-only completion belongs on the explicit `evidenced_noop` task

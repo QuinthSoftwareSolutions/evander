@@ -1407,80 +1407,142 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
     tmp_path: Path,
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    client = _client(tmp_path)
 
-    response = client.post(
-        "/api/addons/team-addon/tasks",
-        json={
-            "id": "outcome-task",
-            "owner_agent_id": "backend",
-            "project_id": "project",
-            "priority": 20,
-            "title": "Prepare an external action",
-            "description": "Produce a durable action, not only a report.",
-            "created_by_agent_id": "lead",
-            "task_kind": "outcome",
-            "outcome_contract": {
-                "required_outcome_kinds": ["prepared_action"],
-                "match": "all",
-                "allow_evidenced_noop": False,
-                "forbidden_effect_kinds": ["report"],
-            },
-            "expected_revision": repo.read().revision,
-        },
-    )
+    async def _exercise() -> None:
+        app = create_app(
+            build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            unlock = await client.post("/api/admin/privileged/unlock")
+            assert unlock.status_code == 200
 
-    assert response.status_code == 201, response.text
-    task = response.json()["tasks"]["outcome-task"]
-    assert task["task_kind"] == "outcome"
-    assert task["outcome_contract"] == {
-        "required_outcome_kinds": ["prepared_action"],
-        "match": "all",
-        "allow_evidenced_noop": False,
-        "forbidden_effect_kinds": ["report"],
-    }
+            for kind in ("prepared_action", "report"):
+                definition_response = await client.post(
+                    "/api/addons/team-addon/outcome-kinds",
+                    json={
+                        "id": f"outcome-kind-{kind}",
+                        "team_id": "team",
+                        "project_id": "project",
+                        "kind": kind,
+                        "name": kind.replace("_", " ").title(),
+                        "description": f"Definition for {kind}.",
+                        "reference_requirements": "Provide a durable reference.",
+                        "expected_revision": repo.read().revision,
+                    },
+                )
+                assert definition_response.status_code == 201, definition_response.text
 
-    report_only = client.post(
-        "/api/addons/team-addon/deliverables",
-        json={
-            "id": "report-only-deliverable",
-            "task_id": "outcome-task",
-            "producer_agent_id": "backend",
-            "summary": "Only a report was produced.",
-            "outcomes": [
-                {
-                    "kind": "report",
-                    "reference_ids": ["arbitrary-report-reference"],
-                }
-            ],
-            "expected_revision": response.json()["revision"],
-        },
-    )
+            response = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "outcome-task",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 20,
+                    "title": "Prepare an external action",
+                    "description": "Produce a durable action, not only a report.",
+                    "created_by_agent_id": "lead",
+                    "task_kind": "outcome",
+                    "outcome_contract": {
+                        "required_outcome_kinds": ["prepared_action"],
+                        "match": "all",
+                        "allow_evidenced_noop": False,
+                        "forbidden_outcome_kinds": ["report"],
+                    },
+                    "expected_revision": repo.read().revision,
+                },
+            )
 
-    assert report_only.status_code == 400
-    assert "forbidden outcome" in report_only.text
-    assert "report-only-deliverable" not in repo.read().deliverables
+            assert response.status_code == 201, response.text
+            task = response.json()["tasks"]["outcome-task"]
+            assert task["task_kind"] == "outcome"
+            assert task["outcome_contract"]["required_outcome_kinds"] == [
+                "prepared_action"
+            ]
+            assert task["outcome_contract"]["match"] == "all"
+            assert task["outcome_contract"]["allow_evidenced_noop"] is False
+            assert task["outcome_contract"]["forbidden_outcome_kinds"] == ["report"]
+            assert {
+                definition["kind"]
+                for definition in task["outcome_contract"][
+                    "outcome_kind_definitions"
+                ]
+            } == {"prepared_action", "report"}
 
-    evidence_only = client.post(
-        "/api/addons/team-addon/deliverables",
-        json={
-            "id": "evidence-only-deliverable",
-            "task_id": "outcome-task",
-            "producer_agent_id": "backend",
-            "summary": "The action was described but not persisted.",
-            "outcomes": [
-                {
-                    "kind": "prepared_action",
-                    "evidence_refs": ["report:prepared-action"],
-                }
-            ],
-            "expected_revision": response.json()["revision"],
-        },
-    )
+            report_only = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "report-only-deliverable",
+                    "task_id": "outcome-task",
+                    "producer_agent_id": "backend",
+                    "summary": "Only a report was produced.",
+                    "outcomes": [
+                        {
+                            "kind": "report",
+                            "reference_ids": ["arbitrary-report-reference"],
+                        }
+                    ],
+                    "expected_revision": response.json()["revision"],
+                },
+            )
 
-    assert evidence_only.status_code == 400
-    assert "reference_ids" in evidence_only.text
-    assert "evidence-only-deliverable" not in repo.read().deliverables
+            assert report_only.status_code == 400
+            assert "forbidden outcome" in report_only.text
+            assert "report-only-deliverable" not in repo.read().deliverables
+
+            evidence_only = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "evidence-only-deliverable",
+                    "task_id": "outcome-task",
+                    "producer_agent_id": "backend",
+                    "summary": "The action was described but not persisted.",
+                    "outcomes": [
+                        {
+                            "kind": "prepared_action",
+                            "evidence_refs": ["report:prepared-action"],
+                        }
+                    ],
+                    "expected_revision": response.json()["revision"],
+                },
+            )
+
+            assert evidence_only.status_code == 400
+            assert "reference_ids" in evidence_only.text
+            assert "evidence-only-deliverable" not in repo.read().deliverables
+
+            listing = await client.get("/api/addons/team-addon/outcome-kinds")
+            assert listing.status_code == 200
+            assert {
+                definition["id"]
+                for definition in listing.json()["outcome_kind_definitions"]
+            } == {"outcome-kind-prepared_action", "outcome-kind-report"}
+            updated = await client.patch(
+                "/api/addons/team-addon/outcome-kinds/outcome-kind-prepared_action",
+                json={
+                    "name": "Prepared Action Updated",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert updated.status_code == 200, updated.text
+            detail = await client.get(
+                "/api/addons/team-addon/outcome-kinds/"
+                "outcome-kind-prepared_action"
+            )
+            assert detail.status_code == 200
+            assert detail.json()["name"] == "Prepared Action Updated"
+            task_snapshot = (
+                repo.read()
+                .tasks["outcome-task"]
+                .outcome_contract.outcome_kind_definitions[0]
+            )
+            assert task_snapshot.name == "Prepared Action"
+
+    asyncio.run(_exercise())
 
 
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(

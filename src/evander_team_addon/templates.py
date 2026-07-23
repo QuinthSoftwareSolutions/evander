@@ -108,6 +108,7 @@ class TemplateReviewProfile(TemplateModel):
     project_scoped: bool = True
     applicable_role_keys: list[str] = Field(default_factory=list)
     criteria: list[ReviewProfileCriterion] = Field(default_factory=list)
+    required_outcome_kinds: list[str] = Field(default_factory=list)
 
     @field_validator("id", "name", mode="before")
     @classmethod
@@ -124,10 +125,39 @@ class TemplateReviewProfile(TemplateModel):
     def _applicable_role_keys(cls, value: object) -> list[str]:
         return _unique_text_list(value, "applicable_role_keys")
 
+    @field_validator("required_outcome_kinds", mode="before")
+    @classmethod
+    def _required_outcome_kinds(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "required_outcome_kinds")
+
     @model_validator(mode="after")
     def _validate_criteria(self) -> "TemplateReviewProfile":
         _ensure_unique([criterion.id for criterion in self.criteria], "review profile criteria")
         return self
+
+
+class TemplateOutcomeKind(TemplateModel):
+    kind: str
+    name: str
+    description: str = ""
+    reference_requirements: str = ""
+    evidence_requirements: str = ""
+    project_scoped: bool = True
+
+    @field_validator("kind", "name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "description",
+        "reference_requirements",
+        "evidence_requirements",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str:
+        return _optional_text(value) or ""
 
 
 class TeamTemplate(TemplateModel):
@@ -140,6 +170,7 @@ class TeamTemplate(TemplateModel):
     required_fields: list[TemplateRequiredField] = Field(default_factory=list)
     project_goals: list[ProjectGoal] = Field(default_factory=list)
     tasks: list[TemplateTask] = Field(default_factory=list)
+    outcome_kinds: list[TemplateOutcomeKind] = Field(default_factory=list)
     review_profiles: list[TemplateReviewProfile] = Field(default_factory=list)
 
     @field_validator("id", "name", "root_role_key", mode="before")
@@ -163,6 +194,10 @@ class TeamTemplate(TemplateModel):
         _ensure_unique([field.path for field in self.required_fields], "required field paths")
         _ensure_unique([goal.id for goal in self.project_goals], "project goal ids")
         _ensure_unique([task.id for task in self.tasks], "task ids")
+        _ensure_unique(
+            [definition.kind for definition in self.outcome_kinds],
+            "outcome kinds",
+        )
         _ensure_unique([profile.id for profile in self.review_profiles], "review profile ids")
 
         role_map = {role.key: role for role in self.roles}
@@ -223,6 +258,17 @@ class TeamTemplate(TemplateModel):
                     )
 
         for profile in self.review_profiles:
+            known_outcome_kinds = {
+                definition.kind for definition in self.outcome_kinds
+            }
+            missing_outcomes = sorted(
+                set(profile.required_outcome_kinds) - known_outcome_kinds
+            )
+            if missing_outcomes:
+                raise ValueError(
+                    f"review profile {profile.id} references missing outcome "
+                    f"kinds: {', '.join(missing_outcomes)}"
+                )
             for role_key in profile.applicable_role_keys:
                 if role_key not in role_map:
                     raise ValueError(
@@ -659,6 +705,44 @@ _ACCOUNTING_DEPARTMENT_TEMPLATE = {
             "state": "pending",
         }
     ],
+    "outcome_kinds": [
+        {
+            "kind": "evidence_match",
+            "name": "Evidence Match",
+            "description": (
+                "A durable source-to-Bokio match or an explicit unmatched or "
+                "blocked disposition."
+            ),
+            "reference_requirements": (
+                "Reference the source record identifiers and matching Bokio "
+                "transaction or evidence identifiers. Unmatched work must "
+                "reference its durable case or blocker."
+            ),
+            "evidence_requirements": (
+                "Cite the amount, date, currency, counterparty, and account "
+                "match basis together with durable Bokio duplicate-check evidence."
+            ),
+            "project_scoped": True,
+        },
+        {
+            "kind": "bokio_prepared_action",
+            "name": "Bokio Prepared Action",
+            "description": (
+                "A prepared-only Bokio bookkeeping action ready for independent "
+                "review and human approval; it does not assert that the action "
+                "was approved or posted."
+            ),
+            "reference_requirements": (
+                "Reference the prepared Bokio supplier invoice, journal entry, "
+                "or bank payment identifier."
+            ),
+            "evidence_requirements": (
+                "Cite supporting documents, Bokio account and counterparty "
+                "mapping, tax treatment, and the applicable human approval boundary."
+            ),
+            "project_scoped": True,
+        },
+    ],
     "tasks": [
         {
             "id": "process-inbox-receipts",
@@ -728,6 +812,7 @@ _ACCOUNTING_DEPARTMENT_TEMPLATE = {
             ),
             "project_scoped": True,
             "applicable_role_keys": ["invoice_reviewer", "tax_compliance_reviewer"],
+            "required_outcome_kinds": ["bokio_prepared_action"],
             "criteria": [
                 {
                     "id": "supporting_documentation",
@@ -817,6 +902,7 @@ __all__ = [
     "TemplateReviewProfile",
     "TemplateRole",
     "TemplateTask",
+    "TemplateOutcomeKind",
     "get_template",
     "template_catalog",
 ]

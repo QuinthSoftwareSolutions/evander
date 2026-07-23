@@ -16,6 +16,7 @@ MAX_SUBORDINATE_IDS = 20
 MAX_SUBORDINATES = 12
 MAX_TASKS = 10
 MAX_PROJECTS = 8
+MAX_OUTCOME_KINDS = 20
 MAX_INBOX = 10
 MAX_BLOCKERS = 8
 MAX_CASES = 8
@@ -83,6 +84,24 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
             MAX_PROJECTS,
             omitted_counts,
             "projects",
+        )
+
+    outcome_kinds = sorted(
+        (
+            _compact_outcome_kind(row)
+            for row in _mapping_rows(lease.get("outcome_kinds"))
+        ),
+        key=lambda row: (
+            _sort_text(row.get("effective_project_id")),
+            _sort_text(row.get("kind")),
+        ),
+    )
+    if outcome_kinds:
+        context["outcome_kinds"] = _limited_rows(
+            outcome_kinds,
+            MAX_OUTCOME_KINDS,
+            omitted_counts,
+            "outcome_kinds",
         )
 
     inbox_rows, non_pending_inbox_count = _pending_inbox_rows(lease.get("inbox"))
@@ -382,6 +401,30 @@ def _compact_project(project: Mapping[str, Any]) -> dict[str, Any]:
             }
             for source in blocking_sources[:ID_LIST_LIMIT]
         ]
+    return row
+
+
+def _compact_outcome_kind(definition: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        definition,
+        (
+            "id",
+            "kind",
+            "name",
+            "team_id",
+            "project_id",
+            "effective_project_id",
+            "inherited",
+        ),
+    )
+    for field_name in (
+        "description",
+        "reference_requirements",
+        "evidence_requirements",
+    ):
+        value = _trim_text(definition.get(field_name), 640)
+        if value:
+            row[field_name] = value
     return row
 
 

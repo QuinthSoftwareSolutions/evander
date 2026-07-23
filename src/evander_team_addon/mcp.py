@@ -57,6 +57,7 @@ from .services.commands import (
     TeamMemoryCommandService,
     TeamNoteCommandService,
     TeamOperatorEscalationCommandService,
+    TeamOutcomeCatalogCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
@@ -87,6 +88,9 @@ TEAM_CREATE_CASE_TOOL = "team_create_case"
 TEAM_UPDATE_CASE_TOOL = "team_update_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
+TEAM_CREATE_OUTCOME_KIND_TOOL = "team_create_outcome_kind"
+TEAM_UPDATE_OUTCOME_KIND_TOOL = "team_update_outcome_kind"
+TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
 TEAM_UPDATE_GOAL_TOOL = "team_update_goal"
 TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
@@ -130,6 +134,8 @@ TEAM_GET_AGENT_TOOL = "team_get_agent"
 TEAM_GET_MY_IDENTITY_TOOL = "team_get_my_identity"
 TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
 TEAM_GET_PROJECT_TOOL = "team_get_project"
+TEAM_LIST_OUTCOME_KINDS_TOOL = "team_list_outcome_kinds"
+TEAM_GET_OUTCOME_KIND_TOOL = "team_get_outcome_kind"
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = "team_list_runtime_attention"
 TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
 
@@ -150,6 +156,9 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_UPDATE_OUTCOME_KIND_TOOL,
+    TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
@@ -198,6 +207,8 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
+    TEAM_LIST_OUTCOME_KINDS_TOOL,
+    TEAM_GET_OUTCOME_KIND_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
     TEAM_SEARCH_MEMORY_TOOL,
 )
@@ -218,6 +229,9 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_UPDATE_OUTCOME_KIND_TOOL,
+    TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
@@ -263,6 +277,9 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_UPDATE_OUTCOME_KIND_TOOL,
+    TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
@@ -333,6 +350,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
     task_creation_commands = TeamTaskCreationCommandService(repo)
+    outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
     task_update_commands = TeamTaskUpdateCommandService(repo)
     agent_control_commands = TeamAgentControlCommandService(repo)
     governance_commands = TeamGovernanceCommandService(repo)
@@ -440,6 +458,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         case_commands,
         task_creation_commands,
         task_update_commands,
+        outcome_catalog_commands,
         blocker_commands,
         agent_control_commands,
         resolver,
@@ -1031,6 +1050,7 @@ def _register_slice6_tools(
     case_commands: TeamCaseCommandService,
     task_creation_commands: TeamTaskCreationCommandService,
     task_update_commands: TeamTaskUpdateCommandService,
+    outcome_catalog_commands: TeamOutcomeCatalogCommandService,
     blocker_commands: TeamBlockerCommandService,
     agent_control_commands: TeamAgentControlCommandService,
     resolver: TeamMcpContextResolver,
@@ -1228,6 +1248,120 @@ def _register_slice6_tools(
         team_create_tasks,
         name=TEAM_CREATE_TASKS_TOOL,
         description="Create a batch of Team tasks all-or-nothing.",
+    )
+
+    def team_create_outcome_kind(
+        team_id: str,
+        kind: str,
+        name: str,
+        request_id: str,
+        project_id: str | None = None,
+        definition_id: str | None = None,
+        description: str = "",
+        reference_requirements: str = "",
+        evidence_requirements: str = "",
+        handled_inbox_item_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_CREATE_OUTCOME_KIND_TOOL,
+        )
+        try:
+            _state, result = outcome_catalog_commands.create_outcome_kind_command(
+                session_id=caller.session_id,
+                team_id=team_id,
+                project_id=project_id,
+                definition_id=definition_id,
+                kind=kind,
+                name=name,
+                description=description,
+                reference_requirements=reference_requirements,
+                evidence_requirements=evidence_requirements,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_create_outcome_kind,
+        name=TEAM_CREATE_OUTCOME_KIND_TOOL,
+        description=(
+            "Create a defined Team outcome kind. Requires manage_outcome_kinds "
+            "and matching team-manager or project-lead scope."
+        ),
+    )
+
+    def team_update_outcome_kind(
+        definition_id: str,
+        request_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        reference_requirements: str | None = None,
+        evidence_requirements: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_UPDATE_OUTCOME_KIND_TOOL,
+        )
+        try:
+            _state, result = outcome_catalog_commands.update_outcome_kind_command(
+                session_id=caller.session_id,
+                definition_id=definition_id,
+                name=name,
+                description=description,
+                reference_requirements=reference_requirements,
+                evidence_requirements=evidence_requirements,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_update_outcome_kind,
+        name=TEAM_UPDATE_OUTCOME_KIND_TOOL,
+        description=(
+            "Update an outcome kind's human meaning and reference/evidence "
+            "requirements. Existing task and review snapshots do not change."
+        ),
+    )
+
+    def team_archive_outcome_kind(
+        definition_id: str,
+        request_id: str,
+        archived: bool = True,
+        handled_inbox_item_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
+        )
+        try:
+            _state, result = outcome_catalog_commands.archive_outcome_kind_command(
+                session_id=caller.session_id,
+                definition_id=definition_id,
+                archived=archived,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_archive_outcome_kind,
+        name=TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
+        description=(
+            "Archive or restore an outcome kind definition. Active review "
+            "profile references must be removed before archival."
+        ),
     )
 
     def team_update_task(
@@ -2814,6 +2948,64 @@ def _register_read_tools(
         team_get_project,
         name=TEAM_GET_PROJECT_TOOL,
         description="Get one visible Team project.",
+    )
+
+    def team_list_outcome_kinds(
+        session_id: str | None = None,
+        project_id: str | None = None,
+        team_id: str | None = None,
+        include_archived: bool = False,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_OUTCOME_KINDS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_outcome_kinds(
+                project_id=project_id,
+                team_id=team_id,
+                include_archived=include_archived,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_outcome_kinds,
+        name=TEAM_LIST_OUTCOME_KINDS_TOOL,
+        description=(
+            "List the effective, defined outcome vocabulary for a visible "
+            "project or the team-wide catalog."
+        ),
+    )
+
+    def team_get_outcome_kind(
+        definition_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_OUTCOME_KIND_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_outcome_kind(definition_id),
+            caller=caller,
+            record_name="outcome_kind",
+            record_id=definition_id,
+        )
+
+    server.add_tool(
+        team_get_outcome_kind,
+        name=TEAM_GET_OUTCOME_KIND_TOOL,
+        description=(
+            "Get one visible outcome kind definition including its durable "
+            "reference and evidence requirements."
+        ),
     )
 
     def team_list_runtime_attention(

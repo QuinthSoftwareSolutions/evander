@@ -117,6 +117,7 @@ const teamStateCollectionKeys = [
   "tasks",
   "deliverables",
   "review_requests",
+  "outcome_kind_definitions",
   "review_profiles",
   "memories",
   "inbox",
@@ -323,6 +324,7 @@ let tooltipCounter = 0;
 
 const rolePermissionTooltips = {
   create_root_task: "Allows this role to create top-level project tasks instead of only subtasks inside existing work.",
+  manage_outcome_kinds: "Allows a team manager or project lead with this role to create, edit, and archive outcome-kind definitions within their authority scope.",
   prepare_bookkeeping_action: "Allows this role to prepare local Bokio bookkeeping actions for review and human approval.",
   request_payment_preparation: "Allows this role to prepare payment work for human approval and BankID signing in Bokio.",
   request_release: "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
@@ -548,6 +550,7 @@ function emptyState() {
     tasks: {},
     deliverables: {},
     review_requests: {},
+    outcome_kind_definitions: {},
     review_profiles: {},
     inbox: {},
     blockers: {},
@@ -9580,6 +9583,7 @@ function renderProjectFocusDetail(project) {
     .sort(compareProjectReleasesLatest);
   const projectProfiles = projectSpecificReviewProfiles(project);
   const teamProfiles = teamWideReviewProfilesForProject(project);
+  const outcomeKinds = outcomeKindDefinitionsForProject(project);
   const projectAgents = values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => agentProjectIds(agent).includes(project.id))
@@ -9633,6 +9637,16 @@ function renderProjectFocusDetail(project) {
     <section class="project-review-profile-panel">
       <div class="projects-detail-section-header">
         <div>
+          <p class="section-label">Outcome catalog</p>
+          <h3>Defined project outcomes</h3>
+        </div>
+      </div>
+      ${renderProjectOutcomeKinds(outcomeKinds)}
+      ${renderProjectOutcomeKindCreateForm(project)}
+    </section>
+    <section class="project-review-profile-panel">
+      <div class="projects-detail-section-header">
+        <div>
           <p class="section-label">Review profile</p>
           <h3>Project review profiles</h3>
         </div>
@@ -9640,6 +9654,103 @@ function renderProjectFocusDetail(project) {
       ${renderProjectReviewProfiles(projectProfiles, teamProfiles)}
       ${renderProjectReviewProfileCreatePanel(project)}
     </section>
+  `;
+}
+
+function effectiveOutcomeKindsForProject(project) {
+  const byKind = new Map();
+  values(state.outcome_kind_definitions)
+    .filter((definition) => definition.team_id === project.team_id && !definition.project_id)
+    .sort(byId)
+    .forEach((definition) => {
+      if (!definition.archived) byKind.set(definition.kind, { ...definition, inherited: true });
+    });
+  values(state.outcome_kind_definitions)
+    .filter((definition) => definition.project_id === project.id)
+    .sort(byId)
+    .forEach((definition) => {
+      if (definition.archived) byKind.delete(definition.kind);
+      else byKind.set(definition.kind, { ...definition, inherited: false });
+    });
+  return Array.from(byKind.values()).sort((left, right) =>
+    text(left.kind).localeCompare(text(right.kind)) || byId(left, right),
+  );
+}
+
+function outcomeKindDefinitionsForProject(project) {
+  const effectiveIds = new Set(
+    effectiveOutcomeKindsForProject(project).map((definition) => definition.id),
+  );
+  return values(state.outcome_kind_definitions)
+    .filter((definition) =>
+      definition.team_id === project.team_id
+      && (!definition.project_id || definition.project_id === project.id)
+    )
+    .map((definition) => ({
+      ...definition,
+      inherited: !definition.project_id,
+      effective: effectiveIds.has(definition.id),
+    }))
+    .sort((left, right) =>
+      text(left.kind).localeCompare(text(right.kind))
+      || Number(left.inherited) - Number(right.inherited)
+      || byId(left, right),
+    );
+}
+
+function renderProjectOutcomeKinds(definitions) {
+  if (!definitions.length) {
+    return `<p class="empty-state">No outcome kinds are defined for this project.</p>`;
+  }
+  return `
+    <ul class="review-list compact-record-list">
+      ${definitions.map((definition) => `
+        <li class="record-item compact-record-card">
+          <details>
+            <summary class="compact-record-summary">
+              <span class="compact-record-main">
+                <strong>${escapeHtml(definition.name)}</strong>
+                <span>
+                  ${escapeHtml(definition.kind)}
+                  - ${definition.inherited ? "team-wide" : "project"}
+                  - ${definition.archived ? "archived" : definition.effective ? "effective" : "overridden"}
+                </span>
+              </span>
+            </summary>
+            <div class="compact-record-body">
+              <div class="record-actions">${editButton("outcome-kind", definition.id)}</div>
+              ${definition.description ? `<div class="meta-line">${escapeHtml(definition.description)}</div>` : ""}
+              ${definition.reference_requirements ? `<div class="meta-line"><strong>References:</strong> ${escapeHtml(definition.reference_requirements)}</div>` : ""}
+              ${definition.evidence_requirements ? `<div class="meta-line"><strong>Evidence:</strong> ${escapeHtml(definition.evidence_requirements)}</div>` : ""}
+            </div>
+          </details>
+        </li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+function renderProjectOutcomeKindCreateForm(project) {
+  return `
+    <form
+      class="project-review-profile-form"
+      data-form-id="create-outcome-kind-form"
+      data-endpoint="/outcome-kinds"
+      data-method="POST"
+      data-delegated-create-form
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(project.team_id)}" />
+      <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
+      <div class="project-review-profile-fields">
+        <label>Kind <input name="kind" required placeholder="durable_result_kind" /></label>
+        <label>Name <input name="name" required /></label>
+        <label><input type="checkbox" name="team_wide" /> Team-wide definition</label>
+        <label>Description <textarea name="description" rows="2" required></textarea></label>
+        <label>Reference requirements <textarea name="reference_requirements" rows="2" required></textarea></label>
+        <label>Evidence requirements <textarea name="evidence_requirements" rows="2"></textarea></label>
+      </div>
+      <button type="submit">Add outcome kind</button>
+    </form>
   `;
 }
 
@@ -10033,6 +10144,7 @@ function renderProjectReviewProfileCreateForm(project) {
         <label>Name <input name="name" required /></label>
         <label>Description <textarea name="description" rows="2"></textarea></label>
         <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="project-review-roles"></select></label>
+        <label>Required outcome kinds <select name="required_outcome_kinds" multiple size="4" data-options="project-outcome-kinds"></select></label>
       </div>
       ${renderReviewProfileCriteriaEditor()}
       <button type="submit">Create profile</button>
@@ -10932,6 +11044,7 @@ function renderCompactReviewProfile(profile) {
           </div>
           <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
           ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
+          ${(profile.required_outcome_kinds || []).length ? `<div class="meta-line">Required outcomes: ${escapeHtml(profile.required_outcome_kinds.join(", "))}</div>` : ""}
           ${renderProfileCriteria(criteria)}
         </div>
       </details>
@@ -12400,6 +12513,26 @@ function buildSelectOptionSets() {
     .filter(isVisibleReviewProfile)
     .sort(byId)
     .map((profile) => [profile.id, `${profile.name} (${profile.id})`]);
+  const selectedProject = state.projects[selectedProjectFocusId] || null;
+  const projectOutcomeKinds = selectedProject
+    ? effectiveOutcomeKindsForProject(selectedProject).map((definition) => [
+        definition.kind,
+        `${definition.name} (${definition.kind})`,
+      ])
+    : [];
+  const teamOutcomeKinds = selectedProject
+    ? values(state.outcome_kind_definitions)
+        .filter((definition) =>
+          definition.team_id === selectedProject.team_id
+          && !definition.project_id
+          && !definition.archived
+        )
+        .sort((left, right) => text(left.kind).localeCompare(text(right.kind)) || byId(left, right))
+        .map((definition) => [
+          definition.kind,
+          `${definition.name} (${definition.kind})`,
+        ])
+    : [];
   const releasePackages = values(state.release_packages)
     .sort(byId)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
@@ -12409,6 +12542,8 @@ function buildSelectOptionSets() {
     projects,
     roles,
     "project-review-roles": projectReviewRoleOptionsForProject(selectedProjectFocusId),
+    "project-outcome-kinds": projectOutcomeKinds,
+    "team-outcome-kinds": teamOutcomeKinds,
     agents,
     "agents-by-display-name": agentsByDisplayName,
     cases,
@@ -12917,6 +13052,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     [/^\/review-requests\/([^/]+)\/decision$/, "review_requests"],
     [/^\/action-records\/([^/]+)\/dismiss$/, "action_records"],
     [/^\/review-profiles\/([^/]+)$/, "review_profiles"],
+    [/^\/outcome-kinds\/([^/]+)$/, "outcome_kind_definitions"],
   ];
   for (const [pattern, collection] of directTargets) {
     const match = path.match(pattern);
@@ -12939,6 +13075,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     "/deliverables": ["deliverables", payload.id || payload.deliverable_id],
     "/review-requests": ["review_requests", payload.id || payload.review_request_id],
     "/review-profiles": ["review_profiles", payload.id || payload.review_profile_id],
+    "/outcome-kinds": ["outcome_kind_definitions", payload.id || payload.definition_id],
   };
   const create = createCollections[path];
   if (!create) {
@@ -14386,6 +14523,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
+      required_outcome_kinds: splitList(data.required_outcome_kinds),
       criteria: reviewProfileCriteriaFromForm(form),
     };
     const projectId = text(data.project_id);
@@ -14393,6 +14531,17 @@ function payloadForForm(form, data = formData(form)) {
       payload.project_id = projectId;
     }
     return payload;
+  }
+  if (formId === "create-outcome-kind-form") {
+    return {
+      team_id: text(data.team_id),
+      project_id: form.elements.team_wide?.checked ? null : text(data.project_id) || null,
+      kind: text(data.kind),
+      name: text(data.name),
+      description: text(data.description),
+      reference_requirements: text(data.reference_requirements),
+      evidence_requirements: text(data.evidence_requirements),
+    };
   }
   if (formId === "record-deliverable-form") {
     const payload = {
@@ -14585,6 +14734,7 @@ function recordForEdit(type, id) {
   if (type === "case") return state.cases[id] || null;
   if (type === "task") return state.tasks[id] || null;
   if (type === "review-profile") return state.review_profiles[id] || null;
+  if (type === "outcome-kind") return state.outcome_kind_definitions[id] || null;
   return null;
 }
 
@@ -14597,6 +14747,7 @@ function editEndpoint(type, id) {
   if (type === "case") return `/cases/${encodeURIComponent(id)}`;
   if (type === "task") return `/tasks/${encodeURIComponent(id)}`;
   if (type === "review-profile") return `/review-profiles/${encodeURIComponent(id)}`;
+  if (type === "outcome-kind") return `/outcome-kinds/${encodeURIComponent(id)}`;
   throw new Error(`Unknown edit type ${type}`);
 }
 
@@ -14610,6 +14761,7 @@ function editDialogTitle(type, record) {
     case: "case",
     task: "task",
     "review-profile": "review profile",
+    "outcome-kind": "outcome kind",
   };
   return `Edit ${labels[type] || "record"} ${record.id || ""}`.trim();
 }
@@ -14729,6 +14881,9 @@ function renderEditFields(type, record) {
     `;
   }
   if (type === "review-profile") {
+    const outcomeOptionSet = record.project_id
+      ? "project-outcome-kinds"
+      : "team-outcome-kinds";
     return `
       ${readonlyField("Profile ID", record.id)}
       ${readonlyField("Team", record.team_id)}
@@ -14736,7 +14891,21 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
       ${multiSelectField("Applicable roles", "applicable_role_ids", "roles", record.applicable_role_ids || [], { size: 4 })}
+      ${multiSelectField("Required outcome kinds", "required_outcome_kinds", outcomeOptionSet, record.required_outcome_kinds || [], { size: 4 })}
       ${renderReviewProfileCriteriaEditor(record.criteria || [])}
+      ${checkboxField("Archived", "archived", Boolean(record.archived))}
+    `;
+  }
+  if (type === "outcome-kind") {
+    return `
+      ${readonlyField("Definition ID", record.id)}
+      ${readonlyField("Kind", record.kind)}
+      ${readonlyField("Team", record.team_id)}
+      ${readonlyField("Project", record.project_id || "Team-wide")}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${textareaField("Description", "description", record.description || "", { rows: 3 })}
+      ${textareaField("Reference requirements", "reference_requirements", record.reference_requirements || "", { rows: 3 })}
+      ${textareaField("Evidence requirements", "evidence_requirements", record.evidence_requirements || "", { rows: 3 })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -14890,7 +15059,17 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
+      required_outcome_kinds: splitList(data.required_outcome_kinds),
       criteria: reviewProfileCriteriaFromForm(form),
+      archived: Boolean(form.elements.archived?.checked),
+    };
+  }
+  if (type === "outcome-kind") {
+    return {
+      name: text(data.name),
+      description: text(data.description),
+      reference_requirements: text(data.reference_requirements),
+      evidence_requirements: text(data.evidence_requirements),
       archived: Boolean(form.elements.archived?.checked),
     };
   }

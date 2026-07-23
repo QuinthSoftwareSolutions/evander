@@ -27,6 +27,7 @@ from ..models import (
     task_payload_with_derived,
 )
 from .domain.project_status import project_blocking_sources
+from .domain.outcome_catalog import effective_outcome_kind_payloads
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
@@ -335,6 +336,56 @@ class TeamReadService:
             project.id,
         )
         return _without_none(payload)
+
+    def list_outcome_kinds(
+        self,
+        *,
+        project_id: str | None = None,
+        team_id: str | None = None,
+        include_archived: bool = False,
+        limit: int = _DEFAULT_LIMIT,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_project_id = _maybe_text(project_id)
+        normalized_team_id = _maybe_text(team_id)
+        if normalized_project_id is not None:
+            project = self._state.projects.get(normalized_project_id)
+            if project is None or not self._project_visible(project.id):
+                return _page([], limit=limit, cursor=cursor, offset=offset)
+            rows = effective_outcome_kind_payloads(
+                self._state,
+                team_id=project.team_id,
+                project_id=project.id,
+                include_archived=include_archived,
+            )
+        else:
+            effective_team_id = normalized_team_id or self._actor.team_id
+            if (
+                effective_team_id is None
+                or effective_team_id not in self._visible_team_ids
+            ):
+                return _page([], limit=limit, cursor=cursor, offset=offset)
+            rows = effective_outcome_kind_payloads(
+                self._state,
+                team_id=effective_team_id,
+                project_id=None,
+                include_archived=include_archived,
+            )
+        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+
+    def get_outcome_kind(self, definition_id: str) -> dict[str, Any] | None:
+        definition = self._state.outcome_kind_definitions.get(
+            _text(definition_id)
+        )
+        if definition is None or definition.team_id not in self._visible_team_ids:
+            return None
+        if (
+            definition.project_id is not None
+            and not self._project_visible(definition.project_id)
+        ):
+            return None
+        return _without_none(definition.model_dump(mode="json"))
 
     def list_runtime_attention(
         self,

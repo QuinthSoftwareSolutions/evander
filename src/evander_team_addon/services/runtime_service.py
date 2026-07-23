@@ -80,6 +80,7 @@ from .domain.governance import (
 )
 from .domain.manager_fallback import _manager_fallback_summary_payload
 from .domain.project_status import project_blocking_sources
+from .domain.outcome_catalog import effective_outcome_kind_payloads
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _agent_subtree_ids,
@@ -517,6 +518,29 @@ class TeamRuntimeService:
                                     if visible_project_id in state_model.projects
                                 ),
                                 key=lambda item: item.id,
+                            )
+                        ],
+                        "outcome_kinds": [
+                            {
+                                **definition,
+                                "effective_project_id": visible_project_id,
+                            }
+                            for visible_project_id in sorted(
+                                set(agent_project_ids(state_model, agent.id))
+                                | set(
+                                    agent_lead_project_ids(
+                                        state_model,
+                                        agent.id,
+                                    )
+                                )
+                            )
+                            if visible_project_id in state_model.projects
+                            for definition in effective_outcome_kind_payloads(
+                                state_model,
+                                team_id=state_model.projects[
+                                    visible_project_id
+                                ].team_id,
+                                project_id=visible_project_id,
                             )
                         ],
                         "cases": _case_payloads_for_agent(state_model, agent.id),
