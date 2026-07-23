@@ -24,6 +24,7 @@ from ..models import (
     AgentTask,
     AgentVoiceProfile,
     Deliverable,
+    DeliverableOutcome,
     EphemeralAgentPolicy,
     GovernanceAgendaItem,
     GovernanceAgendaItemState,
@@ -120,6 +121,7 @@ from .domain.context_rotation import (
 from .domain.deliverables import (
     _active_task_deliverables,
     _superseded_deliverable_for_rework,
+    _validate_deliverable_outcomes_against_task_contract,
 )
 from .domain.governance import (
     _governance_agenda_effective_team_id,
@@ -2407,6 +2409,7 @@ class TeamAdminService:
         normalized_producer_agent_id = _required_text(producer_agent_id, "producer_agent_id")
         normalized_summary = _required_text(summary, "summary")
         normalized_supersedes_deliverable_id = _optional_text(supersedes_deliverable_id)
+        normalized_outcomes = [DeliverableOutcome.model_validate(item) for item in outcomes or []]
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
@@ -2415,6 +2418,10 @@ class TeamAdminService:
                 task=task,
                 producer_agent_id=normalized_producer_agent_id,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
+            )
+            _validate_deliverable_outcomes_against_task_contract(
+                task,
+                normalized_outcomes,
             )
             effective_deliverable_id = normalized_deliverable_id or _generated_id(
                 prefix="deliverable",
@@ -2428,7 +2435,7 @@ class TeamAdminService:
                 producer_agent_id=normalized_producer_agent_id,
                 summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
-                outcomes=[dict(item) for item in outcomes or []],
+                outcomes=normalized_outcomes,
                 state=state,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
                 carried_findings=(

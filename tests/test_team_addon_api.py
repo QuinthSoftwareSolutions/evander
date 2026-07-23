@@ -1424,6 +1424,7 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
                 "required_outcome_kinds": ["prepared_action"],
                 "match": "all",
                 "allow_evidenced_noop": False,
+                "forbidden_effect_kinds": ["report"],
             },
             "expected_revision": repo.read().revision,
         },
@@ -1436,8 +1437,50 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
         "required_outcome_kinds": ["prepared_action"],
         "match": "all",
         "allow_evidenced_noop": False,
-        "forbidden_effect_kinds": [],
+        "forbidden_effect_kinds": ["report"],
     }
+
+    report_only = client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "report-only-deliverable",
+            "task_id": "outcome-task",
+            "producer_agent_id": "backend",
+            "summary": "Only a report was produced.",
+            "outcomes": [
+                {
+                    "kind": "report",
+                    "reference_ids": ["arbitrary-report-reference"],
+                }
+            ],
+            "expected_revision": response.json()["revision"],
+        },
+    )
+
+    assert report_only.status_code == 400
+    assert "forbidden outcome" in report_only.text
+    assert "report-only-deliverable" not in repo.read().deliverables
+
+    evidence_only = client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "evidence-only-deliverable",
+            "task_id": "outcome-task",
+            "producer_agent_id": "backend",
+            "summary": "The action was described but not persisted.",
+            "outcomes": [
+                {
+                    "kind": "prepared_action",
+                    "evidence_refs": ["report:prepared-action"],
+                }
+            ],
+            "expected_revision": response.json()["revision"],
+        },
+    )
+
+    assert evidence_only.status_code == 400
+    assert "reference_ids" in evidence_only.text
+    assert "evidence-only-deliverable" not in repo.read().deliverables
 
 
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(

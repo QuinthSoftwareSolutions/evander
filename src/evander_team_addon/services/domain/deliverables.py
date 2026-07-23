@@ -10,6 +10,7 @@ from ...models import (
     AgentTask,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableOutcome,
     DeliverableVerification,
     TeamRecordState,
     TeamState,
@@ -121,6 +122,44 @@ def _deliverable_submission_next_action_hints(
     return hints
 
 
+def _validate_deliverable_outcomes_against_task_contract(
+    task: AgentTask,
+    outcomes: Sequence[DeliverableOutcome],
+) -> None:
+    contract = task.outcome_contract
+    if contract is None:
+        return
+
+    outcome_kinds = {outcome.kind for outcome in outcomes}
+    forbidden = sorted(outcome_kinds.intersection(contract.forbidden_effect_kinds))
+    if forbidden:
+        raise ValueError("deliverable includes forbidden outcome kinds: " + ", ".join(forbidden))
+
+    required = set(contract.required_outcome_kinds)
+    satisfied = (
+        bool(required.intersection(outcome_kinds))
+        if contract.match == "any"
+        else required.issubset(outcome_kinds)
+    )
+    if required and not satisfied:
+        raise ValueError(
+            "deliverable does not satisfy task outcome contract; required "
+            f"{contract.match}: {', '.join(sorted(required))}"
+        )
+
+    missing_references = sorted({outcome.kind for outcome in outcomes if not outcome.reference_ids})
+    if missing_references:
+        raise ValueError(
+            "task deliverable outcomes must include reference_ids: " + ", ".join(missing_references)
+        )
+    if not outcomes:
+        raise ValueError(
+            "outcome task deliverables must include an outcome with reference_ids; "
+            "use an evidenced_noop task completion when the contract allows an "
+            "evidence-backed no-op"
+        )
+
+
 def _superseded_deliverable_for_rework(
     state: TeamState,
     *,
@@ -183,6 +222,7 @@ __all__ = [
     "_deliverable_verification_from_payload",
     "_deliverable_verification_payload",
     "_deliverable_submission_next_action_hints",
+    "_validate_deliverable_outcomes_against_task_contract",
     "_superseded_deliverable_for_rework",
     "_active_task_deliverables",
 ]

@@ -8894,6 +8894,66 @@ def test_outcome_task_rejects_report_only_deliverable_and_completes_from_accepte
     assert task.completion.outcome_reference_ids == ["bokio-prepared-action-123"]
 
 
+def test_outcome_task_rejects_evidence_only_deliverable_and_allows_evidenced_noop(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-noop-task")
+    state, created = _command_service(repo).create_task_command(
+        session_id="session-lead",
+        task_id="noop-task",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Create the record if needed",
+        description="Do nothing when the durable record already exists.",
+        task_kind="outcome",
+        outcome_contract={
+            "required_outcome_kinds": [],
+            "allow_evidenced_noop": True,
+        },
+        request_id="request-create-noop-task",
+    )
+    assert created["success"] is True
+
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-noop-task")
+    unchanged, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="noop-task",
+        summary="The target record already exists.",
+        outcomes=[
+            {
+                "kind": "existing_record",
+                "evidence_refs": ["duplicate-check:123"],
+            }
+        ],
+        request_id="request-evidence-only-deliverable",
+    )
+
+    assert submitted["success"] is False
+    assert submitted["errors"][0]["code"] == "deliverable_validation_failed"
+    assert "reference_ids" in submitted["errors"][0]["message"]
+    assert unchanged.deliverables == {}
+
+    state, completed = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="noop-task",
+        state="finished",
+        completion={
+            "kind": "evidenced_noop",
+            "summary": "The target record already exists.",
+            "evidence_refs": ["duplicate-check:123"],
+        },
+        request_id="request-complete-evidenced-noop",
+    )
+
+    assert completed["success"] is True
+    task = state.tasks["noop-task"]
+    assert task.state == TeamTaskState.FINISHED
+    assert task.completion is not None
+    assert task.completion.kind == TaskCompletionKind.EVIDENCED_NOOP
+    assert task.completion.evidence_refs == ["duplicate-check:123"]
+
+
 def test_request_review_command_applies_matching_profile_and_enqueues_wake(
     tmp_path: Path,
 ) -> None:

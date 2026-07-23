@@ -15327,6 +15327,54 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     assert manifest.web_search_enabled is False
 
 
+def test_create_vm_upsert_enables_tools_for_host_directory_grants(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.process_helpers.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+        host_directory_grants={
+            "shared": ["list", "import", "delete"],
+        },
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.host_directory_grants == {
+        "shared": ["list", "import", "delete"],
+    }
+    assert {
+        ToolName.GET_AGENT_STATUS,
+        ToolName.HOST_DIRECTORY_LIST,
+        ToolName.HOST_DIRECTORY_IMPORT,
+        ToolName.HOST_DIRECTORY_DELETE,
+    } <= set(manifest.allowed_tools)
+
+
 def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

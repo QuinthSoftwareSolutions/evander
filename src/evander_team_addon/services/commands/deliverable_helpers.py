@@ -54,6 +54,7 @@ from ..domain.deliverables import (
     _deliverable_verification_payload,
     _normalize_deliverable_verification_mapping,
     _superseded_deliverable_for_rework,
+    _validate_deliverable_outcomes_against_task_contract,
 )
 from ..domain.git_work_contexts import (
     GitWorkContextValidationError,
@@ -503,38 +504,7 @@ def _validate_command_deliverable_submission_pre_publication(
                 "outcomes",
             )
         ]
-        contract = task.outcome_contract
-        if contract is not None:
-            outcome_kinds = {outcome.kind for outcome in outcomes}
-            forbidden = sorted(
-                outcome_kinds.intersection(contract.forbidden_effect_kinds)
-            )
-            if forbidden:
-                raise ValueError(
-                    "deliverable includes forbidden outcome kinds: "
-                    + ", ".join(forbidden)
-                )
-            required = set(contract.required_outcome_kinds)
-            satisfied = (
-                bool(required.intersection(outcome_kinds))
-                if contract.match == "any"
-                else required.issubset(outcome_kinds)
-            )
-            if required and not satisfied:
-                raise ValueError(
-                    "deliverable does not satisfy task outcome contract; required "
-                    f"{contract.match}: {', '.join(sorted(required))}"
-                )
-            missing_required_references = sorted(
-                outcome.kind
-                for outcome in outcomes
-                if outcome.kind in required and not outcome.reference_ids
-            )
-            if missing_required_references:
-                raise ValueError(
-                    "required task outcomes must include reference_ids: "
-                    + ", ".join(missing_required_references)
-                )
+        _validate_deliverable_outcomes_against_task_contract(task, outcomes)
     except GitWorkContextValidationError as exc:
         raise TeamCommandValidationError(
             code=exc.code,

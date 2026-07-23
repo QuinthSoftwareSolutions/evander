@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-23 - Outcome Contract and Host Grant Review Fixes
+
+- Applied outcome-contract kind and durable-reference validation to both agent and Admin
+  deliverable submission, and kept evidence-only no-ops on the explicit `evidenced_noop`
+  completion path instead of sending them into review.
+- Enabled the capability-derived Host Directory tools when an existing libvirt session receives
+  new Host Directory grants.
+
 ## 2026-07-23 - Review and Bokio Duplicate-Check Correctness
 
 - Kept deliverables pending when retired reviews leave unresolved carried findings, and restored
