@@ -1789,12 +1789,12 @@ def test_load_ado_pr_feedback_session_bindings_matches_worker_directory_exactly(
     )
 
     parent_bindings = _load_ado_pr_feedback_session_bindings(
-        runtime_dir=worker_config.runtime_dir,
+        session_store_path=worker_config.runtime_dir / "sessions.json",
         pr_map_path=pr_map_path,
         directory_path="root/team-a",
     )
     child_bindings = _load_ado_pr_feedback_session_bindings(
-        runtime_dir=worker_config.runtime_dir,
+        session_store_path=worker_config.runtime_dir / "sessions.json",
         pr_map_path=pr_map_path,
         directory_path="root/team-a/child",
     )
@@ -1803,15 +1803,29 @@ def test_load_ado_pr_feedback_session_bindings_matches_worker_directory_exactly(
     assert sorted(child_bindings) == [("org/repo", "6071")]
 
 
-def test_load_ado_pr_feedback_session_bindings_prefers_session_directory(
+def test_load_ado_pr_feedback_bindings_use_configured_store_for_legacy_directory(
     worker_config: WorkerConfig,
 ) -> None:
-    (worker_config.runtime_dir / "sessions.json").write_text(
+    configured_session_store_path = worker_config.runtime_dir.parent / "configured-sessions.json"
+    configured_session_store_path.write_text(
         json.dumps(
             {
                 "session-6070": {
                     "session_id": "session-6070",
                     "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-09T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6070": {
+                    "session_id": "session-6070",
+                    "directory_path": "root/wrong",
                     "allowed_tools": [],
                     "expires_at": "2026-04-09T00:00:00Z",
                 }
@@ -1829,7 +1843,6 @@ def test_load_ado_pr_feedback_session_bindings_prefers_session_directory(
                         "repo": "org/repo",
                         "pr_id": "6070",
                         "session_id": "session-6070",
-                        "directory_path": "root",
                     }
                 }
             }
@@ -1838,18 +1851,24 @@ def test_load_ado_pr_feedback_session_bindings_prefers_session_directory(
     )
 
     root_bindings = _load_ado_pr_feedback_session_bindings(
-        runtime_dir=worker_config.runtime_dir,
+        session_store_path=configured_session_store_path,
         pr_map_path=pr_map_path,
         directory_path="root",
     )
     session_bindings = _load_ado_pr_feedback_session_bindings(
-        runtime_dir=worker_config.runtime_dir,
+        session_store_path=configured_session_store_path,
         pr_map_path=pr_map_path,
         directory_path="root/team-a",
+    )
+    wrong_bindings = _load_ado_pr_feedback_session_bindings(
+        session_store_path=configured_session_store_path,
+        pr_map_path=pr_map_path,
+        directory_path="root/wrong",
     )
 
     assert root_bindings == {}
     assert sorted(session_bindings) == [("org/repo", "6070")]
+    assert wrong_bindings == {}
 
 
 @pytest.mark.parametrize(

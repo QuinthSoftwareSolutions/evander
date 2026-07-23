@@ -11914,7 +11914,8 @@ def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
 
 
 def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
+    config_path = write_config(tmp_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-a",
@@ -11931,6 +11932,28 @@ def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
+    service.config.pr_map_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "azure_devops:org/repo:42": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "42",
+                        "session_id": "session-a",
+                    },
+                    "azure_devops:org/repo:43": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "43",
+                        "session_id": "session-b",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = service.vm_agent_admin.delete_session("session-a")
 
@@ -11938,6 +11961,9 @@ def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
     assert result.success is True
     assert result.session_id == "session-a"
     assert set(remaining) == {"session-b"}
+    assert "removed_pr_map_entries=1" in result.message
+    pr_map = json.loads(service.config.pr_map_path.read_text(encoding="utf-8"))
+    assert set(pr_map["entries"]) == {"azure_devops:org/repo:43"}
 
 
 def test_delete_session_rejects_vm_linked_agent_session(tmp_path: Path) -> None:

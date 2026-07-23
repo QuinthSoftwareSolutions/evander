@@ -1740,6 +1740,35 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     assert "stage_artifact" in manifest["allowed_tools"]
 
 
+def test_create_session_rejects_existing_session_id(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["create-session", "--config", str(config_path), "session-1"],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "create-session",
+            "--config",
+            str(config_path),
+            "--directory",
+            "root",
+            "session-1",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Session already exists: session-1" in result.output
+
+
 def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     config_path.write_text(
@@ -2964,13 +2993,39 @@ def test_prune_sessions_removes_only_expired_by_default(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    pr_map_path = tmp_path / "runtime" / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "azure_devops:org/repo:42": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "42",
+                        "session_id": "expired-session",
+                    },
+                    "azure_devops:org/repo:43": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "43",
+                        "session_id": "active-session",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = runner.invoke(app, ["prune-sessions", "--config", str(config_path)])
 
     assert result.exit_code == 0
     assert "Pruned 1 expired session(s)" in result.stdout
+    assert "removed_pr_map_entries=1" in result.stdout
     sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
     assert set(sessions) == {"active-session"}
+    pr_map = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    assert set(pr_map["entries"]) == {"azure_devops:org/repo:43"}
 
 
 def test_prune_sessions_all_removes_every_session(tmp_path: Path) -> None:

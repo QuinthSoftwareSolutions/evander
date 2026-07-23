@@ -35,7 +35,7 @@ class PullRequestCompletedTriggerProvider(TriggerProviderBase):
             context.resolved_config.pr_map_path,
             provider=provider,
             directory_path=directory_path,
-            runtime_dir=context.resolved_config.runtime_dir,
+            session_store_path=context.resolved_config.session_store_path,
         )
         if provider == "github":
             self._refresh_github_pr_statuses(trigger=trigger, entries=entries)
@@ -43,7 +43,7 @@ class PullRequestCompletedTriggerProvider(TriggerProviderBase):
                 context.resolved_config.pr_map_path,
                 provider=provider,
                 directory_path=directory_path,
-                runtime_dir=context.resolved_config.runtime_dir,
+                session_store_path=context.resolved_config.session_store_path,
             )
 
         events: list[TriggerEvent] = []

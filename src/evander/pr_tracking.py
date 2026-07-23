@@ -58,7 +58,7 @@ def list_pr_map_entries(
     *,
     provider: str | None = None,
     directory_path: str | None = None,
-    runtime_dir: Path | None = None,
+    session_store_path: Path | None = None,
 ) -> list[PrMapEntry]:
     payload = _read_pr_map_payload(path)
     entries = payload.get("entries")
@@ -67,7 +67,7 @@ def list_pr_map_entries(
 
     expected_provider = pr_map_provider_name(provider) if provider else None
     directory_scope = str(directory_path or "").strip()
-    session_directories, session_vm_ids = _session_indexes(runtime_dir)
+    session_directories, session_vm_ids = _session_indexes(session_store_path)
 
     mapped: list[PrMapEntry] = []
     for entry_key, raw in entries.items():
@@ -78,8 +78,8 @@ def list_pr_map_entries(
         pr_id = str(raw.get("pr_id", "")).strip()
         session_id = str(raw.get("session_id", "")).strip()
         mapped_directory_path = (
-            session_directories.get(session_id)
-            or str(raw.get("directory_path", "")).strip()
+            str(raw.get("directory_path", "")).strip()
+            or session_directories.get(session_id)
             or "root"
         )
         if expected_provider and row_provider != expected_provider:
@@ -153,6 +153,43 @@ class PrMapStore:
             entries[key] = entry
             payload["updated_at"] = timestamp
         return entry
+
+    def prune_session_bindings(
+        self,
+        *,
+        session_ids: set[str],
+    ) -> tuple[int, set[tuple[str, str, str]]]:
+        normalized_session_ids = {
+            str(session_id or "").strip()
+            for session_id in session_ids
+            if str(session_id or "").strip()
+        }
+        if not normalized_session_ids or not self.path.exists():
+            return 0, set()
+
+        removed_streams: set[tuple[str, str, str]] = set()
+        removed_count = 0
+        timestamp = _isoformat_utc(datetime.now(UTC))
+        with _locked_pr_map_payload(self.path) as payload:
+            entries = payload.get("entries")
+            if not isinstance(entries, dict):
+                return 0, set()
+            for entry_key, raw_entry in list(entries.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                session_id = str(raw_entry.get("session_id", "")).strip()
+                if session_id not in normalized_session_ids:
+                    continue
+                provider = pr_map_provider_name(raw_entry.get("provider"))
+                repo = str(raw_entry.get("repo", "")).strip()
+                pr_id = str(raw_entry.get("pr_id", "")).strip()
+                if provider and repo and pr_id:
+                    removed_streams.add((provider, repo, pr_id))
+                entries.pop(entry_key, None)
+                removed_count += 1
+            if removed_count:
+                payload["updated_at"] = timestamp
+        return removed_count, removed_streams
 
     def update_status(
         self,
@@ -377,10 +414,10 @@ def _completed_at_from_response(
     return None
 
 
-def _session_indexes(runtime_dir: Path | None) -> tuple[dict[str, str], dict[str, str]]:
-    if runtime_dir is None:
+def _session_indexes(session_store_path: Path | None) -> tuple[dict[str, str], dict[str, str]]:
+    if session_store_path is None:
         return {}, {}
-    sessions_path = Path(runtime_dir) / "sessions.json"
+    sessions_path = Path(session_store_path)
     if not sessions_path.exists():
         return {}, {}
     try:

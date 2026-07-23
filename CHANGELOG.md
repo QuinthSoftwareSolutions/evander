@@ -4,8 +4,10 @@
 
 - Recorded session-backed pull requests under the session's canonical directory instead of the
   workflow graph's execution directory.
-- Made pull-request tracking readers treat the current session manifest as authoritative so stale
-  directory fields cannot hide feedback or completion streams from exact-directory ADO polling.
+- Kept persisted PR routing authoritative while resolving legacy bindings without a directory
+  through the configured session manifest store.
+- Rejected duplicate `create-session` IDs and pruned PR routing plus feedback state whenever
+  sessions are deleted, preventing historical bindings from following a reused session ID.
 
 ## 2026-07-23 - Focused Worker Navigation
 

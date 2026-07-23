@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from evander.admin.services import session_helpers
+from evander.admin.services import git_helpers, session_helpers
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.admin.services.ports import DirectoryOwnershipPort
 from evander.admin.services.vm_agent.common_helpers import (
@@ -148,11 +148,25 @@ class SessionAdminService:
             managed_git.unbind_all("authorized_sessions", session_id)
             managed_git.unbind_all("sessions", session_id)
         self._session_repository().delete_session(session_id)
+        removed_pr_map_entries, removed_streams = git_helpers.prune_pr_map(
+            self._deps.config.pr_map_path,
+            session_ids={session_id},
+        )
+        removed_cursors, removed_feedback = git_helpers.prune_pr_feedback_store(
+            self._deps.config.runtime_dir / "pr-feedback-store.json",
+            streams=removed_streams,
+        )
         return SessionActionResult(
             success=True,
             session_id=session_id,
             action="delete_session",
-            message=(f"Deleted session {session_id} git_access_revoked={int(git_access_revoked)}"),
+            message=(
+                f"Deleted session {session_id} "
+                f"git_access_revoked={int(git_access_revoked)} "
+                f"removed_pr_map_entries={removed_pr_map_entries} "
+                f"removed_feedback_cursors={removed_cursors} "
+                f"removed_feedback_items={removed_feedback}"
+            ),
         )
 
     def set_session_allowed_tools(
