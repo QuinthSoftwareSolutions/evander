@@ -16,6 +16,10 @@ from evander.connectors.models import (
 )
 from evander.directories import DirectoryService, DirectoryStore
 from evander.host_config import HostConfig, build_runtime_gateway_config
+from evander.host_directories.models import (
+    HostDirectoryDirectoryConfig,
+    validate_host_directory_directory_overlay,
+)
 from evander.models import DirectoryInfo, DirectoryPath
 from evander.vm.templates import (
     DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
@@ -39,6 +43,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "pr_template": "pr-template.json",
     "automation": "automation.json",
     "connectors": "connectors.json",
+    "host_directories": "host-directories.json",
 }
 
 LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
@@ -279,6 +284,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     ),
     "pr_template": frozenset({"pr_template_markdown"}),
     "connectors": frozenset({"auth_profiles", "connectors"}),
+    "host_directories": frozenset({"host_directories"}),
 }
 
 
@@ -542,6 +548,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
         return {"contacts": {}, "user_contact_links": {}}
     if domain == "connectors":
         return {"auth_profiles": {}, "connectors": {}}
+    if domain == "host_directories":
+        return {"host_directories": {}}
     if domain == "pr_template":
         return {"pr_template_markdown": ""}
     return {key: payload[key] for key in sorted(allowed_fields) if key in payload}
@@ -572,6 +580,9 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
         return validated.model_dump(mode="json")
     if domain == "connectors":
         validated = ConnectorDirectoryConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "host_directories":
+        validated = HostDirectoryDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     if domain == "pr_template":
         validated = PrTemplateDirectoryConfig.model_validate(payload)
@@ -727,6 +738,8 @@ class DirectoryConfigStore:
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "connectors":
             return validate_connector_directory_overlay(payload)
+        if domain == "host_directories":
+            return validate_host_directory_directory_overlay(payload)
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))

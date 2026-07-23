@@ -22,6 +22,9 @@ from evander.admin.services.vm_agent.common import (
 from evander.session_auth import ensure_session_mcp_auth_token
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.host_directories.grants import (
+    resolve_and_validate_host_directory_grants,
+)
 from evander.admin.services.session_helpers import normalize_http_targets_metadata
 
 
@@ -34,6 +37,21 @@ def _connector_grants_for_admin_agent(
 ) -> dict[str, list[str]]:
     return resolve_and_validate_connector_grants(
         runtime.provider_config,
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )
+
+
+def _host_directory_grants_for_admin_agent(
+    runtime: Any,
+    *,
+    session_id: str,
+    directory_path: str,
+    value: object,
+) -> dict[str, list[str]]:
+    return resolve_and_validate_host_directory_grants(
+        provider_config=runtime.provider_config,
         directory_path=directory_path,
         session_id=session_id,
         value=value,
@@ -116,6 +134,12 @@ class VmAgentCreateRequestMixin:
                 directory_path=directory_path,
                 value=payload.get("connector_grants"),
             )
+            host_directory_grants = _host_directory_grants_for_admin_agent(
+                self.runtime,
+                session_id=self._agent_optional_string(payload, "session_id") or vm_name,
+                directory_path=directory_path,
+                value=payload.get("host_directory_grants"),
+            )
             result = self._create_vm_for_admin_agent(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -127,6 +151,11 @@ class VmAgentCreateRequestMixin:
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
                 **({"connector_grants": connector_grants} if "connector_grants" in payload else {}),
+                **(
+                    {"host_directory_grants": host_directory_grants}
+                    if "host_directory_grants" in payload
+                    else {}
+                ),
                 **(
                     {"tool_argument_policies": payload["tool_argument_policies"]}
                     if "tool_argument_policies" in payload
@@ -303,6 +332,12 @@ class VmAgentCreateRequestMixin:
                 directory_path=directory_path,
                 value=payload.get("connector_grants"),
             ),
+            host_directory_grants=_host_directory_grants_for_admin_agent(
+                self.runtime,
+                session_id=session_id,
+                directory_path=directory_path,
+                value=payload.get("host_directory_grants"),
+            ),
             **(
                 {"tool_argument_policies": payload["tool_argument_policies"]}
                 if "tool_argument_policies" in payload
@@ -470,6 +505,24 @@ class VmAgentCreateRequestMixin:
             for connector_id, connector in sorted(connector_config.connectors.items())
             if not connector.disabled
         ]
+        host_directory_config = (
+            self.runtime.provider_config.resolve_host_directories_for_directory(
+                normalized_directory
+            )
+        )
+        host_directories = [
+            {
+                "directory_id": directory_id,
+                "display_name": definition.display_name,
+                "description": definition.description,
+                "capabilities": list(definition.capabilities),
+                "delete_requires_approval": definition.delete_requires_approval,
+            }
+            for directory_id, definition in sorted(
+                host_directory_config.host_directories.items()
+            )
+            if not definition.disabled
+        ]
         allowed_mailbox_ids = set(policy_config.email_mailbox_allowlist)
         email_mailboxes: list[dict[str, object]] = []
         for mailbox in provider_config.email_mailboxes:
@@ -526,6 +579,7 @@ class VmAgentCreateRequestMixin:
             ],
             "email_mailboxes": email_mailboxes,
             "connectors": connectors,
+            "host_directories": host_directories,
             "libvirt": {
                 "default_template": vm_defaults.libvirt_vm_default_template,
                 "templates": libvirt_templates,

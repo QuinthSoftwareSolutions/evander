@@ -9,6 +9,8 @@ package, Git, and HTTP relays.
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Directory-scoped named connectors for approved REST operations and host file retrieval, with
   host-owned authentication, per-session operation grants, approvals, and artifact results
+- Directory-scoped Host Directories for relative listing, bounded artifact import, recoverable
+  deletion, and settled new-file workflow triggers without exposing absolute host roots
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
@@ -30,6 +32,7 @@ package, Git, and HTTP relays.
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`
+- A Host Directory security and operations reference at `docs/host-directories.md`
 
 ## Core Security Model
 

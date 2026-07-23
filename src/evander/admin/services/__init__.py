@@ -34,6 +34,18 @@ _SERVICE_EXPORTS = {
         ".connector_admin_service",
         "ConnectorConfigRevisionConflict",
     ),
+    "HostDirectoryAdminDependencies": (
+        ".host_directory_admin_service",
+        "HostDirectoryAdminDependencies",
+    ),
+    "HostDirectoryAdminService": (
+        ".host_directory_admin_service",
+        "HostDirectoryAdminService",
+    ),
+    "HostDirectoryConfigRevisionConflict": (
+        ".host_directory_admin_service",
+        "HostDirectoryConfigRevisionConflict",
+    ),
     "DocumentationService": (".documentation_service", "DocumentationService"),
     "IssueGitAdminDependencies": (".issue_git_service", "IssueGitAdminDependencies"),
     "IssueGitAdminService": (".issue_git_service", "IssueGitAdminService"),

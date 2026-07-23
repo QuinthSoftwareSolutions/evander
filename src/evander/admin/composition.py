@@ -32,6 +32,8 @@ from evander.admin.services import (
     ConnectorAdminDependencies,
     ConnectorAdminService,
     DocumentationService,
+    HostDirectoryAdminDependencies,
+    HostDirectoryAdminService,
     IssueGitAdminDependencies,
     IssueGitAdminService,
     IssueGitAdminSupport,
@@ -84,6 +86,7 @@ from evander.connectors.service import ConnectorService, connector_registry_from
 from evander.directory_config import DirectoryConfigResolver, DirectoryConfigStore
 from evander.directories import DirectoryService, DirectoryStore
 from evander.host_config import DEFAULT_RUNTIME_DIR
+from evander.host_directories.service import HostDirectoryService
 from evander.issues.service import IssueService
 from evander.ownership import DirectoryOwnershipQueries
 from evander.provider_config import ProviderConfigResolver
@@ -228,6 +231,7 @@ class AdminRuntimeComponents:
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
     connector_admin: ConnectorAdminService
+    host_directory_admin: HostDirectoryAdminService
     codex_auth_admin: CodexAuthAdminService
     documentation_admin: DocumentationService
     model_usage_admin: ModelUsageAdminService
@@ -644,6 +648,18 @@ def _build_admin_runtime_components(
             connector_service=connector_service,
         )
     )
+    host_directory_service = HostDirectoryService(
+        runtime_dir=config.runtime_dir,
+        provider_config=runtime.provider_config,
+        artifact_store_factory=lambda: CommunicationArtifactStore(config.runtime_dir),
+    )
+    host_directory_admin = HostDirectoryAdminService(
+        HostDirectoryAdminDependencies(
+            operations_admin=operations_admin,
+            host_directory_service=host_directory_service,
+            directory_inventory=directory_service,
+        )
+    )
     codex_auth_admin = CodexAuthAdminService(
         CodexAuthAdminDependencies(
             provider_config=runtime.provider_config,
@@ -770,6 +786,7 @@ def _build_admin_runtime_components(
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
         connector_admin=connector_admin,
+        host_directory_admin=host_directory_admin,
         codex_auth_admin=codex_auth_admin,
         documentation_admin=documentation_admin,
         model_usage_admin=model_usage_admin,

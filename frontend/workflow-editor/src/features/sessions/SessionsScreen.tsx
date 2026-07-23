@@ -9,9 +9,11 @@ import { readAdminHashQuery } from "../admin/hash";
 import type {
   AgentCreateCommunicationTargetOption,
   AgentCreateEmailMailboxOption,
+  AgentCreateHostDirectoryOption,
   EmailMailboxGrant,
   RuntimeImageInfo,
 } from "../admin/types";
+import { loadAgentCreateOptions } from "../agents/agentCreateShared";
 import {
   CommunicationTargetCheckboxTable,
   EmailMailboxGrantEditor,
@@ -24,6 +26,10 @@ import {
   metadataWithoutHttpTargets,
   type HttpTargetDraftEntry,
 } from "../httpTargets/httpTargetDraft";
+import {
+  HostDirectoryGrantSelector,
+  hostDirectoryToolsForGrants,
+} from "../hostDirectories/HostDirectoryGrantSelector";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 import {
   canToggleWakeScheduleEnabled,
@@ -63,6 +69,7 @@ type SessionRecord = {
   directory_path: string;
   allowed_tools?: string[];
   connector_grants?: Record<string, string[]>;
+  host_directory_grants?: Record<string, string[]>;
   approval_required_tools?: string[];
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   approval_notification_target_ids?: string[];
@@ -240,6 +247,7 @@ type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
   allowedScriptNames: string[];
   connectorGrants: Record<string, unknown>;
+  hostDirectoryGrants: Record<string, string[]>;
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
@@ -415,6 +423,7 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   return {
     allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
     connectorGrants: { ...(session.connector_grants ?? {}) },
+    hostDirectoryGrants: { ...(session.host_directory_grants ?? {}) },
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
@@ -1209,6 +1218,7 @@ export function SessionsScreen() {
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
     allowedScriptNames: [],
     connectorGrants: {},
+    hostDirectoryGrants: {},
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
@@ -1234,6 +1244,9 @@ export function SessionsScreen() {
   const [policyMetadataError, setPolicyMetadataError] = useState<string | null>(null);
   const [metadataDirty, setMetadataDirty] = useState(false);
   const [connectorGrantsError, setConnectorGrantsError] = useState<string | null>(null);
+  const [hostDirectoryOptions, setHostDirectoryOptions] = useState<
+    AgentCreateHostDirectoryOption[]
+  >([]);
   const [httpTargetsError, setHttpTargetsError] = useState<string | null>(null);
   const [httpTargetsDirty, setHttpTargetsDirty] = useState(false);
   const [wakePrompt, setWakePrompt] = useState("");
@@ -1395,6 +1408,26 @@ export function SessionsScreen() {
       })
       .catch(() => {
         if (!cancelled) setGitRepositories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.session.directory_path]);
+
+  useEffect(() => {
+    const directoryPath = detail?.session.directory_path;
+    if (!directoryPath) {
+      setHostDirectoryOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setHostDirectoryOptions([]);
+    void loadAgentCreateOptions(directoryPath)
+      .then((options) => {
+        if (!cancelled) setHostDirectoryOptions(options.host_directories ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setHostDirectoryOptions([]);
       });
     return () => {
       cancelled = true;
@@ -1766,6 +1799,15 @@ export function SessionsScreen() {
     setStatus(null);
   }
 
+  function updateHostDirectoryGrants(nextGrants: Record<string, string[]>) {
+    updatePolicyDraft({ hostDirectoryGrants: nextGrants });
+    const requiredTools = hostDirectoryToolsForGrants(nextGrants);
+    if (requiredTools.some((toolName) => !toolsDraft.includes(toolName))) {
+      setToolsDraft((current) => sortTools([...current, ...requiredTools]));
+      setToolsDirty(true);
+    }
+  }
+
   function openMailboxConfiguration() {
     if (!selectedSession) return;
     if (
@@ -2044,6 +2086,7 @@ export function SessionsScreen() {
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
               connector_grants: policyDraft.connectorGrants,
+              host_directory_grants: policyDraft.hostDirectoryGrants,
               ...(metadataDirty ? { metadata: policyDraft.metadata } : {}),
               ...(httpTargetsDirty
                 ? { http_targets: httpTargetsPayload(policyDraft.httpTargets) }
@@ -2619,6 +2662,19 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                       addLabel="Add connector grant"
                       emptyState="No connector operations are granted to this session."
+                    />
+                  </div>
+                  <div className="field-stack wide-field">
+                    <span>Host directory grants</span>
+                    <p className="field-description">
+                      Select capabilities on named host directories. Selecting one also enables its dedicated
+                      host_directory MCP tool; removing a grant leaves explicitly allowed tools unchanged.
+                    </p>
+                    <HostDirectoryGrantSelector
+                      values={policyDraft.hostDirectoryGrants}
+                      options={hostDirectoryOptions}
+                      onChange={updateHostDirectoryGrants}
+                      disabled={mutationLocked}
                     />
                   </div>
                   <div className="field-stack">

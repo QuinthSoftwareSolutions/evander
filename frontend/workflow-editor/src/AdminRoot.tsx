@@ -81,6 +81,9 @@ const ConfigurationScreen = lazy(() =>
 const ConnectorsPage = lazy(() =>
   import("./features/connectors/ConnectorsPage").then(({ ConnectorsPage }) => ({ default: ConnectorsPage })),
 );
+const HostDirectoriesPage = lazy(() =>
+  import("./features/hostDirectories/HostDirectoriesPage").then(({ HostDirectoriesPage }) => ({ default: HostDirectoriesPage })),
+);
 const OperationsDashboard = lazy(() =>
   import("./features/dashboard/OperationsDashboard").then(({ OperationsDashboard }) => ({ default: OperationsDashboard })),
 );
@@ -2222,6 +2225,11 @@ export default function AdminRoot() {
                 <ConfigurationScreen />
               ) : renderedTab === "connectors" ? (
                 <ConnectorsPage
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  privilegedUnlocked={privilegeUnlocked}
+                />
+              ) : renderedTab === "host-directories" ? (
+                <HostDirectoriesPage
                   selectedDirectoryPath={selectedDirectoryPath}
                   privilegedUnlocked={privilegeUnlocked}
                 />

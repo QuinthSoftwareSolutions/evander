@@ -20,6 +20,10 @@ from evander.admin.services.vm_agent.common import (
 )
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.host_directories.grants import (
+    host_directory_tool_names_for_grants,
+    resolve_and_validate_host_directory_grants,
+)
 
 
 class VmAgentMutationMixin:
@@ -37,6 +41,7 @@ class VmAgentMutationMixin:
             "ttl_hours",
             "allowed_tools",
             "connector_grants",
+            "host_directory_grants",
             "approval_required_tools",
             "approval_tool_settings",
             "approval_notification_target_ids",
@@ -93,6 +98,21 @@ class VmAgentMutationMixin:
                 value=body.get("connector_grants"),
             )
             update["connector_grants"] = connector_grants
+        if "host_directory_grants" in body:
+            update["host_directory_grants"] = resolve_and_validate_host_directory_grants(
+                provider_config=self.runtime.provider_config,
+                directory_path=session.directory_path,
+                session_id=session.session_id,
+                value=body.get("host_directory_grants"),
+            )
+            update["allowed_tools"] = _normalize_allowed_tools(
+                [
+                    *update.get("allowed_tools", session.allowed_tools),
+                    *host_directory_tool_names_for_grants(
+                        update["host_directory_grants"]
+                    ),
+                ]
+            )
         session_policy_fields = {
             key: body[key]
             for key in (

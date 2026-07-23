@@ -488,6 +488,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
         "trigger:approval:pending-created": provider_models.ApprovalPendingCreatedTriggerDefinition,
         "trigger:git:push": provider_models.GitPushTriggerDefinition,
+        "trigger:host-directory:file-added": (
+            provider_models.HostDirectoryFileAddedTriggerDefinition
+        ),
         "trigger:ci:run:completed": provider_models.CiRunCompletedTriggerDefinition,
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,

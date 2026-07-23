@@ -1309,6 +1309,7 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
             vm_provider="libvirt",
             directory_path="root",
             allowed_tools=[],
+            host_directory_grants={"shared": ["list", "import"]},
             allowed_contact_ids=["ops"],
             email_folder_allowlist_by_mailbox={
                 "primary": ["inbox"],
@@ -1347,6 +1348,9 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
     assert agents[0].host["session_policy"]["allowed_contact_ids"] == ["ops"]
+    assert agents[0].host["session_policy"]["host_directory_grants"] == {
+        "shared": ["list", "import"]
+    }
     assert agents[0].host["session_policy"]["email_folder_allowlist_by_mailbox"] == {
         "primary": ["inbox"],
         "archive": ["inbox", "archive"],
@@ -13183,6 +13187,66 @@ def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
     assert updated.teams_chat_allowlist == ["chat:chat-4"]
 
 
+def test_host_directory_policy_updates_validate_grants_and_enable_tools(
+    tmp_path: Path,
+) -> None:
+    host_root = tmp_path / "shared"
+    host_root.mkdir()
+    service = build_admin_runtime(
+        write_config(tmp_path, enable_directory_scoped_config=True)
+    )
+    assert service.operations_admin.write_directory_domain_config(
+        "root",
+        "host_directories",
+        {
+            "host_directories": {
+                "shared": {
+                    "display_name": "Shared",
+                    "description": "Files shared with selected sessions",
+                    "root": str(host_root),
+                    "capabilities": ["list", "import"],
+                }
+            }
+        },
+    ).ok
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-host-directory",
+            vm_id="vm-host-directory",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    result = service.operations_admin.update_session_policy(
+        "agent-host-directory",
+        {"host_directory_grants": {"shared": ["list"]}},
+    )
+
+    assert result.success is True
+    updated = service.runtime.session_repository.get_session("agent-host-directory")
+    assert updated is not None
+    assert updated.host_directory_grants == {"shared": ["list"]}
+    assert ToolName.HOST_DIRECTORY_LIST in updated.allowed_tools
+
+    agent_result = service.vm_agent_admin.update_admin_agent(
+        "vm-host-directory",
+        payload={"host_directory_grants": {"shared": ["import"]}},
+    )
+    assert agent_result["status"] == "updated"
+    updated = service.runtime.session_repository.get_session("agent-host-directory")
+    assert updated is not None
+    assert updated.host_directory_grants == {"shared": ["import"]}
+    assert ToolName.HOST_DIRECTORY_LIST in updated.allowed_tools
+    assert ToolName.HOST_DIRECTORY_IMPORT in updated.allowed_tools
+
+    with pytest.raises(ValueError, match="unavailable capabilities"):
+        service.operations_admin.update_session_policy(
+            "agent-host-directory",
+            {"host_directory_grants": {"shared": ["delete"]}},
+        )
+
+
 def test_admin_http_target_updates_are_validated_and_preserve_other_metadata(
     tmp_path: Path,
 ) -> None:
@@ -13195,9 +13259,7 @@ def test_admin_http_target_updates_are_validated_and_preserve_other_metadata(
             metadata={
                 "keep": {"workflow": "current"},
                 "example_app": {
-                    "environments": {
-                        "legacy": {"base_url": "https://legacy.example.test"}
-                    }
+                    "environments": {"legacy": {"base_url": "https://legacy.example.test"}}
                 },
                 "http_targets": {
                     "targets": {
@@ -15277,6 +15339,7 @@ def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes
             directory_path="root/team-a",
             allowed_tools=[ToolName.CALL_CONNECTOR],
             connector_grants={"documents": ["get_document"]},
+            host_directory_grants={"shared": ["list"]},
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         )
     )
@@ -15306,6 +15369,7 @@ def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes
     assert manifest is not None
     assert manifest.directory_path == "root/team-b"
     assert manifest.connector_grants == {}
+    assert manifest.host_directory_grants == {}
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(

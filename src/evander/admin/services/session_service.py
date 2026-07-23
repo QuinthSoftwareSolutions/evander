@@ -12,6 +12,10 @@ from evander.admin.services.vm_agent.common_helpers import (
     _resolve_session_approval_notification_target_ids,
 )
 from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.host_directories.grants import (
+    host_directory_tool_names_for_grants,
+    resolve_and_validate_host_directory_grants,
+)
 from evander.email.grants import (
     email_mailbox_grant_policy_update,
     validate_email_mailbox_grants,
@@ -285,6 +289,21 @@ class SessionAdminService:
                 directory_path=manifest.directory_path,
                 session_id=manifest.session_id,
                 value=update["connector_grants"],
+            )
+        if "host_directory_grants" in update:
+            update["host_directory_grants"] = resolve_and_validate_host_directory_grants(
+                provider_config=self._deps.runtime.provider_config,
+                directory_path=manifest.directory_path,
+                session_id=manifest.session_id,
+                value=update["host_directory_grants"],
+            )
+            update["allowed_tools"] = session_helpers.normalize_allowed_tools(
+                [
+                    *manifest.allowed_tools,
+                    *host_directory_tool_names_for_grants(
+                        update["host_directory_grants"]
+                    ),
+                ]
             )
         if "approval_notification_target_ids" in update:
             update["approval_notification_target_ids"] = (

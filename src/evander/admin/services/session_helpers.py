@@ -15,6 +15,7 @@ from evander.approval_notification_targets import (
 )
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.connectors.models import normalize_connector_grants
+from evander.host_directories.models import normalize_host_directory_grants
 from evander.email.grants import (
     email_mailbox_grant_policy_update,
     normalize_email_mailbox_grants,
@@ -305,6 +306,7 @@ def build_issue_session_manifest(
     ttl_seconds: int | None = None,
     extra_allowed_tools: list[str | ToolName] | None = None,
     connector_grants: dict[str, list[str]] | None = None,
+    host_directory_grants: dict[str, list[str]] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     allowed_contact_ids: list[str] | None = None,
@@ -400,6 +402,22 @@ def build_issue_session_manifest(
             seen.add(tool_value)
             resolved_allowed_tools.append(tool)
 
+    resolved_host_directory_grants = normalize_host_directory_grants(
+        host_directory_grants or {}
+    )
+    host_directory_tool_by_capability = {
+        "list": ToolName.HOST_DIRECTORY_LIST,
+        "import": ToolName.HOST_DIRECTORY_IMPORT,
+        "delete": ToolName.HOST_DIRECTORY_DELETE,
+    }
+    seen_tool_values = {tool_name_value(tool) for tool in resolved_allowed_tools}
+    for capabilities in resolved_host_directory_grants.values():
+        for capability in capabilities:
+            tool = host_directory_tool_by_capability[capability]
+            if tool.value not in seen_tool_values:
+                seen_tool_values.add(tool.value)
+                resolved_allowed_tools.append(tool)
+
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
@@ -408,6 +426,7 @@ def build_issue_session_manifest(
             [tool_name_value(tool) for tool in resolved_allowed_tools]
         ),
         connector_grants=connector_grants or {},
+        host_directory_grants=resolved_host_directory_grants,
         approval_required_tools=list(policy.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=normalize_allowed_script_names(allowed_script_names or []),
@@ -585,6 +604,7 @@ def session_policy_update_from_payload(
         "approval_notification_target_ids",
         "tool_argument_policies",
         "connector_grants",
+        "host_directory_grants",
         "allowed_script_names",
         "allowed_contact_ids",
         "communication_target_ids",
@@ -663,6 +683,10 @@ def session_policy_update_from_payload(
         )
     if "connector_grants" in payload:
         update["connector_grants"] = normalize_connector_grants(payload.get("connector_grants"))
+    if "host_directory_grants" in payload:
+        update["host_directory_grants"] = normalize_host_directory_grants(
+            payload.get("host_directory_grants")
+        )
 
     discord_field = (
         "discord_channel_allowlist"

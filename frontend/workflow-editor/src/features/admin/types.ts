@@ -231,6 +231,7 @@ export type AgentCreateRequest = {
   web_search_enabled?: boolean;
   allowed_tools?: string[];
   connector_grants?: Record<string, unknown>;
+  host_directory_grants?: Record<string, string[]>;
   allowed_script_names?: string[];
   communication_target_ids?: string[];
   email_mailbox_grants?: EmailMailboxGrant[];
@@ -336,6 +337,16 @@ export type AgentCreateConnectorOption = {
   }>;
 };
 
+export type HostDirectoryCapability = "list" | "import" | "delete";
+
+export type AgentCreateHostDirectoryOption = {
+  directory_id: string;
+  display_name: string;
+  description: string;
+  capabilities: HostDirectoryCapability[];
+  delete_requires_approval: boolean;
+};
+
 export type AgentCreateOptionsResponse = {
   directory_path: string;
   backends: AgentBackend[];
@@ -344,6 +355,7 @@ export type AgentCreateOptionsResponse = {
   communication_targets: AgentCreateCommunicationTargetOption[];
   email_mailboxes: AgentCreateEmailMailboxOption[];
   connectors: AgentCreateConnectorOption[];
+  host_directories: AgentCreateHostDirectoryOption[];
   libvirt: {
     default_template: string | null;
     templates: AgentCreateImageOption[];
@@ -361,6 +373,7 @@ export type AgentPolicyUpdateRequest = {
   web_search_enabled?: boolean;
   allowed_tools?: string[];
   connector_grants?: Record<string, unknown>;
+  host_directory_grants?: Record<string, string[]>;
   approval_required_tools?: string[];
   approval_notification_target_ids?: string[];
   communication_target_ids?: string[] | null;
@@ -394,6 +407,7 @@ export type AgentSessionPolicy = {
   expires_at: string | null;
   allowed_tools: string[];
   connector_grants: Record<string, string[]>;
+  host_directory_grants: Record<string, string[]>;
   approval_required_tools?: string[];
   approval_notification_target_ids: string[];
   approval_notification_target_options: Array<{ value: string; label: string }>;

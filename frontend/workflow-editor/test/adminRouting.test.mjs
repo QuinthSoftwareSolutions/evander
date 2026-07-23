@@ -30,6 +30,7 @@ test("known admin hashes resolve to their matching tabs", () => {
   assert.equal(tabFromHash("#sessions?session_id=session-1"), "sessions");
   assert.equal(tabFromHash("#tool-calls"), "tool-calls");
   assert.equal(tabFromHash("#configuration"), "configuration");
+  assert.equal(tabFromHash("#host-directories"), "host-directories");
 });
 
 test("users hash subpaths resolve to the users admin tab", () => {
@@ -110,7 +111,7 @@ test("built-in tabs belong to one ordered navigation group", () => {
       overview: ["dashboard", "reports"],
       operations: ["agents", "sessions", "issues", "approvals", "artifacts"],
       automation: ["workflow", "skills"],
-      extensions: ["addons", "connectors"],
+      extensions: ["addons", "connectors", "host-directories"],
       infrastructure: ["vms", "workers"],
       governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "users"],
     },

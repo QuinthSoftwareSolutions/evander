@@ -147,6 +147,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     ttl_hours: ConfigValue | None = None
     allowed_tools: list[str] | None = None
     connector_grants: ConfigValue | None = None
+    host_directory_grants: ConfigValue | None = None
     tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
     allowed_contact_ids: list[str] | None = None
@@ -251,6 +252,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     capability_profile: ConfigValue | None = None
     allowed_tools: list[str] | None = None
     connector_grants: ConfigValue | None = None
+    host_directory_grants: ConfigValue | None = None
     tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
     allowed_contact_ids: list[str] | None = None

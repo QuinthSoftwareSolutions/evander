@@ -106,7 +106,7 @@ or environment scope.
 5. Empty non-root directories can be deleted with the delete button when privileges are unlocked.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
-Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Connectors, Configuration, Users,
+Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Connectors, Host Directories, Configuration, Users,
 Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
@@ -201,13 +201,13 @@ Common tasks:
 6. Unlock privileges before starting any mutation.
 7. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
    details, allowed tools/scripts, communication targets, mailbox-account access, bootstrap
-   options, optional HTTP targets, and optional Codex skills. Each HTTP target gives the session a
+   options, optional HTTP targets, Host Directory grants, and optional Codex skills. Each HTTP target gives the session a
    named HTTP(S) base URL through the host relay; it does not enable general internet access or
    supply target credentials. Container-worker Codex agents can also choose **Metered API** or
    **ChatGPT subscription** as their usage source.
 8. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
    source applies on the next turn without replacing the session or its thread history. HTTP
-   targets can also be added, changed, or removed here.
+   targets and Host Directory capabilities can also be added, changed, or removed here.
 9. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
    worker-global account, start or cancel device-code sign-in, and sign out. These account actions
    require both root ownership and an unlocked privileged session because every subscription-mode
@@ -221,7 +221,7 @@ Common tasks:
 13. Use lifecycle actions only after confirming the target and directory are correct.
 
 The same independent sidebar scrolling applies to the other card-list/detail pages, including
-Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, users and groups, MCP Tools,
+Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, Host Directories, users and groups, MCP Tools,
 Tool Visibility, and report navigation. Their existing card contents and density are unchanged.
 
 Notes:
@@ -442,10 +442,13 @@ Common tasks:
     metadata.
 17. Edit connector grants as a connector-to-operation map. A grant exposes only the named
     operations; it does not expose connector endpoints or authentication material.
-18. Save settings.
-19. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+18. Edit **Host Directory access** with the structured resource/capability selector. Select only
+    `list`, `import`, or `delete` where needed. Selecting a capability enables its dedicated MCP
+    tool, while the absolute host root remains hidden from the session.
+19. Save settings.
+20. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
-20. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+21. Review recent scheduled wake ledger entries for the selected session, filter by delivery
     status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
@@ -497,6 +500,41 @@ Common tasks:
 Connector health checks and agent invocations use the same validation, host authentication,
 response limits, and audit path. Health checks cannot select arbitrary methods, paths, headers, or
 credentials.
+
+## Host Directories
+
+The Host Directories page manages dedicated, directory-scoped filesystem resources. This is the
+supported surface when agents need relative tree navigation, bounded file/folder import, or
+recoverable deletion inside one approved host directory. It does not create a mailbox, connector,
+guest mount, or arbitrary host file browser.
+
+Common tasks:
+
+1. Choose the owning Evander directory and open **Host Directories**.
+2. Select an inherited resource or enter a lowercase resource ID and add a new one.
+3. Unlock privileged operations, then set its display name, description, absolute host root,
+   agent capabilities, import/watch limits, delete-approval behavior, and enabled state.
+4. Save the revision-checked local overlay. If the revision is stale, refresh and reapply the
+   intended fields.
+5. Run **Check health**. Missing roots, symlink roots, unsafe filesystem boundaries, and an
+   unwritable delete quarantine fail closed; health details remain operator-only. A delete-enabled
+   check creates and immediately removes a private quarantine probe.
+6. Grant the resource's capabilities from Agent creation, Agent policy, or Sessions policy.
+7. Review **Quarantine recovery** after agent deletes. Restore only when the original relative
+   destination is absent.
+8. Use **Purge permanently** only after confirming the recovery ID and path. V1 never purges
+   quarantine on a timer.
+
+An incomplete recovery record is shown explicitly. Missing-payload or corrupt-metadata records
+cannot be restored, but the owning directory operator can purge their retained control record.
+
+Agents receive resource IDs, relative paths, metadata, and opaque revisions. They never receive the
+absolute root. `delete` requires an exact listed revision and, by default, a one-use exact-payload
+approval; deleting a non-empty directory also requires the explicit recursive flag.
+
+Workflow authors can select `trigger:host-directory:file-added`. It baselines existing files,
+waits for new regular files to settle, supports relative subpaths and include/exclude globs, and
+runs in the existing trigger orchestrator. Directories and file updates do not fire it.
 
 ## Tool Calls
 

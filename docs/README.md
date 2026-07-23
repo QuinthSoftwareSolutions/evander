@@ -19,6 +19,8 @@ documentation. The classifications below are part of the maintenance contract.
 - [`addons.md`](addons.md): add-on lifecycle, bundled add-ons, and Team action reference
 - [`connectors.md`](connectors.md): named file/REST capabilities, authentication, grants, and
   custom connector drivers
+- [`host-directories.md`](host-directories.md): scoped host filesystem resources, session grants,
+  artifact imports, quarantine recovery, and file-added triggers
 - [`execution-backends.md`](execution-backends.md): backend selection and shared contracts
 - [`container-worker-backend.md`](container-worker-backend.md): worker VM/container deployment
 - [`git-remotes.md`](git-remotes.md): managed repository and restricted Git flow

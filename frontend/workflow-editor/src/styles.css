@@ -5859,6 +5859,65 @@ select {
   min-width: 0;
 }
 
+.host-directory-add {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.host-directory-add button {
+  justify-self: start;
+}
+
+.host-directory-form .host-directory-description-field {
+  grid-column: 1 / -1;
+}
+
+.host-directory-capabilities {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0;
+  padding: 0.85rem;
+  border: 1px solid rgba(93, 75, 48, 0.14);
+  border-radius: 10px;
+}
+
+.host-directory-capabilities legend {
+  padding: 0 0.3rem;
+  font-weight: 700;
+}
+
+.host-directory-capability-options,
+.host-directory-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1.25rem;
+}
+
+.host-directory-quarantine-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+}
+
+.host-directory-quarantine-entry p {
+  margin: 0.25rem 0 0;
+}
+
+@media (max-width: 720px) {
+  .host-directory-quarantine-entry {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root[data-theme="dark"] .host-directory-add,
+:root[data-theme="dark"] .host-directory-capabilities {
+  border-color: rgba(125, 170, 190, 0.18);
+}
+
 .users-page .feature-toolbar > div,
 .users-page .panel-header,
 .users-page .panel-meta,

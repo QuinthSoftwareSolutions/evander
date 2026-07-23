@@ -86,6 +86,36 @@ separately allowed communication-artifact copy operation imports them into the s
 
 See [connectors](connectors.md) for schemas, examples, authentication behavior, and custom drivers.
 
+## Host Directory Operations
+
+Use Admin Web **Host Directories** to define a resource ID, absolute non-root host path, allowed
+capabilities, import/watch limits, delete-approval policy, and enabled state for the selected
+Evander directory. Unlock privileged operations to save or probe a host path. Run **Check health**
+before granting a resource to a session or selecting it in a workflow. For a delete-enabled
+resource this also creates and removes a private quarantine probe, so a green result verifies
+quarantine writability rather than only opening the root.
+
+Grant only the required `list`, `import`, and `delete` capabilities through the structured
+Host Directory selector in Agent creation, Agent policy, or Sessions policy. Agents see only the
+resource ID and relative entries. An import returns a session-owned artifact; it does not mount the
+root or bypass the separately configured workspace-copy policy.
+
+Delete is revision-checked and approval-gated by default. It moves the entry to the resource-local
+`.evander-trash` quarantine. In **Quarantine recovery**, restore a record only when its original
+relative destination is free. Permanent purge is irreversible and has no scheduled retention in
+v1. Incomplete records remain visible: a missing payload or corrupt metadata disables restore but
+still allows explicit cleanup by purge. If health fails, repair the real directory and permissions;
+do not use a symlink, configure `/`, or hand-edit quarantine metadata.
+
+For automation, add `trigger:host-directory:file-added` in the Workflow editor. It baselines
+existing files and emits only settled new regular files through the normal trigger-orchestrator
+poll loop. Diagnose it by checking the effective resource, workflow directory scope, include/
+exclude globs, the resource entry limit, trigger worker logs, and
+`runtime/trigger-cursors-host-directories.json`.
+
+See [Host Directories](host-directories.md) for the complete schema, tool contracts, safety
+boundary, and recovery procedure.
+
 ## Workflow Runtime Files and Troubleshooting
 
 The workflow orchestrators share runtime state under `runtime/` (or your configured
@@ -93,6 +123,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 
 - `trigger-orchestrator-events.json`: durable queue of trigger and completion events.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
+- `trigger-cursors-host-directories.json`: per-trigger Host Directory baseline, settle candidate,
+  pending-event, and acknowledgement state.
 - `gate-orchestrator-executions.json`: gate execution log with idempotency key, gate type, state,
   resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
@@ -440,6 +472,8 @@ and surfaces:
   available until that backfill finishes.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
+- a Host Directories page for revisioned resource configuration, host-only health checks, and
+  quarantine restore/purge
 - Sessions policy controls for `approval_required_tools`, which lets operators require human
   approval before selected allowed tools execute
 - a configuration tab that inspects inherited per-domain directory config

@@ -47,6 +47,11 @@ from evander.connectors.service import (
     ConnectorService,
     connector_registry_from_addons,
 )
+from evander.host_directories.service import (
+    HostDirectoryError,
+    HostDirectoryPolicyError,
+    HostDirectoryService,
+)
 from evander.communication_artifact_links import (
     CommunicationArtifactLinkError,
     communication_artifact_link_secret_env,
@@ -217,6 +222,7 @@ from evander.gateway.communication_tools import (
     register_communication_tools,
 )
 from evander.gateway.connector_tools import register_connector_tools
+from evander.gateway.host_directory_tools import register_host_directory_tools
 from evander.gateway.documentation_tools import register_documentation_tools
 from evander.gateway.consultation_tools import register_consultation_tools
 from evander.gateway.email_draft_helpers import (
@@ -533,6 +539,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             base_dir=context.config.runtime_dir.parent,
         ),
     )
+    host_directory_service = HostDirectoryService(
+        runtime_dir=context.config.runtime_dir,
+        provider_config=context.provider_config,
+        artifact_store_factory=deps.communication_artifact_store_factory,
+    )
 
     def _record_visible_tools(
         *,
@@ -838,6 +849,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         ),
     )
     register_connector_tools(server, context, connector_service)
+    register_host_directory_tools(server, context, host_directory_service)
 
     register_communication_tools(
         server,
@@ -1135,7 +1147,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
         except PolicyError:
             return None
-        connector_requires_approval = False
+        resource_requires_approval = False
         if tool_value == ToolName.CALL_CONNECTOR.value:
             try:
                 _, _, connector_operation = connector_service.require_operation(
@@ -1146,9 +1158,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 )
             except (ValueError, ConnectorPolicyError) as exc:
                 raise ToolError(str(exc)) from exc
-            connector_requires_approval = bool(connector_operation.requires_approval)
+            resource_requires_approval = bool(connector_operation.requires_approval)
+        elif tool_value == ToolName.HOST_DIRECTORY_DELETE.value:
+            try:
+                resource_requires_approval = host_directory_service.delete_requires_approval(
+                    session,
+                    str(sanitized_arguments.get("directory_id") or ""),
+                )
+            except (ValueError, HostDirectoryError, HostDirectoryPolicyError) as exc:
+                raise ToolError(str(exc)) from exc
         if not (
-            connector_requires_approval
+            resource_requires_approval
             or context.policy.approval_required_for_tool(session, tool_name)
         ):
             return None
@@ -1160,7 +1180,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             arguments=sanitized_arguments,
         )
         grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_name)
-        if connector_requires_approval:
+        if resource_requires_approval:
             grant_settings = ApprovalGrantSettings(
                 ttl_seconds=grant_settings.ttl_seconds,
                 max_uses=1,

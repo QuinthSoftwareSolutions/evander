@@ -10,6 +10,7 @@ from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.directories import DirectoryStore
 from evander.events.provider_models import AgentCreateEffectDefinition
+from evander.host_directories.grants import resolve_and_validate_host_directory_grants
 from evander.messaging.targets import load_communication_targets_config
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
@@ -71,6 +72,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "capability_profile": effect.capability_profile,
             "allowed_tools": effect.allowed_tools,
             "connector_grants": effect.connector_grants,
+            "host_directory_grants": effect.host_directory_grants,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
             "allowed_contact_ids": effect.allowed_contact_ids,
@@ -235,6 +237,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id or f"session-{vm_name}",
             value=payload.get("connector_grants"),
         )
+        host_directory_grants = _validated_host_directory_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id or f"session-{vm_name}",
+            value=payload.get("host_directory_grants"),
+        )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -245,6 +253,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=as_string_list(payload.get("allowed_tools")),
             connector_grants=connector_grants,
+            host_directory_grants=host_directory_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -439,6 +448,21 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 connector_id: list(operation_names)
                 for connector_id, operation_names in existing_session.connector_grants.items()
             }
+        host_directory_grants = _validated_host_directory_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id,
+            value=payload.get("host_directory_grants"),
+        )
+        if (
+            host_directory_grants is None
+            and existing_session is not None
+            and existing_session.directory_path == directory_path
+        ):
+            host_directory_grants = {
+                directory_id: list(capabilities)
+                for directory_id, capabilities in existing_session.host_directory_grants.items()
+            }
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -448,6 +472,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
             connector_grants=connector_grants,
+            host_directory_grants=host_directory_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -794,6 +819,23 @@ def _validated_connector_grants(
     resolver = getattr(context, "provider_config_resolver", None)
     return resolve_and_validate_connector_grants(
         resolver,
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )
+
+
+def _validated_host_directory_grants(
+    context: Any,
+    *,
+    directory_path: str,
+    session_id: str,
+    value: object,
+) -> dict[str, list[str]] | None:
+    if value is None:
+        return None
+    return resolve_and_validate_host_directory_grants(
+        provider_config=getattr(context, "provider_config_resolver", None),
         directory_path=directory_path,
         session_id=session_id,
         value=value,

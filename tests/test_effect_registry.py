@@ -87,6 +87,7 @@ from evander.events.provider_models import (
     VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
 )
+from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.managed_git_grants import managed_git_key_name, managed_git_ssh_alias
 from evander.messaging.targets import (
@@ -107,6 +108,12 @@ from evander.triggers.queue import TriggerQueueRecord
 class _ResolverStub:
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
         return GatewayConfig(runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")))
+
+    def resolve_host_directories_for_directory(
+        self, directory_path: str | None
+    ) -> HostDirectoryDirectoryConfig:
+        del directory_path
+        return _host_directory_config()
 
 
 class _ContainerResolverStub:
@@ -130,11 +137,32 @@ class _ContainerResolverStub:
         del directory_path
         return self.contacts_config
 
+    def resolve_host_directories_for_directory(
+        self, directory_path: str | None
+    ) -> HostDirectoryDirectoryConfig:
+        del directory_path
+        return _host_directory_config()
+
     def resolve_effect_provider_config(self, directory_path: str | None):
         from evander.provider_config import EffectProviderConfig
 
         del directory_path
         return EffectProviderConfig.model_validate(self.config.model_dump(mode="json"))
+
+
+def _host_directory_config() -> HostDirectoryDirectoryConfig:
+    return HostDirectoryDirectoryConfig.model_validate(
+        {
+            "host_directories": {
+                "shared": {
+                    "display_name": "Shared files",
+                    "description": "Files shared with explicitly granted sessions.",
+                    "root": "/srv/evander/shared",
+                    "capabilities": ["list", "import"],
+                }
+            }
+        }
+    )
 
 
 def _libvirt_vm_defaults_stub() -> SimpleNamespace:
@@ -895,6 +923,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         labels={"workflow": "issue-worker", "role": "issue"},
         metadata={"issue_number": "42", "issue_title": "Fix picker"},
         model_provider_mode="local_openai",
+        host_directory_grants={"shared": ["list", "import"]},
         dotnet=True,
     )
     admin_service = _AdminServiceStub(
@@ -931,6 +960,34 @@ def test_vm_create_provider_returns_required_outputs() -> None:
     assert admin_service.create_vm_calls[0]["model_provider_mode"] == "local_openai"
     assert admin_service.create_vm_calls[0]["dotnet"] is True
     assert admin_service.create_vm_calls[0]["connector_grants"] is None
+    assert admin_service.create_vm_calls[0]["host_directory_grants"] == {
+        "shared": ["list", "import"]
+    }
+
+
+def test_vm_create_provider_rejects_unavailable_host_directory_capability() -> None:
+    effect = VmCreateEffectDefinition(
+        id="effect-vm",
+        display_name="Create VM",
+        type="effect:vm:create",
+        vm_name="lab-vm",
+        host_directory_grants={"shared": ["delete"]},
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    with pytest.raises(ValueError, match="includes unavailable capabilities: delete"):
+        factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.create_vm_calls == []
 
 
 def test_vm_create_provider_passes_codex_skills() -> None:
@@ -977,6 +1034,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         communication_file_max_bytes=4096,
         communication_file_require_approval_for_send=True,
         web_search_enabled=True,
+        host_directory_grants={"shared": ["list"]},
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -1006,6 +1064,9 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
     assert admin_service.create_vm_calls[0]["connector_grants"] is None
+    assert admin_service.create_vm_calls[0]["host_directory_grants"] == {
+        "shared": ["list"]
+    }
     assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
 
 
@@ -5898,6 +5959,7 @@ def test_agent_create_container_upserts_when_session_exists(
             codex_auth_mode=CodexAuthMode.METERED_API,
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             connector_grants={"manually-assigned": ["read"]},
+            host_directory_grants={"shared": ["list"]},
             web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
@@ -5966,8 +6028,13 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated is not None
     assert updated.model == "gpt-5.5"
     assert updated.codex_auth_mode is CodexAuthMode.METERED_API
-    assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN, ToolName.STAGE_ARTIFACT]
+    assert updated.allowed_tools == [
+        ToolName.SET_ISSUE_PLAN,
+        ToolName.STAGE_ARTIFACT,
+        ToolName.HOST_DIRECTORY_LIST,
+    ]
     assert updated.connector_grants == {"manually-assigned": ["read"]}
+    assert updated.host_directory_grants == {"shared": ["list"]}
     assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["agent_provider"] == "claude"
@@ -6002,18 +6069,21 @@ def test_agent_create_container_upserts_when_session_exists(
             session_id="session-1",
             existing_agent_behavior="upsert",
             connector_grants={},
+            host_directory_grants={},
         )
     ).execute()
 
     cleared = session_repository.get_session("session-1")
     assert cleared is not None
     assert cleared.connector_grants == {}
+    assert cleared.host_directory_grants == {}
 
     session_repository.upsert_session(
         cleared.model_copy(
             update={
                 "directory_path": "root/team-a",
                 "connector_grants": {"team-a-documents": ["read"]},
+                "host_directory_grants": {"shared": ["list"]},
             }
         )
     )
@@ -6033,6 +6103,7 @@ def test_agent_create_container_upserts_when_session_exists(
     assert moved is not None
     assert moved.directory_path == "root/team-b"
     assert moved.connector_grants == {}
+    assert moved.host_directory_grants == {}
 
 
 def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(

@@ -24,6 +24,10 @@ import {
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
 import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
+import {
+  HostDirectoryGrantSelector,
+  hostDirectoryToolsForGrants,
+} from "../hostDirectories/HostDirectoryGrantSelector";
 
 type AgentCreateDialogProps = {
   directoryPath: string;
@@ -184,6 +188,7 @@ export function AgentCreateDialog({
       initialPolicy: {
         ...current.initialPolicy,
         connectorGrants: {},
+        hostDirectoryGrants: {},
         communicationTargetIds: [],
         emailMailboxGrants: [],
       },
@@ -612,6 +617,28 @@ export function AgentCreateDialog({
                 addLabel="Add label"
                 keyLabel="Key"
                 valueLabel="Value"
+              />
+            </div>
+            <div className="field-stack wide-field">
+              <CreateFieldLabel tooltip="Capabilities granted for named host directories. Selecting one also enables its dedicated MCP tool; delete normally requires approval and moves entries to quarantine.">
+                Host directory grants
+              </CreateFieldLabel>
+              <HostDirectoryGrantSelector
+                values={createForm.initialPolicy.hostDirectoryGrants}
+                options={createOptions?.host_directories ?? []}
+                onChange={(nextValues) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    initialPolicy: {
+                      ...current.initialPolicy,
+                      hostDirectoryGrants: nextValues,
+                      allowedTools: dedupeStrings([
+                        ...current.initialPolicy.allowedTools,
+                        ...hostDirectoryToolsForGrants(nextValues),
+                      ]),
+                    },
+                  }))
+                }
               />
             </div>
             <div className="field-stack">

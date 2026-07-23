@@ -11,6 +11,10 @@ from evander.directory_config import (
     validate_effective_domain_payload,
 )
 from evander.directories import DirectoryService, DirectoryStore
+from evander.host_directories.grants import (
+    validate_host_directory_grant_mapping,
+)
+from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.models import SessionManifest
 from evander.policy_config import PolicyConfigResolver
 from evander.provider_config import ProviderConfigResolver
@@ -101,6 +105,97 @@ def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenanc
     assert resolution.provenance["roles"].directory_path == "root/team"
     assert resolution.provenance["mode"].directory_path == "root/team/sandbox"
     assert resolution.provenance["optional"].directory_path == "root/team"
+
+
+def test_host_directory_inheritance_and_child_grant_validation(
+    tmp_path: Path,
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    directory_service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(directory_service)
+    child = directory_service.create(parent="root", name="team")
+    root_path = tmp_path / "shared"
+
+    root = store.get("root")
+    assert root is not None
+    store.put(
+        root.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "host_directories": {
+                            "host_directories": {
+                                "shared": {
+                                    "display_name": "Shared",
+                                    "description": "Shared inbound files",
+                                    "root": str(root_path),
+                                    "capabilities": ["list", "import"],
+                                    "max_import_bytes": 1024,
+                                },
+                                "blocked": {
+                                    "display_name": "Blocked",
+                                    "description": "Disabled below the root scope",
+                                    "root": str(tmp_path / "blocked"),
+                                    "capabilities": ["list"],
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+    child_info = store.get(child.id)
+    assert child_info is not None
+    store.put(
+        child_info.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "host_directories": {
+                            "host_directories": {
+                                "shared": {"max_import_bytes": 2048},
+                                "blocked": {"disabled": True},
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_domain(
+        child.path,
+        domain="host_directories",
+        base_config={"host_directories": {}},
+        validator=lambda payload: HostDirectoryDirectoryConfig.model_validate(payload),
+    )
+    config = HostDirectoryDirectoryConfig.model_validate(
+        resolution.effective_config
+    )
+
+    assert resolution.validation_errors == []
+    assert config.host_directories["shared"].root == root_path
+    assert config.host_directories["shared"].capabilities == ["list", "import"]
+    assert config.host_directories["shared"].max_import_bytes == 2048
+    assert config.host_directories["blocked"].disabled is True
+    validate_host_directory_grant_mapping(
+        config,
+        {"shared": ["list", "import"]},
+        session_id="session-child",
+    )
+    with pytest.raises(ValueError, match="unavailable directory"):
+        validate_host_directory_grant_mapping(
+            config,
+            {"blocked": ["list"]},
+            session_id="session-child",
+        )
+    with pytest.raises(ValueError, match="unavailable capabilities"):
+        validate_host_directory_grant_mapping(
+            config,
+            {"shared": ["delete"]},
+            session_id="session-child",
+        )
 
 
 def test_directory_config_resolver_validates_gateway_domain_without_changing_consumers(

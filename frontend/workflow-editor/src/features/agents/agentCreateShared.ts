@@ -40,6 +40,7 @@ export type AgentInitialPolicyFormState = {
   webSearchEnabled: boolean;
   allowedTools: string[];
   connectorGrants: Record<string, string[]>;
+  hostDirectoryGrants: Record<string, string[]>;
   allowedScriptNames: string[];
   communicationTargetIds: string[];
   emailMailboxGrants: EmailMailboxGrant[];
@@ -81,6 +82,7 @@ export function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     webSearchEnabled: false,
     allowedTools: [],
     connectorGrants: {},
+    hostDirectoryGrants: {},
     allowedScriptNames: [],
     communicationTargetIds: [],
     emailMailboxGrants: [],
@@ -192,6 +194,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   if (allowedTools.length > 0) payload.allowed_tools = allowedTools;
   if (Object.keys(initialPolicy.connectorGrants).length > 0) {
     payload.connector_grants = initialPolicy.connectorGrants;
+  }
+  if (Object.keys(initialPolicy.hostDirectoryGrants).length > 0) {
+    payload.host_directory_grants = initialPolicy.hostDirectoryGrants;
   }
   const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
   if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;

@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-07-23 - Review and Bokio Duplicate-Check Correctness
+
+- Kept deliverables pending when retired reviews leave unresolved carried findings, and restored
+  outcome-aware implicit review-profile selection for atomic deliverable submissions.
+- Made Bokio duplicate checks follow reported pagination totals and scoped cached durable evidence
+  to the configured company and API endpoint.
+
+## 2026-07-23 - Scoped Host Directory Resources
+
+- Added directory-scoped Host Directory definitions and structured session grants for dedicated
+  relative list, bounded file/folder import, and recoverable delete tools without exposing absolute
+  host roots.
+- Added revision-checked, approval-by-default quarantine deletes with Admin health checks,
+  restore, and explicit permanent purge; imports produce session-owned artifacts and deterministic
+  directory archives.
+- Added the baseline-and-settle `trigger:host-directory:file-added` provider to the existing
+  trigger orchestrator, plus structured Admin configuration and Agent/Sessions capability
+  selectors.
+- Hardened descriptor-relative traversal against bind-mount crossings, made pagination resilient
+  to live-tree removals, probed delete-quarantine writability, and retained scoped cleanup records
+  for interrupted quarantine operations.
+
 ## 2026-07-23 - Structured Session HTTP Targets
 
 - Added structured HTTP target alias and base-URL editors to agent creation, agent policy editing,
@@ -7,13 +29,6 @@
 - Validated and narrowly merged canonical HTTP target updates, preserved workflow-owned target
   metadata, supported legacy APP target conversion, and made an explicitly empty target set deny
   the legacy fallback.
-
-## 2026-07-23 - Review and Bokio Duplicate-Check Correctness
-
-- Kept deliverables pending when retired reviews leave unresolved carried findings, and restored
-  outcome-aware implicit review-profile selection for atomic deliverable submissions.
-- Made Bokio duplicate checks follow reported pagination totals and scoped cached durable evidence
-  to the configured company and API endpoint.
 
 ## 2026-07-23 - Team Outcome And Recovery Reliability
 

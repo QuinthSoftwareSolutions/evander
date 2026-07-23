@@ -6,6 +6,7 @@ from typing import Any
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.events.provider_models import VmCreateEffectDefinition
+from evander.host_directories.grants import resolve_and_validate_host_directory_grants
 from evander.provider_config import MODEL_PROVIDER_MODE_METADATA_KEY
 
 from .agent_session import contacts_config_for_directory
@@ -31,6 +32,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             "ttl_hours": effect.ttl_hours,
             "allowed_tools": effect.allowed_tools,
             "connector_grants": effect.connector_grants,
+            "host_directory_grants": effect.host_directory_grants,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
             "allowed_contact_ids": effect.allowed_contact_ids,
@@ -76,6 +78,12 @@ class VmCreateEffectProvider(EffectProviderBase):
             session_id=session_id or f"session-{vm_name}",
             value=payload.get("connector_grants"),
         )
+        host_directory_grants = _validated_host_directory_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id or f"session-{vm_name}",
+            value=payload.get("host_directory_grants"),
+        )
 
         result = context.vm_creator.create_vm(
             provider=self._normalize_optional_string(payload.get("provider")),
@@ -90,6 +98,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             ttl_hours=self._as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=self._as_string_list(payload.get("allowed_tools")),
             connector_grants=connector_grants,
+            host_directory_grants=host_directory_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=self._as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -191,6 +200,23 @@ def _validated_connector_grants(
     resolver = getattr(context, "provider_config_resolver", None)
     return resolve_and_validate_connector_grants(
         resolver,
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )
+
+
+def _validated_host_directory_grants(
+    context: Any,
+    *,
+    directory_path: str,
+    session_id: str,
+    value: object,
+) -> dict[str, list[str]] | None:
+    if value is None:
+        return None
+    return resolve_and_validate_host_directory_grants(
+        provider_config=getattr(context, "provider_config_resolver", None),
         directory_path=directory_path,
         session_id=session_id,
         value=value,

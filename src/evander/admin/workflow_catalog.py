@@ -654,6 +654,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Start when a matching provider remote issue receives a new matching comment."
     ),
     "trigger:script-run-request": "Start from an approved run_script request submitted by a session.",
+    "trigger:host-directory:file-added": (
+        "Start when a new regular file becomes stable in a configured host directory."
+    ),
     "trigger:discord:new-message": (
         "Start from new Discord messages that match the configured filters."
     ),
@@ -1048,6 +1051,58 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:script-run-request",
         label="Script run request",
         fields=[],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:host-directory:file-added",
+        label="Host directory file added",
+        fields=[
+            _field(
+                "directory_id",
+                "Host directory",
+                "enum",
+                required=True,
+                description="Directory-scoped host directory resource to watch.",
+            ),
+            _field(
+                "path",
+                "Relative path",
+                "string",
+                default_value="",
+                description="Optional directory path relative to the configured host root.",
+            ),
+            _field(
+                "recursive",
+                "Recursive",
+                "boolean",
+                default_value=False,
+                description="Watch regular files in nested directories.",
+            ),
+            _field(
+                "include_globs",
+                "Include globs",
+                "string_list",
+                default_value=[],
+                description="Optional relative-path patterns; leave empty to include all files.",
+            ),
+            _field(
+                "exclude_globs",
+                "Exclude globs",
+                "string_list",
+                default_value=[],
+                description="Relative-path patterns to exclude after include filtering.",
+            ),
+            _field(
+                "settle_seconds",
+                "Settle seconds",
+                "number",
+                default_value=5,
+                description=(
+                    "Require unchanged identity, size, and modification time across polls "
+                    "for at least this duration."
+                ),
+            ),
+        ],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
@@ -1792,6 +1847,18 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 default_value={},
             ),
             _field(
+                "host_directory_grants",
+                "Host directory grants",
+                "json",
+                bindable=True,
+                description=(
+                    "Host-directory-id to list, import, or delete capability lists "
+                    "granted to the created session."
+                ),
+                json_value_type="object",
+                default_value={},
+            ),
+            _field(
                 "tool_argument_policies",
                 "Tool argument policy",
                 "json",
@@ -2072,6 +2139,18 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 bindable=True,
                 description="Connector-id to operation-name lists granted to the created session.",
+                json_value_type="object",
+                default_value={},
+            ),
+            _field(
+                "host_directory_grants",
+                "Host directory grants",
+                "json",
+                bindable=True,
+                description=(
+                    "Host-directory-id to list, import, or delete capability lists "
+                    "granted to the created session."
+                ),
                 json_value_type="object",
                 default_value={},
             ),
