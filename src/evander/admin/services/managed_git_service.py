@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from urllib.error import HTTPError, URLError
@@ -90,6 +91,8 @@ _B64_ASSIGNMENT_PATTERN = re.compile(
 )
 _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
 _AZURE_PR_DESCRIPTION_MAX_CHARS = 4000
+_AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS = 11
+_AZURE_PR_SOURCE_CONFIRMATION_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1855,13 +1858,11 @@ class ManagedGitAdminService:
             item = values[0]
             if not isinstance(item, Mapping):
                 raise RuntimeError("Azure DevOps PR API returned an invalid response")
-            source_commit = item.get("lastMergeSourceCommit")
-            self._verify_provider_pr_source_commit(
-                provider="Azure DevOps",
+            self._confirm_existing_azure_pr_source_commit(
+                api_root=api_root,
+                pr=item,
                 expected_commit_sha=expected_commit_sha,
-                actual_commit_sha=(
-                    source_commit.get("commitId") if isinstance(source_commit, Mapping) else None
-                ),
+                auth=auth,
             )
             pr_id = str(item.get("pullRequestId") or "").strip()
             if not pr_id:
@@ -1944,6 +1945,68 @@ class ManagedGitAdminService:
             **truncation,
             **link_result,
         }
+
+    def _confirm_existing_azure_pr_source_commit(
+        self,
+        *,
+        api_root: str,
+        pr: Mapping[str, Any],
+        expected_commit_sha: str,
+        auth: str,
+    ) -> None:
+        source_commit = pr.get("lastMergeSourceCommit")
+        try:
+            self._verify_provider_pr_source_commit(
+                provider="Azure DevOps",
+                expected_commit_sha=expected_commit_sha,
+                actual_commit_sha=(
+                    source_commit.get("commitId") if isinstance(source_commit, Mapping) else None
+                ),
+            )
+            return
+        except ManagedGitConflictError as mismatch:
+            latest_mismatch = mismatch
+
+        pr_id = str(pr.get("pullRequestId") or "").strip()
+        if not pr_id:
+            raise RuntimeError("Azure DevOps PR API returned no pull request ID")
+        iterations_url = (
+            f"{api_root}/{quote(pr_id, safe='')}/iterations?api-version=7.1"
+        )
+        for attempt in range(_AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS):
+            iterations = self._azure_request_json(iterations_url, auth=auth)
+            current_commit_sha = self._latest_azure_pr_iteration_source_commit(iterations)
+            if current_commit_sha:
+                try:
+                    self._verify_provider_pr_source_commit(
+                        provider="Azure DevOps",
+                        expected_commit_sha=expected_commit_sha,
+                        actual_commit_sha=current_commit_sha,
+                    )
+                    return
+                except ManagedGitConflictError as mismatch:
+                    latest_mismatch = mismatch
+            if attempt + 1 < _AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS:
+                time.sleep(_AZURE_PR_SOURCE_CONFIRMATION_INTERVAL_SECONDS)
+        raise latest_mismatch
+
+    @staticmethod
+    def _latest_azure_pr_iteration_source_commit(
+        iterations: Mapping[str, Any],
+    ) -> str | None:
+        values = iterations.get("value")
+        if not isinstance(values, list):
+            return None
+        for item in reversed(values):
+            if not isinstance(item, Mapping):
+                continue
+            source_commit = item.get("sourceRefCommit")
+            if not isinstance(source_commit, Mapping):
+                continue
+            commit_id = str(source_commit.get("commitId") or "").strip()
+            if commit_id:
+                return commit_id
+        return None
 
     @staticmethod
     def _bounded_azure_pr_description(body: str) -> tuple[str, dict[str, Any]]:

@@ -597,8 +597,24 @@ def test_azure_pr_create_and_reuse_reject_moved_source_branch(
         "url": "https://example/pr/19",
         "lastMergeSourceCommit": {"commitId": current_commit},
     }
+    if reuse_existing:
+        monkeypatch.setattr(
+            "evander.admin.services.managed_git_service."
+            "_AZURE_PR_SOURCE_CONFIRMATION_ATTEMPTS",
+            1,
+        )
     responses = iter(
-        [{"value": [pr_item]}]
+        [
+            {"value": [pr_item]},
+            {
+                "value": [
+                    {
+                        "id": 1,
+                        "sourceRefCommit": {"commitId": current_commit},
+                    }
+                ]
+            },
+        ]
         if reuse_existing
         else [{"value": []}, pr_item, {"status": "abandoned"}]
     )
@@ -635,6 +651,91 @@ def test_azure_pr_create_and_reuse_reject_moved_source_branch(
         "current_commit_sha": current_commit,
     }
     assert ("PATCH" in methods) is (not reuse_existing)
+
+
+def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "1" * 40
+    previous_commit = "2" * 40
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
+    service = _service(tmp_path)
+    record = {
+        "canonical_repository_url": "https://dev.azure.com/Org/Project/_git/Repo",
+        "provider": "azure_devops",
+        "directory_path": "root",
+    }
+    pr_item = {
+        "pullRequestId": 19,
+        "url": "https://example/pr/19",
+        "lastMergeSourceCommit": {"commitId": previous_commit},
+    }
+    responses = iter(
+        [
+            {"value": [pr_item]},
+            {
+                "value": [
+                    {
+                        "id": 1,
+                        "sourceRefCommit": {"commitId": previous_commit},
+                    }
+                ]
+            },
+            {
+                "value": [
+                    {
+                        "id": 1,
+                        "sourceRefCommit": {"commitId": previous_commit},
+                    },
+                    {
+                        "id": 2,
+                        "sourceRefCommit": {"commitId": expected_commit},
+                    },
+                ]
+            },
+            pr_item,
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    sleeps: list[float] = []
+
+    def _fake_azure_request_json(
+        url: str,
+        *,
+        auth: str,
+        payload=None,
+        method: str | None = None,
+    ) -> dict[str, object]:
+        del auth
+        calls.append({"url": url, "payload": payload, "method": method})
+        return next(responses)
+
+    monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service.time.sleep",
+        sleeps.append,
+    )
+
+    result = service._create_or_reuse_azure_pr(
+        record,
+        destination_branch="feature/issue-42",
+        base_branch="main",
+        expected_commit_sha=expected_commit,
+        title="Updated title",
+        body="Updated body",
+        draft=False,
+    )
+
+    assert result["created"] is False
+    assert sleeps == [1.0]
+    assert "/pullrequests/19/iterations?api-version=7.1" in str(calls[1]["url"])
+    assert "/pullrequests/19/iterations?api-version=7.1" in str(calls[2]["url"])
+    assert calls[3]["method"] == "PATCH"
+    assert calls[3]["payload"] == {
+        "description": "Updated body",
+        "title": "Updated title",
+    }
 
 
 def test_azure_pr_reuse_refreshes_metadata_links_work_item_and_returns_web_url(
@@ -705,6 +806,7 @@ def test_azure_pr_reuse_refreshes_metadata_links_work_item_and_returns_web_url(
     assert result["description_original_length"] == 4100
     assert result["description_length"] == 4000
     assert result["work_item_linked"] is True
+    assert all("/iterations?" not in str(call["url"]) for call in calls)
     assert calls[1]["method"] == "PATCH"
     assert calls[1]["payload"] == {"description": "x" * 4000, "title": "Updated title"}
     assert calls[3]["method"] == "PATCH"

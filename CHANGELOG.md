@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23 - Azure DevOps PR Source Confirmation
+
+- Confirmed reused Azure DevOps pull request source revisions through the latest PR iteration when
+  `lastMergeSourceCommit` still reflects the preceding push.
+- Kept the confirmation wait bounded and preserved the existing conflict result when the source
+  branch genuinely moves to another commit.
+
 ## 2026-07-23 - Agent Log Continuity Across Artifact Operations
 
 - Kept filling the Agents page's latest execution-log window from preceding session executions
