@@ -142,7 +142,7 @@ Admin Web is the supported operator GUI. Its core areas answer different questio
 
 The navigation keeps all areas visible in six permanently expanded groups: **Overview** contains
 Dashboard and Reports; **Operations** contains Agents, Sessions, Issues, Approvals, and Artifacts;
-**Automation** contains Workflow and Skills; **Extensions** contains Add-ons, Connectors, and
+**Automation** contains Workflow and Skills; **Extensions** contains Add-ons, Connectors, Host Directories, and
 add-on-contributed areas; **Infrastructure** contains VMs and Workers; and **Governance** contains
 Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use **Find page** or
 `Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
@@ -176,6 +176,7 @@ unknown field is ignored.
 | Tool Visibility | Which tools does a session actually see, and what binding or denial explains that result? |
 | MCP Tools | Which directory policy controls approval and denial for each tool? |
 | Connectors | Which named host-side integrations and operations are available in this directory? |
+| Host Directories | Which approved host roots, agent capabilities, health checks, and quarantined entries are managed here? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |
@@ -187,7 +188,7 @@ Workflow pack changes made in Admin Web are revision- and lock-aware. Do not byp
 
 ## 28.7 Team Add-on view map
 
-The Team Add-on contributes one navigation area with fourteen current views. There is no separate top-level **Roles** view; roles are edited in the **Teams** view.
+The Team Add-on contributes one navigation area with fifteen current views. There is no separate top-level **Roles** view; roles are edited in the **Teams** view.
 
 | View | What it projects |
 |---|---|
@@ -201,6 +202,7 @@ The Team Add-on contributes one navigation area with fourteen current views. The
 | Teams | Teams, agents, memberships, responsibilities, roles, and models |
 | Chat | Team chat channels and messages |
 | Mail | Sent/received projections over the durable Team inbox |
+| Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |
 | Planning | Goals, deliverables, and status-filtered task context for planning work |
 | Timeline | Time-ordered domain activity |
@@ -223,7 +225,8 @@ UI state is a projection. For a disputed operational fact, prefer the Team Admin
 | Execution abstraction | `src/evander/execution/` |
 | VM lifecycle | `src/evander/vm/` plus `scripts/*_vm.sh` |
 | Container worker | `src/evander/worker_daemon.py`, `ansible/worker.yml` |
-| Managed Git | `src/evander/admin/services/managed_git_service.py` |
+| Managed Git | `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, `managed_git_worktree_service.py`, and `managed_git_common.py` |
+| Code consultations | `src/evander/code_consultation_service.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` |
 | Relays | `src/evander/relays/` |
 | Communications | `src/evander/messaging/` |
 | Core providers | `src/evander/providers/` |

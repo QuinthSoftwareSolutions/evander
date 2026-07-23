@@ -50,6 +50,8 @@ from evander_team_addon.models import (
     TeamBlockerEventType,
     TeamBlockerRoute,
     TeamBlockerState,
+    TeamDispatchActivity,
+    TeamDispatchActivityStatus,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamOutboxRecord,
@@ -107,6 +109,14 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/blockers/{blocker_id}/resolve"
     )
     assert blocker_resolve_route.methods == {"POST"}
+    review_retire_route = next(
+        route
+        for route in routes
+        if route.path == "/review-requests/{review_request_id}/retire"
+    )
+    assert review_retire_route.methods == {"POST"}
+    activity_route = next(route for route in routes if route.path == "/dispatch-events")
+    assert activity_route.methods == {"GET", "HEAD"}
 
 
 @pytest.fixture(autouse=True)
@@ -1333,6 +1343,146 @@ def test_team_addon_inbox_history_is_searchable_filterable_and_paginated(
     assert invalid.json() == {"error": "agent_id is required when filtering inbox direction"}
 
 
+def test_team_addon_dispatch_events_are_structured_filterable_and_redacted(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    repo.append_dispatch_activity(
+        TeamDispatchActivity(
+            id="activity-failed",
+            tool_name="team_submit_deliverable",
+            caller_session_id="secret-session-id",
+            caller_identity="agent:backend",
+            agent_id="backend",
+            dispatch_id="dispatch-1",
+            status=TeamDispatchActivityStatus.FAILURE,
+            error_code="stale_dispatch_context",
+            error_message="A later directive must be handled.",
+            correction_context_summary="inbox_item_id=inbox-late",
+        )
+    )
+    client = _client(tmp_path)
+
+    activity_view = client.get("/api/addons/team-addon/views/activity")
+    assert activity_view.status_code == 200
+    assert set(activity_view.json()["data"]["state"]) >= {"teams", "roles", "agents"}
+    assert "inbox" not in activity_view.json()["data"]["state"]
+
+    response = client.get(
+        "/api/addons/team-addon/dispatch-events",
+        params={
+            "team_id": "team",
+            "agent_id": "backend",
+            "status": "failure",
+            "q": "later directive",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["retention_days"] == 30
+    assert payload["total_count"] == 1
+    assert payload["events"] == [
+        {
+            "id": "activity-failed",
+            "dispatch_id": "dispatch-1",
+            "agent_id": "backend",
+            "agent_display_name": "backend",
+            "team_id": "team",
+            "kind": "tool_failed",
+            "tool_name": "team_submit_deliverable",
+            "status": "failure",
+            "progress_classification": "none",
+            "summary": "A later directive must be handled.",
+            "error_code": "stale_dispatch_context",
+            "correction_context_summary": "inbox_item_id=inbox-late",
+            "occurred_at": payload["events"][0]["occurred_at"],
+        }
+    ]
+    serialized = json.dumps(payload)
+    assert "secret-session-id" not in serialized
+    assert "agent:backend" not in serialized
+
+
+def test_team_addon_admin_api_creates_outcome_task_contract(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "outcome-task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 20,
+            "title": "Prepare an external action",
+            "description": "Produce a durable action, not only a report.",
+            "created_by_agent_id": "lead",
+            "task_kind": "outcome",
+            "outcome_contract": {
+                "required_outcome_kinds": ["prepared_action"],
+                "match": "all",
+                "allow_evidenced_noop": False,
+                "forbidden_effect_kinds": ["report"],
+            },
+            "expected_revision": repo.read().revision,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    task = response.json()["tasks"]["outcome-task"]
+    assert task["task_kind"] == "outcome"
+    assert task["outcome_contract"] == {
+        "required_outcome_kinds": ["prepared_action"],
+        "match": "all",
+        "allow_evidenced_noop": False,
+        "forbidden_effect_kinds": ["report"],
+    }
+
+    report_only = client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "report-only-deliverable",
+            "task_id": "outcome-task",
+            "producer_agent_id": "backend",
+            "summary": "Only a report was produced.",
+            "outcomes": [
+                {
+                    "kind": "report",
+                    "reference_ids": ["arbitrary-report-reference"],
+                }
+            ],
+            "expected_revision": response.json()["revision"],
+        },
+    )
+
+    assert report_only.status_code == 400
+    assert "forbidden outcome" in report_only.text
+    assert "report-only-deliverable" not in repo.read().deliverables
+
+    evidence_only = client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "evidence-only-deliverable",
+            "task_id": "outcome-task",
+            "producer_agent_id": "backend",
+            "summary": "The action was described but not persisted.",
+            "outcomes": [
+                {
+                    "kind": "prepared_action",
+                    "evidence_refs": ["report:prepared-action"],
+                }
+            ],
+            "expected_revision": response.json()["revision"],
+        },
+    )
+
+    assert evidence_only.status_code == 400
+    assert "reference_ids" in evidence_only.text
+    assert "evidence-only-deliverable" not in repo.read().deliverables
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:
@@ -2172,6 +2322,17 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+    assert "createTeamMailController" in script.text
+
+    mail_script = enabled.get("/addons/team-addon/team-mail.js")
+    assert mail_script.status_code == 200
+    assert "createTeamMailController" in mail_script.text
+    assert "/inbox?" in mail_script.text
+    activity_script = enabled.get("/addons/team-addon/team-activity.js")
+    assert activity_script.status_code == 200
+    assert "createTeamActivityController" in activity_script.text
+    assert "/dispatch-events?" in activity_script.text
+
     assert "renderWorkspaceDashboard" in script.text
     assert "data-team-link-view" in script.text
     assert "renderRuntimeOperations" in script.text
@@ -3163,6 +3324,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     )
     assert response.status_code == 200
     assert response.json()["tasks"]["task"]["state"] == "waiting_for_review"
+    assert response.json()["tasks"]["task"]["waiting_reason"] is None
 
     response = client.post(
         "/api/addons/team-addon/deliverables",
@@ -3177,6 +3339,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     )
     assert response.status_code == 201
     assert response.json()["tasks"]["task"]["deliverable_ids"] == ["deliverable"]
+    assert response.json()["tasks"]["task"]["waiting_reason"] == "superior_acceptance"
 
     response = client.post(
         "/api/addons/team-addon/review-requests",
@@ -3191,6 +3354,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     state = response.json()
     assert state["revision"] == 8
     assert state["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
+    assert state["tasks"]["task"]["waiting_reason"] == "review"
     assert "runtime_operations" in state
     assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
         "backend",
@@ -4518,7 +4682,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
         "/api/addons/team-addon/review-requests/review/decision",
         json={"state": "accepted", "findings": ["looks good"], "expected_revision": 7},
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     state = response.json()
     assert state["review_requests"]["review"]["state"] == "accepted"
     assert state["review_requests"]["review"]["findings"] == ["looks good"]

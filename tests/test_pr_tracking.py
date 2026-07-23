@@ -10,6 +10,7 @@ from evander.pr_tracking import (
     completion_event_id,
     completion_event_payload,
     is_pr_completed,
+    list_pr_map_entries,
     status_snapshot_from_pull_request,
 )
 
@@ -82,6 +83,122 @@ def test_pr_map_store_updates_status_and_tracks_completion_publication(
         "trigger-pr-completed"
     ]
     assert event_record["event_id"] == event_id
+
+
+def test_list_pr_map_entries_uses_configured_store_for_legacy_directory(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    configured_session_store_path = tmp_path / "configured-sessions.json"
+    configured_session_store_path.write_text(
+        json.dumps(
+            {
+                "session-42": {
+                    "session_id": "session-42",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-08-01T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-42": {
+                    "session_id": "session-42",
+                    "directory_path": "root/wrong",
+                    "allowed_tools": [],
+                    "expires_at": "2026-08-01T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "azure_devops:org/repo:42": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "42",
+                        "session_id": "session-42",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    root_entries = list_pr_map_entries(
+        pr_map_path,
+        directory_path="root",
+        session_store_path=configured_session_store_path,
+    )
+    session_entries = list_pr_map_entries(
+        pr_map_path,
+        directory_path="root/team-a",
+        session_store_path=configured_session_store_path,
+    )
+    wrong_entries = list_pr_map_entries(
+        pr_map_path,
+        directory_path="root/wrong",
+        session_store_path=configured_session_store_path,
+    )
+
+    assert [entry.pr_id for entry in root_entries] == ["42"]
+    assert [entry.directory_path for entry in root_entries] == ["root/team-a"]
+    assert [entry.pr_id for entry in session_entries] == ["42"]
+    assert wrong_entries == []
+
+
+def test_pr_map_store_prunes_only_selected_session_bindings(tmp_path: Path) -> None:
+    pr_map_path = tmp_path / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "azure_devops:org/repo:42": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "42",
+                        "session_id": "session-42",
+                    },
+                    "github:example/repo:43": {
+                        "provider": "github",
+                        "repo": "example/repo",
+                        "pr_id": "43",
+                        "session_id": "session-43",
+                    },
+                    "metadata": "preserved",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    removed_count, removed_streams = PrMapStore(pr_map_path).prune_session_bindings(
+        session_ids={"", "session-42"}
+    )
+
+    assert removed_count == 1
+    assert removed_streams == {("azure_devops", "org/repo", "42")}
+    payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    assert payload["entries"] == {
+        "github:example/repo:43": {
+            "provider": "github",
+            "repo": "example/repo",
+            "pr_id": "43",
+            "session_id": "session-43",
+        },
+        "metadata": "preserved",
+    }
 
 
 def test_pr_terminal_state_detection_includes_closed_and_abandoned() -> None:

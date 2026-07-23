@@ -1785,7 +1785,7 @@ def _effect_lock_path_for_worker_config(
 
 def _load_ado_pr_feedback_session_bindings(
     *,
-    runtime_dir: Path,
+    session_store_path: Path,
     pr_map_path: Path,
     directory_path: str,
 ) -> dict[tuple[str, str], dict[str, str]]:
@@ -1801,7 +1801,7 @@ def _load_ado_pr_feedback_session_bindings(
 
     session_directory_paths: dict[str, str] = {}
     session_vm_ids: dict[str, str] = {}
-    session_repository = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repository = JsonSessionManifestRepository(session_store_path)
     session_ado_projects: dict[str, str] = {}
     for manifest in session_repository.list_sessions():
         normalized_session_id = str(manifest.session_id).strip()
@@ -1826,9 +1826,11 @@ def _load_ado_pr_feedback_session_bindings(
         repo = str(raw.get("repo", "")).strip()
         pr_id = str(raw.get("pr_id", "")).strip()
         session_id = str(raw.get("session_id", "")).strip()
-        mapped_directory_path = str(
-            raw.get("directory_path", "")
-        ).strip() or session_directory_paths.get(session_id, "root")
+        mapped_directory_path = (
+            str(raw.get("directory_path", "")).strip()
+            or session_directory_paths.get(session_id)
+            or "root"
+        )
         if provider != "azure_devops" or not repo or not pr_id:
             continue
         if directory_path and mapped_directory_path != directory_path:
@@ -1884,7 +1886,7 @@ def _publish_directory_pr_feedback_events(
     legacy_bindings: dict[tuple[str, str], dict[str, str]] = {}
     if any(not _trigger_has_explicit_pr_criteria(trigger) for trigger in triggers):
         legacy_bindings = _load_ado_pr_feedback_session_bindings(
-            runtime_dir=config.runtime_dir,
+            session_store_path=runtime_gateway_config.session_store_path,
             pr_map_path=runtime_gateway_config.pr_map_path,
             directory_path=directory_path,
         )
@@ -2087,7 +2089,7 @@ def _publish_directory_pr_completion_events(
     legacy_bindings: dict[tuple[str, str], dict[str, str]] = {}
     if any(not _trigger_has_explicit_pr_criteria(trigger) for trigger in triggers):
         legacy_bindings = _load_ado_pr_feedback_session_bindings(
-            runtime_dir=config.runtime_dir,
+            session_store_path=runtime_gateway_config.session_store_path,
             pr_map_path=runtime_gateway_config.pr_map_path,
             directory_path=directory_path,
         )

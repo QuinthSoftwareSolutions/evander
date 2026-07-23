@@ -159,7 +159,10 @@ def _pending_reviews_for_agent(state: TeamState, agent_id: str) -> list[ReviewRe
     reviews = [
         review
         for review in state.review_requests.values()
-        if review.reviewer_agent_id == agent_id and review.state in pending_states
+        if review.reviewer_agent_id == agent_id
+        and review.state in pending_states
+        and review.superseded_by_review_request_id is None
+        and review.retired_at is None
     ]
     reviews.sort(key=lambda item: (item.created_at or datetime.min.replace(tzinfo=UTC), item.id))
     return reviews

@@ -17,6 +17,7 @@ from evander.directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
+from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.directories import DirectoryService, DirectoryStore
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import (
@@ -223,6 +224,22 @@ class ProviderConfigResolver:
             validator=lambda candidate: validate_effective_domain_payload("connectors", candidate),
         )
         return ConnectorDirectoryConfig.model_validate(resolution.effective_config)
+
+    def resolve_host_directories_for_directory(
+        self, directory_path: str | None
+    ) -> HostDirectoryDirectoryConfig:
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
+        resolution = self.resolver.resolve_domain(
+            normalized_path,
+            domain="host_directories",
+            base_config=get_domain_base_config(self.config, "host_directories"),
+            validator=lambda candidate: validate_effective_domain_payload(
+                "host_directories", candidate
+            ),
+        )
+        if resolution.validation_errors:
+            raise ValueError("; ".join(resolution.validation_errors))
+        return HostDirectoryDirectoryConfig.model_validate(resolution.effective_config)
 
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
         session = self.session_store.get_session(session_id)

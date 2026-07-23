@@ -25,6 +25,10 @@ class VmAgentContainerSessionPolicyMixin:
                 connector_id: list(operations)
                 for connector_id, operations in session.connector_grants.items()
             },
+            "host_directory_grants": {
+                directory_id: list(capabilities)
+                for directory_id, capabilities in session.host_directory_grants.items()
+            },
             "approval_required_tools": [
                 tool_name_value(tool) for tool in session.approval_required_tools
             ],

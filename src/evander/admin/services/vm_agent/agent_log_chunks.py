@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from evander.admin.services.vm_agent.common import (
     Any,
+    Mapping,
 )
+
+_CONTAINER_EXECUTION_LOG_PAGE_FETCH_LIMIT = 5000
 
 
 class VmAgentLogChunkMixin:
-    def _container_execution_log_chunk(
+    def _container_execution_log_header(
         self,
-        worker_backend: Any,
         execution: Any,
         *,
-        lines: int,
         mode: str,
     ) -> str:
         header_parts = [
@@ -24,6 +25,17 @@ class VmAgentLogChunkMixin:
             header_parts.append(f"started={execution.started_at.isoformat()}")
         if execution.finished_at is not None:
             header_parts.append(f"finished={execution.finished_at.isoformat()}")
+        return "=== " + " ".join(header_parts) + " ==="
+
+    def _container_execution_log_chunk(
+        self,
+        worker_backend: Any,
+        execution: Any,
+        *,
+        lines: int,
+        mode: str,
+    ) -> str:
+        header = self._container_execution_log_header(execution, mode=mode)
         try:
             text = worker_backend.get_log_snapshot(
                 execution.execution_id,
@@ -32,8 +44,71 @@ class VmAgentLogChunkMixin:
             ).rstrip()
         except Exception as exc:
             text = f"[log unavailable: {exc}]"
-        header = "=== " + " ".join(header_parts) + " ==="
         return header if not text else header + "\n" + text
+
+    def _container_execution_log_page_chunk(
+        self,
+        worker_backend: Any,
+        execution: Any,
+        *,
+        body_lines: int,
+        mode: str,
+    ) -> tuple[str, bool]:
+        page_reader = getattr(worker_backend, "get_log_page", None)
+        if not callable(page_reader):
+            return (
+                self._container_execution_log_chunk(
+                    worker_backend,
+                    execution,
+                    lines=max(1, body_lines),
+                    mode=mode,
+                ),
+                False,
+            )
+
+        header = self._container_execution_log_header(execution, mode=mode)
+        remaining = max(1, int(body_lines))
+        page_offset = 0
+        body_pages: list[str] = []
+        has_more_before = False
+        while remaining > 0:
+            try:
+                page = page_reader(
+                    execution.execution_id,
+                    limit=min(remaining, _CONTAINER_EXECUTION_LOG_PAGE_FETCH_LIMIT),
+                    offset=page_offset,
+                    query=None,
+                    mode=mode,
+                )
+            except TypeError:
+                if page_offset == 0:
+                    return (
+                        self._container_execution_log_chunk(
+                            worker_backend,
+                            execution,
+                            lines=max(1, body_lines),
+                            mode=mode,
+                        ),
+                        False,
+                    )
+                return header + "\n[log unavailable: paged log reader rejected continuation]", False
+            except Exception as exc:
+                return header + f"\n[log unavailable: {exc}]", False
+            if not isinstance(page, Mapping):
+                return header + "\n[log unavailable: paged log reader returned invalid data]", False
+
+            text = str(page.get("text") or "").rstrip()
+            returned_lines = len(text.splitlines())
+            if text:
+                body_pages.insert(0, text)
+            has_more_before = bool(page.get("has_more_before"))
+            if returned_lines <= 0 or not has_more_before:
+                break
+            page_offset += returned_lines
+            remaining -= returned_lines
+
+        body = "\n".join(body_pages)
+        return (header if not body else header + "\n" + body), has_more_before
 
     @staticmethod
     def _join_container_log_chunks(chunks: list[str]) -> str:
@@ -123,7 +198,9 @@ class VmAgentLogChunkMixin:
         except Exception as exc:
             return f"[log unavailable: {exc}]"
 
+    container_execution_log_header = _container_execution_log_header
     container_execution_log_chunk = _container_execution_log_chunk
+    container_execution_log_page_chunk = _container_execution_log_page_chunk
     join_container_log_chunks = _join_container_log_chunks
     container_thread_execution_fallback_log = _container_thread_execution_fallback_log
     container_thread_transcript = _container_thread_transcript

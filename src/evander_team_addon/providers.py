@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
 import shlex
-import subprocess
-import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,8 +11,6 @@ from typing import Any
 
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from evander.effects.providers.agent_create import AgentCreateEffectProvider
-from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.agent_session import (
     container_backend,
@@ -48,8 +43,6 @@ from evander.events.scheduled import (
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
-    AgentCreateEffectDefinition,
-    AgentDestroyEffectDefinition,
     AgentExecEffectDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
@@ -92,6 +85,8 @@ from .mcp import (
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_IMPORT_ARTIFACT_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -104,6 +99,7 @@ from .mcp import (
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
@@ -177,7 +173,11 @@ from .services.domain.wake import (
 )
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
-from .services.release_gate_service import TeamReleaseGateService
+from .services.release_verification_effects import EffectReleaseVerificationExecutor
+from .services.release_verification_runner import (
+    ReleaseVerificationExecutor,
+    TeamReleaseVerificationRunner,
+)
 from .services.memory_service import (
     DEFAULT_MEMORY_LIMIT,
     TeamMemorySemanticService,
@@ -187,7 +187,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 16
+TEAM_AGENT_GUIDANCE_VERSION = 18
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -196,7 +196,8 @@ TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS = 3
 TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS = 1.0
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
+_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "seg_"
+_ARTIFACT_SPACE_COMPONENT_MAX_BYTES = 96
 _ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
 _TEAM_REVIEW_ARTIFACT_ID_DEFAULT = "bundle"
 
@@ -3152,245 +3153,16 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         run_id = _required_text(payload.get("verification_run_id"), "verification_run_id")
         candidate_sha = _required_text(payload.get("candidate_commit_sha"), "candidate_commit_sha")
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        state = repo.read()
-        release = state.release_packages.get(release_id)
-        run = state.release_verification_runs.get(run_id)
-        if release is None or run is None:
-            raise ValueError("release package or verification run does not exist")
-        if (
-            release.candidate_commit_sha != candidate_sha
-            or run.candidate_commit_sha != candidate_sha
-        ):
-            raise ValueError("release verification request does not match the pinned candidate")
-        if run.state in {"passed", "failed", "timed_out"}:
-            return {
-                "success": True,
-                "release_package_id": release_id,
-                "verification_run_id": run_id,
-                "verification_state": run.state,
-                "skipped": True,
-            }
-        project = state.projects.get(release.project_id)
-        policy = project.release_policy if project is not None else None
-        git = project.git if project is not None else None
-        manifest = release.manifest
-        if project is None or git is None or manifest is None:
-            raise ValueError(
-                "release project, Git configuration, or frozen candidate manifest is missing"
-            )
-        verification_commands = manifest.verification_commands
-        if not verification_commands:
-            raise ValueError("release verification run has no frozen commands")
-
-        command_results: list[dict[str, Any]] = []
-        terminal_state = "passed"
-        failure_kind: str | None = None
-        terminal_error: str | None = None
-        created = False
-        try:
-            create = AgentCreateEffectProvider()
-            create.initialize(
-                AgentCreateEffectDefinition(
-                    id=f"team-create-release-verifier-{run_id}",
-                    display_name="Create disposable release verifier",
-                    type="effect:agent:create",
-                    execution_backend="container_worker_vm",
-                    session_id=run.session_id,
-                    existing_agent_behavior="upsert",
-                    container_image=(policy.container_image if policy is not None else None),
-                    directory_path=git.directory_path,
-                    dotnet=True,
-                    nuget=True,
-                    ttl_hours=4,
-                    metadata={
-                        "team_release_verification": True,
-                        "release_package_id": release.id,
-                        "candidate_commit_sha": candidate_sha,
-                    },
-                ),
-                self.runtime_context,
-            )
-            create_result = create.execute()
-            if not bool(create_result.get("success")):
-                raise RuntimeError(
-                    _optional_text(create_result.get("message"))
-                    or "failed to create disposable release verifier"
-                )
-            created = True
-
-            clone = AgentCloneRepoEffectProvider()
-            clone.initialize(
-                AgentCloneRepoEffectDefinition(
-                    id=f"team-clone-release-candidate-{run_id}",
-                    display_name="Clone release candidate",
-                    type="effect:agent:clone-repo",
-                    session_id=run.session_id,
-                    managed_repo_id=git.managed_repo_id,
-                    clone_branch=release.release_branch,
-                    git_access_mode="read-only",
-                ),
-                self.runtime_context,
-            )
-            clone_result = clone.execute()
-            if not bool(clone_result.get("success")):
-                raise RuntimeError(
-                    _optional_text(clone_result.get("message"))
-                    or "failed to clone release candidate"
-                )
-            target_dir = _required_text(clone_result.get("target_dir"), "target_dir")
-            checkout_commands = (
-                (
-                    "pin",
-                    "Pin release candidate checkout",
-                    ["git", "checkout", "--detach", "--force", candidate_sha],
-                ),
-                (
-                    "reset",
-                    "Reset release candidate checkout",
-                    ["git", "reset", "--hard", candidate_sha],
-                ),
-                (
-                    "clean",
-                    "Clean release candidate checkout",
-                    ["git", "clean", "-ffdx"],
-                ),
-            )
-            for operation, display_name, checkout_command in checkout_commands:
-                checkout = AgentExecEffectProvider()
-                checkout.initialize(
-                    AgentExecEffectDefinition(
-                        id=f"team-{operation}-release-candidate-{run_id}",
-                        display_name=display_name,
-                        type="effect:agent:exec",
-                        session_id=run.session_id,
-                        command=checkout_command,
-                        working_directory=target_dir,
-                        timeout_seconds=120,
-                        check=True,
-                    ),
-                    self.runtime_context,
-                )
-                checkout.execute()
-
-            for command in verification_commands:
-                started = time.monotonic()
-                executor = AgentExecEffectProvider()
-                executor.initialize(
-                    AgentExecEffectDefinition(
-                        id=f"team-release-check-{run_id}-{len(command_results)}",
-                        display_name=command.name,
-                        type="effect:agent:exec",
-                        session_id=run.session_id,
-                        command=list(command.argv),
-                        working_directory=_release_verification_working_directory(
-                            target_dir,
-                            command.cwd,
-                        ),
-                        timeout_seconds=command.timeout_seconds,
-                        check=False,
-                    ),
-                    self.runtime_context,
-                )
-                try:
-                    command_output = executor.execute()
-                except (TimeoutError, subprocess.TimeoutExpired) as exc:
-                    duration = time.monotonic() - started
-                    error = str(exc) or f"release verification command {command.name!r} timed out"
-                    command_results.append(
-                        {
-                            "name": command.name,
-                            "state": "timed_out",
-                            "duration_seconds": duration,
-                            "log_excerpt": error[-8000:],
-                        }
-                    )
-                    terminal_state = "timed_out"
-                    failure_kind = "timeout"
-                    terminal_error = error
-                    break
-                duration = time.monotonic() - started
-                success = bool(command_output.get("success"))
-                command_status = str(command_output.get("status") or "").strip().casefold()
-                command_timed_out = not success and (
-                    command_output.get("failure_kind") == "timeout"
-                    or command_status in {"unknown", "preparing", "starting", "running"}
-                )
-                excerpt = "\n".join(
-                    part
-                    for part in (
-                        _optional_text(command_output.get("stdout")),
-                        _optional_text(command_output.get("stderr")),
-                    )
-                    if part
-                )[-8000:]
-                command_results.append(
-                    {
-                        "name": command.name,
-                        "state": (
-                            "passed" if success else "timed_out" if command_timed_out else "failed"
-                        ),
-                        "job_id": _optional_text(command_output.get("execution_id")),
-                        "exit_code": command_output.get("exit_code"),
-                        "duration_seconds": duration,
-                        "log_excerpt": excerpt or None,
-                    }
-                )
-                if not success:
-                    if command_timed_out:
-                        terminal_state = "timed_out"
-                        failure_kind = "timeout"
-                        terminal_error = f"release verification command {command.name!r} timed out"
-                    else:
-                        terminal_state = "failed"
-                        failure_kind = (
-                            "candidate"
-                            if command_output.get("failure_kind") == "command"
-                            else "infrastructure"
-                        )
-                        terminal_error = f"release verification command {command.name!r} failed"
-                    break
-        except (TimeoutError, subprocess.TimeoutExpired) as exc:
-            terminal_state = "timed_out"
-            failure_kind = "timeout"
-            terminal_error = str(exc) or "release verification timed out"
-        except Exception as exc:
-            terminal_state = "failed"
-            failure_kind = "infrastructure"
-            terminal_error = str(exc) or type(exc).__name__
-        finally:
-            if created:
-                try:
-                    destroy = AgentDestroyEffectProvider()
-                    destroy.initialize(
-                        AgentDestroyEffectDefinition(
-                            id=f"team-destroy-release-verifier-{run_id}",
-                            display_name="Destroy disposable release verifier",
-                            type="effect:agent:destroy",
-                            session_id=run.session_id,
-                            execution_backend="container_worker_vm",
-                        ),
-                        self.runtime_context,
-                    )
-                    destroy_result = destroy.execute()
-                    if not bool(destroy_result.get("success")):
-                        raise RuntimeError(
-                            _optional_text(destroy_result.get("message"))
-                            or "release verifier deletion reported failure"
-                        )
-                except Exception as exc:
-                    if terminal_state == "passed":
-                        terminal_state = "failed"
-                        failure_kind = "infrastructure"
-                        terminal_error = f"failed to destroy release verifier: {exc}"
-
-        _state, result = TeamReleaseGateService(repo).record_verification_result(
+        executor: ReleaseVerificationExecutor = EffectReleaseVerificationExecutor(
+            self.runtime_context
+        )
+        result = TeamReleaseVerificationRunner(
+            repo,
+            executor,
+        ).run(
             release_package_id=release_id,
             verification_run_id=run_id,
             candidate_commit_sha=candidate_sha,
-            verification_state=terminal_state,
-            command_results=command_results,
-            failure_kind=failure_kind,
-            error=terminal_error,
         )
         published_event_ids = _publish_team_events(
             self.runtime_context,
@@ -4226,7 +3998,7 @@ def _prepare_review_artifacts_for_lease(
         artifact_ref = _required_text(request.get("artifact_ref"), "artifact_ref")
         try:
             artifact_space_path = _artifact_space_path_from_ref(artifact_ref)
-            _require_review_artifact_space_read(
+            _require_artifact_space_read(
                 artifact_state,
                 artifact_space_path=artifact_space_path,
                 subject=_required_text(request.get("subject"), "subject"),
@@ -4349,7 +4121,7 @@ def _artifact_space_path_from_ref(artifact_ref: str) -> str:
     return normalize_space_path(artifact_ref.removeprefix(_ARTIFACT_SPACE_REF_PREFIX))
 
 
-def _require_review_artifact_space_read(
+def _require_artifact_space_read(
     artifact_state: Any,
     *,
     artifact_space_path: str,
@@ -4362,6 +4134,93 @@ def _require_review_artifact_space_read(
         raise ArtifactSpacePermissionError(
             f"subject {subject or '<anonymous>'} cannot read artifact space {artifact_space_path}"
         )
+
+
+def _import_team_artifact_for_session(
+    context: Any,
+    *,
+    artifact_ref: str,
+    artifact_id: str,
+    session_id: str,
+    subject: str,
+) -> dict[str, Any]:
+    normalized_ref = _required_text(artifact_ref, "artifact_ref")
+    normalized_artifact_id = _required_text(artifact_id, "artifact_id")
+    normalized_session_id = _required_text(session_id, "session_id")
+    normalized_subject = _required_text(subject, "subject")
+    artifact_space_path = _artifact_space_path_from_ref(normalized_ref)
+    artifact_state = ArtifactSpaceStore(_runtime_dir(context)).read()
+    _require_artifact_space_read(
+        artifact_state,
+        artifact_space_path=artifact_space_path,
+        subject=normalized_subject,
+    )
+    versions = artifact_state.latest_versions_for_space(
+        artifact_space_path,
+        artifact_id=normalized_artifact_id,
+    )
+    if not versions:
+        raise ValueError(
+            "artifact space has no latest published version for "
+            f"artifact_id {normalized_artifact_id}: {artifact_space_path}"
+        )
+    version = versions[0]
+    destination_path = _team_artifact_import_destination_path(
+        artifact_space_path=artifact_space_path,
+        artifact_id=version.artifact_id,
+        artifact_space_version_id=version.id,
+    )
+    effect_hash = hashlib.sha256(
+        f"{normalized_session_id}\0{version.artifact_key}".encode("utf-8")
+    ).hexdigest()[:24]
+    provider = ArtifactImportPublishedEffectProvider()
+    provider.initialize(
+        ArtifactImportPublishedEffectDefinition(
+            id=f"team-artifact-import-{effect_hash}",
+            display_name="Import Team artifact",
+            type="effect:artifact:import-published",
+            session_id=normalized_session_id,
+            key=version.artifact_key,
+            destination_path=destination_path,
+            overwrite=True,
+        ),
+        context,
+    )
+    import_result = provider.execute()
+    relative_paths = [str(path) for path in import_result.get("imported_paths") or []]
+    return {
+        "artifact_ref": normalized_ref,
+        "artifact_space_path": artifact_space_path,
+        "artifact_id": version.artifact_id,
+        "artifact_key": version.artifact_key,
+        "artifact_space_version_id": version.id,
+        "artifact_space_version": version.version,
+        "destination_path": destination_path,
+        "artifact_path": f"/artifacts/{destination_path}",
+        "imported_paths": [f"/artifacts/{path.lstrip('/')}" for path in relative_paths],
+        "imported_relative_paths": relative_paths,
+        "imported_file_count": int(import_result.get("imported_file_count") or 0),
+        "source_byte_count": int(import_result.get("source_byte_count") or 0),
+        "archive_sha256": import_result.get("sha256"),
+    }
+
+
+def _team_artifact_import_destination_path(
+    *,
+    artifact_space_path: str,
+    artifact_id: str,
+    artifact_space_version_id: str,
+) -> str:
+    return "/".join(
+        [
+            "team-artifact-imports",
+            _artifact_space_path_segment(artifact_id, "artifact_id"),
+            _review_artifact_ref_version_segment(
+                artifact_space_path=artifact_space_path,
+                artifact_space_version_id=artifact_space_version_id,
+            ),
+        ]
+    )
 
 
 def _import_review_artifact_version(
@@ -4393,11 +4252,11 @@ def _import_review_artifact_version(
     )
     provider.initialize(
         ArtifactImportPublishedEffectDefinition(
-            id=(
-                "team-review-artifact-import-"
-                f"{_artifact_space_path_segment(review_request_id, 'review_request_id')}-"
-                f"{_artifact_space_path_segment(artifact_id, 'artifact_id')}-"
-                f"{ref_version_segment}"
+            id=_bounded_generated_identifier(
+                "team-review-artifact-import-",
+                review_request_id,
+                artifact_id,
+                ref_version_segment,
             ),
             display_name="Import Team review artifact",
             type="effect:artifact:import-published",
@@ -4458,7 +4317,10 @@ def _review_artifact_ref_version_segment(
         artifact_space_version_id,
         "artifact_space_version_id",
     )
-    return f"ref-{ref_hash}-{version_segment}"
+    candidate = f"ref-{ref_hash}-{version_segment}"
+    if len(candidate.encode("utf-8")) <= _ARTIFACT_SPACE_COMPONENT_MAX_BYTES:
+        return candidate
+    return _bounded_generated_identifier(f"ref-{ref_hash}-", artifact_space_version_id)
 
 
 def _artifact_space_path_segment(value: str, field_name: str) -> str:
@@ -4467,10 +4329,33 @@ def _artifact_space_path_segment(value: str, field_name: str) -> str:
         _ARTIFACT_SPACE_SAFE_SEGMENT_RE.fullmatch(text)
         and text not in {".", ".."}
         and not text.startswith(_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX)
+        and len(text.encode("utf-8")) <= _ARTIFACT_SPACE_COMPONENT_MAX_BYTES
     ):
         return text
-    encoded = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
-    return f"{_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX}{encoded}"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("._-") or "value"
+    suffix = f"-{digest}"
+    prefix = _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX
+    available = _ARTIFACT_SPACE_COMPONENT_MAX_BYTES - len((prefix + suffix).encode("ascii"))
+    readable = readable.encode("utf-8")[:available].decode("utf-8", errors="ignore").rstrip("._-")
+    return f"{prefix}{readable or 'value'}{suffix}"
+
+
+def _bounded_generated_identifier(prefix: str, *parts: str) -> str:
+    normalized_prefix = _required_text(prefix, "prefix")
+    if len(normalized_prefix.encode("utf-8")) >= _ARTIFACT_SPACE_COMPONENT_MAX_BYTES:
+        raise ValueError("generated identifier prefix exceeds the component byte budget")
+    source = "-".join(_required_text(part, "identifier part") for part in parts)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "-", source).strip("._-") or "value"
+    suffix = f"-{digest}"
+    available = _ARTIFACT_SPACE_COMPONENT_MAX_BYTES - len(
+        (normalized_prefix + suffix).encode("ascii")
+    )
+    readable = readable.encode("utf-8")[:available].decode("utf-8", errors="ignore").rstrip(
+        "._-"
+    )
+    return f"{normalized_prefix}{readable or 'value'}{suffix}"
 
 
 def _ensure_deliverable_artifact_space_version(
@@ -4711,6 +4596,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "non-terminal task or reassign it within the same project. Do not accept "
         "or reject someone else's task through "
         f"{TEAM_UPDATE_TASK_TOOL}.\n"
+        f"- Complete administrative, delegation, coordination, acknowledgement, "
+        f"or other work with no assessable work product by calling {TEAM_UPDATE_TASK_TOOL} "
+        "with state: finished. Creating or handing off the required child task is "
+        "enough to finish a delegation-only parent; do not manufacture a routing "
+        "report deliverable as a completion ritual.\n"
         f"- Use {TEAM_CREATE_CASE_TOOL} and {TEAM_UPDATE_CASE_TOOL} for intake, "
         "source references, priority, owner, lifecycle, and case-task links.\n"
         f"- Use {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} only within "
@@ -4731,14 +4621,20 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "hoc checklists in descriptions. Declare ordering between tasks with "
         "dependency_task_ids.\n\n"
         "Deliverables and review:\n"
-        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} for finished work that does not "
-        "need a separate reviewer. Use "
+        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} only for an assessable work product "
+        "that needs acceptance by your direct superior. This always moves the task "
+        "to waiting_for_review and sends the superior a deliverable notice. Use "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} when the deliverable should "
         "immediately be handed to a reviewer.\n"
         "- For non-Git deliverables, stage files under /artifacts and pass paths "
         f"relative to /artifacts to {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}. The Team runtime publishes "
         "only those paths and records artifact refs for reviewers.\n"
+        f"- An artifact-space ref is durable metadata, not a local file path. When "
+        "another agent hands you a published artifact for ordinary task work, call "
+        f"{TEAM_IMPORT_ARTIFACT_TOOL} with that ref to permission-check and import "
+        "its latest bundle into your own /artifacts tree. Never assume another "
+        "agent's /home/agent or /artifacts path exists in your session.\n"
         "- Git deliverables must include the runtime-provided branch_context_id. "
         "Do not invent branch names; submitted git_refs must match that context. "
         "Artifact-only, administrative, customer-service, and operations work do "
@@ -4751,12 +4647,20 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Deliverables may include verification with status passed, failed, "
         "partial, not_run, or unknown plus a short summary. Use not_run when "
         "test tooling or required services were unavailable.\n"
+        "- Outcome tasks include an outcome_contract. Submit structured outcomes "
+        "with durable reference_ids; reports and artifacts are supporting evidence "
+        "and do not satisfy an outcome contract by themselves. Finish an allowed "
+        "existing-record no-op with structured evidenced_noop completion evidence.\n"
         "- When responding to a review_rejected inbox item, create a revised "
         "deliverable with supersedes_deliverable_id set to the "
         "payload's supersedes_deliverable_id.\n"
         f"- Use {TEAM_DECIDE_REVIEW_TOOL} only for review requests assigned to "
         "you. Accepting a review is what cascades to deliverable/task acceptance "
         "once all attached reviews are accepted.\n"
+        f"- Use {TEAM_RETRY_REVIEW_TOOL} to replace a current blocked review "
+        "attempt after its dependency or system problem is corrected. Use "
+        f"{TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL} when an accepted replacement "
+        "must retire a blocked or rejected predecessor across tasks.\n"
         "- During manager fallback, routing_gaps take priority. If a gap says an "
         "idle profile-eligible reviewer has review work, create a fresh "
         f"{TEAM_REQUEST_REVIEW_TOOL} call for that reviewer instead of accepting "
@@ -4797,6 +4701,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "FYI updates that can be batched, normal for ordinary coordination, and "
         "high only for urgent blockers. Low-priority inbox may be delivered with "
         "other work instead of waking the recipient immediately.\n"
+        "- Before a terminal action, re-read any high-priority inbox item that "
+        "arrived during the current dispatch and include its id in "
+        "handled_inbox_item_ids. Terminal tools reject stale dispatch context "
+        "instead of silently ignoring a newer instruction.\n"
         f"- Use {TEAM_REPORT_BLOCKER_TOOL} when you cannot proceed. A blocker is "
         "durably assigned to the nearest available superior; do not rely on a "
         "prose-only progress report for escalation.\n"
@@ -5316,16 +5224,6 @@ def _project_repo_prompt_guidance(project_repo: object) -> str:
         "The project host checkout is not mounted in the guest; use this guest "
         f"repo and its configured Git helpers for code changes.{git_context_guidance}\n\n"
     )
-
-
-def _release_verification_working_directory(repo_root: str, cwd: str) -> str:
-    normalized = cwd.strip()
-    if normalized in {"", "."}:
-        return repo_root
-    path = Path(normalized)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError("release verification cwd must stay within the candidate checkout")
-    return f"{repo_root.rstrip('/')}/{normalized.strip('/')}"
 
 
 def _prepare_project_repo(

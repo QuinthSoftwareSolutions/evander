@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from evander.addons import addon_mcp_tool_catalog_payloads, load_addons
+from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads, load_addons
 from evander.admin.common import (
     _coerce_optional_datetime,
     _coerce_optional_string,
@@ -80,6 +80,7 @@ from evander.events.internal import (
     validate_internal_event_type,
 )
 from evander.events.models import TriggerEvent
+from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.repositories.orchestration import (
@@ -147,6 +148,7 @@ class WorkflowConfigAdminDependencies:
     admin_config_mutation_lock: Callable[[], ContextManager[None]]
     normalize_directory_reference: Callable[[str | None], str]
     workflow_reports_admin: Any | None = None
+    addon_catalog: LoadedAddonCatalog | None = None
 
 
 @dataclass(slots=True)
@@ -174,6 +176,7 @@ class WorkflowConfigAdminService:
         self._admin_config_mutation_lock = dependencies.admin_config_mutation_lock
         self._normalize_directory_reference = dependencies.normalize_directory_reference
         self._workflow_reports_admin = dependencies.workflow_reports_admin
+        self._addon_catalog = dependencies.addon_catalog
         history_runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=self.config.runtime_dir,
@@ -2192,11 +2195,40 @@ class WorkflowConfigAdminService:
     ) -> list[WorkflowEditorFieldOption]:
         return self._communication_target_options(directory_path, purpose="agent-session")
 
+    def _directory_resource_trigger_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        normalized_directory = self._normalize_directory_reference(directory_path)
+        result = self.directory_admin.compute_effective_config(
+            normalized_directory,
+            domain="host_directories",
+        )
+        if not result.ok or result.data is None:
+            messages = [error.message for error in result.errors]
+            raise ValueError(
+                "; ".join(messages)
+                or f"Host directories could not be resolved for {normalized_directory!r}."
+            )
+        configured = HostDirectoryDirectoryConfig.model_validate(
+            result.data.resolution.effective_config
+        )
+        return [
+            _field_option(
+                directory_id,
+                definition.display_name,
+                description=definition.description,
+            )
+            for directory_id, definition in sorted(configured.host_directories.items())
+            if not definition.disabled
+        ]
+
     def _read_workflow_editor_catalog(
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
-        addon_catalog = load_addons(self.config.addon_loader, base_dir=self.project_dir)
+        addon_catalog = self._addon_catalog or load_addons(
+            self.config.addon_loader, base_dir=self.project_dir
+        )
         tool_options = _tool_field_options(addon_mcp_tool_catalog_payloads(addon_catalog))
         communication_send_target_options = self._communication_send_target_options(directory_path)
         communication_notification_target_options = self._communication_notification_target_options(
@@ -2206,6 +2238,7 @@ class WorkflowConfigAdminService:
         agent_communication_target_options = self._agent_communication_target_options(
             directory_path
         )
+        host_directory_trigger_options = self._directory_resource_trigger_options(directory_path)
         provider_catalog = self._load_workflow_provider_catalog(
             self._read_worker_provider_loader_config("trigger-orchestrator")
         )
@@ -2278,6 +2311,13 @@ class WorkflowConfigAdminService:
                 node.fields = [
                     field.model_copy(update={"options": communication_read_target_options})
                     if field.key == "communication_target_ids"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "trigger:host-directory:file-added":
+                node.fields = [
+                    field.model_copy(update={"options": host_directory_trigger_options})
+                    if field.key == "directory_id"
                     else field
                     for field in node.fields
                 ]

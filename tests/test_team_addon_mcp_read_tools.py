@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,10 +11,14 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonLoaderConfig
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander.artifact_spaces import ArtifactSpaceStore
 from evander.config import GatewayConfig
+from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from evander.gateway import create_server
 from evander.models import SessionManifest, tool_name_value
 from evander.policy import PolicyError
+from evander.published_artifacts import PublishedArtifactStore
 from evander.runtime import build_runtime
 from evander_team_addon import mcp as team_mcp
 from evander_team_addon.models import (
@@ -54,6 +59,11 @@ TEAM_GET_DELIVERABLE_TOOL = getattr(
     team_mcp,
     "TEAM_GET_DELIVERABLE_TOOL",
     "team_get_deliverable",
+)
+TEAM_IMPORT_ARTIFACT_TOOL = getattr(
+    team_mcp,
+    "TEAM_IMPORT_ARTIFACT_TOOL",
+    "team_import_artifact",
 )
 TEAM_LIST_REVIEW_REQUESTS_TOOL = getattr(
     team_mcp,
@@ -106,6 +116,7 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_GET_CASE_TOOL,
     TEAM_LIST_DELIVERABLES_TOOL,
     TEAM_GET_DELIVERABLE_TOOL,
+    TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_LIST_REVIEW_REQUESTS_TOOL,
     TEAM_GET_REVIEW_REQUEST_TOOL,
     TEAM_LIST_RELEASE_PACKAGES_TOOL,
@@ -497,6 +508,187 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         assert _item(result)["id"] == expected_id
 
     assert repo.read().revision == before_revision
+
+
+def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_GET_DELIVERABLE_TOOL, TEAM_IMPORT_ARTIFACT_TOOL],
+    )
+    recipient_session = context.session_repository.get_session("session-alpha-dev")
+    assert recipient_session is not None
+    context.session_repository.upsert_session(
+        recipient_session.model_copy(
+            update={"vm_id": "vm-alpha-dev", "vm_provider": "libvirt_vm"}
+        )
+    )
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+    artifact_space_path = "/teams/alpha/projects/alpha-project/deliverables/1930-export"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_key = "team/alpha/alpha-project/1930-export/dispatch-manager/bundle"
+    published_store = PublishedArtifactStore(context.config.runtime_dir)
+    artifact_record = published_store.publish_single_file(
+        key=artifact_key,
+        session_id="session-alpha-manager",
+        filename="1930.csv",
+        artifact_path="operator-1930-export/1930.csv",
+        content=b"Date,Description,Amount\n2026-07-01,Example,-100.00\n",
+    )
+    artifact_store = ArtifactSpaceStore(context.config.runtime_dir)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        metadata={
+            "team_id": "alpha",
+            "project_id": "alpha-project",
+            "deliverable_id": "alpha-deliverable",
+            "source": "team_addon",
+        },
+        subject="team-agent:alpha-manager",
+    )
+    artifact_version = artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject="team-agent:alpha-manager",
+    ).latest_versions_for_space(artifact_space_path, artifact_id="bundle")[0]
+
+    def _record_ordinary_handoff(state):
+        state.deliverables["alpha-deliverable"].artifact_refs = [artifact_ref]
+        state.inbox["inbox-1930-handoff"] = AgentInboxItem(
+            id="inbox-1930-handoff",
+            recipient_agent_id="alpha-dev",
+            sender_agent_id="alpha-lead",
+            task_id="alpha-task-a",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={
+                "question": (
+                    "The Team-readable 1930 source is available as deliverable "
+                    "alpha-deliverable. Please confirm access and use it for matching."
+                )
+            },
+        )
+        return state
+
+    repo.update(_record_ordinary_handoff)
+    assert repo.read().agent_runtimes["alpha-dev"].active_dispatch_id is None
+    ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
+    expected_destination = (
+        f"team-artifact-imports/bundle/ref-{ref_hash}-{artifact_version.id}"
+    )
+    copy_requests: list[dict[str, Any]] = []
+    exec_requests: list[dict[str, Any]] = []
+
+    def fake_vm_copy_files(
+        self: AdminRuntimeProviderAdapter,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        copy_requests.append(dict(kwargs))
+        return {
+            "success": True,
+            "message": "copied",
+            "vm_name": str(kwargs["target"]),
+            "copied_count": 1,
+            "copied_paths": [str(kwargs["files"][0]["destination_path"])],
+        }
+
+    def fake_vm_exec(
+        self: AdminRuntimeProviderAdapter,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        exec_requests.append(dict(kwargs))
+        payload = {
+            "success": True,
+            "artifacts_root": "/artifacts",
+            "destination_path": expected_destination,
+            "imported_file_count": 1,
+            "imported_paths": [f"{expected_destination}/operator-1930-export/1930.csv"],
+            "source_byte_count": 53,
+            "overwrite": True,
+        }
+        return {
+            "success": True,
+            "message": "imported",
+            "vm_name": str(kwargs["target"]),
+            "exit_code": 0,
+            "stdout": (
+                "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__\n"
+                f"{json.dumps(payload, sort_keys=True)}\n"
+                "__EVANDER_ARTIFACT_EFFECT_JSON_END__\n"
+            ),
+        }
+
+    monkeypatch.setattr(AdminRuntimeProviderAdapter, "vm_copy_files", fake_vm_copy_files)
+    monkeypatch.setattr(AdminRuntimeProviderAdapter, "vm_exec", fake_vm_exec)
+    server = create_server(context)
+    before_revision = repo.read().revision
+
+    deliverable_result = _call_tool(
+        server,
+        TEAM_GET_DELIVERABLE_TOOL,
+        {"session_id": "session-alpha-dev", "deliverable_id": "alpha-deliverable"},
+    )
+    resolved_ref = deliverable_result["record"]["artifact_refs"][0]
+    result = _call_tool(
+        server,
+        TEAM_IMPORT_ARTIFACT_TOOL,
+        {"session_id": "session-alpha-dev", "artifact_ref": resolved_ref},
+    )
+
+    _assert_read_success(result)
+    assert result["artifact_ref"] == artifact_ref
+    assert result["artifact_key"] == artifact_key
+    assert result["artifact_space_version_id"] == artifact_version.id
+    assert result["artifact_space_version"] == artifact_version.version
+    assert result["artifact_path"] == f"/artifacts/{expected_destination}"
+    assert result["imported_paths"] == [
+        f"{result['artifact_path']}/operator-1930-export/1930.csv"
+    ]
+    assert result["imported_file_count"] == 1
+    assert result["archive_sha256"] == artifact_record.sha256
+    assert copy_requests[0]["target"] == "vm-alpha-dev"
+    assert copy_requests[0]["files"][0]["source_path"] == str(
+        published_store.get(artifact_key).blob_path
+    )
+    assert exec_requests[0]["target"] == "vm-alpha-dev"
+    assert expected_destination in exec_requests[0]["command"]
+    assert repo.read().revision == before_revision
+
+
+def test_team_import_artifact_enforces_artifact_space_read_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_IMPORT_ARTIFACT_TOOL])
+    _seed_read_tool_state(context.config.runtime_dir)
+    artifact_space_path = "/teams/alpha/restricted"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_store = ArtifactSpaceStore(context.config.runtime_dir)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        grants={
+            "read_subjects": ["team-agent:alpha-lead"],
+            "write_subjects": ["team-agent:alpha-lead"],
+            "manage_subjects": ["team-agent:alpha-lead"],
+        },
+        subject="team-agent:alpha-lead",
+    )
+
+    def fail_import(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("permission-denied artifact must not be imported")
+
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", fail_import)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="team-agent:alpha-dev cannot read artifact space"):
+        _call_tool(
+            server,
+            TEAM_IMPORT_ARTIFACT_TOOL,
+            {"session_id": "session-alpha-dev", "artifact_ref": artifact_ref},
+        )
 
 
 def test_team_search_memory_status_filter_reaches_archived_records(tmp_path: Path) -> None:

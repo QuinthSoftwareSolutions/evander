@@ -70,6 +70,18 @@ Before debugging individual scripts or services, run the consolidated host statu
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
 
+## Session Manifest Operations
+
+`evander-cli create-session` creates a new identity and fails if that session ID already exists; it
+does not overwrite or silently recycle an earlier manifest. Use the supported renew, revoke,
+policy-edit, or delete operation for an existing session.
+
+Deleting a session removes more than the manifest. The service revokes all of that session's
+managed-Git grants and bindings, prunes its legacy `runtime/pr-map.json` entries, and removes the
+matching feedback cursors and items from `runtime/pr-feedback-store.json`. This prevents a newly
+created session with the same ID from inheriting historical repository or pull-request routing.
+Deletion does not remove provider-side pull requests or comments.
+
 ## Connector Operations
 
 Use Admin Web **Connectors** to inspect the effective directory configuration, verify whether each
@@ -86,6 +98,36 @@ separately allowed communication-artifact copy operation imports them into the s
 
 See [connectors](connectors.md) for schemas, examples, authentication behavior, and custom drivers.
 
+## Host Directory Operations
+
+Use Admin Web **Host Directories** to define a resource ID, absolute non-root host path, allowed
+capabilities, import/watch limits, delete-approval policy, and enabled state for the selected
+Evander directory. Unlock privileged operations to save or probe a host path. Run **Check health**
+before granting a resource to a session or selecting it in a workflow. For a delete-enabled
+resource this also creates and removes a private quarantine probe, so a green result verifies
+quarantine writability rather than only opening the root.
+
+Grant only the required `list`, `import`, and `delete` capabilities through the structured
+Host Directory selector in Agent creation, Agent policy, or Sessions policy. Agents see only the
+resource ID and relative entries. An import returns a session-owned artifact; it does not mount the
+root or bypass the separately configured workspace-copy policy.
+
+Delete is revision-checked and approval-gated by default. It moves the entry to the resource-local
+`.evander-trash` quarantine. In **Quarantine recovery**, restore a record only when its original
+relative destination is free. Permanent purge is irreversible and has no scheduled retention in
+v1. Incomplete records remain visible: a missing payload or corrupt metadata disables restore but
+still allows explicit cleanup by purge. If health fails, repair the real directory and permissions;
+do not use a symlink, configure `/`, or hand-edit quarantine metadata.
+
+For automation, add `trigger:host-directory:file-added` in the Workflow editor. It baselines
+existing files and emits only settled new regular files through the normal trigger-orchestrator
+poll loop. Diagnose it by checking the effective resource, workflow directory scope, include/
+exclude globs, the resource entry limit, trigger worker logs, and
+`runtime/trigger-cursors-host-directories.json`.
+
+See [Host Directories](host-directories.md) for the complete schema, tool contracts, safety
+boundary, and recovery procedure.
+
 ## Workflow Runtime Files and Troubleshooting
 
 The workflow orchestrators share runtime state under `runtime/` (or your configured
@@ -93,6 +135,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 
 - `trigger-orchestrator-events.json`: durable queue of trigger and completion events.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
+- `trigger-cursors-host-directories.json`: per-trigger Host Directory baseline, settle candidate,
+  pending-event, and acknowledgement state.
 - `gate-orchestrator-executions.json`: gate execution log with idempotency key, gate type, state,
   resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
@@ -440,6 +484,8 @@ and surfaces:
   available until that backfill finishes.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
+- a Host Directories page for revisioned resource configuration, host-only health checks, and
+  quarantine restore/purge
 - Sessions policy controls for `approval_required_tools`, which lets operators require human
   approval before selected allowed tools execute
 - a configuration tab that inspects inherited per-domain directory config
@@ -2160,6 +2206,10 @@ live provider APIs.
   feedback still publishes by default; set `suppress_agent_authored_feedback`
   only for workflows that should store those comments without emitting wake
   events.
+  For a session-bound legacy entry, the current session manifest's
+  `directory_path` is authoritative for routing and filtering; an older
+  directory value persisted in `pr-map.json` is only a fallback when the
+  session no longer resolves.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start evander-discord-wake.service`

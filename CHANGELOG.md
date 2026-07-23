@@ -1,5 +1,125 @@
 # Changelog
 
+## 2026-07-23 - Branch Documentation Audit
+
+- Aligned the Team operator guide and technical manual with outcome contracts, superior acceptance,
+  review rejection/retry/replacement/retirement behavior, and Bokio duplicate-check pagination and
+  cache scope.
+- Documented cross-execution agent-log continuity, session-owned PR routing and cleanup, reused
+  Azure PR source confirmation, live Host Directory grant reconciliation, and the refactored
+  managed-Git and consultation service boundaries.
+
+## 2026-07-23 - Outcome Contract and Host Grant Review Fixes
+
+- Applied outcome-contract kind and durable-reference validation to both agent and Admin
+  deliverable submission, and kept evidence-only no-ops on the explicit `evidenced_noop`
+  completion path instead of sending them into review.
+- Enabled the capability-derived Host Directory tools when an existing libvirt session receives
+  new Host Directory grants.
+
+## 2026-07-23 - Review and Bokio Duplicate-Check Correctness
+
+- Kept deliverables pending when retired reviews leave unresolved carried findings, and restored
+  outcome-aware implicit review-profile selection for atomic deliverable submissions.
+- Made Bokio duplicate checks follow reported pagination totals and scoped cached durable evidence
+  to the configured company and API endpoint.
+
+## 2026-07-23 - Scoped Host Directory Resources
+
+- Added directory-scoped Host Directory definitions and structured session grants for dedicated
+  relative list, bounded file/folder import, and recoverable delete tools without exposing absolute
+  host roots.
+- Added revision-checked, approval-by-default quarantine deletes with Admin health checks,
+  restore, and explicit permanent purge; imports produce session-owned artifacts and deterministic
+  directory archives.
+- Added the baseline-and-settle `trigger:host-directory:file-added` provider to the existing
+  trigger orchestrator, plus structured Admin configuration and Agent/Sessions capability
+  selectors.
+- Hardened descriptor-relative traversal against bind-mount crossings, made pagination resilient
+  to live-tree removals, probed delete-quarantine writability, and retained scoped cleanup records
+  for interrupted quarantine operations.
+
+## 2026-07-23 - Structured Session HTTP Targets
+
+- Added structured HTTP target alias and base-URL editors to agent creation, agent policy editing,
+  and Sessions policy editing so operators no longer need to modify raw session metadata.
+- Validated and narrowly merged canonical HTTP target updates, preserved workflow-owned target
+  metadata, supported legacy APP target conversion, and made an explicitly empty target set deny
+  the legacy fallback.
+
+## 2026-07-23 - Team Outcome And Recovery Reliability
+
+- Added explicit outcome contracts for tasks, structured deliverable outcomes,
+  review-profile outcome requirements, and evidence-backed no-op completion so
+  operational work cannot finish with a report in place of its required result.
+- Added immutable blocked-review retry, deliverable replacement lineage,
+  operator review retirement, exact project blocking sources, blocked-task
+  completion guards, late high-priority handoff protection, and idempotent inbox
+  and blocker replay behavior.
+- Included project goals and blockers in wake context, preserved sole urgent
+  directive detail, bounded generated artifact path segments, and added a
+  separate redacted Activity view/API/CLI tail with 30-day retention.
+- Added paginated Bokio journal duplicate checks with durable evidence,
+  source fingerprints, matching entry IDs, and a 15-minute reuse window.
+
+## 2026-07-23 - Session-Owned Pull Request Tracking
+
+- Recorded session-backed pull requests under the session's canonical directory instead of the
+  workflow graph's execution directory.
+- Kept persisted PR routing authoritative while resolving legacy bindings without a directory
+  through the configured session manifest store.
+- Rejected duplicate `create-session` IDs and pruned PR routing plus feedback state whenever
+  sessions are deleted, preventing historical bindings from following a reused session ID.
+
+## 2026-07-23 - Focused Worker Navigation
+
+- Replaced the Workers fleet summary and tall service cards with worker search, status filtering,
+  compact name/status rows, and hover or focus diagnostics.
+- Kept the independently scrollable list and expanded the selected-worker overview with unit-file
+  state and diagnostic detail.
+
+## 2026-07-23 - Azure DevOps PR Source Confirmation
+
+- Confirmed reused Azure DevOps pull request source revisions through the latest PR iteration when
+  `lastMergeSourceCommit` still reflects the preceding push.
+- Selected the highest iteration ID, bounded confirmation by elapsed time and per-request timeout,
+  and preserved the existing conflict result when the source branch genuinely moves.
+
+## 2026-07-23 - Agent Log Continuity Across Artifact Operations
+
+- Kept filling the Agents page's latest execution-log window from preceding session executions
+  when a newer, short artifact operation would otherwise replace the visible agent transcript.
+- Preserved bounded line-window pagination so older execution history remains available through
+  **Load older** without eagerly reading the whole session history.
+- Bounded live-refresh transfers as well as rendered output by reading only each execution's
+  required tail through the worker's paged log API.
+
+## 2026-07-23 - Team Artifact Handoffs
+
+- Added `team_import_artifact` so an active Team agent can permission-check an
+  `artifact-space:` reference and import its latest published bundle into that agent's own
+  `/artifacts/team-artifact-imports/...` tree during ordinary task and inbox handoffs.
+- Kept the import target caller-bound and host-generated, preserved artifact-space read grants,
+  and returned concrete imported file paths instead of treating deliverable metadata as file
+  access.
+- Wired ordinary imports through the supported admin provider adapter so default libvirt Team
+  sessions have the session lookup, VM copy, and VM execution ports required to materialize files.
+- Moved the artifact-import guidance into the manual's canonical Chapter 22 source and regenerated
+  every published format so the checked-in build record remains current.
+
+## 2026-07-23 - Team Task Completion and Review Semantics
+
+- Directed administrative, delegation, coordination, and acknowledgement-only Team work through
+  direct `finished` task completion instead of manufacturing deliverables for review.
+- Distinguished superior acceptance from formal review in derived task payloads and Team UI labels
+  while preserving the existing persisted task-state contract.
+- Kept terminal formal-review history and unresolved carried findings classified as review work,
+  while excluding superior-acceptance-only deliverables from reviewer-routing gaps.
+- Required a direct superior before accepting a direct deliverable submission, preventing top-level
+  agents from leaving work waiting for an acceptance notice that cannot be delivered.
+- Split superior acceptance from formal review in Delivery grouping and filters, while retaining
+  deliverable artifacts and audit history.
+
 ## 2026-07-22 - Bokio Evidence Recovery and Teamless Chat Attachments
 
 - Reopened evidence-bearing journal creation after an operator confirms an uncertain create is
@@ -43,6 +163,18 @@
   operator during their active Team Chat dispatch.
 - Kept the exception limited to `team_reply_to_chat`; teamless agents remain unable to invoke
   ordinary Team state mutations.
+
+## 2026-07-22 - Cross-Domain Service Boundary Refactoring
+
+- Extracted managed-Git worktree/lifecycle handling and code-consultation orchestration behind
+  typed services instead of coordinating them through daemon, gateway, and provider internals.
+- Centralized connector and mailbox grant policy, moved Connector and Codex account workflows out
+  of Admin Web routes, and shared one add-on catalog across Admin runtime consumers.
+- Split Team release verification/review handoff, Bokio durable-operation mechanics, ADO activity
+  pagination, local-OpenAI tool compatibility, and mailbox/Team Mail UI features into focused
+  collaborators while preserving their existing public contracts.
+- Made the live documentation catalog consume the technical manual's authoritative chapter
+  manifest instead of independently discovering another chapter list.
 
 ## 2026-07-22 - Hierarchical Team Blocker Escalation
 

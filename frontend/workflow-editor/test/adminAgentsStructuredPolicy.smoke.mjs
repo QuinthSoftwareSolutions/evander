@@ -16,7 +16,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("agents structured labels round-trip and block malformed rows", async (t) => {
+test("agents structured policy round-trips labels and HTTP targets", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -64,7 +64,18 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
         discord_channels: [],
         discord_channel_allowlist: [],
         teams_channel_allowlist: [],
-        metadata: {},
+        metadata: {
+          http_targets: {
+            targets: {
+              api: {
+                base_url: "https://api.example.test/v1",
+                metadata: {
+                  owner: "workflow",
+                },
+              },
+            },
+          },
+        },
         email_mailboxes: [],
         email_folders: [],
         labels: {
@@ -235,6 +246,16 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
         assert.deepEqual(body.teams_channel_allowlist, []);
         assert.deepEqual(body.email_mailboxes, []);
         assert.deepEqual(body.email_folders, []);
+        assert.deepEqual(body.http_targets, {
+          targets: {
+            api: {
+              base_url: "https://api.example.test/v2",
+              metadata: {
+                owner: "workflow",
+              },
+            },
+          },
+        });
         await route.fulfill(jsonResponse({ message: "Updated agent policy.", target_name: "Dispatch agent" }));
         return;
       }
@@ -280,6 +301,11 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
   const scriptsField = editDialog.locator(".field-stack").filter({ hasText: "Allowed scripts" });
   await scriptsField.getByRole("button", { name: "Add script" }).click();
   await scriptsField.locator(".structured-input-row").first().locator("input").fill("collect-logs");
+  const httpTargetsField = editDialog.locator(".field-stack").filter({ hasText: "HTTP targets" });
+  const httpTargetInputs = httpTargetsField.locator(".http-target-row input");
+  assert.equal(await httpTargetInputs.nth(0).inputValue(), "api");
+  assert.equal(await httpTargetInputs.nth(1).inputValue(), "https://api.example.test/v1");
+  await httpTargetInputs.nth(1).fill("https://api.example.test/v2/");
   await editDialog.getByRole("button", { name: "Save" }).click();
   await page.locator(".modal-card[aria-label='Edit agent policy']").waitFor({ state: "hidden" });
   assert.equal(patchBodies.length, 1);
@@ -293,4 +319,16 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
   await editDialog.getByRole("button", { name: "Save" }).click();
   await page.locator(".callout.error-callout").filter({ hasText: "Labels contains duplicate key 'team'." }).first().waitFor({ state: "visible" });
   assert.equal(patchBodies.length, 1);
+
+  await editDialog.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  const createDialog = page.locator(".modal-card[aria-label='Create agent']");
+  await createDialog.waitFor({ state: "visible" });
+  const createHttpTargets = createDialog.locator(".field-stack").filter({ hasText: "HTTP targets" });
+  await createHttpTargets.getByRole("button", { name: "Add target" }).click();
+  const createTargetInputs = createHttpTargets.locator(".http-target-row input");
+  await createTargetInputs.nth(0).fill("docs");
+  await createTargetInputs.nth(1).fill("https://docs.example.test/");
+  assert.equal(await createTargetInputs.nth(0).inputValue(), "docs");
+  assert.equal(await createTargetInputs.nth(1).inputValue(), "https://docs.example.test/");
 });

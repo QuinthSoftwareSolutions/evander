@@ -34,6 +34,7 @@ import type {
   AgentCreateOperation,
   AgentCreateCommunicationTargetOption,
   AgentCreateEmailMailboxOption,
+  AgentCreateHostDirectoryOption,
   AgentCreateRequest,
   AgentExecutionRecord,
   AgentListResponse,
@@ -53,6 +54,16 @@ import {
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
 import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
+import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
+import {
+  httpTargetsDraftFromMetadata,
+  httpTargetsPayload,
+  type HttpTargetDraftEntry,
+} from "../httpTargets/httpTargetDraft";
+import {
+  HostDirectoryGrantSelector,
+  hostDirectoryToolsForGrants,
+} from "../hostDirectories/HostDirectoryGrantSelector";
 
 type ActionLogEntry = {
   at: string;
@@ -132,6 +143,7 @@ type AgentPolicyFormState = {
   webSearchEnabled: boolean;
   allowedTools: string;
   connectorGrants: Record<string, unknown>;
+  hostDirectoryGrants: Record<string, string[]>;
   allowedScriptNames: string;
   approvalNotificationTargetIds: string[];
   communicationTargetIds: string[] | null;
@@ -145,6 +157,9 @@ type AgentPolicyFormState = {
   emailFolderAllowlistByMailbox: Record<string, string[]>;
   emailSendEnabled: boolean;
   codexAuthMode: string;
+  httpTargets: HttpTargetDraftEntry[];
+  httpTargetsLegacyFallback: boolean;
+  httpTargetsSourceError: string | null;
 };
 
 type AgentSkillInstallFormState = {
@@ -199,6 +214,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     webSearchEnabled: false,
     allowedTools: "",
     connectorGrants: {},
+    hostDirectoryGrants: {},
     allowedScriptNames: "",
     approvalNotificationTargetIds: [],
     communicationTargetIds: null,
@@ -212,6 +228,9 @@ function emptyPolicyForm(): AgentPolicyFormState {
     emailFolderAllowlistByMailbox: {},
     emailSendEnabled: false,
     codexAuthMode: "",
+    httpTargets: [],
+    httpTargetsLegacyFallback: false,
+    httpTargetsSourceError: null,
   };
 }
 
@@ -738,6 +757,12 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
           Array.isArray(entry[1]) && entry[1].every((item) => typeof item === "string"),
       ),
     ),
+    host_directory_grants: Object.fromEntries(
+      Object.entries(hostRecord(rawPolicy, "host_directory_grants") ?? {}).filter(
+        (entry): entry is [string, string[]] =>
+          Array.isArray(entry[1]) && entry[1].every((item) => typeof item === "string"),
+      ),
+    ),
     approval_notification_target_ids: hostStringList(rawPolicy, "approval_notification_target_ids"),
     approval_notification_target_options: Array.isArray(rawPolicy.approval_notification_target_options)
       ? rawPolicy.approval_notification_target_options.filter(
@@ -790,6 +815,7 @@ function agentUsesCodex(agent: AgentRecord): boolean {
 
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
+  const httpTargetsDraft = httpTargetsDraftFromMetadata(policy?.metadata);
   const labels = policy?.labels ?? Object.fromEntries(labelsForAgent(agent));
   return {
     model: policy?.model ?? "",
@@ -798,6 +824,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     connectorGrants: { ...(policy?.connector_grants ?? {}) },
+    hostDirectoryGrants: { ...(policy?.host_directory_grants ?? {}) },
     allowedScriptNames: formatList(policy?.allowed_script_names),
     approvalNotificationTargetIds: dedupeStrings(policy?.approval_notification_target_ids ?? []),
     communicationTargetIds: policy?.communication_target_ids == null
@@ -819,12 +846,16 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     ),
     emailSendEnabled: Boolean(policy?.email_send_enabled),
     codexAuthMode: policy?.codex_auth_mode ?? "",
+    httpTargets: httpTargetsDraft.entries,
+    httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
+    httpTargetsSourceError: httpTargetsDraft.sourceError,
   };
 }
 
 function buildPolicyPayload(
   form: AgentPolicyFormState,
   includeCodexAuthMode = false,
+  includeHttpTargets = false,
 ): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
@@ -832,6 +863,7 @@ function buildPolicyPayload(
     web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     connector_grants: form.connectorGrants,
+    host_directory_grants: form.hostDirectoryGrants,
     allowed_script_names: parseList(form.allowedScriptNames),
     approval_notification_target_ids: dedupeStrings(form.approvalNotificationTargetIds),
     communication_target_ids: form.communicationTargetIds,
@@ -842,6 +874,9 @@ function buildPolicyPayload(
       form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
         ? form.codexAuthMode
         : null;
+  }
+  if (includeHttpTargets) {
+    payload.http_targets = httpTargetsPayload(form.httpTargets);
   }
   if (form.communicationTargetIds === null) {
     payload.discord_channels = parseList(form.discordChannels);
@@ -950,6 +985,9 @@ export function AgentsPage() {
   const [editEmailMailboxOptions, setEditEmailMailboxOptions] = useState<
     AgentCreateEmailMailboxOption[]
   >([]);
+  const [editHostDirectoryOptions, setEditHostDirectoryOptions] = useState<
+    AgentCreateHostDirectoryOption[]
+  >([]);
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
   const [skillInstallForm, setSkillInstallForm] = useState<AgentSkillInstallFormState>(() =>
     emptySkillInstallForm(),
@@ -957,6 +995,8 @@ export function AgentsPage() {
   const [inlineValidation, setInlineValidation] = useState("");
   const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
   const [connectorGrantsValidationError, setConnectorGrantsValidationError] = useState<string | null>(null);
+  const [httpTargetsValidationError, setHttpTargetsValidationError] = useState<string | null>(null);
+  const [httpTargetsDirty, setHttpTargetsDirty] = useState(false);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
@@ -1677,16 +1717,21 @@ export function AgentsPage() {
     setEditForm(policyFormFromAgent(selectedAgent));
     setEditCommunicationTargetOptions([]);
     setEditEmailMailboxOptions([]);
+    setEditHostDirectoryOptions([]);
     void loadAgentCreateOptions(selectedAgent.directory_path)
       .then((options) => {
         setEditCommunicationTargetOptions(options.communication_targets);
         setEditEmailMailboxOptions(options.email_mailboxes);
+        setEditHostDirectoryOptions(options.host_directories ?? []);
       })
       .catch(() => {
         setEditCommunicationTargetOptions([]);
         setEditEmailMailboxOptions([]);
+        setEditHostDirectoryOptions([]);
       });
     setConnectorGrantsValidationError(null);
+    setHttpTargetsValidationError(null);
+    setHttpTargetsDirty(false);
     setShowEditForm(true);
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
@@ -1804,6 +1849,10 @@ export function AgentsPage() {
       setInlineValidation(connectorGrantsValidationError);
       return;
     }
+    if (httpTargetsValidationError) {
+      setInlineValidation(httpTargetsValidationError);
+      return;
+    }
     setBusyAction("edit-agent");
     setInlineValidation("");
     try {
@@ -1816,6 +1865,7 @@ export function AgentsPage() {
             buildPolicyPayload(
               editForm,
               selectedAgent.backend === "container_worker_vm" && agentUsesCodex(selectedAgent),
+              httpTargetsDirty,
             ),
           ),
         },
@@ -2371,6 +2421,25 @@ export function AgentsPage() {
                       valueLabel="Value"
                     />
                   </div>
+                  <div className="field-stack wide-field">
+                    <span>HTTP targets</span>
+                    <HttpTargetsEditor
+                      entries={editForm.httpTargets}
+                      onChange={(nextEntries) => {
+                        setEditForm((current) => ({
+                          ...current,
+                          httpTargets: nextEntries,
+                          httpTargetsLegacyFallback: false,
+                          httpTargetsSourceError: null,
+                        }));
+                        setHttpTargetsDirty(true);
+                      }}
+                      onValidationChange={setHttpTargetsValidationError}
+                      legacyFallback={editForm.httpTargetsLegacyFallback}
+                      sourceError={editForm.httpTargetsSourceError}
+                      sessionId={sessionPolicyForAgent(selectedAgent)?.session_id ?? null}
+                    />
+                  </div>
                   <div className="field-stack">
                     <span>Allowed tools</span>
                     <StringListEditor
@@ -2395,6 +2464,27 @@ export function AgentsPage() {
                       fieldLabel="Connector grants"
                       emptyState="No connector operations are granted."
                       addLabel="Add connector grant"
+                    />
+                  </div>
+                  <div className="field-stack wide-field">
+                    <span>Host directory grants</span>
+                    <p className="field-description">
+                      Select capabilities on named host directories. Selecting a capability also enables its
+                      dedicated host_directory MCP tool; removing a grant does not remove an explicitly allowed tool.
+                    </p>
+                    <HostDirectoryGrantSelector
+                      values={editForm.hostDirectoryGrants}
+                      options={editHostDirectoryOptions}
+                      onChange={(nextValue) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          hostDirectoryGrants: nextValue,
+                          allowedTools: formatList(dedupeStrings([
+                            ...parseList(current.allowedTools),
+                            ...hostDirectoryToolsForGrants(nextValue),
+                          ])),
+                        }))
+                      }
                     />
                   </div>
                   <label className="checkbox-row agent-checkbox-row">

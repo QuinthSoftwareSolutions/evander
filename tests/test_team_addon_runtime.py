@@ -101,7 +101,9 @@ from evander_team_addon.providers import (
     TeamUpdateCaseEffectProvider,
     TeamWakeDueAgentsEffectProvider,
     TeamWakeGovernanceManagersEffectProvider,
+    _artifact_space_path_segment,
     _build_prompt,
+    _review_artifact_destination_path,
     _publish_deliverable_artifact_bundle,
     _publish_team_events,
 )
@@ -1029,6 +1031,14 @@ def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> Non
     backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
     task_payload = backend_lease["tasks"][0]
     assert backend_lease["cases"][0]["id"] == "case"
+    assert backend_lease["projects"][0]["goals"] == [
+        {
+            "id": "goal",
+            "description": "Ship work",
+            "state": "pending",
+        }
+    ]
+    assert backend_lease["projects"][0]["blocking_sources"] == []
     assert task_payload["case_id"] == "case"
     assert task_payload["dependency_status"] == "satisfied"
     assert task_payload["child_task_ids"] == []
@@ -1287,6 +1297,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "task creation mandate in your wake prompt" in guidance
     assert "Core MCP surface:" in guidance
     assert "a superior may set state: finished on a subordinate non-terminal task" in guidance
+    assert "administrative, delegation, coordination, acknowledgement" in guidance
+    assert "do not manufacture a routing report deliverable" in guidance
+    assert "needs acceptance by your direct superior" in guidance
+    assert "This always moves the task to waiting_for_review" in guidance
     assert "Do not accept or reject someone else's task" in guidance
     assert "Use team_decide_review only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
@@ -1443,6 +1457,35 @@ def test_wake_due_agents_provider_preserves_active_governance_tools(
         *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
         *GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ]
+
+
+def test_artifact_import_path_segments_are_bounded_and_stable() -> None:
+    long_id = "deliverable-" + ("very-long-human-readable-id-" * 20)
+
+    first = _artifact_space_path_segment(long_id, "deliverable_id")
+    second = _artifact_space_path_segment(long_id, "deliverable_id")
+    other = _artifact_space_path_segment(long_id + "other", "deliverable_id")
+
+    assert first == second
+    assert first != other
+    assert first.startswith("seg_deliverable-")
+    assert len(first.encode("utf-8")) <= 96
+    assert _artifact_space_path_segment("short-safe-id", "deliverable_id") == "short-safe-id"
+
+
+def test_review_artifact_destination_bounds_every_identifier_component() -> None:
+    destination = _review_artifact_destination_path(
+        review_request_id="review-" + ("x" * 500),
+        deliverable_id="deliverable-" + ("y" * 500),
+        artifact_space_path="team/project/deliverable",
+        artifact_id="artifact-" + ("z" * 500),
+        artifact_space_version_id="version-" + ("v" * 500),
+    )
+
+    components = destination.split("/")
+    assert components[0] == "team-review-inputs"
+    assert all(len(component.encode("utf-8")) <= 96 for component in components)
+    assert len(set(components[1:4])) == 3
 
 
 def test_wake_due_agents_provider_imports_review_artifact_refs(
@@ -2033,6 +2076,10 @@ def test_wake_due_agents_provider_does_not_import_review_artifacts_from_status_r
     ]
     assert guidance_files
     assert "Review artifact handoff is through team_request_review" in str(
+        guidance_files[-1]["content"]
+    )
+    assert "call team_import_artifact with that ref" in str(guidance_files[-1]["content"])
+    assert "Never assume another agent's /home/agent or /artifacts path" in str(
         guidance_files[-1]["content"]
     )
     assert "do not pass local artifact paths through communication tools" in str(
@@ -2805,7 +2852,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     assert len(prompt.encode("utf-8")) < 32_000
 
 
-def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
+def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -2835,7 +2882,7 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
     assert result["success"] is True
 
     def _make_task_terminal_without_review(state: TeamState) -> TeamState:
-        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        state.tasks["task"].state = TeamTaskState.FINISHED
         state.deliverables[
             "deliverable-feature"
         ].git_refs.feature_branch = "team/team/features/task-backend"
@@ -2857,7 +2904,7 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
     assert fallback_summary["summary_counts"]["open_task_count"] == 1
     assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
     work = {item["id"]: item for item in fallback_summary["open_work"]}
-    assert work["task"]["state"] == "accepted"
+    assert work["task"]["state"] == "finished"
     deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
     assert deliverables["deliverable-feature"]["state"] == "pending"
     assert deliverables["deliverable-feature"]["git_refs"] == {
@@ -2866,13 +2913,52 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
         "feature_branch": "team/team/features/task-backend",
         "commit_sha": "feedface",
     }
-    assert any(
-        item["kind"] == "reviewer_without_assigned_review_work"
-        and item["agent"] == "luke"
-        and item["deliverable_ids"] == ["deliverable-feature"]
+    assert not any(
+        "deliverable-feature" in item.get("deliverable_ids", [])
         for item in fallback_summary["routing_gaps"]
     )
     assert "deliverable-feature" in prompt
+
+
+def test_manager_fallback_does_not_route_superior_acceptance_for_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-for-acceptance",
+                    "task_id": "task",
+                    "summary": "Ready for the project lead to accept.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+    context = _team_context_from_prompt(_build_prompt(lease))
+    fallback_summary = context["manager_fallback_summary"]
+    task = next(item for item in fallback_summary["open_work"] if item["id"] == "task")
+
+    assert task["waiting_reason"] == "superior_acceptance"
+    assert not any(
+        "deliverable-for-acceptance" in item.get("deliverable_ids", [])
+        for item in fallback_summary["routing_gaps"]
+    )
 
 
 @pytest.mark.parametrize("blocker", ["paused", "stand_down"])

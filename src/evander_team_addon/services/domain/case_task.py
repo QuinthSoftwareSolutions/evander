@@ -14,6 +14,8 @@ from ...models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    TeamTaskKind,
+    TaskOutcomeContract,
     _unique_text_list,
     agent_has_project_assignment,
 )
@@ -53,6 +55,8 @@ class _TaskCreationPlan:
     priority: int
     title: str
     description: str
+    task_kind: TeamTaskKind
+    outcome_contract: TaskOutcomeContract | None
 
 
 def _validate_case_scope(
@@ -443,6 +447,23 @@ def _plan_task_creation(
         result["errors"].append(mandate_error)
         return None
     priority = creation.get("priority")
+    try:
+        task_kind = TeamTaskKind(
+            _optional_text(creation.get("task_kind")) or TeamTaskKind.SUPPORT.value
+        )
+        raw_contract = creation.get("outcome_contract")
+        outcome_contract = (
+            TaskOutcomeContract.model_validate(raw_contract)
+            if raw_contract is not None
+            else None
+        )
+        if task_kind == TeamTaskKind.OUTCOME and outcome_contract is None:
+            raise ValueError("outcome task requires outcome_contract")
+        if task_kind == TeamTaskKind.SUPPORT and outcome_contract is not None:
+            raise ValueError("support task cannot define outcome_contract")
+    except ValueError as exc:
+        result["errors"].append(str(exc))
+        return None
     return _TaskCreationPlan(
         task_id=task_id,
         owner_id=owner_id,
@@ -454,6 +475,8 @@ def _plan_task_creation(
         priority=int(priority) if priority is not None else 0,
         title=_required_text(creation.get("title"), "title"),
         description=_required_text(creation.get("description"), "description"),
+        task_kind=task_kind,
+        outcome_contract=outcome_contract,
     )
 
 
@@ -471,6 +494,8 @@ def _apply_task_creation_plan(
         case_id=plan.case_id,
         priority=plan.priority,
         state=plan.task_state,
+        task_kind=plan.task_kind,
+        outcome_contract=plan.outcome_contract,
         title=plan.title,
         description=plan.description,
         created_by_agent_id=actor.id,

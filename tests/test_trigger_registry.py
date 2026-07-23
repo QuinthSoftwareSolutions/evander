@@ -67,6 +67,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:review:new-request",
         "trigger:approval:pending-created",
         "trigger:git:push",
+        "trigger:host-directory:file-added",
         "trigger:ci:run:completed",
         "trigger:agent:prompt:new",
         "trigger:agent:run:completed",

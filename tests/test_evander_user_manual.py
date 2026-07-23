@@ -204,6 +204,7 @@ def test_current_contract_repairs_are_reflected_in_manual_and_authoritative_docs
     addons = (ROOT / "docs/addons.md").read_text(encoding="utf-8")
     configuration = (ROOT / "docs/configuration-reference.md").read_text(encoding="utf-8")
     wake_tree = (ROOT / "docs/team-addon-wake-decision-tree.md").read_text(encoding="utf-8")
+    delivery_chapter = (CHAPTERS / "22-team-delivery-review.md").read_text(encoding="utf-8")
 
     assert "evander-trigger-orchestrator --runtime-dir" not in readme
     assert "evander-trigger-orchestrator --runtime-dir" not in operations
@@ -213,6 +214,8 @@ def test_current_contract_repairs_are_reflected_in_manual_and_authoritative_docs
     assert "no separate top-level `Roles` view" in addons
     assert "chat-class tool `team_reply_to_chat`" in addons
     assert "High or normal<br/>pending inbox?" in wake_tree
+    assert "team_import_artifact" in delivery_chapter
+    assert "/artifacts/team-artifact-imports/..." in delivery_chapter
 
 
 def test_generated_publication_formats_are_nontrivial_and_current() -> None:

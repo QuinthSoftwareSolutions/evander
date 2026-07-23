@@ -625,63 +625,6 @@ def test_relay_expands_local_openai_namespace_tools_and_restores_function_namesp
     assert function_call["namespace"] == "evander"
 
 
-def test_relay_does_not_guess_namespace_for_ambiguous_bare_function_name() -> None:
-    payload = {
-        "type": "function_call",
-        "name": "get_task",
-        "arguments": '{"task_id":"task-1"}',
-        "call_id": "call-1",
-    }
-
-    changed = OpenAIRelay._rewrite_local_openai_function_calls_payload(
-        payload,
-        function_namespaces={
-            "evander__get_task": ("evander", "get_task"),
-            "other__get_task": ("other", "get_task"),
-        },
-    )
-
-    assert changed is False
-    assert payload["name"] == "get_task"
-    assert "namespace" not in payload
-
-
-def test_relay_preserves_exact_top_level_function_over_namespace_guess() -> None:
-    compatibility = OpenAIRelay._rewrite_local_openai_namespace_tools_request(
-        method="POST",
-        upstream_path="responses",
-        request_body=json.dumps(
-            {
-                "tools": [
-                    {"type": "function", "name": "exec_command"},
-                    {
-                        "type": "namespace",
-                        "name": "evander",
-                        "tools": [{"name": "exec_command"}],
-                    },
-                ]
-            }
-        ).encode("utf-8"),
-    )
-    payload = {
-        "type": "function_call",
-        "name": "exec_command",
-        "arguments": "{}",
-        "call_id": "call-1",
-    }
-
-    changed = OpenAIRelay._rewrite_local_openai_function_calls_payload(
-        payload,
-        function_namespaces=compatibility.function_namespaces,
-        top_level_function_names=compatibility.top_level_function_names,
-    )
-
-    assert compatibility.top_level_function_names == frozenset({"exec_command"})
-    assert changed is False
-    assert payload["name"] == "exec_command"
-    assert "namespace" not in payload
-
-
 def test_relay_restores_local_openai_function_namespace_in_chunked_stream(
     tmp_path: Path,
 ) -> None:

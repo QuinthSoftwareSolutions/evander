@@ -15,6 +15,7 @@ ID_LIST_LIMIT = 12
 MAX_SUBORDINATE_IDS = 20
 MAX_SUBORDINATES = 12
 MAX_TASKS = 10
+MAX_PROJECTS = 8
 MAX_INBOX = 10
 MAX_BLOCKERS = 8
 MAX_CASES = 8
@@ -72,10 +73,39 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
     )
     context["tasks"] = _limited_rows(tasks, MAX_TASKS, omitted_counts, "tasks")
 
+    projects = sorted(
+        (_compact_project(row) for row in _mapping_rows(lease.get("projects"))),
+        key=lambda row: _sort_text(row.get("id")),
+    )
+    if projects:
+        context["projects"] = _limited_rows(
+            projects,
+            MAX_PROJECTS,
+            omitted_counts,
+            "projects",
+        )
+
     inbox_rows, non_pending_inbox_count = _pending_inbox_rows(lease.get("inbox"))
     _add_omitted(omitted_counts, "inbox_non_pending", non_pending_inbox_count)
+    sorted_inbox_rows = sorted(inbox_rows, key=_inbox_sort_key)
+    sole_high_priority_id = (
+        _optional_text(sorted_inbox_rows[0].get("id"))
+        if len(sorted_inbox_rows) == 1
+        and _optional_text(sorted_inbox_rows[0].get("priority")) == "high"
+        else None
+    )
     context["inbox"] = _limited_rows(
-        sorted((_compact_inbox(row) for row in inbox_rows), key=_inbox_sort_key),
+        [
+            _compact_inbox(
+                row,
+                payload_text_limit=(
+                    2048
+                    if _optional_text(row.get("id")) == sole_high_priority_id
+                    else TEXT_LIMIT
+                ),
+            )
+            for row in sorted_inbox_rows
+        ],
         MAX_INBOX,
         omitted_counts,
         "inbox",
@@ -299,6 +329,7 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
             "created_at",
             "updated_at",
             "state_entered_at",
+            "task_kind",
         ),
     )
     row["title"] = _trim_text(task.get("title"), TITLE_LIMIT)
@@ -312,10 +343,53 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
     row["subtask_counts"] = _json_value(
         subtask_counts if isinstance(subtask_counts, Mapping) else {}
     )
+    if isinstance(task.get("outcome_contract"), Mapping):
+        row["outcome_contract"] = _json_value(task["outcome_contract"])
+    if isinstance(task.get("completion"), Mapping):
+        row["completion"] = _json_value(task["completion"])
     return row
 
 
-def _compact_inbox(item: Mapping[str, Any]) -> dict[str, Any]:
+def _compact_project(project: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        project,
+        (
+            "id",
+            "team_id",
+            "name",
+            "lead_agent_id",
+            "status",
+            "updated_at",
+        ),
+    )
+    goals = [
+        {
+            **_compact_fields(goal, ("id", "state")),
+            "description": _trim_text(goal.get("description"), 1200),
+        }
+        for goal in _mapping_rows(project.get("goals"))
+    ]
+    if goals:
+        row["goals"] = goals[:ID_LIST_LIMIT]
+        if len(goals) > ID_LIST_LIMIT:
+            row["goals_omitted_count"] = len(goals) - ID_LIST_LIMIT
+    blocking_sources = _mapping_rows(project.get("blocking_sources"))
+    if blocking_sources:
+        row["blocking_sources"] = [
+            {
+                **_compact_fields(source, ("kind", "id", "state")),
+                "summary": _trim_text(source.get("summary"), 640),
+            }
+            for source in blocking_sources[:ID_LIST_LIMIT]
+        ]
+    return row
+
+
+def _compact_inbox(
+    item: Mapping[str, Any],
+    *,
+    payload_text_limit: int = TEXT_LIMIT,
+) -> dict[str, Any]:
     row = _compact_fields(
         item,
         (
@@ -333,7 +407,10 @@ def _compact_inbox(item: Mapping[str, Any]) -> dict[str, Any]:
     )
     payload = item.get("payload")
     if isinstance(payload, Mapping):
-        compact_payload = _compact_payload(payload)
+        compact_payload = _compact_payload(
+            payload,
+            text_limit=payload_text_limit,
+        )
         if compact_payload:
             row["payload"] = compact_payload
     return row
@@ -692,6 +769,7 @@ def _compact_manager_task(item: Mapping[str, Any]) -> dict[str, Any]:
             "project_id",
             "priority",
             "dependency_status",
+            "waiting_reason",
         ),
     )
     row["title"] = _trim_text(item.get("title"), TITLE_LIMIT)
@@ -908,7 +986,11 @@ def _compact_review_artifact_error(item: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _compact_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _compact_payload(
+    payload: Mapping[str, Any],
+    *,
+    text_limit: int = TEXT_LIMIT,
+) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     omitted_keys: list[str] = []
     for raw_key, value in sorted(payload.items(), key=lambda entry: str(entry[0])):
@@ -916,7 +998,7 @@ def _compact_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if value in (None, "", [], {}):
             continue
         if key in _PAYLOAD_TEXT_KEYS:
-            compact[key] = _trim_text(value)
+            compact[key] = _trim_text(value, text_limit)
         elif key in _PAYLOAD_LIST_KEYS or key.endswith("_ids"):
             values = _string_items(value)
             compact[key] = values[:ID_LIST_LIMIT]

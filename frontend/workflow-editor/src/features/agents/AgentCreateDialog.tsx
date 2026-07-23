@@ -23,6 +23,11 @@ import {
   CommunicationTargetCheckboxTable,
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
+import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
+import {
+  HostDirectoryGrantSelector,
+  hostDirectoryToolsForGrants,
+} from "../hostDirectories/HostDirectoryGrantSelector";
 
 type AgentCreateDialogProps = {
   directoryPath: string;
@@ -169,6 +174,7 @@ export function AgentCreateDialog({
   const [createOptions, setCreateOptions] = useState<AgentCreateOptionsResponse | null>(null);
   const [inlineValidation, setInlineValidation] = useState("");
   const [createLabelsValidationError, setCreateLabelsValidationError] = useState<string | null>(null);
+  const [createHttpTargetsValidationError, setCreateHttpTargetsValidationError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -182,6 +188,7 @@ export function AgentCreateDialog({
       initialPolicy: {
         ...current.initialPolicy,
         connectorGrants: {},
+        hostDirectoryGrants: {},
         communicationTargetIds: [],
         emailMailboxGrants: [],
       },
@@ -237,6 +244,10 @@ export function AgentCreateDialog({
       setInlineValidation(createLabelsValidationError);
       return;
     }
+    if (createHttpTargetsValidationError) {
+      setInlineValidation(createHttpTargetsValidationError);
+      return;
+    }
     const submittedForm = createForm;
     const createPayload = buildCreatePayload(submittedForm, directoryPath);
     const targetLabel = agentCreateTargetLabel(submittedForm);
@@ -246,6 +257,7 @@ export function AgentCreateDialog({
       await onCreate(createPayload, { form: submittedForm, targetLabel });
       setCreateForm(emptyCreateForm());
       setCreateLabelsValidationError(null);
+      setCreateHttpTargetsValidationError(null);
       if (closeOnSuccess) onClose();
     } catch (reason: unknown) {
       setInlineValidation(reason instanceof Error ? reason.message : String(reason));
@@ -607,6 +619,28 @@ export function AgentCreateDialog({
                 valueLabel="Value"
               />
             </div>
+            <div className="field-stack wide-field">
+              <CreateFieldLabel tooltip="Capabilities granted for named host directories. Selecting one also enables its dedicated MCP tool; delete normally requires approval and moves entries to quarantine.">
+                Host directory grants
+              </CreateFieldLabel>
+              <HostDirectoryGrantSelector
+                values={createForm.initialPolicy.hostDirectoryGrants}
+                options={createOptions?.host_directories ?? []}
+                onChange={(nextValues) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    initialPolicy: {
+                      ...current.initialPolicy,
+                      hostDirectoryGrants: nextValues,
+                      allowedTools: dedupeStrings([
+                        ...current.initialPolicy.allowedTools,
+                        ...hostDirectoryToolsForGrants(nextValues),
+                      ]),
+                    },
+                  }))
+                }
+              />
+            </div>
             <div className="field-stack">
               <CreateFieldLabel tooltip="MCP tools this session may call without being hidden by policy. Approval rules still apply.">
                 Allowed tools
@@ -662,6 +696,22 @@ export function AgentCreateDialog({
                 itemLabel="Script"
                 placeholder="collect-logs"
                 emptyState="No scripts are allowed explicitly."
+              />
+            </div>
+            <div className="field-stack wide-field">
+              <CreateFieldLabel tooltip="Named HTTP(S) base URLs this session may reach through the host HTTP target relay. Target authentication remains agent-managed.">
+                HTTP targets
+              </CreateFieldLabel>
+              <HttpTargetsEditor
+                entries={createForm.initialPolicy.httpTargets}
+                onChange={(nextEntries) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    initialPolicy: { ...current.initialPolicy, httpTargets: nextEntries },
+                  }))
+                }
+                onValidationChange={setCreateHttpTargetsValidationError}
+                sessionId={createForm.sessionId.trim() || null}
               />
             </div>
             <div className="field-stack wide-field agent-communication-targets-field">

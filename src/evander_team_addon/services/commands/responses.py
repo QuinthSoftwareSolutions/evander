@@ -21,6 +21,7 @@ def _command_success_response(
     context: TeamCommandContext,
     activity_id: str,
     handled_inbox_item_ids: Sequence[str],
+    already_handled_inbox_item_ids: Sequence[str],
     apply_result: TeamCommandApplyResult,
 ) -> dict[str, Any]:
     response = dict(apply_result.response_payload)
@@ -28,13 +29,16 @@ def _command_success_response(
     response.update(
         {
             "success": True,
-            "applied": True,
+            "applied": apply_result.applied,
             "progress_made": progress_made,
             "revision": state.revision,
             "activity_id": activity_id,
             "tool_name": context.tool_name,
             "action_record_id": _optional_text(response.get("action_record_id")),
             "handled_inbox_item_ids": list(handled_inbox_item_ids),
+            "already_handled_inbox_item_ids": list(
+                already_handled_inbox_item_ids
+            ),
             "errors": [],
         }
     )

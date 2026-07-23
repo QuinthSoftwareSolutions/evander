@@ -18,8 +18,12 @@ from evander.admin.services.vm_agent.common import (
     _sync_added_discord_session_cursors,
     timedelta,
 )
-from evander.connectors.models import normalize_connector_grants
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
+from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.host_directories.grants import (
+    host_directory_tool_names_for_grants,
+    resolve_and_validate_host_directory_grants,
+)
 
 
 class VmAgentMutationMixin:
@@ -37,6 +41,7 @@ class VmAgentMutationMixin:
             "ttl_hours",
             "allowed_tools",
             "connector_grants",
+            "host_directory_grants",
             "approval_required_tools",
             "approval_tool_settings",
             "approval_notification_target_ids",
@@ -49,6 +54,7 @@ class VmAgentMutationMixin:
             "teams_channel_allowlist",
             "teams_chat_allowlist",
             "teams_user_allowlist",
+            "http_targets",
             "metadata",
             "web_search_enabled",
             "email_mailboxes",
@@ -85,22 +91,28 @@ class VmAgentMutationMixin:
                 self._agent_string_list(body, "allowed_tools") or []
             )
         if "connector_grants" in body:
-            connector_grants = normalize_connector_grants(body.get("connector_grants"))
-            connector_config = self.runtime.provider_config.resolve_connectors_for_directory(
-                session.directory_path
+            connector_grants = resolve_and_validate_connector_grants(
+                self.runtime.provider_config,
+                directory_path=session.directory_path,
+                session_id=session.session_id,
+                value=body.get("connector_grants"),
             )
-            for connector_id, operation_names in connector_grants.items():
-                connector = connector_config.connectors.get(connector_id)
-                if connector is None or connector.disabled:
-                    raise ValueError(f"unknown or disabled connector: {connector_id}")
-                for operation_name in operation_names:
-                    operation = connector.operations.get(operation_name)
-                    if operation is None or operation.disabled:
-                        raise ValueError(
-                            "unknown or disabled connector operation: "
-                            f"{connector_id}.{operation_name}"
-                        )
             update["connector_grants"] = connector_grants
+        if "host_directory_grants" in body:
+            update["host_directory_grants"] = resolve_and_validate_host_directory_grants(
+                provider_config=self.runtime.provider_config,
+                directory_path=session.directory_path,
+                session_id=session.session_id,
+                value=body.get("host_directory_grants"),
+            )
+            update["allowed_tools"] = _normalize_allowed_tools(
+                [
+                    *update.get("allowed_tools", session.allowed_tools),
+                    *host_directory_tool_names_for_grants(
+                        update["host_directory_grants"]
+                    ),
+                ]
+            )
         session_policy_fields = {
             key: body[key]
             for key in (
@@ -116,6 +128,7 @@ class VmAgentMutationMixin:
                 "teams_channel_allowlist",
                 "teams_chat_allowlist",
                 "teams_user_allowlist",
+                "http_targets",
                 "metadata",
                 "web_search_enabled",
                 *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,

@@ -55,6 +55,15 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.CALL_CONNECTOR: (
         "Invoke one schema-validated operation on a connector granted to the current session."
     ),
+    ToolName.HOST_DIRECTORY_LIST: (
+        "List regular files and folders below a named, granted host directory."
+    ),
+    ToolName.HOST_DIRECTORY_IMPORT: (
+        "Import a granted host file or folder into the session-owned artifact store."
+    ),
+    ToolName.HOST_DIRECTORY_DELETE: (
+        "Move a granted host file or folder into recoverable quarantine."
+    ),
     ToolName.ASSISTANT_READ_STATUS: (
         "Read high-level control-plane status for the assistant Admin chat surface."
     ),

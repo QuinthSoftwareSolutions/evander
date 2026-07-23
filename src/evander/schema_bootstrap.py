@@ -530,6 +530,14 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         "notes_ref": {"type": "string"},
         "default_branch": {"type": "string"},
     },
+    "trigger:host-directory:file-added": {
+        "directory_id": {"type": "string"},
+        "relative_path": {"type": "string"},
+        "size": {"type": "integer"},
+        "modified_at": {"type": "string"},
+        "revision": {"type": "string"},
+        "detected_at": {"type": "string"},
+    },
     "trigger:ci:run:completed": {
         "provider": {"type": "string"},
         "repo": {"type": "string"},

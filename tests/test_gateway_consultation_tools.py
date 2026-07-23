@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import evander.gateway as gateway_module
-import evander.gateway.consultation_tools as consultation_tools_module
 import pytest
 
+from evander.code_consultation_service import CodeConsultationEventDispatcher
 from evander.config import GatewayConfig
 from evander.consultations import (
     CodeConsultationStore,
@@ -140,6 +140,9 @@ def test_consult_codebase_pins_snapshot_and_publishes_durable_request(
     assert [(event.event_type, event.payload["consultation_id"]) for event in events] == [
         ("agent.consultation.requested", created["consultation_id"])
     ]
+    assert events[0].source is not None
+    assert events[0].source.source_type == "mcp_tool"
+    assert events[0].source.source_name == ToolName.CONSULT_CODEBASE.value
 
     fetched = _call_tool(
         server,
@@ -159,15 +162,16 @@ def test_consult_codebase_pins_snapshot_and_publishes_durable_request(
         },
     )
     assert cancelled["cancellation_requested"] is True
-    assert [
-        event.event_type
-        for event in InternalEventBus(
-            internal_event_store_path(context.config.runtime_dir)
-        ).list_events()
-    ] == [
+    all_events = InternalEventBus(
+        internal_event_store_path(context.config.runtime_dir)
+    ).list_events()
+    assert [event.event_type for event in all_events] == [
         "agent.consultation.requested",
         "agent.consultation.terminate",
     ]
+    assert all_events[1].source is not None
+    assert all_events[1].source.source_type == "mcp_tool"
+    assert all_events[1].source.source_name == ToolName.CANCEL_CODEBASE_CONSULTATION.value
 
 
 def test_worker_submission_is_session_bound_and_persists_structured_result(
@@ -348,8 +352,8 @@ def test_consult_codebase_releases_snapshot_when_timeout_setup_fails(
         lambda _runtime_dir: SimpleNamespace(managed_git_admin=managed_git),
     )
     monkeypatch.setattr(
-        consultation_tools_module,
-        "_schedule_timeout",
+        CodeConsultationEventDispatcher,
+        "schedule_timeout",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("schedule unavailable")),
     )
     context = _runtime(tmp_path, allowed_tools=[ToolName.CONSULT_CODEBASE])
@@ -390,8 +394,8 @@ def test_consult_codebase_enqueues_cleanup_when_dispatch_publication_fails(
         lambda _runtime_dir: SimpleNamespace(managed_git_admin=managed_git),
     )
     monkeypatch.setattr(
-        consultation_tools_module,
-        "_publish_claimed",
+        CodeConsultationEventDispatcher,
+        "publish_requested",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("event publication unavailable")
         ),

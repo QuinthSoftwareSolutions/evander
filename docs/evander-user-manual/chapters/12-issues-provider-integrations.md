@@ -127,7 +127,10 @@ snapshot and rerun the check—not treat an earlier clean report as permission t
 >    publishes new-feedback or completion events idempotently.
 > 2. **Legacy PR-map bindings.** Older sessions may be associated with entries in
 >    `runtime/pr-map.json`. This compatibility path remains readable, but new workflow design should
->    prefer explicit PR triggers and managed repository identity.
+>    prefer explicit PR triggers and managed repository identity. While the session still exists,
+>    its manifest's current directory is authoritative over an older directory persisted in the
+>    binding. Supported session deletion prunes that session's PR-map entries and matching feedback
+>    cursors/items so a reused session ID cannot inherit the historical stream.
 >
 > The ADO worker owns Azure DevOps review feedback and completion pickup. It does not own general
 > work-item intake. GitHub PR reads, replies, and publication use their provider services; do not

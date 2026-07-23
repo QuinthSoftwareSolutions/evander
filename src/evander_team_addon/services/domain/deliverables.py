@@ -10,6 +10,7 @@ from ...models import (
     AgentTask,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableOutcome,
     DeliverableVerification,
     TeamRecordState,
     TeamState,
@@ -107,9 +108,9 @@ def _deliverable_submission_next_action_hints(
         )
     elif created_inbox_ids:
         hints.append(
-            "A deliverable notice was sent to your superior; wait for review, "
-            "acceptance, or branch-promotion instructions before taking more "
-            "completion actions."
+            "The task is waiting_for_review for superior acceptance because a "
+            "deliverable notice was sent to your superior. Wait for acceptance "
+            "or branch-promotion instructions before taking more completion actions."
         )
     verification = _optional_mapping(deliverable.get("verification"), "verification")
     if verification is not None and verification.get("status") == "not_run":
@@ -119,6 +120,44 @@ def _deliverable_submission_next_action_hints(
             "is required."
         )
     return hints
+
+
+def _validate_deliverable_outcomes_against_task_contract(
+    task: AgentTask,
+    outcomes: Sequence[DeliverableOutcome],
+) -> None:
+    contract = task.outcome_contract
+    if contract is None:
+        return
+
+    outcome_kinds = {outcome.kind for outcome in outcomes}
+    forbidden = sorted(outcome_kinds.intersection(contract.forbidden_effect_kinds))
+    if forbidden:
+        raise ValueError("deliverable includes forbidden outcome kinds: " + ", ".join(forbidden))
+
+    required = set(contract.required_outcome_kinds)
+    satisfied = (
+        bool(required.intersection(outcome_kinds))
+        if contract.match == "any"
+        else required.issubset(outcome_kinds)
+    )
+    if required and not satisfied:
+        raise ValueError(
+            "deliverable does not satisfy task outcome contract; required "
+            f"{contract.match}: {', '.join(sorted(required))}"
+        )
+
+    missing_references = sorted({outcome.kind for outcome in outcomes if not outcome.reference_ids})
+    if missing_references:
+        raise ValueError(
+            "task deliverable outcomes must include reference_ids: " + ", ".join(missing_references)
+        )
+    if not outcomes:
+        raise ValueError(
+            "outcome task deliverables must include an outcome with reference_ids; "
+            "use an evidenced_noop task completion when the contract allows an "
+            "evidence-backed no-op"
+        )
 
 
 def _superseded_deliverable_for_rework(
@@ -149,8 +188,13 @@ def _superseded_deliverable_for_rework(
             f"{deliverable.producer_agent_id}; only that producer or current "
             f"task owner {task.owner_agent_id} may supersede it"
         )
-    if deliverable.state != TeamRecordState.REJECTED:
-        raise ValueError(f"supersedes_deliverable_id {deliverable.id} is not rejected")
+    if deliverable.state not in {
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    }:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} is not rejected or blocked"
+        )
     if deliverable.superseded_by_deliverable_id is not None:
         raise ValueError(
             f"supersedes_deliverable_id {deliverable.id} is already superseded by "
@@ -178,6 +222,7 @@ __all__ = [
     "_deliverable_verification_from_payload",
     "_deliverable_verification_payload",
     "_deliverable_submission_next_action_hints",
+    "_validate_deliverable_outcomes_against_task_contract",
     "_superseded_deliverable_for_rework",
     "_active_task_deliverables",
 ]

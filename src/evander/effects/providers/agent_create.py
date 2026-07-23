@@ -6,10 +6,11 @@ from typing import Any
 
 from evander.container_worker_images import resolve_container_worker_image_selector
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
-from evander.connectors.models import normalize_connector_grants
+from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.directories import DirectoryStore
 from evander.events.provider_models import AgentCreateEffectDefinition
+from evander.host_directories.grants import resolve_and_validate_host_directory_grants
 from evander.messaging.targets import load_communication_targets_config
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
@@ -17,8 +18,11 @@ from evander.provider_config import (
 )
 from evander.services import parse_teams_target
 from evander.session_auth import ensure_session_mcp_auth_token
-from evander.admin.services.session_helpers import normalize_email_mailbox_grants
-from evander.models import EmailMailboxAccess, EmailMailboxGrant
+from evander.email.grants import (
+    normalize_email_mailbox_grants,
+    validate_email_mailbox_grants,
+)
+from evander.models import EmailMailboxGrant
 from evander.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
@@ -68,6 +72,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "capability_profile": effect.capability_profile,
             "allowed_tools": effect.allowed_tools,
             "connector_grants": effect.connector_grants,
+            "host_directory_grants": effect.host_directory_grants,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
             "allowed_contact_ids": effect.allowed_contact_ids,
@@ -232,6 +237,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id or f"session-{vm_name}",
             value=payload.get("connector_grants"),
         )
+        host_directory_grants = _validated_host_directory_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id or f"session-{vm_name}",
+            value=payload.get("host_directory_grants"),
+        )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -242,6 +253,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=as_string_list(payload.get("allowed_tools")),
             connector_grants=connector_grants,
+            host_directory_grants=host_directory_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -436,6 +448,21 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 connector_id: list(operation_names)
                 for connector_id, operation_names in existing_session.connector_grants.items()
             }
+        host_directory_grants = _validated_host_directory_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id,
+            value=payload.get("host_directory_grants"),
+        )
+        if (
+            host_directory_grants is None
+            and existing_session is not None
+            and existing_session.directory_path == directory_path
+        ):
+            host_directory_grants = {
+                directory_id: list(capabilities)
+                for directory_id, capabilities in existing_session.host_directory_grants.items()
+            }
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -445,6 +472,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
             connector_grants=connector_grants,
+            host_directory_grants=host_directory_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -692,39 +720,15 @@ def _agent_email_mailbox_grants(
     grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
     if grants is None:
         return None
-    mailboxes = {mailbox.mailbox_id: mailbox for mailbox in config.email_mailboxes}
-    allowed_mailboxes = set(config.email_mailbox_allowlist)
-    validated: list[EmailMailboxGrant] = []
-    for grant in grants:
-        mailbox = mailboxes.get(grant.mailbox_id)
-        if mailbox is None or grant.mailbox_id not in allowed_mailboxes:
-            raise ValueError(
-                "effect:agent:create email_mailbox_grants contains unavailable mailbox "
-                f"{grant.mailbox_id!r} for directory {directory_path!r}"
-            )
-        folders = (
-            list(grant.folders)
-            if "folders" in grant.model_fields_set
-            else list(mailbox.folder_allowlist_defaults)
-        )
-        allowed_folders = set(
-            config.email_folder_allowlist_by_mailbox.get(
-                grant.mailbox_id, mailbox.folder_allowlist_defaults
-            )
-        )
-        unavailable_folders = sorted(set(folders) - allowed_folders)
-        if unavailable_folders:
-            raise ValueError(
-                "effect:agent:create email_mailbox_grants contains unavailable folders "
-                f"for mailbox {grant.mailbox_id!r}: {', '.join(unavailable_folders)}"
-            )
-        if grant.access == EmailMailboxAccess.SEND and not config.email_send_enabled:
-            raise ValueError(
-                "effect:agent:create cannot grant send access while email send is disabled "
-                f"for directory {directory_path!r}"
-            )
-        validated.append(grant.model_copy(update={"folders": folders}))
-    return validated
+    return validate_email_mailbox_grants(
+        grants,
+        mailboxes=config.email_mailboxes,
+        allowed_mailbox_ids=config.email_mailbox_allowlist,
+        folder_allowlist_by_mailbox=config.email_folder_allowlist_by_mailbox,
+        email_send_enabled=config.email_send_enabled,
+        directory_path=directory_path,
+        error_context="effect:agent:create ",
+    )
 
 
 def _email_mailbox_id_for_target(target: Any) -> str:
@@ -812,27 +816,30 @@ def _validated_connector_grants(
 ) -> dict[str, list[str]] | None:
     if value is None:
         return None
-    grants = normalize_connector_grants(value)
-    if not grants:
-        return {}
     resolver = getattr(context, "provider_config_resolver", None)
-    if resolver is None or not hasattr(resolver, "resolve_connectors_for_directory"):
-        raise ValueError("connector grants require a directory connector configuration resolver")
-    config = resolver.resolve_connectors_for_directory(directory_path)
-    for connector_id, operation_names in grants.items():
-        connector = config.connectors.get(connector_id)
-        if connector is None or connector.disabled:
-            raise ValueError(
-                f"session {session_id!r} grants unknown or disabled connector {connector_id!r}"
-            )
-        for operation_name in operation_names:
-            operation = connector.operations.get(operation_name)
-            if operation is None or operation.disabled:
-                raise ValueError(
-                    f"session {session_id!r} grants unknown or disabled connector operation "
-                    f"{connector_id}.{operation_name}"
-                )
-    return grants
+    return resolve_and_validate_connector_grants(
+        resolver,
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )
+
+
+def _validated_host_directory_grants(
+    context: Any,
+    *,
+    directory_path: str,
+    session_id: str,
+    value: object,
+) -> dict[str, list[str]] | None:
+    if value is None:
+        return None
+    return resolve_and_validate_host_directory_grants(
+        provider_config=getattr(context, "provider_config_resolver", None),
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )
 
 
 def _libvirt_vm_template_selection_from_session(session: Any) -> dict[str, str | None] | None:

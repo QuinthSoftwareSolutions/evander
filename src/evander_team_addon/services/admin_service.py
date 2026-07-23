@@ -24,6 +24,7 @@ from ..models import (
     AgentTask,
     AgentVoiceProfile,
     Deliverable,
+    DeliverableOutcome,
     EphemeralAgentPolicy,
     GovernanceAgendaItem,
     GovernanceAgendaItemState,
@@ -57,6 +58,10 @@ from ..models import (
     TeamRecordState,
     TeamRole,
     TeamState,
+    TaskCompletion,
+    TaskCompletionKind,
+    TaskOutcomeContract,
+    TeamTaskKind,
     TeamTaskState,
     _ensure_unique,
     _unique_text_list,
@@ -81,7 +86,12 @@ from .domain.case_task import (
     _unlink_task_from_case,
     _validate_case_scope,
 )
-from .domain.blockers import active_blockers_for_source, open_or_get_blocker, resolve_blocker
+from .domain.blockers import (
+    active_blockers_for_source,
+    open_or_get_blocker,
+    resolve_active_blockers_for_source,
+    resolve_blocker,
+)
 from .domain.common import (
     _NON_TERMINAL_TASK_STATES,
     _append_unique,
@@ -108,7 +118,11 @@ from .domain.context_rotation import (
     _resolved_context_clearing_policy,
     _set_context_clearing_policy,
 )
-from .domain.deliverables import _superseded_deliverable_for_rework
+from .domain.deliverables import (
+    _active_task_deliverables,
+    _superseded_deliverable_for_rework,
+    _validate_deliverable_outcomes_against_task_contract,
+)
 from .domain.governance import (
     _governance_agenda_effective_team_id,
     _governance_goals_with_generated_ids,
@@ -463,6 +477,7 @@ class TeamAdminService:
         tags: list[str] | None = None,
         source_refs: list[str] | None = None,
         artifact_refs: list[str] | None = None,
+        outcomes: list[Mapping[str, Any]] | None = None,
         confidence: float | None = None,
         supersedes_memory_id: str | None = None,
         created_by: str | None = None,
@@ -1979,6 +1994,9 @@ class TeamAdminService:
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
+        task_kind: TeamTaskKind | str | None = None,
+        outcome_contract: Mapping[str, Any] | None = None,
+        set_outcome_contract: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
         state_model, _effective_task_id, _created = self.create_or_reprioritize_task_with_result(
@@ -1996,6 +2014,9 @@ class TeamAdminService:
             set_parent_task_id=set_parent_task_id,
             set_case_id=set_case_id,
             dependency_task_ids=dependency_task_ids,
+            task_kind=task_kind,
+            outcome_contract=outcome_contract,
+            set_outcome_contract=set_outcome_contract,
             expected_revision=expected_revision,
         )
         return state_model
@@ -2017,6 +2038,9 @@ class TeamAdminService:
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
+        task_kind: TeamTaskKind | str | None = None,
+        outcome_contract: Mapping[str, Any] | None = None,
+        set_outcome_contract: bool = False,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str, bool]:
         normalized_task_id = _optional_text(task_id)
@@ -2025,6 +2049,12 @@ class TeamAdminService:
         normalized_description = _required_text(description, "description")
         normalized_owner_agent_id = _required_text(owner_agent_id, "owner_agent_id")
         normalized_project_id = _required_text(project_id, "project_id")
+        normalized_task_kind = TeamTaskKind(task_kind) if task_kind is not None else None
+        normalized_outcome_contract = (
+            TaskOutcomeContract.model_validate(outcome_contract)
+            if outcome_contract is not None
+            else None
+        )
         effective_task_id: str | None = None
         created = False
         blocker_result: dict[str, Any] = {"events": []}
@@ -2053,6 +2083,10 @@ class TeamAdminService:
                     )
                 if dependency_task_ids is not None:
                     task.dependency_task_ids = dependency_task_ids
+                if normalized_task_kind is not None:
+                    task.task_kind = normalized_task_kind
+                if set_outcome_contract or outcome_contract is not None:
+                    task.outcome_contract = normalized_outcome_contract
                 task.updated_at = now
                 if task.state in _NON_TERMINAL_TASK_STATES:
                     _mark_agent_work_due(
@@ -2088,6 +2122,8 @@ class TeamAdminService:
                 created_by_actor=created_by_actor,
                 parent_task_id=parent_task_id,
                 dependency_task_ids=dependency_task_ids or [],
+                task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
+                outcome_contract=normalized_outcome_contract,
                 created_at=now,
                 updated_at=now,
             )
@@ -2363,6 +2399,7 @@ class TeamAdminService:
         producer_agent_id: str,
         summary: str,
         artifact_refs: list[str] | None = None,
+        outcomes: list[dict[str, Any]] | None = None,
         state: TeamRecordState = TeamRecordState.PENDING,
         supersedes_deliverable_id: str | None = None,
         expected_revision: int | None = None,
@@ -2372,6 +2409,7 @@ class TeamAdminService:
         normalized_producer_agent_id = _required_text(producer_agent_id, "producer_agent_id")
         normalized_summary = _required_text(summary, "summary")
         normalized_supersedes_deliverable_id = _optional_text(supersedes_deliverable_id)
+        normalized_outcomes = [DeliverableOutcome.model_validate(item) for item in outcomes or []]
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
@@ -2380,6 +2418,10 @@ class TeamAdminService:
                 task=task,
                 producer_agent_id=normalized_producer_agent_id,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
+            )
+            _validate_deliverable_outcomes_against_task_contract(
+                task,
+                normalized_outcomes,
             )
             effective_deliverable_id = normalized_deliverable_id or _generated_id(
                 prefix="deliverable",
@@ -2393,6 +2435,7 @@ class TeamAdminService:
                 producer_agent_id=normalized_producer_agent_id,
                 summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
+                outcomes=normalized_outcomes,
                 state=state,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
                 carried_findings=(
@@ -2408,6 +2451,13 @@ class TeamAdminService:
             state_model.deliverables[deliverable.id] = deliverable
             if superseded_deliverable is not None:
                 superseded_deliverable.superseded_by_deliverable_id = deliverable.id
+                superseded_deliverable.supersession_reason = (
+                    "Rework deliverable submitted."
+                )
+                superseded_deliverable.superseded_at = deliverable.created_at
+                superseded_deliverable.superseded_by_actor = (
+                    f"agent:{normalized_producer_agent_id}"
+                )
             task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
             task.updated_at = utc_now()
             return state_model
@@ -2424,6 +2474,7 @@ class TeamAdminService:
         description: str = "",
         applicable_role_ids: list[str] | None = None,
         criteria: list[ReviewProfileCriterion] | None = None,
+        required_outcome_kinds: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_profile_id = _optional_text(profile_id)
@@ -2454,6 +2505,7 @@ class TeamAdminService:
                 description=description,
                 applicable_role_ids=applicable_role_ids or [],
                 criteria=criteria or [],
+                required_outcome_kinds=required_outcome_kinds or [],
                 created_at=now,
                 updated_at=now,
             )
@@ -2473,6 +2525,7 @@ class TeamAdminService:
         description: str | None = None,
         applicable_role_ids: list[str] | None = None,
         criteria: list[ReviewProfileCriterion] | None = None,
+        required_outcome_kinds: list[str] | None = None,
         archived: bool | None = None,
         project_id: str | None = None,
         set_project_id: bool = False,
@@ -2490,6 +2543,11 @@ class TeamAdminService:
                 profile.criteria = [
                     ReviewProfileCriterion.model_validate(criterion) for criterion in criteria
                 ]
+            if required_outcome_kinds is not None:
+                profile.required_outcome_kinds = _unique_text_list(
+                    required_outcome_kinds,
+                    "required_outcome_kinds",
+                )
             if archived is not None:
                 profile.archived = archived
             if set_project_id:
@@ -2870,9 +2928,22 @@ class TeamAdminService:
                 expected_team_id=reviewer.team_id,
                 project_id=task.project_id,
                 reviewer=reviewer,
+                deliverable=deliverable,
             )
             if profile_error is not None:
                 raise ValueError(profile_error)
+            if profile is not None and profile.required_outcome_kinds:
+                delivered_outcome_kinds = {
+                    outcome.kind for outcome in deliverable.outcomes
+                }
+                missing_outcome_kinds = sorted(
+                    set(profile.required_outcome_kinds) - delivered_outcome_kinds
+                )
+                if missing_outcome_kinds:
+                    raise ValueError(
+                        f"review profile {profile.id} requires deliverable outcome kinds: "
+                        + ", ".join(missing_outcome_kinds)
+                    )
             effective_review_profile_id = review_profile_id
             if profile is not None and effective_review_profile_id is None:
                 effective_review_profile_id = profile.id
@@ -3023,6 +3094,122 @@ class TeamAdminService:
             outbox_records=lambda: _team_event_outbox_records(
                 blocker_result.get("events") or []
             ),
+            expected_revision=expected_revision,
+        )
+
+    def retire_review_request(
+        self,
+        *,
+        review_request_id: str,
+        reason: str,
+        operator_actor_id: str = "operator",
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        """Retire one current non-release review attempt without changing its decision."""
+
+        normalized_id = _required_text(review_request_id, "review_request_id")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_actor = _required_text(operator_actor_id, "operator_actor_id")
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            review = _require_present(
+                state_model.review_requests, normalized_id, "review request"
+            )
+            if review.release_package_id is not None:
+                raise ValueError(
+                    "release review attempts must be recovered through release gates"
+                )
+            if review.superseded_by_review_request_id is not None:
+                raise ValueError(
+                    f"review {review.id} is already superseded by "
+                    f"{review.superseded_by_review_request_id}"
+                )
+            if review.retired_at is not None:
+                if (
+                    review.retirement_reason == normalized_reason
+                    and review.retired_by == normalized_actor
+                ):
+                    return state_model
+                raise ValueError(f"review {review.id} is already retired")
+            deliverable = _require_present(
+                state_model.deliverables, review.deliverable_id, "deliverable"
+            )
+            task = _require_present(state_model.tasks, deliverable.task_id, "task")
+            now = utc_now()
+            review.retired_at = now
+            review.retired_by = normalized_actor
+            review.retirement_reason = normalized_reason
+            resolve_active_blockers_for_source(
+                state_model,
+                source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                source_id=review.id,
+                actor_agent_id=None,
+                dispatch_id=None,
+                note=f"Review attempt retired by {normalized_actor}: {normalized_reason}",
+                now=now,
+            )
+            current_reviews = [
+                state_model.review_requests[review_id]
+                for review_id in deliverable.review_request_ids
+                if review_id in state_model.review_requests
+                and state_model.review_requests[
+                    review_id
+                ].superseded_by_review_request_id
+                is None
+                and state_model.review_requests[review_id].retired_at is None
+            ]
+            if any(
+                item.state == TeamRecordState.BLOCKED for item in current_reviews
+            ):
+                deliverable.state = TeamRecordState.BLOCKED
+                _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+            elif any(
+                item.state == TeamRecordState.REJECTED for item in current_reviews
+            ):
+                deliverable.state = TeamRecordState.REJECTED
+                _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+            elif current_reviews and all(
+                item.state == TeamRecordState.ACCEPTED for item in current_reviews
+            ):
+                if any(
+                    finding.state == "open"
+                    for finding in deliverable.carried_findings
+                ):
+                    deliverable.state = TeamRecordState.PENDING
+                    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+                else:
+                    deliverable.state = TeamRecordState.ACCEPTED
+                    task_deliverables = _active_task_deliverables(state_model, task)
+                    if all(
+                        item.state == TeamRecordState.ACCEPTED
+                        for item in task_deliverables
+                    ):
+                        if task.task_kind == TeamTaskKind.OUTCOME:
+                            task.completion = TaskCompletion(
+                                kind=TaskCompletionKind.DELIVERED,
+                                summary=(
+                                    "Accepted deliverables satisfied the task outcome contract."
+                                ),
+                                outcome_reference_ids=[
+                                    reference_id
+                                    for item in task_deliverables
+                                    for outcome in item.outcomes
+                                    for reference_id in outcome.reference_ids
+                                ],
+                            )
+                        _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
+            elif current_reviews:
+                deliverable.state = TeamRecordState.PENDING
+                _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+            else:
+                deliverable.state = TeamRecordState.PENDING
+                _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+            task.updated_at = now
+            _recalculate_project_status(state_model, task.project_id)
+            return state_model
+
+        return self._repository.update(
+            _mutate,
             expected_revision=expected_revision,
         )
 

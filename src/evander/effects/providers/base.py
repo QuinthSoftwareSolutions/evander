@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from evander.code_consultation_service import CodeConsultationServiceFactoryPort
 from evander.events.models import (
     EffectDefinitionDiscriminated,
     WorkflowNodeEnvelope,
@@ -69,6 +70,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     git_branch_promoter: GitBranchPromoter | None = None
     git_branch_pusher: GitBranchPusher | None = None
     pull_request_creator: PullRequestCreator | None = None
+    code_consultation_service_factory: CodeConsultationServiceFactoryPort | None = None
     admin_service: Any | None = None
 
     def __post_init__(self) -> None:

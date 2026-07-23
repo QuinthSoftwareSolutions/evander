@@ -12,6 +12,7 @@ from .types import (
 )
 from ...models import (
     AgentActionRecord,
+    TeamInboxItemState,
     TeamState,
     _unique_text_list,
 )
@@ -144,12 +145,19 @@ class TeamNoteCommandService(TeamCommandExecutor):
                     message="inbox_item_ids must contain at least one inbox item id",
                     correction_context={"field": "inbox_item_ids"},
                 )
+            pending_ids = [
+                inbox_item_id
+                for inbox_item_id in normalized_inbox_ids
+                if state.inbox[inbox_item_id].state == TeamInboxItemState.PENDING
+            ]
             return TeamCommandApplyResult(
                 response_payload={
-                    "handled_inbox_item_ids": list(normalized_inbox_ids),
-                    "progress_made": True,
+                    "handled_inbox_item_ids": pending_ids,
+                    "progress_made": bool(pending_ids),
                 },
-                created_domain_ids=list(normalized_inbox_ids),
+                created_domain_ids=pending_ids,
+                applied=bool(pending_ids),
+                state_changed=bool(pending_ids),
             )
 
         return self._execute_team_command(

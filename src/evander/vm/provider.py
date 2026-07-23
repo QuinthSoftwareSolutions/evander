@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
+from evander.host_directories.grants import host_directory_tool_names_for_grants
 from evander.models import SessionManifest, VmActionResult, VmSummary
 from evander.repositories.session_manifests import (
     SessionManifestRepository,
@@ -865,6 +866,7 @@ def _libvirt_create_vm(
     ttl_hours: int | None = None,
     allowed_tools: list[str | Any] | None = None,
     connector_grants: dict[str, list[str]] | None = None,
+    host_directory_grants: dict[str, list[str]] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     allowed_contact_ids: list[str] | None = None,
@@ -939,6 +941,16 @@ def _libvirt_create_vm(
             policy_update["connector_grants"] = connector_grants
         elif existing_session.directory_path != normalized_directory_path:
             policy_update["connector_grants"] = {}
+        if host_directory_grants is not None:
+            policy_update["host_directory_grants"] = host_directory_grants
+            policy_update["allowed_tools"] = session_helpers.normalize_allowed_tools(
+                [
+                    *existing_session.allowed_tools,
+                    *host_directory_tool_names_for_grants(host_directory_grants),
+                ]
+            )
+        elif existing_session.directory_path != normalized_directory_path:
+            policy_update["host_directory_grants"] = {}
         if tool_argument_policies is not None:
             policy_update["tool_argument_policies"] = (
                 session_helpers.session_tool_argument_policies_from_payload(
@@ -970,6 +982,7 @@ def _libvirt_create_vm(
             ttl_seconds=ttl_seconds,
             extra_allowed_tools=allowed_tools,
             connector_grants=connector_grants,
+            host_directory_grants=host_directory_grants,
             tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
             allowed_contact_ids=allowed_contact_ids,

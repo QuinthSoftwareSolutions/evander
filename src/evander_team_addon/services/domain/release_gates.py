@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from ...models import (
-    AgentInboxItem,
     GitPromotionRecord,
+    PersistentAgent,
+    Project,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
     ReleaseCandidateReviewEvidence,
@@ -14,16 +16,15 @@ from ...models import (
     ReleaseVerificationCommandResult,
     ReleaseVerificationRun,
     ReviewRequest,
+    ReviewProfile,
     TeamBlockerSourceKind,
-    TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
 )
 from .common import _append_unique, _required_text, utc_now
 from .blockers import open_release_blocker, resolve_active_blockers_for_source
-from .wake import _append_agent_wake_requested_event_for_inbox_item
-from .work_due import _mark_agent_work_due
+from .review_handoff import queue_actionable_inbox_item
 
 
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
@@ -44,6 +45,90 @@ def _release_review_scope_error(
     if profile.project_id not in {None, project.id}:
         return f"release review profile {profile.id} does not apply to project {project.id}"
     return None
+
+
+def _create_release_review(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    reviewer: PersistentAgent,
+    profile: ReviewProfile,
+    candidate_commit_sha: str,
+    instructions: str,
+    result: dict[str, Any],
+    now: datetime,
+    supersedes: ReviewRequest | None = None,
+    retry_reason: str | None = None,
+    retry_requested_by: str | None = None,
+) -> ReviewRequest:
+    """Create the durable review record shared by initial and retry handoffs."""
+
+    review = ReviewRequest(
+        id=f"release-review-{release.id}-{uuid4().hex}",
+        release_package_id=release.id,
+        candidate_commit_sha=candidate_commit_sha,
+        reviewer_agent_id=reviewer.id,
+        review_profile_id=profile.id,
+        criteria_snapshot=[criterion.model_copy(deep=True) for criterion in profile.criteria],
+        reviewed_commit_sha=candidate_commit_sha,
+        state=TeamRecordState.PENDING,
+        supersedes_review_request_id=supersedes.id if supersedes is not None else None,
+        retry_reason=retry_reason,
+        retry_requested_by=retry_requested_by,
+        instructions=instructions,
+        created_at=now,
+    )
+    if supersedes is not None:
+        supersedes.superseded_by_review_request_id = review.id
+    state.review_requests[review.id] = review
+    release.review_request_ids = _append_unique(release.review_request_ids, review.id)
+    result.setdefault("created_review_request_ids", []).append(review.id)
+    return review
+
+
+def _queue_release_review_handoff(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    project: Project,
+    reviewer: PersistentAgent,
+    profile: ReviewProfile,
+    review: ReviewRequest,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Deliver a release review through the common review inbox lifecycle."""
+
+    payload: dict[str, Any] = {
+        "kind": "release_review_request",
+        "review_request_id": review.id,
+        "release_package_id": release.id,
+        "candidate_commit_sha": review.candidate_commit_sha,
+        "release_manifest": (
+            release.manifest.model_dump(mode="json") if release.manifest is not None else None
+        ),
+        "review_profile": {
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "criteria": [criterion.model_dump(mode="json") for criterion in profile.criteria],
+        },
+    }
+    if review.supersedes_review_request_id is not None:
+        payload["supersedes_review_request_id"] = review.supersedes_review_request_id
+    if review.retry_reason is not None:
+        payload["retry_reason"] = review.retry_reason
+    if review.retry_requested_by is not None:
+        payload["retry_requested_by"] = review.retry_requested_by
+    queue_actionable_inbox_item(
+        state,
+        recipient_agent_id=reviewer.id,
+        sender_agent_id=project.lead_agent_id,
+        priority=TeamInboxPriority.HIGH,
+        payload=payload,
+        result=result,
+        now=now,
+    )
 
 
 def begin_release_gates(
@@ -314,63 +399,29 @@ def create_release_reviews_or_approve(
                 result=result,
             )
             return
-        review_id = f"release-review-{release.id}-{uuid4().hex}"
-        review = ReviewRequest(
-            id=review_id,
-            release_package_id=release.id,
+        now = utc_now()
+        review = _create_release_review(
+            state,
+            release=release,
+            reviewer=reviewer,
+            profile=profile,
             candidate_commit_sha=candidate,
-            reviewer_agent_id=reviewer.id,
-            review_profile_id=profile.id,
-            criteria_snapshot=[criterion.model_copy(deep=True) for criterion in profile.criteria],
-            reviewed_commit_sha=candidate,
-            state=TeamRecordState.PENDING,
             instructions=(
                 f"Review release candidate {candidate} for release package {release.id}. "
                 "Decide only the pinned candidate commit."
             ),
-            created_at=utc_now(),
-        )
-        state.review_requests[review.id] = review
-        release.review_request_ids = _append_unique(release.review_request_ids, review.id)
-        inbox_id = f"inbox-{uuid4().hex}"
-        item = AgentInboxItem(
-            id=inbox_id,
-            recipient_agent_id=reviewer.id,
-            sender_agent_id=project.lead_agent_id,
-            item_type=TeamInboxItemType.STATUS_REQUEST,
-            response_requested=True,
-            priority=TeamInboxPriority.HIGH,
-            payload={
-                "kind": "release_review_request",
-                "review_request_id": review.id,
-                "release_package_id": release.id,
-                "candidate_commit_sha": candidate,
-                "release_manifest": (
-                    release.manifest.model_dump(mode="json")
-                    if release.manifest is not None
-                    else None
-                ),
-                "review_profile": {
-                    "id": profile.id,
-                    "name": profile.name,
-                    "description": profile.description,
-                    "criteria": [
-                        criterion.model_dump(mode="json") for criterion in profile.criteria
-                    ],
-                },
-            },
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        )
-        state.inbox[item.id] = item
-        result.setdefault("created_inbox_item_ids", []).append(item.id)
-        result.setdefault("created_review_request_ids", []).append(review.id)
-        _mark_agent_work_due(state, agent_id=reviewer.id, now=utc_now())
-        _append_agent_wake_requested_event_for_inbox_item(
-            state,
-            item=item,
             result=result,
-            now=utc_now(),
+            now=now,
+        )
+        _queue_release_review_handoff(
+            state,
+            release=release,
+            project=project,
+            reviewer=reviewer,
+            profile=profile,
+            review=review,
+            result=result,
+            now=now,
         )
 
     if _current_release_reviews(state, release):
@@ -530,26 +581,23 @@ def retry_release_gate(
     )
     if scope_error is not None:
         raise ValueError(scope_error)
-    review = ReviewRequest(
-        id=f"release-review-{release.id}-{uuid4().hex}",
-        release_package_id=release.id,
+    now = utc_now()
+    review = _create_release_review(
+        state,
+        release=release,
+        reviewer=reviewer,
+        profile=profile,
         candidate_commit_sha=candidate,
-        reviewer_agent_id=current.reviewer_agent_id,
-        review_profile_id=current.review_profile_id,
-        criteria_snapshot=[criterion.model_copy(deep=True) for criterion in profile.criteria],
-        reviewed_commit_sha=candidate,
-        supersedes_review_request_id=current.id,
+        supersedes=current,
         retry_reason=normalized_reason,
         retry_requested_by=normalized_requested_by,
         instructions=(
             f"Retry blocked review {current.id} for unchanged release candidate {candidate}. "
             f"Retry reason: {normalized_reason}"
         ),
-        created_at=utc_now(),
+        result=result,
+        now=now,
     )
-    current.superseded_by_review_request_id = review.id
-    state.review_requests[review.id] = review
-    release.review_request_ids = _append_unique(release.review_request_ids, review.id)
     _recompute_release_state_after_gate_retry(state, release)
     resolve_active_blockers_for_source(
         state,
@@ -571,48 +619,20 @@ def retry_release_gate(
         reference_ids=[review.id],
         result=result,
     )
-    item = AgentInboxItem(
-        id=f"inbox-{uuid4().hex}",
-        recipient_agent_id=reviewer.id,
-        sender_agent_id=project.lead_agent_id,
-        item_type=TeamInboxItemType.STATUS_REQUEST,
-        response_requested=True,
-        priority=TeamInboxPriority.HIGH,
-        payload={
-            "kind": "release_review_request",
-            "review_request_id": review.id,
-            "supersedes_review_request_id": current.id,
-            "release_package_id": release.id,
-            "candidate_commit_sha": candidate,
-            "retry_reason": normalized_reason,
-            "retry_requested_by": normalized_requested_by,
-            "release_manifest": (
-                release.manifest.model_dump(mode="json") if release.manifest is not None else None
-            ),
-            "review_profile": {
-                "id": profile.id,
-                "name": profile.name,
-                "description": profile.description,
-                "criteria": [criterion.model_dump(mode="json") for criterion in profile.criteria],
-            },
-        },
-        created_at=utc_now(),
-        updated_at=utc_now(),
+    _queue_release_review_handoff(
+        state,
+        release=release,
+        project=project,
+        reviewer=reviewer,
+        profile=profile,
+        review=review,
+        result=result,
+        now=now,
     )
-    state.inbox[item.id] = item
-    result.setdefault("created_inbox_item_ids", []).append(item.id)
-    result.setdefault("created_review_request_ids", []).append(review.id)
     result["retried_gate_id"] = current.id
     result["replacement_gate_id"] = review.id
     result["retry_reason"] = normalized_reason
     result["retry_requested_by"] = normalized_requested_by
-    _mark_agent_work_due(state, agent_id=reviewer.id, now=utc_now())
-    _append_agent_wake_requested_event_for_inbox_item(
-        state,
-        item=item,
-        result=result,
-        now=utc_now(),
-    )
 
 
 def _candidate_manifest(

@@ -15,11 +15,17 @@ from evander.approval_notification_targets import (
 )
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.connectors.models import normalize_connector_grants
+from evander.host_directories.models import normalize_host_directory_grants
+from evander.email.grants import (
+    email_mailbox_grant_policy_update,
+    normalize_email_mailbox_grants,
+)
 from evander.models import (
     ApprovalGrantSettings,
     EmailMailboxAccess,
     EmailMailboxGrant,
     McpToolName,
+    SessionHttpTargetsMetadata,
     SessionManifest,
     ToolName,
     normalize_approval_tool_settings,
@@ -277,26 +283,6 @@ def normalize_plain_string_list(value: object, *, field_name: str) -> list[str]:
     return normalized
 
 
-def normalize_email_mailbox_grants(value: object) -> list[EmailMailboxGrant] | None:
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        raise ValueError("email_mailbox_grants must be a JSON array or null")
-    try:
-        grants = [EmailMailboxGrant.model_validate(item) for item in value]
-    except ValidationError as exc:
-        raise ValueError(f"invalid email_mailbox_grants: {exc}") from exc
-    mailbox_ids = [grant.mailbox_id for grant in grants]
-    duplicates = sorted(
-        mailbox_id for mailbox_id in set(mailbox_ids) if mailbox_ids.count(mailbox_id) > 1
-    )
-    if duplicates:
-        raise ValueError(
-            "email_mailbox_grants contains duplicate mailbox IDs: " + ", ".join(duplicates)
-        )
-    return grants
-
-
 def normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
     return normalize_teams_channel_or_target_refs(
         normalize_plain_string_list(value, field_name=field_name)
@@ -320,6 +306,7 @@ def build_issue_session_manifest(
     ttl_seconds: int | None = None,
     extra_allowed_tools: list[str | ToolName] | None = None,
     connector_grants: dict[str, list[str]] | None = None,
+    host_directory_grants: dict[str, list[str]] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     allowed_contact_ids: list[str] | None = None,
@@ -415,6 +402,22 @@ def build_issue_session_manifest(
             seen.add(tool_value)
             resolved_allowed_tools.append(tool)
 
+    resolved_host_directory_grants = normalize_host_directory_grants(
+        host_directory_grants or {}
+    )
+    host_directory_tool_by_capability = {
+        "list": ToolName.HOST_DIRECTORY_LIST,
+        "import": ToolName.HOST_DIRECTORY_IMPORT,
+        "delete": ToolName.HOST_DIRECTORY_DELETE,
+    }
+    seen_tool_values = {tool_name_value(tool) for tool in resolved_allowed_tools}
+    for capabilities in resolved_host_directory_grants.values():
+        for capability in capabilities:
+            tool = host_directory_tool_by_capability[capability]
+            if tool.value not in seen_tool_values:
+                seen_tool_values.add(tool.value)
+                resolved_allowed_tools.append(tool)
+
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
@@ -423,6 +426,7 @@ def build_issue_session_manifest(
             [tool_name_value(tool) for tool in resolved_allowed_tools]
         ),
         connector_grants=connector_grants or {},
+        host_directory_grants=resolved_host_directory_grants,
         approval_required_tools=list(policy.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=normalize_allowed_script_names(allowed_script_names or []),
@@ -600,6 +604,7 @@ def session_policy_update_from_payload(
         "approval_notification_target_ids",
         "tool_argument_policies",
         "connector_grants",
+        "host_directory_grants",
         "allowed_script_names",
         "allowed_contact_ids",
         "communication_target_ids",
@@ -610,6 +615,7 @@ def session_policy_update_from_payload(
         "teams_channels",
         "teams_chat_allowlist",
         "teams_user_allowlist",
+        "http_targets",
         "metadata",
         *SESSION_BOOL_POLICY_FIELDS,
         *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
@@ -632,15 +638,7 @@ def session_policy_update_from_payload(
             ]
     if "email_mailbox_grants" in payload:
         grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
-        update["email_mailbox_grants"] = grants
-        if grants is not None:
-            update["email_mailbox_allowlist"] = [grant.mailbox_id for grant in grants]
-            update["email_folder_allowlist_by_mailbox"] = {
-                grant.mailbox_id: list(grant.folders) for grant in grants
-            }
-            update["email_folder_allowlist"] = sorted(
-                {folder for grant in grants for folder in grant.folders}
-            )
+        update.update(email_mailbox_grant_policy_update(grants))
     if "allowed_script_names" in payload:
         update["allowed_script_names"] = normalize_allowed_script_names(
             normalize_plain_string_list(
@@ -685,6 +683,10 @@ def session_policy_update_from_payload(
         )
     if "connector_grants" in payload:
         update["connector_grants"] = normalize_connector_grants(payload.get("connector_grants"))
+    if "host_directory_grants" in payload:
+        update["host_directory_grants"] = normalize_host_directory_grants(
+            payload.get("host_directory_grants")
+        )
 
     discord_field = (
         "discord_channel_allowlist"
@@ -735,9 +737,29 @@ def session_policy_update_from_payload(
         metadata = payload.get("metadata")
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be a JSON object")
-        update["metadata"] = dict(metadata)
+        normalized_metadata = dict(metadata)
+        if "http_targets" in normalized_metadata:
+            normalized_metadata["http_targets"] = normalize_http_targets_metadata(
+                normalized_metadata["http_targets"]
+            )
+        elif "http_targets" in session.metadata:
+            normalized_metadata["http_targets"] = session.metadata["http_targets"]
+        update["metadata"] = normalized_metadata
+
+    if "http_targets" in payload:
+        metadata = dict(update.get("metadata", session.metadata))
+        metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
+        update["metadata"] = metadata
 
     return update
+
+
+def normalize_http_targets_metadata(value: object) -> dict[str, Any]:
+    try:
+        normalized = SessionHttpTargetsMetadata.model_validate(value)
+    except ValidationError as exc:
+        raise ValueError(f"http_targets is invalid: {exc}") from exc
+    return normalized.model_dump(mode="json")
 
 
 def wake_eligible_discord_channel_ids(

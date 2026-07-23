@@ -279,48 +279,37 @@ class VmAgentThreadLogMixin:
 
         normalized_query = str(query or "").strip()
         sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        if not normalized_query and offset == 0:
-            page = _log_page_from_end(
-                self._container_execution_log_chunk(
-                    worker_backend,
-                    sorted_records[-1],
-                    lines=0,
-                    mode="execution",
-                ),
-                limit=limit,
-                offset=0,
-            )
-            if len(sorted_records) > 1:
-                page["has_more_before"] = True
-                page["total_lines"] = None
-                page["start_line"] = None
-                page["end_line"] = None
-            return page
 
         chunks: list[str] = []
         truncated_before = False
+        # A short auxiliary execution, such as an artifact import, must not hide the
+        # preceding agent transcript. Read backward until the requested window is full.
         target_lines = max(1, limit) + max(0, offset) + 1
         line_count = 0
-        records_to_read = (
-            list(enumerate(sorted_records))
-            if normalized_query
-            else list(reversed(list(enumerate(sorted_records))))
-        )
-        for _original_index, execution in records_to_read:
-            chunk = self._container_execution_log_chunk(
-                worker_backend,
-                execution,
-                lines=0,
-                mode="execution",
-            )
-            if normalized_query:
+        if normalized_query:
+            for execution in sorted_records:
+                chunk = self._container_execution_log_chunk(
+                    worker_backend,
+                    execution,
+                    lines=0,
+                    mode="execution",
+                )
                 chunks.append(chunk)
-                continue
-            chunks.insert(0, chunk)
-            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-            if line_count >= target_lines:
-                truncated_before = _original_index > 0
-                break
+        else:
+            for _original_index, execution in reversed(list(enumerate(sorted_records))):
+                separator_lines = 1 if chunks else 0
+                body_lines = max(1, target_lines - line_count - separator_lines - 1)
+                chunk, execution_has_more = self._container_execution_log_page_chunk(
+                    worker_backend,
+                    execution,
+                    body_lines=body_lines,
+                    mode="execution",
+                )
+                chunks.insert(0, chunk)
+                line_count += len(chunk.splitlines()) + separator_lines
+                if execution_has_more or line_count >= target_lines:
+                    truncated_before = execution_has_more or _original_index > 0
+                    break
 
         page = _log_page_from_end(
             self._join_container_log_chunks(chunks),

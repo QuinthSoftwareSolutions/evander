@@ -106,7 +106,7 @@ or environment scope.
 5. Empty non-root directories can be deleted with the delete button when privileges are unlocked.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
-Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Connectors, Configuration, Users,
+Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Connectors, Host Directories, Configuration, Users,
 Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
@@ -201,10 +201,13 @@ Common tasks:
 6. Unlock privileges before starting any mutation.
 7. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
    details, allowed tools/scripts, communication targets, mailbox-account access, bootstrap
-   options, and optional Codex skills. Container-worker Codex agents can also choose **Metered
-   API** or **ChatGPT subscription** as their usage source.
+   options, optional HTTP targets, Host Directory grants, and optional Codex skills. Each HTTP target gives the session a
+   named HTTP(S) base URL through the host relay; it does not enable general internet access or
+   supply target credentials. Container-worker Codex agents can also choose **Metered API** or
+   **ChatGPT subscription** as their usage source.
 8. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
-   source applies on the next turn without replacing the session or its thread history.
+   source applies on the next turn without replacing the session or its thread history. HTTP
+   targets and Host Directory capabilities can also be added, changed, or removed here.
 9. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
    worker-global account, start or cancel device-code sign-in, and sign out. These account actions
    require both root ownership and an unlocked privileged session because every subscription-mode
@@ -218,7 +221,7 @@ Common tasks:
 13. Use lifecycle actions only after confirming the target and directory are correct.
 
 The same independent sidebar scrolling applies to the other card-list/detail pages, including
-Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, users and groups, MCP Tools,
+Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, Host Directories, users and groups, MCP Tools,
 Tool Visibility, and report navigation. Their existing card contents and density are unchanged.
 
 Notes:
@@ -237,6 +240,10 @@ Notes:
   Use **Threads** when you need the Codex conversation grouped by thread ID. The thread view is
   available only for container-worker sessions; VM-backed agents continue to show their normal
   agent output.
+- The latest **Executions** window fills from preceding executions when a newer auxiliary run,
+  such as an artifact import, is too short to fill the view. **Load older** continues backward
+  across that combined execution history. Refresh and paging use bounded worker log-page reads;
+  they do not eagerly transfer every historical execution log.
 - Some actions are unavailable until privileged operations are unlocked.
 
 ## Approvals
@@ -415,7 +422,10 @@ Common tasks:
 5. Unlock privileges before editing.
 6. Use the extend action to renew expiry.
 7. Use revoke to deny further guest access before expiry.
-8. Use delete only when you intend to remove saved local session state.
+8. Use delete only when you intend to remove saved local session state. Deletion also revokes the
+   session's managed-Git bindings and removes its legacy PR-routing entries plus the matching
+   feedback cursors/items, so a later session cannot inherit historical PR state by reusing the
+   same ID.
 9. Edit the model field when a session needs a different model for future resume/prompt work.
 10. Toggle allowed tools and **Require approval** for tools that should queue human decisions.
     Tools are grouped by domain; Team Add-on tools are distinct from Microsoft Teams application
@@ -431,14 +441,21 @@ Common tasks:
 14. For a legacy session whose canonical grants are still null, review its inherited/raw
     allowlists and use **Convert to managed grants** deliberately. Missing or null canonical fields
     preserve legacy behavior; an explicit empty list means no access.
-15. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
+15. Configure **HTTP targets** as alias/base-URL pairs when the agent needs REST or browser access
+    to an external application. The UI shows the relay URL template, preserves workflow-owned
+    target metadata, and converts legacy APP environment targets when edited. Removing every row
+    stores an explicit empty target set.
+16. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
-16. Edit connector grants as a connector-to-operation map. A grant exposes only the named
+17. Edit connector grants as a connector-to-operation map. A grant exposes only the named
     operations; it does not expose connector endpoints or authentication material.
-17. Save settings.
-18. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+18. Edit **Host Directory access** with the structured resource/capability selector. Select only
+    `list`, `import`, or `delete` where needed. Selecting a capability enables its dedicated MCP
+    tool, while the absolute host root remains hidden from the session.
+19. Save settings.
+20. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
-19. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+21. Review recent scheduled wake ledger entries for the selected session, filter by delivery
     status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
@@ -490,6 +507,43 @@ Common tasks:
 Connector health checks and agent invocations use the same validation, host authentication,
 response limits, and audit path. Health checks cannot select arbitrary methods, paths, headers, or
 credentials.
+
+## Host Directories
+
+The Host Directories page manages dedicated, directory-scoped filesystem resources. This is the
+supported surface when agents need relative tree navigation, bounded file/folder import, or
+recoverable deletion inside one approved host directory. It does not create a mailbox, connector,
+guest mount, or arbitrary host file browser.
+
+Common tasks:
+
+1. Choose the owning Evander directory and open **Host Directories**.
+2. Select an inherited resource or enter a lowercase resource ID and add a new one.
+3. Unlock privileged operations, then set its display name, description, absolute host root,
+   agent capabilities, import/watch limits, delete-approval behavior, and enabled state.
+4. Save the revision-checked local overlay. If the revision is stale, refresh and reapply the
+   intended fields.
+5. Run **Check health**. Missing roots, symlink roots, unsafe filesystem boundaries, and an
+   unwritable delete quarantine fail closed; health details remain operator-only. A delete-enabled
+   check creates and immediately removes a private quarantine probe.
+6. Grant the resource's capabilities from Agent creation, Agent policy, or Sessions policy.
+   Granting capabilities to an existing libvirt session also enables the matching dedicated Host
+   Directory tools while preserving its other allowed tools.
+7. Review **Quarantine recovery** after agent deletes. Restore only when the original relative
+   destination is absent.
+8. Use **Purge permanently** only after confirming the recovery ID and path. V1 never purges
+   quarantine on a timer.
+
+An incomplete recovery record is shown explicitly. Missing-payload or corrupt-metadata records
+cannot be restored, but the owning directory operator can purge their retained control record.
+
+Agents receive resource IDs, relative paths, metadata, and opaque revisions. They never receive the
+absolute root. `delete` requires an exact listed revision and, by default, a one-use exact-payload
+approval; deleting a non-empty directory also requires the explicit recursive flag.
+
+Workflow authors can select `trigger:host-directory:file-added`. It baselines existing files,
+waits for new regular files to settle, supports relative subpaths and include/exclude globs, and
+runs in the existing trigger orchestrator. Directories and file updates do not fire it.
 
 ## Tool Calls
 
@@ -707,14 +761,19 @@ The Workers tab manages host background worker services and worker-global settin
 Common tasks:
 
 1. Open **Workers**.
-2. Select a worker service from the left list.
-3. Inspect active state, sub-state, result, unit name, main PID, global settings, and recent
+2. Use **Find worker** to search names, IDs, units, states, descriptions, or diagnostic detail, and
+   use **Status** to isolate running, stopped, or failed services.
+3. Browse the compact, independently scrollable worker list. Each row shows only the worker name
+   and service status; hover or focus it for unit, state, result, unit-file, PID, and detail.
+4. Select a worker service from the left list.
+5. Inspect active state, sub-state, result, unit name, unit-file state, main PID, diagnostic detail,
+   global settings, and recent
    journal tail.
-4. Unlock privileges before starting, stopping, or saving worker settings.
-5. Use the start/stop toolbar action to change service state.
-6. Edit fields in **Global settings** when the worker exposes an editable schema.
-7. Click the save icon to write worker-global settings back to the host config file.
-8. Use **Reload log** to refresh the current journal tail.
+6. Unlock privileges before starting, stopping, or saving worker settings.
+7. Use the start/stop toolbar action to change service state.
+8. Edit fields in **Global settings** when the worker exposes an editable schema.
+9. Click the save icon to write worker-global settings back to the host config file.
+10. Use **Reload log** to refresh the current journal tail.
 
 If a worker configuration save reports a revision conflict, reload the worker settings first. The
 draft remains visible so you can reapply intentional changes after reviewing the newer server copy.

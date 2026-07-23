@@ -367,6 +367,17 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   Bokio association state from Evander's durable local evidence store; they do not
   query Bokio's remote uploads. `bokio_stage_evidence_for_workspace` can make
   previously retained evidence available to a new session as an artifact.
+- `bokio_check_journal_duplicates` follows Bokio's reported `totalItems` through
+  every required journal-entry page and matches a non-empty combination of
+  `date`, `account`, `amount`, `title`, `invoice_number`, and `receipt_number`.
+  It fails closed if pagination ends before that total is reached. The result
+  includes the number of entries inspected, matching entry IDs, a source
+  fingerprint, and a durable `bokio-duplicate-check:...` evidence reference.
+  Equivalent checks reuse evidence for 15 minutes by default, but the cache key
+  includes the configured company ID and API base URL so evidence cannot cross
+  Bokio companies or endpoints; set `refresh=true` to force a new scan. The
+  durable records live in
+  `runtime/addons/bokio-addon/duplicate-checks/duplicate-checks.db`.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
   creates an entry and attaches one or more evidence records with a durable
@@ -460,9 +471,9 @@ integration index.
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
 add-on API under `/api/addons/team-addon/`; it does not add team-specific views
-or models to Evander core Admin Web pages. The current UI has fourteen top-level
+or models to Evander core Admin Web pages. The current UI has fifteen top-level
 views: **Workspace**, **Operations**, **Delivery**, **Memory**, **Projects**,
-**Task board**, **Cases**, **Teams**, **Chat**, **Mail**, **Governance**,
+**Task board**, **Cases**, **Teams**, **Chat**, **Mail**, **Activity**, **Governance**,
 **Planning**, **Timeline**, and **Org chart**. Review requests, review profiles,
 deliverables, release packages, and Git promotion state are grouped inside
 **Delivery**. Team setup, persistent agents, roles, and stand-down controls are
@@ -534,6 +545,16 @@ one persistent agent, and use Mail to inspect the sent and received projections
 over Team's single durable inbox collection, including handling state and
 message context. `team_chats.read_all` applies only to other operators' Chat
 histories; it does not grant broader Agent Mail access.
+
+The separate Activity view is a redacted operational tail over Team's durable
+dispatch-activity ledger. It shows dispatch start/finish and Team tool
+success/failure events without tool arguments, tool results, session IDs, or
+model reasoning. Operators can filter it by team, agent, dispatch, status, tool,
+or search text. The same data is available from
+`GET /api/addons/team-addon/dispatch-events` and
+`evander-cli team dispatch-tail [--follow] [--json]`. Activity rows are retained
+for 30 days; Mail remains the correspondence history and is not merged into this
+operational stream.
 
 ### Team Memory
 
@@ -934,8 +955,11 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_revoke_stand_down`
 - `team_submit_deliverable`
 - `team_submit_deliverable_for_review`
+- `team_import_artifact`
 - `team_request_review`
 - `team_decide_review`
+- `team_retry_review`
+- `team_link_deliverable_replacement`
 - `team_publish_review_branch`
 - `team_update_feature_branch`
 - `team_request_release`
@@ -1005,6 +1029,21 @@ Team mutation. Paths are checked for safety, publication is replay-idempotent,
 and Team state stores the resulting stable artifact references. If publication
 succeeds but the final mutation fails, operators should treat the published
 artifact as an orphan until it is linked by a replay or cleaned up intentionally.
+`team_submit_deliverable` is a superior-acceptance handoff: it requires the
+producer to have a direct superior, sends that superior a deliverable notice,
+and exposes `waiting_reason: superior_acceptance`. It does not create formal
+review work. Use `team_submit_deliverable_for_review` or `team_request_review`
+when an assigned reviewer and review policy must decide the result. A top-level
+agent with no direct superior must use formal review for a deliverable, or use
+`team_update_task state=finished` for support/coordination work that produces no
+reviewable result.
+
+For ordinary task, status-request, question, or progress-report handoffs, the
+recipient can pass an `artifact-space:` ref to `team_import_artifact`. The tool
+checks that artifact space's read grant for the calling `team-agent:<id>`, selects
+the requested latest artifact version (`bundle` by default), and imports it into
+the caller's own `/artifacts/team-artifact-imports/<artifact>/<ref-version>`
+path. The caller cannot select another session or a host destination path.
 Reviewer wakes automatically import review-request artifact refs into
 `/artifacts/team-review-inputs/<review>/<deliverable>/<artifact>/<ref-version>`
 and surface successful imports or import errors in the Team context JSON.
@@ -1111,11 +1150,13 @@ and the same cascade backs both the `team_decide_review` MCP tool and the
 `POST /review-requests/{id}/decision` Admin API endpoint:
 
 - **accepted** — the review is accepted. The deliverable becomes accepted only
-  when **all** of its review requests are accepted. The task becomes accepted
-  only when every deliverable on that task is accepted (multi-review and
-  multi-deliverable tasks are held back until the last one lands).
-- **rejected** — the review and deliverable are rejected and the task is set to
-  `blocked`.
+  when **all current, non-retired** review requests are accepted and no carried
+  finding remains open. The task becomes accepted only when every current
+  deliverable on that task is accepted (multi-review and multi-deliverable tasks
+  are held back until the last one lands).
+- **rejected** — the review and deliverable are rejected, findings are preserved,
+  the task returns to `in_progress`, and the owner receives an actionable rework
+  notice.
 - **blocked** — the review, deliverable, and task are all set to `blocked`.
 
 Every decision stamps `decision_at` and triggers
@@ -1147,6 +1188,44 @@ and populated with criteria rows. Review requests can attach a profile and
 instructions; review decisions can then record per-criterion outcomes. Archived
 profiles remain visible for history but cannot be assigned to new review
 requests through either Team MCP tools or the Admin API.
+
+Tasks that must produce an external or durable result can use
+`task_kind: outcome` and an `outcome_contract`. The contract names required
+deliverable outcome kinds, chooses `all` or `any` matching, can forbid outcome
+kinds, and may explicitly allow an evidence-backed no-op. Deliverables carry
+structured outcome kinds, durable reference IDs, and evidence references. A
+report-only deliverable cannot satisfy an outcome task, and a review profile can
+require specific outcome kinds before review is requested or accepted. Ordinary
+coordination tasks remain `task_kind: support` and finish without inventing a
+deliverable. When several profiles apply to the same reviewer role, their
+required outcome kinds also select the implicit profile; callers still pass
+`review_profile_id` when more than one matching profile remains.
+
+Every outcome submitted for an outcome task must carry durable `reference_ids`;
+evidence-only completion belongs on the explicit `evidenced_noop` task
+completion path and is accepted only when the contract allows it. Finishing an
+outcome task with `delivered` completion must point to outcomes on accepted,
+current deliverables that satisfy the contract. A task cannot be finished while
+an active deliverable, review, or blocker is blocked.
+
+Review decisions are immutable attempts. A blocked non-release review records a
+`block_kind` and can be retried with `team_retry_review`; the successor is linked
+to the preserved attempt and becomes the only current review. A blocked or
+rejected deliverable can be replaced by a normal same-task rework submission, or
+a project lead/manager can explicitly link an accepted cross-task replacement
+with `team_link_deliverable_replacement`. An operator can retire one erroneous
+current non-release review through
+`POST /api/addons/team-addon/review-requests/{id}/retire`. Migrations never infer
+or repair these relationships automatically, so historical blocked records stay
+blocked until an explicit retry, replacement, retirement, or blocker resolution.
+Retirement removes the erroneous attempt from the current review set but does
+not erase it or accept a deliverable that still has open carried findings.
+
+Terminal commands reject a stale dispatch snapshot when a newer high-priority
+inbox item arrived after the agent woke. The agent must read the item and include
+its ID in `handled_inbox_item_ids` in the same command. Re-sending already handled
+IDs and resolving an already-resolved blocker with compatible evidence are
+successful no-ops, with `applied: false` and no Team-state revision bump.
 
 ### Deterministic Git Branch Naming
 

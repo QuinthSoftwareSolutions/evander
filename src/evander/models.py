@@ -159,6 +159,9 @@ class ToolName(str, Enum):
     COPILOT_HOST_AUTH = "copilot_host_auth"
     LIST_CONNECTORS = "list_connectors"
     CALL_CONNECTOR = "call_connector"
+    HOST_DIRECTORY_LIST = "host_directory_list"
+    HOST_DIRECTORY_IMPORT = "host_directory_import"
+    HOST_DIRECTORY_DELETE = "host_directory_delete"
 
 
 McpToolName = ToolName | str
@@ -583,6 +586,7 @@ class SessionManifest(BaseModel):
     directory_path: str = "root"
     allowed_tools: list[McpToolName]
     connector_grants: dict[str, list[str]] = Field(default_factory=dict)
+    host_directory_grants: dict[str, list[str]] = Field(default_factory=dict)
     approval_required_tools: list[McpToolName] = Field(default_factory=list)
     approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
@@ -659,6 +663,13 @@ class SessionManifest(BaseModel):
         from evander.connectors.models import normalize_connector_grants
 
         return normalize_connector_grants(value)
+
+    @field_validator("host_directory_grants", mode="before")
+    @classmethod
+    def normalize_host_directory_grants_field(cls, value: object) -> dict[str, list[str]]:
+        from evander.host_directories.models import normalize_host_directory_grants
+
+        return normalize_host_directory_grants(value)
 
     @field_validator("approval_tool_settings", mode="before")
     @classmethod

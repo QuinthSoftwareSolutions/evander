@@ -38,3 +38,13 @@ test("workers screen uses structured editors for string lists and json fields", 
     /field\.kind === "multiline_text"\s*\|\|\s*field\.kind === "string_list"\s*\|\|\s*field\.kind === "json"/,
   );
 });
+
+test("workers screen exposes focused worker navigation without list-card metadata", () => {
+  assert.match(workers, /Find worker/);
+  assert.match(workers, /WorkerStatusFilter/);
+  assert.match(workers, /workerHoverSummary/);
+  assert.match(workers, /className="feature-list worker-list"/);
+  assert.match(workers, /unit_file_state/);
+  assert.match(workers, /selectedSummary\.detail/);
+  assert.doesNotMatch(workers, /<div className="feature-list-meta">\{worker\.unit\}<\/div>/);
+});

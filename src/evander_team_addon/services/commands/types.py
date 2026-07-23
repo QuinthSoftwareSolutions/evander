@@ -47,6 +47,8 @@ class TeamCommandApplyResult:
     created_event_ids: list[str] = field(default_factory=list)
     outbox_records: list[TeamOutboxRecord | Mapping[str, Any]] = field(default_factory=list)
     progress_classification: str | None = None
+    applied: bool = True
+    state_changed: bool = True
 
 
 TeamDeliverableArtifactPublisher = Callable[..., Mapping[str, Any]]

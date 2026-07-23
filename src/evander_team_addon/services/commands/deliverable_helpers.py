@@ -25,6 +25,7 @@ from ...models import (
     AgentInboxItem,
     AgentTask,
     Deliverable,
+    DeliverableOutcome,
     PersistentAgent,
     ReviewRequest,
     TeamInboxItemType,
@@ -53,6 +54,7 @@ from ..domain.deliverables import (
     _deliverable_verification_payload,
     _normalize_deliverable_verification_mapping,
     _superseded_deliverable_for_rework,
+    _validate_deliverable_outcomes_against_task_contract,
 )
 from ..domain.git_work_contexts import (
     GitWorkContextValidationError,
@@ -90,6 +92,13 @@ def _normalize_deliverable_submission_mapping(
             "agent_branch": _optional_text(git_refs.get("agent_branch")),
             "commit_sha": _optional_text(git_refs.get("commit_sha")),
         },
+        "outcomes": [
+            DeliverableOutcome.model_validate(outcome).model_dump(mode="json")
+            for outcome in _list_of_mappings(
+                payload.get("outcomes"),
+                f"{field_name}.outcomes",
+            )
+        ],
     }
     verification = _normalize_deliverable_verification_mapping(
         payload.get("verification"),
@@ -135,6 +144,7 @@ def _normalize_review_decision_mapping(
             f"{field_name}.review_request_id",
         ),
         "state": _required_text(payload.get("state"), f"{field_name}.state"),
+        "block_kind": _optional_text(payload.get("block_kind")),
         "findings": _string_list(payload.get("findings"), f"{field_name}.findings"),
         "criteria": [
             {
@@ -250,6 +260,26 @@ def _command_deliverable_task_for_submission(
     return task
 
 
+def _validate_command_deliverable_has_acceptance_recipient(agent: PersistentAgent) -> None:
+    if agent.reports_to_agent_id is not None:
+        return
+    raise TeamCommandValidationError(
+        code="direct_superior_required",
+        message=(
+            f"agent {agent.id} cannot submit a deliverable for superior acceptance "
+            "because it has no direct superior; use team_submit_deliverable_for_review "
+            "for formal review or team_update_task state=finished for completion-only work"
+        ),
+        correction_context={
+            "caller_agent_id": agent.id,
+            "recommended_tools": [
+                "team_submit_deliverable_for_review",
+                "team_update_task",
+            ],
+        },
+    )
+
+
 def _command_deliverable_id(
     state: TeamState,
     *,
@@ -293,11 +323,12 @@ def _plan_command_review_requests_for_deliverable(
     state: TeamState,
     *,
     actor: PersistentAgent,
-    deliverable_id: str,
+    deliverable: Deliverable,
     task: AgentTask,
     reviews: Sequence[Mapping[str, Any]],
     request_id: str,
 ) -> list[dict[str, Any]]:
+    deliverable_id = deliverable.id
     reserved_review_ids: set[str] = set(state.review_requests)
     planned: list[dict[str, Any]] = []
     for review_request in reviews:
@@ -318,6 +349,7 @@ def _plan_command_review_requests_for_deliverable(
             expected_team_id=actor.team_id or "",
             project_id=task.project_id,
             reviewer=reviewer,
+            deliverable=deliverable,
         )
         if profile_error is not None:
             raise TeamCommandValidationError(
@@ -465,6 +497,14 @@ def _validate_command_deliverable_submission_pre_publication(
         )
         _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
         _deliverable_verification_from_payload(deliverable.get("verification"))
+        outcomes = [
+            DeliverableOutcome.model_validate(outcome)
+            for outcome in _list_of_mappings(
+                deliverable.get("outcomes"),
+                "outcomes",
+            )
+        ]
+        _validate_deliverable_outcomes_against_task_contract(task, outcomes)
     except GitWorkContextValidationError as exc:
         raise TeamCommandValidationError(
             code=exc.code,
@@ -549,6 +589,13 @@ def _apply_command_deliverable_submission(
         )
         git_refs = _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
         verification = _deliverable_verification_from_payload(deliverable.get("verification"))
+        outcomes = [
+            DeliverableOutcome.model_validate(outcome)
+            for outcome in _list_of_mappings(
+                deliverable.get("outcomes"),
+                "outcomes",
+            )
+        ]
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",
@@ -571,6 +618,7 @@ def _apply_command_deliverable_submission(
         artifact_refs=artifact_refs,
         git_refs=git_refs,
         verification=verification,
+        outcomes=outcomes,
         state=TeamRecordState.PENDING,
         supersedes_deliverable_id=supersedes_deliverable_id,
         carried_findings=(
@@ -586,6 +634,9 @@ def _apply_command_deliverable_submission(
     state.deliverables[new_deliverable.id] = new_deliverable
     if superseded_deliverable is not None:
         superseded_deliverable.superseded_by_deliverable_id = new_deliverable.id
+        superseded_deliverable.supersession_reason = "Rework deliverable submitted."
+        superseded_deliverable.superseded_at = new_deliverable.created_at
+        superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
     task.deliverable_ids = _append_unique(task.deliverable_ids, new_deliverable.id)
     now = utc_now()
     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)

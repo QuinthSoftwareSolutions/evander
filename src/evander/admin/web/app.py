@@ -19,11 +19,8 @@ from starlette.staticfiles import StaticFiles
 
 from evander.addons import (
     AddonContext,
-    LoadedAddonCatalog,
-    addon_mcp_tool_catalog_payloads,
     addon_admin_navigation_payloads,
     addon_runtime_dir,
-    load_addons,
     resolve_addon_admin_api_routes,
     resolve_addon_admin_ui_routes,
 )
@@ -43,6 +40,7 @@ from evander.admin.web.artifacts import artifact_routes
 from evander.admin.web.chat import chat_routes
 from evander.admin.web.codex_auth import codex_auth_routes
 from evander.admin.web.connectors import connector_routes
+from evander.admin.web.host_directories import host_directory_routes
 from evander.admin.web.operator_steering import operator_steering_routes
 from evander.admin.web.sessions_approvals import session_approval_routes
 from evander.admin.web.shared import (
@@ -290,18 +288,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     )
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
-    try:
-        addon_catalog = load_addons(service.config.addon_loader, base_dir=service.project_dir)
-    except Exception:
-        addon_catalog = LoadedAddonCatalog(registrations=(), loaded_addons=())
-    addon_tool_names = [
-        item["value"] for item in addon_mcp_tool_catalog_payloads(addon_catalog)
-    ]
-    if addon_tool_names:
-        existing_tool_names = set(service.runtime.policy.extra_mcp_tool_names)
-        service.runtime.policy.set_extra_mcp_tool_names(
-            existing_tool_names.union(addon_tool_names)
-        )
+    addon_catalog = service.addon_catalog
     service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
@@ -616,6 +603,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(agent_routes(service, auth, dashboard_cache))
     routes.extend(addon_routes(service, auth))
     routes.extend(connector_routes(service, auth))
+    routes.extend(host_directory_routes(service, auth))
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
@@ -672,7 +660,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         try:
             yield
         finally:
-            service.managed_git_admin.cleanup_active_worktrees()
+            service.managed_git_maintenance.cleanup_active_worktrees()
 
     app = Starlette(debug=False, routes=routes, lifespan=lifespan)
     app.state.auth = auth

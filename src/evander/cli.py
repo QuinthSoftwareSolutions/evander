@@ -85,6 +85,7 @@ from evander.models import (
     SessionManifest,
     ToolName,
 )
+from evander.pr_tracking import PrMapStore
 from evander.model_usage import (
     DEFAULT_MODEL_PRICING_FILENAME,
     seed_default_model_pricing_catalog,
@@ -144,6 +145,7 @@ setup_app = typer.Typer(
     help="Guided first-run setup for the Evander control plane.",
     invoke_without_command=True,
 )
+team_app = typer.Typer(help="Inspect Team Add-on runtime activity.")
 app.add_typer(directories_app, name="directories")
 app.add_typer(git_repos_app, name="git-repos", rich_help_panel="Health and State")
 app.add_typer(wake_schedules_app, name="wake-schedules")
@@ -152,6 +154,7 @@ app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions
 app.add_typer(execution_app, name="execution", rich_help_panel="VM Operations")
 app.add_typer(connectors_app, name="connectors", rich_help_panel="Health and State")
 app.add_typer(setup_app, name="setup", rich_help_panel="Health and State")
+app.add_typer(team_app, name="team", rich_help_panel="Health and State")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
 DirectoryOption = Annotated[
@@ -210,6 +213,79 @@ def _load_host_config_from_option(config: Path):
     return load_host_bootstrap_config(
         runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
     )
+
+
+@team_app.command("dispatch-tail")
+def team_dispatch_tail(
+    dispatch_id: Annotated[
+        str | None,
+        typer.Option("--dispatch-id", help="Filter to one Team dispatch id."),
+    ] = None,
+    agent_id: Annotated[
+        str | None,
+        typer.Option("--agent-id", help="Filter to one persistent agent id."),
+    ] = None,
+    tool_name: Annotated[
+        str | None,
+        typer.Option("--tool-name", help="Filter to one Team tool name."),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=500, help="Maximum initial events."),
+    ] = 100,
+    follow: Annotated[
+        bool,
+        typer.Option("--follow/--no-follow", help="Continue polling for new events."),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit one JSON object per line."),
+    ] = False,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    """Tail redacted, structured Team dispatch and tool activity."""
+
+    from evander_team_addon.repository import TeamStateRepository
+
+    runtime_dir, _legacy = _bootstrap_inputs(config)
+    repository = TeamStateRepository(runtime_dir)
+    seen: set[str] = set()
+    first = True
+    try:
+        while True:
+            rows = repository.list_dispatch_activity(
+                dispatch_id=dispatch_id,
+                agent_id=agent_id,
+                tool_name=tool_name,
+                limit=limit,
+                newest_first=True,
+            )
+            pending = [row for row in reversed(rows) if row.id not in seen]
+            for row in pending:
+                payload = row.model_dump(mode="json")
+                if json_output:
+                    typer.echo(json.dumps(payload, separators=(",", ":"), default=str))
+                else:
+                    occurred_at = payload.get("created_at") or ""
+                    actor = payload.get("agent_id") or payload.get("caller_identity")
+                    status = payload.get("status")
+                    dispatch = payload.get("dispatch_id") or "-"
+                    detail = payload.get("error_message") or payload.get(
+                        "correction_context_summary"
+                    )
+                    line = (
+                        f"{occurred_at} {status} {actor} {dispatch} "
+                        f"{payload.get('tool_name')}"
+                    )
+                    typer.echo(f"{line} - {detail}" if detail else line)
+                seen.add(row.id)
+            if not follow:
+                return
+            if first:
+                first = False
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        return
 
 
 def _build_execution_backend_from_option(config: Path):
@@ -1242,38 +1318,7 @@ def _session_streams_for_session_ids(
 
 
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
-    if not path.exists():
-        return 0, set()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0, set()
-    entries = payload.get("entries")
-    if not isinstance(entries, dict):
-        return 0, set()
-
-    removed_streams: set[tuple[str, str, str]] = set()
-    kept_entries: dict[str, object] = {}
-    removed_count = 0
-    for entry_key, raw_entry in entries.items():
-        if not isinstance(raw_entry, dict):
-            kept_entries[entry_key] = raw_entry
-            continue
-        session_id = str(raw_entry.get("session_id", "")).strip()
-        if session_id in session_ids:
-            provider = str(raw_entry.get("provider", "")).strip()
-            repo = str(raw_entry.get("repo", "")).strip()
-            pr_id = str(raw_entry.get("pr_id", "")).strip()
-            if provider and repo and pr_id:
-                removed_streams.add((provider, repo, pr_id))
-            removed_count += 1
-            continue
-        kept_entries[entry_key] = raw_entry
-
-    if removed_count:
-        payload["entries"] = kept_entries
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return removed_count, removed_streams
+    return PrMapStore(path).prune_session_bindings(session_ids=session_ids)
 
 
 def _prune_pr_map_for_issue_numbers(
@@ -2799,7 +2844,11 @@ def create_session(
             manifest.model = None
     if manifest.email_send_enabled:
         manifest.allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
-    _runtime_session_repository(runtime).upsert_session(manifest)
+    session_repository = _runtime_session_repository(runtime)
+    if session_repository.get_session(session_id) is not None:
+        typer.echo(f"Session already exists: {session_id}", err=True)
+        raise typer.Exit(code=1)
+    session_repository.upsert_session(manifest)
     typer.echo(f"Created session manifest {session_id}")
 
 
@@ -2834,8 +2883,21 @@ def prune_sessions(
     for session_id in keys_to_delete:
         session_repository.delete_session(session_id)
 
+    removed_pr_map_entries, removed_streams = _prune_pr_map(
+        cfg.pr_map_path,
+        session_ids=set(keys_to_delete),
+    )
+    removed_cursors, removed_feedback = _prune_pr_feedback_store(
+        cfg.runtime_dir / "pr-feedback-store.json",
+        streams=removed_streams,
+    )
     mode = "expired" if expired_only else "all"
-    typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
+    typer.echo(
+        f"Pruned {len(keys_to_delete)} {mode} session(s) "
+        f"removed_pr_map_entries={removed_pr_map_entries} "
+        f"removed_feedback_cursors={removed_cursors} "
+        f"removed_feedback_items={removed_feedback}"
+    )
 
 
 @app.command(

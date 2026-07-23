@@ -51,6 +51,12 @@ from evander_team_addon.providers import (
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
+from evander_team_addon.services.release_verification_effects import (
+    EffectReleaseVerificationExecutor,
+)
+from evander_team_addon.services.release_verification_runner import (
+    ReleaseVerificationTimeoutError,
+)
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -593,6 +599,34 @@ def test_release_verifier_classifies_agent_command_timeouts(
     assert recorded["verification_state"] == "timed_out"
     assert recorded["failure_kind"] == "timeout"
     assert recorded["command_results"][0]["state"] == "timed_out"
+
+
+def test_release_verification_effect_adapter_translates_subprocess_timeouts(
+    monkeypatch,
+) -> None:
+    command = ReleaseVerificationCommand(
+        name="timed-check",
+        cwd=".",
+        argv=["python", "-m", "timed_check"],
+    )
+
+    def _timeout(self, **kwargs):
+        del self, kwargs
+        raise subprocess.TimeoutExpired(command.argv, timeout=60)
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _timeout)
+    executor = EffectReleaseVerificationExecutor(EffectRuntimeContext(resolved_config={}))
+
+    with pytest.raises(ReleaseVerificationTimeoutError) as raised:
+        executor.execute_command(
+            run_id="verification-1",
+            command_index=0,
+            session_id="verification-session",
+            target_dir="/workspace/repo",
+            command=command,
+        )
+
+    assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
 
 
 def test_release_verifier_treats_reported_cleanup_failure_as_infrastructure_failure(

@@ -20,6 +20,7 @@ from evander.codex_auth import (
 )
 from evander.config import GatewayConfig
 from evander.directory_config import ContactDirectoryConfig
+from evander.host_directories.models import normalize_host_directory_grants
 from evander.runtime import allowed_tools_for_capability_profile
 from evander.services import (
     normalize_teams_chat_or_target_refs,
@@ -461,6 +462,7 @@ def build_container_session_manifest(
     ttl_hours: int | None,
     allowed_tools: list[str] | None,
     connector_grants: dict[str, list[str]] | None = None,
+    host_directory_grants: dict[str, list[str]] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None,
     allowed_script_names: list[str] | None,
     allowed_contact_ids: list[str] | None,
@@ -487,6 +489,19 @@ def build_container_session_manifest(
     resolved_tools = normalize_allowed_tools(allowed_tools)
     if ToolName.STAGE_ARTIFACT not in resolved_tools:
         resolved_tools.append(ToolName.STAGE_ARTIFACT)
+    resolved_host_directory_grants = normalize_host_directory_grants(
+        host_directory_grants or {}
+    )
+    host_directory_tool_by_capability = {
+        "list": ToolName.HOST_DIRECTORY_LIST,
+        "import": ToolName.HOST_DIRECTORY_IMPORT,
+        "delete": ToolName.HOST_DIRECTORY_DELETE,
+    }
+    for capabilities in resolved_host_directory_grants.values():
+        for capability in capabilities:
+            tool = host_directory_tool_by_capability[capability]
+            if tool not in resolved_tools:
+                resolved_tools.append(tool)
     if discord_channels:
         for tool in (
             ToolName.DISCORD_GET_COMMANDS,
@@ -562,6 +577,7 @@ def build_container_session_manifest(
         directory_path=directory_path,
         allowed_tools=resolved_tools,
         connector_grants=connector_grants or {},
+        host_directory_grants=resolved_host_directory_grants,
         approval_required_tools=list(config.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=normalize_allowed_script_names(allowed_script_names),

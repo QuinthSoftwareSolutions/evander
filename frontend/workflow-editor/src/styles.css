@@ -5859,6 +5859,65 @@ select {
   min-width: 0;
 }
 
+.host-directory-add {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.host-directory-add button {
+  justify-self: start;
+}
+
+.host-directory-form .host-directory-description-field {
+  grid-column: 1 / -1;
+}
+
+.host-directory-capabilities {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0;
+  padding: 0.85rem;
+  border: 1px solid rgba(93, 75, 48, 0.14);
+  border-radius: 10px;
+}
+
+.host-directory-capabilities legend {
+  padding: 0 0.3rem;
+  font-weight: 700;
+}
+
+.host-directory-capability-options,
+.host-directory-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1.25rem;
+}
+
+.host-directory-quarantine-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+}
+
+.host-directory-quarantine-entry p {
+  margin: 0.25rem 0 0;
+}
+
+@media (max-width: 720px) {
+  .host-directory-quarantine-entry {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root[data-theme="dark"] .host-directory-add,
+:root[data-theme="dark"] .host-directory-capabilities {
+  border-color: rgba(125, 170, 190, 0.18);
+}
+
 .users-page .feature-toolbar > div,
 .users-page .panel-header,
 .users-page .panel-meta,
@@ -6436,6 +6495,67 @@ select {
   min-height: 0;
   max-height: 24rem;
   overflow-y: auto;
+}
+
+.workers-filter-grid {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 0.45rem;
+}
+
+.workers-page .feature-sidebar .field-stack input,
+.workers-page .feature-sidebar .field-stack select {
+  border-radius: 0;
+}
+
+.workers-list-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-height: 2rem;
+  margin-bottom: 0.35rem;
+  color: #6d5c4c;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.worker-list-item-tooltip,
+.worker-list-item-tooltip-trigger {
+  display: block;
+  width: 100%;
+}
+
+.worker-list-item-tooltip-bubble {
+  white-space: pre-line;
+}
+
+.worker-list-item {
+  width: 100%;
+  min-height: 2.45rem;
+  padding: 0.38rem 0.5rem;
+}
+
+.worker-list-item-row {
+  min-width: 0;
+}
+
+.worker-list-item strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-list-item .status-pill {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.42rem;
+  font-size: 0.68rem;
+}
+
+.workers-page .feature-content {
+  padding-top: 0.8rem;
 }
 
 .vm-agent-log {

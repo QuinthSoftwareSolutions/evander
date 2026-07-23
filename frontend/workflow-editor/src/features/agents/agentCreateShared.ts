@@ -8,6 +8,10 @@ import type {
   AgentCreateRequest,
   EmailMailboxGrant,
 } from "../admin/types";
+import {
+  httpTargetsPayload,
+  type HttpTargetDraftEntry,
+} from "../httpTargets/httpTargetDraft";
 
 export type AgentCreateFormState = {
   backend: AgentBackend;
@@ -36,9 +40,11 @@ export type AgentInitialPolicyFormState = {
   webSearchEnabled: boolean;
   allowedTools: string[];
   connectorGrants: Record<string, string[]>;
+  hostDirectoryGrants: Record<string, string[]>;
   allowedScriptNames: string[];
   communicationTargetIds: string[];
   emailMailboxGrants: EmailMailboxGrant[];
+  httpTargets: HttpTargetDraftEntry[];
 };
 
 export type AgentCreateSubmitMeta = {
@@ -76,9 +82,11 @@ export function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     webSearchEnabled: false,
     allowedTools: [],
     connectorGrants: {},
+    hostDirectoryGrants: {},
     allowedScriptNames: [],
     communicationTargetIds: [],
     emailMailboxGrants: [],
+    httpTargets: [],
   };
 }
 
@@ -187,6 +195,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   if (Object.keys(initialPolicy.connectorGrants).length > 0) {
     payload.connector_grants = initialPolicy.connectorGrants;
   }
+  if (Object.keys(initialPolicy.hostDirectoryGrants).length > 0) {
+    payload.host_directory_grants = initialPolicy.hostDirectoryGrants;
+  }
   const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
   if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
   const communicationTargetIds = dedupeStrings(initialPolicy.communicationTargetIds);
@@ -196,6 +207,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
     access: grant.access,
     folders: dedupeStrings(grant.folders),
   }));
+  if (initialPolicy.httpTargets.length > 0) {
+    payload.http_targets = httpTargetsPayload(initialPolicy.httpTargets);
+  }
   return payload;
 }
 

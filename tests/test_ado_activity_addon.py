@@ -318,6 +318,150 @@ def test_ado_activity_sync_indexes_work_item_activity(
     assert indexed["index"]["sync_state"][0]["complete_through"] == "2026-07-08T00:00:00.000000Z"
 
 
+def test_ado_activity_sync_all_preserves_scope_order_paging_and_completion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeIssueService:
+        def __init__(self, config_resolver) -> None:
+            assert config_resolver is fake_resolver
+
+        def query_remote_work_item_activity(self, **kwargs):
+            calls.append(("work_items", kwargs))
+            if kwargs["skip"] == 0:
+                return {
+                    "items": [
+                        {
+                            "id": "101",
+                            "project": "APP",
+                            "activities": [
+                                {
+                                    "activity_type": "changed",
+                                    "provenance": "update",
+                                    "occurred_at": datetime(2026, 7, 7, 10, tzinfo=UTC),
+                                    "raw": {"id": 5},
+                                }
+                            ],
+                        }
+                    ],
+                    "paging": {"has_more": True, "next_skip": 200},
+                }
+            return {
+                "items": [],
+                "paging": {"has_more": False, "next_skip": None},
+            }
+
+    class FakePrQueryService:
+        def list_ado_pr_comment_activity(self, **kwargs):
+            calls.append(("pr_comments", kwargs))
+            return {
+                "repo": "ExampleIndustryAPP",
+                "project": "APP",
+                "comments": [
+                    {
+                        "pr_id": "12",
+                        "thread_id": "1",
+                        "comment_id": "2",
+                        "created_at": datetime(2026, 7, 7, 11, tzinfo=UTC),
+                    }
+                ],
+                # A source can exhaust this page without completing its candidate scan.
+                "paging": {"has_more": True, "next_skip": None},
+            }
+
+        def list_ado_pr_commit_activity(self, **kwargs):
+            calls.append(("pr_commits", kwargs))
+            return {
+                "repo": "ExampleIndustryAPP",
+                "project": "APP",
+                "commits": [
+                    {
+                        "pr_id": "12",
+                        "commit_id": "abc123",
+                        "authored_at": datetime(2026, 7, 7, 12, tzinfo=UTC),
+                    }
+                ],
+                "paging": {"has_more": False, "next_skip": None},
+            }
+
+    fake_resolver = object()
+    fake_pr_service = FakePrQueryService()
+    monkeypatch.setattr("evander_ado_activity_addon.service.IssueService", FakeIssueService)
+    service = AdoActivityIndexService(
+        addon_runtime_dir=tmp_path,
+        provider_config_resolver=fake_resolver,
+    )
+    monkeypatch.setattr(service, "_pr_query_service", lambda directory_path: fake_pr_service)
+
+    result = service.sync(
+        since=datetime(2026, 7, 7, tzinfo=UTC),
+        until=datetime(2026, 7, 8, tzinfo=UTC),
+        directory_path="root",
+        scope="all",
+        actor="alex@example.com",
+        project="APP",
+        repo="ExampleIndustryAPP",
+        states=["Active"],
+        types=["Task"],
+        tags_any=["review"],
+        statuses=["active"],
+        include_system_comments=True,
+    )
+
+    assert [name for name, _kwargs in calls] == [
+        "work_items",
+        "work_items",
+        "pr_comments",
+        "pr_commits",
+    ]
+    assert [kwargs["skip"] for _name, kwargs in calls] == [0, 200, 0, 0]
+    assert calls[2][1]["include_system_comments"] is True
+    assert list(result["details"]) == ["work_items", "pr_comments", "pr_commits"]
+    assert result["details"] == {
+        "work_items": {
+            "inserted": 1,
+            "updated": 0,
+            "records": 1,
+            "pages": 2,
+            "complete": True,
+        },
+        "pr_comments": {
+            "inserted": 1,
+            "updated": 0,
+            "records": 1,
+            "pages": 1,
+            "complete": False,
+        },
+        "pr_commits": {
+            "inserted": 1,
+            "updated": 0,
+            "records": 1,
+            "pages": 1,
+            "complete": True,
+        },
+    }
+    assert (result["inserted"], result["updated"], result["records"]) == (3, 0, 3)
+
+    indexed = service.query(
+        since=datetime(2026, 7, 7, tzinfo=UTC),
+        directory_path="root",
+    )
+    sync_state = {item["sync_key"]: item["metadata"] for item in indexed["index"]["sync_state"]}
+    assert sync_state == {
+        "root:pr_commits:APP:ExampleIndustryAPP": {
+            "actor": "alex@example.com",
+            "statuses": ["active"],
+        },
+        "root:work_items:APP:*": {
+            "actor": "alex@example.com",
+            "states": ["Active"],
+            "types": ["Task"],
+        },
+    }
+
+
 def test_ado_activity_mcp_tools_register_and_query_index(tmp_path: Path) -> None:
     tools = {}
 

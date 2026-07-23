@@ -93,8 +93,10 @@ TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
 TEAM_REVOKE_STAND_DOWN_TOOL = "team_revoke_stand_down"
 TEAM_SUBMIT_DELIVERABLE_TOOL = "team_submit_deliverable"
 TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL = "team_submit_deliverable_for_review"
+TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL = "team_link_deliverable_replacement"
 TEAM_REQUEST_REVIEW_TOOL = "team_request_review"
 TEAM_DECIDE_REVIEW_TOOL = "team_decide_review"
+TEAM_RETRY_REVIEW_TOOL = "team_retry_review"
 TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
@@ -117,6 +119,7 @@ TEAM_LIST_CASES_TOOL = "team_list_cases"
 TEAM_GET_CASE_TOOL = "team_get_case"
 TEAM_LIST_DELIVERABLES_TOOL = "team_list_deliverables"
 TEAM_GET_DELIVERABLE_TOOL = "team_get_deliverable"
+TEAM_IMPORT_ARTIFACT_TOOL = "team_import_artifact"
 TEAM_LIST_REVIEW_REQUESTS_TOOL = "team_list_review_requests"
 TEAM_GET_REVIEW_REQUEST_TOOL = "team_get_review_request"
 TEAM_LIST_RELEASE_PACKAGES_TOOL = "team_list_release_packages"
@@ -152,8 +155,10 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -181,6 +186,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_CASE_TOOL,
     TEAM_LIST_DELIVERABLES_TOOL,
     TEAM_GET_DELIVERABLE_TOOL,
+    TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_LIST_REVIEW_REQUESTS_TOOL,
     TEAM_GET_REVIEW_REQUEST_TOOL,
     TEAM_LIST_RELEASE_PACKAGES_TOOL,
@@ -216,8 +222,10 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -258,8 +266,10 @@ MCP_TOOL_NAMES = (
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -283,6 +293,12 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL: (
         "Stage one regular file from the current agent workspace for a Team Chat reply "
         "or proactive operator message. Returns a session-owned attachment_id."
+    ),
+    TEAM_IMPORT_ARTIFACT_TOOL: (
+        "Permission-check and import the latest published version of an artifact-space "
+        "reference into the calling Team agent's own /artifacts tree. Use this after "
+        "team_get_deliverable when another agent hands off an artifact in an ordinary "
+        "task, status request, question, or progress report."
     ),
 }
 MCP_TOOL_CATALOG = tuple(
@@ -1134,6 +1150,8 @@ def _register_slice6_tools(
         state: str = "pending",
         parent_task_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
+        task_kind: str = "support",
+        outcome_contract: dict[str, Any] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1156,6 +1174,8 @@ def _register_slice6_tools(
                 state=state,
                 parent_task_id=parent_task_id,
                 dependency_task_ids=dependency_task_ids,
+                task_kind=task_kind,
+                outcome_contract=outcome_contract,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1210,6 +1230,7 @@ def _register_slice6_tools(
         description: str | None = None,
         owner_agent_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
+        completion: dict[str, Any] | None = None,
         request_id: str | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
@@ -1228,6 +1249,7 @@ def _register_slice6_tools(
             "description": description,
             "owner_agent_id": owner_agent_id,
             "dependency_task_ids": dependency_task_ids,
+            "completion": completion,
         }.items():
             if value is not None:
                 updates[name] = value
@@ -1463,6 +1485,7 @@ def _register_slice7_tools(
         branch_context_id: str | None = None,
         git_refs: dict[str, Any] | None = None,
         verification: dict[str, Any] | None = None,
+        outcomes: list[dict[str, Any]] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1485,6 +1508,7 @@ def _register_slice7_tools(
                 branch_context_id=branch_context_id,
                 git_refs=git_refs,
                 verification=verification,
+                outcomes=outcomes,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1499,8 +1523,12 @@ def _register_slice7_tools(
         team_submit_deliverable,
         name=TEAM_SUBMIT_DELIVERABLE_TOOL,
         description=(
-            "Submit a deliverable for the caller's owned task. Publishes any "
-            "artifact_paths from /artifacts before recording state. Optional "
+            "Submit a work product that requires the caller's direct superior to "
+            "accept it. This always moves the task to waiting_for_review and sends "
+            "the superior a deliverable notice. Finish administrative, delegation, "
+            "coordination, or acknowledgement-only work with team_update_task "
+            "state=finished instead. Publishes any artifact_paths from /artifacts "
+            "before recording state. Optional "
             "verification records status passed, failed, partial, not_run, or "
             "unknown with a summary. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "
@@ -1548,6 +1576,49 @@ def _register_slice7_tools(
             "verification status and git_refs. Git deliverables must include "
             "deliverable.branch_context_id; git_refs do not publish a review "
             "branch by themselves and must match that context."
+        ),
+    )
+
+    def team_link_deliverable_replacement(
+        predecessor_deliverable_id: str,
+        replacement_deliverable_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
+        )
+        try:
+            _state, result = (
+                deliverable_commands.link_deliverable_replacement_command(
+                    session_id=caller.session_id,
+                    predecessor_deliverable_id=predecessor_deliverable_id,
+                    replacement_deliverable_id=replacement_deliverable_id,
+                    reason=reason,
+                    request_id=request_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_link_deliverable_replacement,
+        name=TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
+        description=(
+            "Record immutable structured lineage from a rejected or blocked "
+            "deliverable to an accepted replacement in the same project. This "
+            "does not rewrite either review decision. Project leads and team "
+            "managers may use it across tasks. Requires predecessor_deliverable_id, "
+            "replacement_deliverable_id, reason, and request_id."
         ),
     )
 
@@ -1599,6 +1670,7 @@ def _register_slice7_tools(
         state: str,
         request_id: str,
         findings: list[str] | None = None,
+        block_kind: str | None = None,
         criteria: list[dict[str, Any]] | None = None,
         finding_resolutions: list[dict[str, Any]] | None = None,
         override_routing_gap_reason: str | None = None,
@@ -1616,6 +1688,7 @@ def _register_slice7_tools(
                 session_id=caller.session_id,
                 review_request_id=review_request_id,
                 state=state,
+                block_kind=block_kind,
                 findings=findings,
                 criteria=criteria,
                 finding_resolutions=finding_resolutions,
@@ -1636,8 +1709,50 @@ def _register_slice7_tools(
             "Record the assigned reviewer's accepted, rejected, or blocked "
             "decision. Decisions are immutable. For release reviews, rejected means "
             "the candidate failed review; blocked is reserved for a non-candidate "
-            "process or evidence-access blocker and requires a finding. Requires "
+            "process or evidence-access blocker and requires a finding. For blocked "
+            "decisions, block_kind may identify dependency, input_unavailable, policy, "
+            "system, or unspecified. Requires "
             "review_request_id, state, and request_id."
+        ),
+    )
+
+    def team_retry_review(
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        reviewer_agent_id: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RETRY_REVIEW_TOOL,
+        )
+        try:
+            _state, result = review_commands.retry_review_command(
+                session_id=caller.session_id,
+                review_request_id=review_request_id,
+                reason=reason,
+                reviewer_agent_id=reviewer_agent_id,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_retry_review,
+        name=TEAM_RETRY_REVIEW_TOOL,
+        description=(
+            "Create a new pending review attempt that supersedes a current blocked "
+            "non-release review without rewriting its immutable decision. The producer, "
+            "supervisor, project lead, or team manager may retry it and optionally choose "
+            "another eligible reviewer. Requires review_request_id, reason, and request_id."
         ),
     )
 
@@ -2399,6 +2514,40 @@ def _register_read_tools(
         description="Get one visible Team deliverable.",
     )
 
+    def team_import_artifact(
+        artifact_ref: str,
+        artifact_id: str = "bundle",
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_IMPORT_ARTIFACT_TOOL,
+        )
+        from .providers import _import_team_artifact_for_session
+
+        try:
+            imported = _import_team_artifact_for_session(
+                _team_artifact_import_runtime_context(context, caller.session_id),
+                artifact_ref=artifact_ref,
+                artifact_id=artifact_id,
+                session_id=caller.session_id,
+                subject=f"team-agent:{caller.agent_id}",
+            )
+        except (FileNotFoundError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return team_mcp_success(
+            revision=caller.state.revision,
+            progress_made=False,
+            agent_id=caller.agent_id,
+            **imported,
+        )
+
+    server.add_tool(
+        team_import_artifact,
+        name=TEAM_IMPORT_ARTIFACT_TOOL,
+        description=_MCP_TOOL_CATALOG_DESCRIPTIONS[TEAM_IMPORT_ARTIFACT_TOOL],
+    )
+
     def team_list_review_requests(
         session_id: str | None = None,
         deliverable_id: str | None = None,
@@ -3051,6 +3200,26 @@ def _team_session_directory_path(context: AddonContext, session_id: str) -> str:
     get_session = getattr(repository, "get_session", None)
     session = get_session(session_id) if callable(get_session) else None
     return str(getattr(session, "directory_path", None) or "root")
+
+
+def _team_artifact_import_runtime_context(
+    context: AddonContext,
+    session_id: str,
+) -> EffectRuntimeContext:
+    from evander.admin.composition import build_admin_runtime
+    from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+
+    runtime = context.service
+    admin_service = AdminRuntimeProviderAdapter(build_admin_runtime(context.runtime_dir))
+    return EffectRuntimeContext(
+        resolved_config=runtime.resolve_provider_config_for_session(session_id),
+        provider_config_resolver=getattr(runtime, "provider_config", None),
+        admin_service=admin_service,
+        session_lookup=admin_service,
+        vm_executor=admin_service,
+        vm_file_copier=admin_service,
+        metadata={"directory_path": _team_session_directory_path(context, session_id)},
+    )
 
 
 def _read_team_chat_workspace_file(

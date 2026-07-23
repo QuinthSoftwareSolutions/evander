@@ -23,6 +23,7 @@ from ..models import (
     GitWorkContextState,
     GovernanceRuntime,
     TeamDispatchActivityStatus,
+    TeamDispatchActivity,
     TeamInboxPriority,
     TeamState,
     agent_has_project_assignment,
@@ -78,6 +79,7 @@ from .domain.governance import (
     _pending_governance_agenda_for_group,
 )
 from .domain.manager_fallback import _manager_fallback_summary_payload
+from .domain.project_status import project_blocking_sources
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _agent_subtree_ids,
@@ -492,6 +494,31 @@ class TeamRuntimeService:
                         "tasks": [
                             task_payload_with_derived(state_model, task) for task in active_tasks
                         ],
+                        "projects": [
+                            {
+                                **project.model_dump(mode="json"),
+                                "blocking_sources": project_blocking_sources(
+                                    state_model,
+                                    project.id,
+                                ),
+                            }
+                            for project in sorted(
+                                (
+                                    state_model.projects[visible_project_id]
+                                    for visible_project_id in sorted(
+                                        set(agent_project_ids(state_model, agent.id))
+                                        | set(
+                                            agent_lead_project_ids(
+                                                state_model,
+                                                agent.id,
+                                            )
+                                        )
+                                    )
+                                    if visible_project_id in state_model.projects
+                                ),
+                                key=lambda item: item.id,
+                            )
+                        ],
                         "cases": _case_payloads_for_agent(state_model, agent.id),
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "blockers": assigned_blockers,
@@ -634,6 +661,7 @@ class TeamRuntimeService:
 
         if normalized_limit == 0:
             return self._repository.read(), []
+
         def _transaction(
             payload: dict[str, Any],
             tx: TeamStateSqliteCommandTransaction,
@@ -650,6 +678,22 @@ class TeamRuntimeService:
             payload.update(validated.model_dump(mode="json"))
             for record in _team_event_outbox_records(blocker_routing_events):
                 tx.enqueue_outbox_record(record)
+            for lease in leases:
+                lease_agent = lease["agent"]
+                tx.append_dispatch_activity(
+                    TeamDispatchActivity(
+                        id=f"activity-{uuid4().hex}",
+                        tool_name="team_dispatch_started",
+                        caller_session_id=lease_agent["session_id"],
+                        caller_identity=f"agent:{lease_agent['id']}",
+                        agent_id=lease_agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        status=TeamDispatchActivityStatus.SUCCESS,
+                        progress_classification="none",
+                        created_at=effective_now,
+                        updated_at=effective_now,
+                    )
+                )
             return validated
 
         state = self._repository.store.update_object_with_command_transaction(_transaction)
@@ -1051,6 +1095,22 @@ class TeamRuntimeService:
                 else None
             )
             result["context_rotation_pending"] = finalized_runtime.context_rotation_pending
+            tx.append_dispatch_activity(
+                TeamDispatchActivity(
+                    id=f"activity-{uuid4().hex}",
+                    tool_name="team_dispatch_finished",
+                    caller_session_id=normalized_session_id,
+                    caller_identity=f"agent:{agent.id}",
+                    agent_id=agent.id,
+                    dispatch_id=normalized_dispatch_id,
+                    status=TeamDispatchActivityStatus.SUCCESS,
+                    progress_classification=(
+                        "progress" if progress_made else "none"
+                    ),
+                    created_at=completed_at,
+                    updated_at=completed_at,
+                )
+            )
             return validated, result
 
         return self._repository.store.update_object_with_command_transaction(_transaction)

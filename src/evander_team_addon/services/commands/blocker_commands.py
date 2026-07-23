@@ -241,6 +241,54 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                     code="blocker_not_found",
                     message=f"blocker {normalized_blocker_id} does not exist",
                 )
+            if (
+                blocker.state == TeamBlockerState.RESOLVED
+                and normalized_action == "resolve"
+            ):
+                eligible_agent_ids = blocker_resolution_line_agent_ids(
+                    state,
+                    blocker=blocker,
+                )
+                if actor.id not in eligible_agent_ids:
+                    raise TeamCommandValidationError(
+                        code="blocker_resolution_line_required",
+                        message=(
+                            f"agent {actor.id} is not in blocker {blocker.id}'s "
+                            "resolution line"
+                        ),
+                    )
+                existing_refs = set(blocker.terminal_reference_ids)
+                missing_refs = sorted(set(normalized_refs) - existing_refs)
+                if missing_refs:
+                    raise TeamCommandValidationError(
+                        code="blocker_resolution_conflict",
+                        message=(
+                            f"blocker {blocker.id} is already resolved without "
+                            f"references {', '.join(missing_refs)}"
+                        ),
+                        correction_context={
+                            "blocker_id": blocker.id,
+                            "terminal_reference_ids": sorted(existing_refs),
+                            "attempted_resolution_refs": normalized_refs,
+                        },
+                    )
+                return TeamCommandApplyResult(
+                    response_payload={
+                        "blocker_id": blocker.id,
+                        "action": normalized_action,
+                        "owner_agent_id": blocker.owner_agent_id,
+                        "delegate_agent_id": blocker.delegate_agent_id,
+                        "state": blocker.state.value,
+                        "route": blocker.route.value,
+                        "handled_blocker_inbox_item_ids": [],
+                        "blocker_event_ids": [],
+                        "async_effect_pending": False,
+                        "progress_made": False,
+                    },
+                    progress_classification="none",
+                    applied=False,
+                    state_changed=False,
+                )
             if blocker.state != TeamBlockerState.OPEN:
                 raise TeamCommandValidationError(
                     code="blocker_not_open",

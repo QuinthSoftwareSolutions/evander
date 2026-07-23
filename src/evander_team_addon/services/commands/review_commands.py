@@ -44,6 +44,7 @@ from ..domain.review import (
     _apply_review_decision,
     _apply_review_request,
     _review_request_was_created,
+    retry_blocked_review,
 )
 from ..domain.work_due import (
     _mark_agent_work_due,
@@ -180,6 +181,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
         )
 
     def decide_review_command(
@@ -190,6 +192,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
         state: str,
         request_id: str,
         findings: Sequence[str] | None = None,
+        block_kind: str | None = None,
         criteria: Sequence[Mapping[str, Any]] | None = None,
         finding_resolutions: Sequence[Mapping[str, Any]] | None = None,
         override_routing_gap_reason: str | None = None,
@@ -203,6 +206,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
             {
                 "review_request_id": review_request_id,
                 "state": state,
+                "block_kind": block_kind,
                 "findings": list(findings or []),
                 "criteria": [dict(item) for item in criteria or []],
                 "finding_resolutions": [dict(item) for item in finding_resolutions or []],
@@ -365,6 +369,113 @@ class TeamReviewCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
+    def retry_review_command(
+        self,
+        *,
+        session_id: str,
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        reviewer_agent_id: str | None = None,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_payload = {
+            "review_request_id": _required_text(
+                review_request_id, "review_request_id"
+            ),
+            "reason": _required_text(reason, "reason"),
+            "reviewer_agent_id": _optional_text(reviewer_agent_id),
+            "handled_inbox_item_ids": sorted(
+                _unique_text_list(
+                    handled_inbox_item_ids or [],
+                    "handled_inbox_item_ids",
+                )
+            ),
+            "correlation_id": _optional_text(correlation_id),
+            "causation_id": _optional_text(causation_id),
+        }
+        normalized_handled_ids = list(normalized_payload["handled_inbox_item_ids"])
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_retry_review",
+            request_id=normalized_request_id,
+            correlation_id=normalized_payload["correlation_id"],
+            causation_id=normalized_payload["causation_id"],
+            progress_classification="review_retry",
+        )
+
+        def _apply(
+            command_state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, "team_retry_review")
+            intent_result: dict[str, Any] = {
+                "created_inbox_item_ids": [],
+                "created_review_request_ids": [],
+                "resolved_blocker_ids": [],
+            }
+            try:
+                retry = retry_blocked_review(
+                    command_state,
+                    actor=agent,
+                    review_request_id=normalized_payload["review_request_id"],
+                    reason=normalized_payload["reason"],
+                    reviewer_agent_id=normalized_payload["reviewer_agent_id"],
+                    result=intent_result,
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="review_retry_invalid",
+                    message=str(exc),
+                    correction_context={
+                        "review_request_id": normalized_payload["review_request_id"],
+                    },
+                ) from exc
+            deliverable = command_state.deliverables[retry.deliverable_id]
+            task = command_state.tasks[deliverable.task_id]
+            _recalculate_project_status(command_state, task.project_id)
+            _mark_agent_work_due(
+                command_state,
+                agent_id=retry.reviewer_agent_id,
+                now=utc_now(),
+            )
+            created_inbox_ids = list(intent_result["created_inbox_item_ids"])
+            return TeamCommandApplyResult(
+                response_payload={
+                    "intent_recorded": True,
+                    "async_effect_pending": bool(created_inbox_ids),
+                    "review_request_id": retry.id,
+                    "retried_review_request_id": normalized_payload[
+                        "review_request_id"
+                    ],
+                    "replacement_review_request_id": retry.id,
+                    "review": retry.model_dump(mode="json"),
+                    "deliverable": deliverable.model_dump(mode="json"),
+                    "task": task_payload_with_derived(command_state, task),
+                    "created_inbox_item_ids": created_inbox_ids,
+                    "resolved_blocker_ids": list(
+                        intent_result.get("resolved_blocker_ids") or []
+                    ),
+                    "progress_made": True,
+                },
+                created_domain_ids=[retry.id, *created_inbox_ids],
+                progress_classification="review_retry",
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
         )
 
 

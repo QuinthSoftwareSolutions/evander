@@ -5,6 +5,7 @@ export type BuiltinAdminTab =
   | "artifacts"
   | "addons"
   | "connectors"
+  | "host-directories"
   | "skills"
   | "vms"
   | "issues"
@@ -85,6 +86,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library.", group: "automation" },
   { key: "addons", label: "Add-ons", shortLabel: "Add-ons", description: "Enable, disable, and inspect runtime add-ons.", group: "extensions" },
   { key: "connectors", label: "Connectors", shortLabel: "Connect", description: "Configure approved files and REST integrations for agent sessions.", group: "extensions" },
+  { key: "host-directories", label: "Host Directories", shortLabel: "Files", description: "Manage directory-scoped host filesystem resources and recovery.", group: "extensions" },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details.", group: "infrastructure" },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings.", group: "infrastructure" },
   { key: "tool-visibility", label: "Tool Visibility", shortLabel: "Visibility", description: "Effective tool visibility, transport binding, and denied execution evidence.", group: "governance" },

@@ -152,6 +152,9 @@ from evander.triggers.providers.discord_new_message import DiscordNewMessageTrig
 from evander.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from evander.triggers.providers.event import EventTriggerProvider
 from evander.triggers.providers.git_push import GitPushTriggerProvider
+from evander.triggers.providers.host_directory_file_added import (
+    HostDirectoryFileAddedTriggerProvider,
+)
 from evander.triggers.providers.issue_comment_created import (
     IssueCommentCreatedTriggerProvider,
 )
@@ -204,6 +207,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,
             "trigger:approval:pending-created": ApprovalPendingCreatedTriggerProvider,
             "trigger:git:push": GitPushTriggerProvider,
+            "trigger:host-directory:file-added": HostDirectoryFileAddedTriggerProvider,
             "trigger:ci:run:completed": CiRunCompletedTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
             "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,

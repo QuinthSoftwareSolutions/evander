@@ -191,6 +191,13 @@ Do not erase a `cleanup_failed` record to make a dashboard look tidy. It is the 
 
 Chat Assistant mappings are also backend-aware. Libvirt uses one global assistant VM/session with distinct per-user agent thread IDs. Container execution uses a distinct assistant session per user. The durable mapping in `runtime/chat-assistant-session-mappings.json` makes concurrent “open chat” and “first message” initialization converge instead of creating duplicates.
 
+Admin Web offers **Executions** and **Threads** log views for container-worker sessions.
+Executions are raw worker job logs; Threads group the Codex conversation by thread ID. The latest
+Executions window reads backward across preceding runs when a short auxiliary execution, such as an
+artifact import, would otherwise hide the agent transcript. **Load older** continues through that
+combined history. Live refresh and paging request bounded log pages from the worker rather than
+transferring every historical execution log.
+
 ## Administrator runbook
 
 Start with the broad control-plane view:

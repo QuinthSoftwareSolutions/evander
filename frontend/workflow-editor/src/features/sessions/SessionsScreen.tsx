@@ -9,14 +9,27 @@ import { readAdminHashQuery } from "../admin/hash";
 import type {
   AgentCreateCommunicationTargetOption,
   AgentCreateEmailMailboxOption,
+  AgentCreateHostDirectoryOption,
   EmailMailboxGrant,
   RuntimeImageInfo,
 } from "../admin/types";
+import { loadAgentCreateOptions } from "../agents/agentCreateShared";
 import {
   CommunicationTargetCheckboxTable,
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
 import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
+import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
+import {
+  httpTargetsDraftFromMetadata,
+  httpTargetsPayload,
+  metadataWithoutHttpTargets,
+  type HttpTargetDraftEntry,
+} from "../httpTargets/httpTargetDraft";
+import {
+  HostDirectoryGrantSelector,
+  hostDirectoryToolsForGrants,
+} from "../hostDirectories/HostDirectoryGrantSelector";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 import {
   canToggleWakeScheduleEnabled,
@@ -56,6 +69,7 @@ type SessionRecord = {
   directory_path: string;
   allowed_tools?: string[];
   connector_grants?: Record<string, string[]>;
+  host_directory_grants?: Record<string, string[]>;
   approval_required_tools?: string[];
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   approval_notification_target_ids?: string[];
@@ -233,6 +247,7 @@ type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
   allowedScriptNames: string[];
   connectorGrants: Record<string, unknown>;
+  hostDirectoryGrants: Record<string, string[]>;
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
@@ -249,6 +264,9 @@ type SessionPolicyDraft = {
   communicationFileRequireApprovalForSend: boolean;
   webSearchEnabled: boolean;
   metadata: Record<string, unknown>;
+  httpTargets: HttpTargetDraftEntry[];
+  httpTargetsLegacyFallback: boolean;
+  httpTargetsSourceError: string | null;
 };
 
 const POLL_INTERVAL_MS = 10000;
@@ -401,9 +419,11 @@ function normalizeApprovalToolSettings(
 }
 
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
+  const httpTargetsDraft = httpTargetsDraftFromMetadata(session.metadata);
   return {
     allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
     connectorGrants: { ...(session.connector_grants ?? {}) },
+    hostDirectoryGrants: { ...(session.host_directory_grants ?? {}) },
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
@@ -428,7 +448,10 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     communicationFileBlockedExtensions: dedupeStrings(session.communication_file_blocked_extensions ?? []),
     communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
     webSearchEnabled: Boolean(session.web_search_enabled),
-    metadata: { ...(session.metadata ?? {}) },
+    metadata: metadataWithoutHttpTargets(session.metadata),
+    httpTargets: httpTargetsDraft.entries,
+    httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
+    httpTargetsSourceError: httpTargetsDraft.sourceError,
   };
 }
 
@@ -1195,6 +1218,7 @@ export function SessionsScreen() {
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
     allowedScriptNames: [],
     connectorGrants: {},
+    hostDirectoryGrants: {},
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
@@ -1211,11 +1235,20 @@ export function SessionsScreen() {
     communicationFileRequireApprovalForSend: false,
     webSearchEnabled: false,
     metadata: {},
+    httpTargets: [],
+    httpTargetsLegacyFallback: false,
+    httpTargetsSourceError: null,
   });
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policyBoundSessionId, setPolicyBoundSessionId] = useState("");
   const [policyMetadataError, setPolicyMetadataError] = useState<string | null>(null);
+  const [metadataDirty, setMetadataDirty] = useState(false);
   const [connectorGrantsError, setConnectorGrantsError] = useState<string | null>(null);
+  const [hostDirectoryOptions, setHostDirectoryOptions] = useState<
+    AgentCreateHostDirectoryOption[]
+  >([]);
+  const [httpTargetsError, setHttpTargetsError] = useState<string | null>(null);
+  const [httpTargetsDirty, setHttpTargetsDirty] = useState(false);
   const [wakePrompt, setWakePrompt] = useState("");
   const [wakeCron, setWakeCron] = useState("");
   const [wakeResumeAt, setWakeResumeAt] = useState("");
@@ -1382,6 +1415,26 @@ export function SessionsScreen() {
   }, [detail?.session.directory_path]);
 
   useEffect(() => {
+    const directoryPath = detail?.session.directory_path;
+    if (!directoryPath) {
+      setHostDirectoryOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setHostDirectoryOptions([]);
+    void loadAgentCreateOptions(directoryPath)
+      .then((options) => {
+        if (!cancelled) setHostDirectoryOptions(options.host_directories ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setHostDirectoryOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.session.directory_path]);
+
+  useEffect(() => {
     if (!selectedSessionId) {
       setDetail(null);
       setDetailLoading(false);
@@ -1419,12 +1472,18 @@ export function SessionsScreen() {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyDirty(false);
           setPolicyMetadataError(null);
+          setMetadataDirty(false);
           setConnectorGrantsError(null);
+          setHttpTargetsError(null);
+          setHttpTargetsDirty(false);
           setPolicyBoundSessionId(sessionId);
         } else if (!policyDirty) {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyMetadataError(null);
+          setMetadataDirty(false);
           setConnectorGrantsError(null);
+          setHttpTargetsError(null);
+          setHttpTargetsDirty(false);
         }
         const visibleSchedules = filterVisibleWakeSchedules(payload.wake_schedules, {
           showPastOneTime: showPastOneTimeWakeSchedules,
@@ -1740,6 +1799,15 @@ export function SessionsScreen() {
     setStatus(null);
   }
 
+  function updateHostDirectoryGrants(nextGrants: Record<string, string[]>) {
+    updatePolicyDraft({ hostDirectoryGrants: nextGrants });
+    const requiredTools = hostDirectoryToolsForGrants(nextGrants);
+    if (requiredTools.some((toolName) => !toolsDraft.includes(toolName))) {
+      setToolsDraft((current) => sortTools([...current, ...requiredTools]));
+      setToolsDirty(true);
+    }
+  }
+
   function openMailboxConfiguration() {
     if (!selectedSession) return;
     if (
@@ -1794,6 +1862,7 @@ export function SessionsScreen() {
 
   function sessionPolicyValidationError(): string | null {
     return connectorGrantsError
+      ?? httpTargetsError
       ?? policyMetadataError
       ?? validateLeadingDotExtensions(policyDraft.communicationFileAllowedExtensions, "Allowed extensions")
       ?? validateLeadingDotExtensions(policyDraft.communicationFileBlockedExtensions, "Blocked extensions");
@@ -2017,13 +2086,20 @@ export function SessionsScreen() {
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
               connector_grants: policyDraft.connectorGrants,
-              metadata: policyDraft.metadata,
+              host_directory_grants: policyDraft.hostDirectoryGrants,
+              ...(metadataDirty ? { metadata: policyDraft.metadata } : {}),
+              ...(httpTargetsDirty
+                ? { http_targets: httpTargetsPayload(policyDraft.httpTargets) }
+                : {}),
             }),
           },
         );
         setPolicyDirty(false);
         setPolicyMetadataError(null);
+        setMetadataDirty(false);
         setConnectorGrantsError(null);
+        setHttpTargetsError(null);
+        setHttpTargetsDirty(false);
         setPolicyBoundSessionId(selectedSession.session_id);
         savedSections.push("policy");
       }
@@ -2588,6 +2664,19 @@ export function SessionsScreen() {
                       emptyState="No connector operations are granted to this session."
                     />
                   </div>
+                  <div className="field-stack wide-field">
+                    <span>Host directory grants</span>
+                    <p className="field-description">
+                      Select capabilities on named host directories. Selecting one also enables its dedicated
+                      host_directory MCP tool; removing a grant leaves explicitly allowed tools unchanged.
+                    </p>
+                    <HostDirectoryGrantSelector
+                      values={policyDraft.hostDirectoryGrants}
+                      options={hostDirectoryOptions}
+                      onChange={updateHostDirectoryGrants}
+                      disabled={mutationLocked}
+                    />
+                  </div>
                   <div className="field-stack">
                     <span>Approval notifications</span>
                     <p className="field-description">
@@ -2664,6 +2753,28 @@ export function SessionsScreen() {
                     />
                     <span>Web search</span>
                   </label>
+                  <div className="field-stack">
+                    <span>HTTP targets</span>
+                    <HttpTargetsEditor
+                      entries={policyDraft.httpTargets}
+                      onChange={(nextEntries) => {
+                        setPolicyDraft((current) => ({
+                          ...current,
+                          httpTargets: nextEntries,
+                          httpTargetsLegacyFallback: false,
+                          httpTargetsSourceError: null,
+                        }));
+                        setHttpTargetsDirty(true);
+                        setPolicyDirty(true);
+                        setStatus(null);
+                      }}
+                      onValidationChange={setHttpTargetsError}
+                      legacyFallback={policyDraft.httpTargetsLegacyFallback}
+                      sourceError={policyDraft.httpTargetsSourceError}
+                      sessionId={selectedSession.session_id}
+                      disabled={mutationLocked}
+                    />
+                  </div>
                   <div className="field-stack session-communication-files">
                     <span>Communication files</span>
                     <div className="session-communication-file-toggles">
@@ -2766,10 +2877,14 @@ export function SessionsScreen() {
                     </p>
                     <JsonObjectKeyValueEditor
                       value={policyDraft.metadata}
-                      onChange={(nextValue) => updatePolicyDraft({ metadata: nextValue })}
+                      onChange={(nextValue) => {
+                        setMetadataDirty(true);
+                        updatePolicyDraft({ metadata: nextValue });
+                      }}
                       onValidationChange={(error) => {
                         setPolicyMetadataError(error);
                         if (error) {
+                          setMetadataDirty(true);
                           setPolicyDirty(true);
                           setStatus(null);
                         }

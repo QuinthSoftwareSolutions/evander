@@ -1,6 +1,6 @@
 # 11. Managed Git, Artifacts, and Code Consultations
 
-> **At a glance.** Source code, produced files, and a quick question about a repository are different kinds of things, so Evander moves them in different ways. Git carries exact versions of code; artifact storage carries durable result files; a consultation gives a temporary reader one bounded question. Choosing the right route keeps the result traceable without exposing arbitrary folders on the host.
+> **At a glance.** Source code, produced files, approved inbound host files, and a quick question about a repository are different kinds of things, so Evander moves them in different ways. Git carries exact versions of code; artifact storage carries durable result files; a Host Directory imports from one approved root; a consultation gives a temporary reader one bounded question. Choosing the right route keeps the result traceable without exposing arbitrary folders on the host.
 
 ## Three kinds of movement
 
@@ -8,6 +8,8 @@ It helps to begin with the thing being moved:
 
 - **Source code** belongs in managed Git. Git gives Evander an exact commit to review and publish.
 - **Reports, bundles, and other produced files** belong in artifact storage. Publishing makes one immutable archive; an artifact space can organize versions without rewriting old archives.
+- **Approved inbound files on the host** belong in a Host Directory. An agent receives named
+  list/import/delete capabilities and relative paths, never the absolute root.
 - **A bounded question about code** belongs in a code consultation. Evander pins one repository snapshot, gives a temporary worker read-only access, accepts one structured answer, and cleans the worker up.
 
 The matching identities are:
@@ -16,12 +18,13 @@ The matching identities are:
 |---|---|---|
 | Clone, review, merge, or publish source code | Managed Git | `managed_repo_id` + ref + exact commit SHA |
 | Preserve generated files or a deliverable | Published artifact | immutable artifact key + archive SHA-256 |
+| Inspect or import from one approved host folder | Host Directory | resource ID + relative path + revision |
 | Organize versions of published outputs | Artifact space | space path + logical artifact ID + version |
 | Ask a bounded question about a code snapshot | Code consultation | consultation ID + managed repo + pinned commit |
 
 A host checkout path is not a public repository identity. `/artifacts` is not a Git remote. An artifact key is not a mutable “latest” file. A consultation is not a persistent Team member. Keeping those distinctions sharp prevents a large class of provenance and cleanup errors.
 
-These are three separate data planes, and host paths remain private implementation details in all three flows.
+These are separate data planes, and host paths remain private implementation details in every flow.
 
 ![Managed Git carries a session-owned agent ref through an exact-SHA host pin, review, and lease-protected upstream publication.](../../assets/evander-user-manual/diagrams/08-managed-git.svg)
 
@@ -72,6 +75,8 @@ The safe outcome is often a refusal rather than an automatic recovery. That refu
 | Consultation exceeds capacity | It remains queued until capacity is released or its deadline expires. |
 | Consultation result cites invalid lines/path | Result submission fails validation; the snapshot remains authoritative. |
 | Consultation worker cleanup fails | The terminal record is retained and capacity is not released prematurely. |
+| Host Directory entry changes after listing | Import/delete rejects the stale revision; list again before deciding. |
+| Host Directory root or child is a symlink/mount crossing | The operation fails closed rather than following it. |
 
 ## Troubleshooting: what to hand to an administrator
 
@@ -79,11 +84,13 @@ Begin with the kind of object involved and its durable identity:
 
 1. For source code, record the directory, `managed_repo_id`, session ID, relevant ref, and exact commit SHA.
 2. For a published file bundle, record the artifact key, source session, publication status, and archive SHA-256 if shown. For an artifact-space conflict, also record the space path and revision.
-3. For a code consultation, record the consultation ID, source session, pinned commit, status, deadline, and cleanup state.
-4. Copy the exact refusal or error and note the last successful stage.
-5. Give those details to an Evander administrator. Do not move branch labels to “match,” overwrite an artifact, delete a retained cleanup record, or manually release a consultation snapshot or capacity slot.
+3. For a Host Directory, record its resource ID, relative path, revision or recovery ID, and
+   operation; never paste the operator-only absolute root into agent-visible notes.
+4. For a code consultation, record the consultation ID, source session, pinned commit, status, deadline, and cleanup state.
+5. Copy the exact refusal or error and note the last successful stage.
+6. Give those details to an Evander administrator. Do not move branch labels to “match,” overwrite an artifact, delete a retained cleanup record, hand-edit Host Directory quarantine, or manually release a consultation snapshot or capacity slot.
 
-The remainder of this chapter is managed-Git, artifact, consultation, and administrator reference material.
+The remainder of this chapter is managed-Git, Host Directory, artifact, consultation, and administrator reference material.
 
 ## Administrator reference: managed repository identity and trust scope
 
@@ -137,7 +144,7 @@ Publication is equally strict. When Northstar Platform's release agent publishes
 3. Push the exact approved SHA with an explicit destination lease.
 4. Serialize operations for the same destination while allowing unrelated destinations to proceed.
 
-This makes a race visible instead of letting stale automation overwrite a newer upstream branch. PR creation may reuse an existing PR for the same source/destination, but it does not weaken the exact-SHA push contract.
+This makes a race visible instead of letting stale automation overwrite a newer upstream branch. PR creation may reuse an existing PR for the same source/destination, but it does not weaken the exact-SHA push contract. Azure DevOps can briefly leave <code>lastMergeSourceCommit</code> on the preceding push; Evander confirms the expected SHA against the highest-ID PR iteration within a bounded window before accepting the reused PR. A source branch that genuinely moved still produces a conflict.
 
 ### Ephemeral host worktrees
 
@@ -152,6 +159,36 @@ It starts from a pinned host-only ref. Hooks, LFS smudge, submodule initializati
 The worktree is scratch space, not an agent sandbox. Never execute agent-authored builds or tests there. Success, failure, cancellation, and normal termination remove the worktree, prune its registration, and compare-and-swap delete its operation ref. Startup and periodic maintenance reconcile abandoned worktrees only when their lock is free and they are older than the configured stale threshold, one hour by default.
 
 ## Administrator reference: artifact lifecycle
+
+### Host Directory intake and recovery
+
+Host Directories are defined in the directory-scoped `host-directories.json` domain. Each named
+resource fixes an absolute non-root host directory, available capabilities, size/entry bounds,
+delete approval, and enabled state. Session `host_directory_grants` select exact
+`list`/`import`/`delete` capabilities. The dedicated MCP tools resolve every component relative to
+an already-open directory descriptor; parent traversal, symlinks, special files, and
+mount-boundary crossings are rejected. Agent responses never contain the configured root.
+When an existing libvirt session is reconciled with new Host Directory grants, Evander adds the
+dedicated tools implied by those capabilities while preserving its unrelated allowed tools.
+The Admin health operation opens the root and, when `delete` is enabled, creates and removes a
+private quarantine probe so an unwritable recovery area fails before agents receive access.
+
+Listing returns relative metadata plus a revision. File import copies bounded bytes into a
+session-owned communication artifact; directory import creates a deterministic `tar.gz`. That
+handle still needs the normal, separately granted artifact-copy path before bytes enter the
+workspace. Delete requires the listed revision and an explicit recursive flag for a non-empty
+directory. By default it also requires one-use exact-payload approval. The host moves the entry
+under `.evander-trash` and returns a recovery ID; Admin Web can restore it to an absent original
+destination or permanently purge it. V1 has no automatic purge. Scope markers and directory
+fsyncs make interrupted operations diagnosable: missing-payload or corrupt-metadata records remain
+visible to the owning directory, cannot be restored, and can be explicitly purged.
+
+`trigger:host-directory:file-added` uses the existing trigger worker. The first scan baselines
+existing regular files; later files must keep the same identity, size, and modification time for
+two polls and the configured settle interval. Directories, symlinks, and updates to a known file do
+not emit. Replacing a known path is still an update unless a scan first observes it absent; a
+delete observed before re-add creates a new event. Events carry the resource ID, relative path,
+size, timestamps, and revision, never the root.
 
 ### Session artifacts
 
@@ -248,10 +285,10 @@ For a legacy mirror deployment, do not improvise a partial conversion. Stop trig
 
 ## Source trail
 
-- `src/evander/admin/services/managed_git_service.py` — registry identity, ref transactions, restricted SSH integration, worktrees, publication, maintenance, and migration.
+- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, maintenance, and migration.
 - `scripts/git_ssh_command_wrapper.sh`, `scripts/guest/push_agent.sh`, and `scripts/guest/sync_base.sh` — guest capability and helper enforcement.
 - `src/evander/session_artifacts.py`, `src/evander/effects/providers/artifacts.py`, and `src/evander/published_artifacts.py` — safe artifact paths, publication, and immutable storage.
 - `src/evander/artifact_spaces.py` and `src/evander/admin/services/artifact_service.py` — logical spaces, grants, versions, and revision checking.
-- `src/evander/consultations.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` — persisted consultations, one-time result submission, worker lifecycle, and cleanup.
+- `src/evander/consultations.py`, `src/evander/code_consultation_service.py`, `src/evander/gateway/consultation_tools.py`, and `src/evander/effects/providers/code_consultation.py` — persisted consultations, one-time result submission, worker lifecycle, and cleanup behind the shared domain service.
 - `docs/git-remotes.md` and `docs/operations.md` — supported managed-Git and consultation runbooks.
-- `tests/test_managed_git_service.py`, `tests/test_managed_git_workflow_contract.py`, `tests/test_published_artifacts.py`, `tests/test_artifact_spaces.py`, and `tests/test_consultations.py` — current contract coverage.
+- `tests/test_managed_git_service.py`, `tests/test_managed_git_runtime_service.py`, `tests/test_managed_git_worktree_service.py`, `tests/test_managed_git_workflow_contract.py`, `tests/test_published_artifacts.py`, `tests/test_artifact_spaces.py`, and `tests/test_consultations.py` — current contract coverage.

@@ -12,6 +12,12 @@ from evander.policy import PolicyError
 
 from .api import _execute_prepared_action
 from .client import BokioClient
+from .duplicate_checks import (
+    DEFAULT_DUPLICATE_CHECK_MAX_AGE_SECONDS,
+    BokioDuplicateCheckError,
+    BokioDuplicateCheckStore,
+    check_journal_duplicates,
+)
 from .evidence import (
     BokioEvidenceStore,
     attach_evidence as _attach_evidence,
@@ -29,6 +35,7 @@ from .state import PreparedActionStore, upload_staging_dir
 GET_COMPANY_TOOL = "bokio_get_company"
 LIST_ACCOUNTS_TOOL = "bokio_list_accounts"
 LIST_JOURNAL_ENTRIES_TOOL = "bokio_list_journal_entries"
+CHECK_JOURNAL_DUPLICATES_TOOL = "bokio_check_journal_duplicates"
 LIST_CUSTOMERS_TOOL = "bokio_list_customers"
 GET_CUSTOMER_TOOL = "bokio_get_customer"
 LIST_INVOICES_TOOL = "bokio_list_invoices"
@@ -56,6 +63,7 @@ READ_TOOLS = (
     GET_COMPANY_TOOL,
     LIST_ACCOUNTS_TOOL,
     LIST_JOURNAL_ENTRIES_TOOL,
+    CHECK_JOURNAL_DUPLICATES_TOOL,
     LIST_CUSTOMERS_TOOL,
     GET_CUSTOMER_TOOL,
     LIST_INVOICES_TOOL,
@@ -95,6 +103,11 @@ MCP_TOOL_CATALOG = (
         LIST_JOURNAL_ENTRIES_TOOL,
         "List journal entries",
         "List Bokio journal entries with optional paging and filtering.",
+    ),
+    _catalog(
+        CHECK_JOURNAL_DUPLICATES_TOOL,
+        "Check journal duplicates",
+        "Scan all Bokio journal pages for matching entries and retain durable check evidence.",
     ),
     _catalog(
         LIST_CUSTOMERS_TOOL,
@@ -254,6 +267,35 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
                 query=query,
             )
         }
+
+    @server.tool(
+        name=CHECK_JOURNAL_DUPLICATES_TOOL,
+        description=(
+            "Check all Bokio journal-entry pages for entries matching date, account, amount, "
+            "title, invoice_number, or receipt_number criteria. The result includes a durable "
+            "evidence reference and is reused for up to 15 minutes by default."
+        ),
+    )
+    def bokio_check_journal_duplicates(
+        criteria: dict[str, Any],
+        max_age_seconds: int = DEFAULT_DUPLICATE_CHECK_MAX_AGE_SECONDS,
+        refresh: bool = False,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, CHECK_JOURNAL_DUPLICATES_TOOL)
+        try:
+            return {
+                "result": check_journal_duplicates(
+                    _client(context),
+                    BokioDuplicateCheckStore(context.runtime_dir),
+                    criteria=criteria,
+                    max_age_seconds=max_age_seconds,
+                    refresh=refresh,
+                )
+            }
+        except BokioDuplicateCheckError as exc:
+            raise ToolError(str(exc)) from exc
 
     @server.tool(
         name=LIST_CUSTOMERS_TOOL,

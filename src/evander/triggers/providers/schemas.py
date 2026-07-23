@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -15,6 +16,8 @@ from evander.events.provider_types import (
     validate_email_provider,
     validate_pr_feedback_provider,
 )
+from evander.host_directories.models import normalize_host_directory_id
+from evander.host_directories.paths import normalize_relative_host_path
 from evander.workflow.contracts import normalize_directory_paths, normalize_string_list
 
 _WEBHOOK_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -415,6 +418,38 @@ class RemoteIssueCommentCreatedTriggerDefinition(RemoteIssueMatchingTriggerDefin
 
 class ScriptRunRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:script-run-request"]
+
+
+class HostDirectoryFileAddedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:host-directory:file-added"]
+    directory_id: str = Field(min_length=1)
+    path: str = ""
+    recursive: bool = False
+    include_globs: list[str] = Field(default_factory=list)
+    exclude_globs: list[str] = Field(default_factory=list)
+    settle_seconds: float = Field(default=5.0, ge=0)
+
+    @field_validator("directory_id", mode="before")
+    @classmethod
+    def normalize_directory_id(cls, value: object) -> str:
+        return normalize_host_directory_id(value)
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def normalize_path(cls, value: object) -> str:
+        parts = normalize_relative_host_path(value, allow_empty=True)
+        return PurePosixPath(*parts).as_posix() if parts else ""
+
+    @field_validator("include_globs", "exclude_globs", mode="before")
+    @classmethod
+    def normalize_globs(cls, value: object) -> object:
+        normalized = normalize_string_list(value)
+        if not isinstance(normalized, list):
+            return normalized
+        for pattern in normalized:
+            if "\x00" in pattern or "\\" in pattern or pattern.startswith("/"):
+                raise ValueError("host directory globs must be relative POSIX patterns")
+        return normalized
 
 
 def _normalize_lower_string_list(value: object) -> object:

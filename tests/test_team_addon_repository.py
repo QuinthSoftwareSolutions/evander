@@ -36,6 +36,7 @@ from evander_team_addon.models import (
     ProjectGoal,
     ProjectStatus,
     ReleasePackage,
+    ReviewBlockKind,
     ReviewRequest,
     ReviewProfileCriterion,
     RolePermission,
@@ -53,6 +54,8 @@ from evander_team_addon.models import (
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamRecordState,
+    TaskCompletionKind,
+    TeamTaskKind,
     TeamTaskState,
     agent_project_ids,
     project_lead_agent_id,
@@ -1340,8 +1343,10 @@ def test_repository_mark_inbox_handled_command_is_all_or_nothing(
         session_id="session-backend",
         inbox_item_ids=["inbox-owned-1"],
     )
-    assert replay["success"] is False
-    assert replay["errors"][0]["code"] == "inbox_item_not_pending"
+    assert replay["success"] is True
+    assert replay["applied"] is False
+    assert replay["handled_inbox_item_ids"] == []
+    assert replay["already_handled_inbox_item_ids"] == ["inbox-owned-1"]
     assert replay_state.revision == state.revision
 
 
@@ -1944,6 +1949,8 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     }
     assert any("provenance only" in hint for hint in first["next_action_hints"])
     assert any("not_run" in hint for hint in first["next_action_hints"])
+    assert any("superior acceptance" in hint for hint in first["next_action_hints"])
+    assert first["waiting_reason"] == "superior_acceptance"
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert state.agent_runtimes["backend"].active_dispatch_id == "dispatch-slice7"
     notices = [
@@ -1958,6 +1965,39 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         "summary": "pytest is unavailable in this VM.",
         "evidence_refs": [],
     }
+
+
+def test_submit_deliverable_command_requires_direct_superior_before_publication(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="manager-task", owner_agent_id="manager")
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-manager")
+    published: list[dict[str, object]] = []
+
+    def publish(**kwargs: object) -> dict[str, object]:
+        published.append(dict(kwargs))
+        return {"artifact_ref": "artifact-space:/unexpected"}
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-manager",
+        id="manager-deliverable",
+        task_id="manager-task",
+        summary="Top-level work cannot wait for a nonexistent superior.",
+        artifact_paths=["reports/manager.txt"],
+        request_id="request-manager-deliverable",
+        artifact_publisher=publish,
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "direct_superior_required"
+    assert result["errors"][0]["correction_context"]["recommended_tools"] == [
+        "team_submit_deliverable_for_review",
+        "team_update_task",
+    ]
+    assert published == []
+    assert state.deliverables == {}
+    assert state.tasks["manager-task"].state == TeamTaskState.PENDING
 
 
 def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -> None:
@@ -2124,6 +2164,7 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     assert result["success"] is True
     assert result["deliverable_id"] == "deliverable-1"
     assert result["created_review_request_ids"] == ["review-1"]
+    assert result["waiting_reason"] == "review"
     assert [
         item.id
         for item in state.inbox.values()
@@ -2358,6 +2399,43 @@ def test_manual_blocker_resolve_allows_reporter_to_root_escalation_line(
         and event.actor_agent_id == resolver_agent_id
         for event in state.blocker_events.values()
     )
+
+
+def test_manual_blocker_resolve_is_idempotent_with_compatible_evidence(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="idempotent-resolve",
+    )
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-resolve-replay")
+    state, first = _command_service(repo).update_blocker_command(
+        session_id="session-worker",
+        blocker_id=blocker_id,
+        action="resolve",
+        note="The dependency is available.",
+        resolution_refs=["evidence-1"],
+        request_id="request-resolve-first",
+    )
+    first_revision = state.revision
+
+    replayed_state, replayed = _command_service(repo).update_blocker_command(
+        session_id="session-worker",
+        blocker_id=blocker_id,
+        action="resolve",
+        note="The dependency is available.",
+        resolution_refs=["evidence-1"],
+        request_id="request-resolve-replayed",
+    )
+
+    assert first["success"] is True
+    assert replayed["success"] is True
+    assert replayed["applied"] is False
+    assert replayed_state.revision == first_revision
+    assert replayed_state.blockers[blocker_id].terminal_reference_ids == ["evidence-1"]
 
 
 def test_manual_blocker_resolve_rejects_peer_even_when_delegated(tmp_path: Path) -> None:
@@ -2599,7 +2677,10 @@ def test_expired_top_owner_blocker_routes_to_governance_and_persists_event(
     )
     assert resolved["success"] is True
     assert state.governance_agenda[agenda_id].state == GovernanceAgendaItemState.HANDLED
-    assert state.blockers[blocker_id].terminal_reference_ids == [agenda_id]
+    assert state.blockers[blocker_id].terminal_reference_ids == [
+        agenda_id,
+        "recovery-evidence",
+    ]
 
 
 def test_top_owner_no_progress_routes_to_operator_and_persists_event(
@@ -3504,6 +3585,124 @@ def test_repository_update_task_command_reports_cross_project_graph_context(
     assert repo.read().tasks["backend-task"].dependency_task_ids == []
 
 
+def test_repository_update_task_command_owner_finishes_without_deliverable_notice(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="follow-up-task",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Follow-up",
+        description="Starts after the administrative task is finished.",
+        created_by_agent_id="backend",
+        dependency_task_ids=["backend-task"],
+    )
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        state="finished",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["backend-task"].state == TeamTaskState.FINISHED
+    assert state.dependency_status("follow-up-task") == "satisfied"
+    assert state.deliverables == {}
+    assert not any(
+        item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE for item in state.inbox.values()
+    )
+
+
+def test_repository_update_task_command_cannot_hide_blocked_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="blocked-deliverable",
+        task_id="backend-task",
+    )
+
+    def _block_deliverable(state):
+        state.deliverables["blocked-deliverable"].state = TeamRecordState.BLOCKED
+        return state
+
+    repo.update(_block_deliverable)
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        state="finished",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "task_completion_blocked_by_active_sources"
+    assert result["correction_context"]["blocked_deliverable_ids"] == [
+        "blocked-deliverable"
+    ]
+    assert state.tasks["backend-task"].state == TeamTaskState.PENDING
+
+
+def test_terminal_deliverable_action_rejects_late_high_priority_handoff_until_handled(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-stale-terminal")
+    wake_at = datetime(2099, 1, 1, tzinfo=UTC)
+
+    def _record_wake_snapshot(state):
+        state.agent_runtimes["backend"].last_wake_at = wake_at
+        return state
+
+    repo.update(_record_wake_snapshot)
+
+    def _add_late_directive(state):
+        created_at = wake_at + timedelta(seconds=1)
+        state.inbox["late-directive"] = AgentInboxItem(
+            id="late-directive",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="backend-task",
+            item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+            priority=TeamInboxPriority.HIGH,
+            payload={"message": "Use the corrected source document."},
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        return state
+
+    repo.update(_add_late_directive)
+    state, stale = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        summary="Prepared from the old source.",
+        request_id="request-stale-terminal",
+    )
+    assert stale["success"] is False
+    assert stale["errors"][0]["code"] == "stale_dispatch_context"
+    assert stale["correction_context"]["newer_high_priority_inbox_items"][0]["id"] == (
+        "late-directive"
+    )
+    assert state.deliverables == {}
+
+    state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        summary="Prepared from the corrected source.",
+        handled_inbox_item_ids=["late-directive"],
+        request_id="request-fresh-terminal",
+    )
+    assert submitted["success"] is True
+    assert state.inbox["late-directive"].state == TeamInboxItemState.HANDLED
+
+
 def test_repository_update_task_command_supervisor_finishes_subordinate_task(
     tmp_path: Path,
 ) -> None:
@@ -4308,6 +4507,9 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
         review_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_review_requests)")
         }
+        review_profile_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_review_profiles)")
+        }
         release_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_release_packages)")
         }
@@ -4328,14 +4530,21 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
     assert "state_entered_at" in task_columns
+    assert {"task_kind", "outcome_contract_json", "completion_json"} <= task_columns
     assert "supersedes_deliverable_id" in deliverable_columns
     assert "superseded_by_deliverable_id" in deliverable_columns
     assert "verification_json" in deliverable_columns
+    assert "outcomes_json" in deliverable_columns
+    assert {"supersession_reason", "superseded_at", "superseded_by_actor"} <= (
+        deliverable_columns
+    )
     assert "supersedes_review_request_id" in review_columns
     assert "superseded_by_review_request_id" in review_columns
     assert "retry_reason" in review_columns
     assert "retry_requested_by" in review_columns
     assert "criteria_snapshot_json" in review_columns
+    assert {"block_kind", "retired_at", "retired_by", "retirement_reason"} <= review_columns
+    assert "required_outcome_kinds_json" in review_profile_columns
     assert "gate_failure_json" in release_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
@@ -8453,6 +8662,298 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
     }
 
 
+def test_blocked_review_retry_preserves_attempt_and_reopens_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        producer_agent_id="backend",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-request-review")
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Verify the result.",
+        request_id="request-review-retry-source",
+    )
+    first_review_id = requested["review_request_id"]
+
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-block-review")
+    state, blocked = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id=first_review_id,
+        state="blocked",
+        block_kind="system",
+        findings=["The review environment was unavailable."],
+        request_id="request-review-blocked",
+    )
+    assert blocked["success"] is True
+    assert state.review_requests[first_review_id].block_kind == ReviewBlockKind.SYSTEM
+    assert state.deliverables["deliverable"].state == TeamRecordState.BLOCKED
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-retry-review")
+    state, retried = _command_service(repo).retry_review_command(
+        session_id="session-lead",
+        review_request_id=first_review_id,
+        reason="The review environment has recovered.",
+        request_id="request-review-retry",
+    )
+
+    successor_id = retried["replacement_review_request_id"]
+    original = state.review_requests[first_review_id]
+    successor = state.review_requests[successor_id]
+    assert original.state == TeamRecordState.BLOCKED
+    assert original.superseded_by_review_request_id == successor_id
+    assert successor.supersedes_review_request_id == first_review_id
+    assert successor.state == TeamRecordState.PENDING
+    assert successor.retry_reason == "The review environment has recovered."
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert all(
+        blocker.source_id != first_review_id or blocker.state == TeamBlockerState.RESOLVED
+        for blocker in state.blockers.values()
+    )
+
+
+def test_operator_review_retirement_is_explicit_and_preserves_the_blocked_attempt(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="review-blocked",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+    )
+    state = _team_admin_service(repo).record_review_decision(
+        review_request_id="review-blocked",
+        state=TeamRecordState.BLOCKED,
+        findings=["The record was created from an invalid historical handoff."],
+        expected_revision=state.revision,
+    )
+    reopened = TeamStateRepository(tmp_path)
+    assert reopened.read().review_requests["review-blocked"].retired_at is None
+    assert reopened.read().projects["project"].status == ProjectStatus.BLOCKED
+
+    state = _team_admin_service(reopened).retire_review_request(
+        review_request_id="review-blocked",
+        reason="Operator confirmed this review attempt was attached in error.",
+        operator_actor_id="operator:admin",
+        expected_revision=reopened.read().revision,
+    )
+
+    review = state.review_requests["review-blocked"]
+    assert review.state == TeamRecordState.BLOCKED
+    assert review.retired_at is not None
+    assert review.retired_by == "operator:admin"
+    assert review.retirement_reason == (
+        "Operator confirmed this review attempt was attached in error."
+    )
+    assert review.superseded_by_review_request_id is None
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_retiring_review_does_not_accept_deliverable_with_open_carried_findings(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable-v1", task_id="task")
+    admin = _team_admin_service(repo)
+    state = admin.record_review_request(
+        review_request_id="review-rejected",
+        deliverable_id="deliverable-v1",
+        reviewer_agent_id="worker",
+    )
+    state = admin.record_review_decision(
+        review_request_id="review-rejected",
+        state=TeamRecordState.REJECTED,
+        findings=["The original deliverable still has an unresolved finding."],
+        expected_revision=state.revision,
+    )
+    state = admin.record_deliverable(
+        deliverable_id="deliverable-v2",
+        task_id="task",
+        producer_agent_id="backend",
+        summary="Reworked deliverable.",
+        supersedes_deliverable_id="deliverable-v1",
+        expected_revision=state.revision,
+    )
+    assert any(
+        finding.state == "open"
+        for finding in state.deliverables["deliverable-v2"].carried_findings
+    )
+    state = admin.record_review_request(
+        review_request_id="review-accepted",
+        deliverable_id="deliverable-v2",
+        reviewer_agent_id="lead",
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="review-to-retire",
+        deliverable_id="deliverable-v2",
+        reviewer_agent_id="worker",
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_decision(
+        review_request_id="review-accepted",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=state.revision,
+    )
+
+    state = admin.retire_review_request(
+        review_request_id="review-to-retire",
+        reason="This unrelated review is no longer required.",
+        expected_revision=state.revision,
+    )
+
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_outcome_task_rejects_report_only_deliverable_and_completes_from_accepted_outcome(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-outcome-task")
+    state, created = _command_service(repo).create_task_command(
+        session_id="session-lead",
+        task_id="outcome-task",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Prepare the Bokio action",
+        description="Produce a reviewable bookkeeping action.",
+        task_kind="outcome",
+        outcome_contract={
+            "required_outcome_kinds": ["bokio_prepared_action"],
+            "match": "all",
+        },
+        request_id="request-create-outcome-task",
+    )
+    assert created["success"] is True
+    assert state.tasks["outcome-task"].task_kind == TeamTaskKind.OUTCOME
+
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit-outcome")
+    unchanged, report_only = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="outcome-task",
+        summary="I inspected the evidence.",
+        request_id="request-report-only",
+    )
+    assert report_only["success"] is False
+    assert report_only["errors"][0]["code"] == "deliverable_validation_failed"
+    assert "outcome contract" in report_only["errors"][0]["message"]
+    assert "outcome-task" not in {
+        deliverable.task_id for deliverable in unchanged.deliverables.values()
+    }
+
+    state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="outcome-task",
+        summary="Prepared the Bokio journal entry action.",
+        outcomes=[
+            {
+                "kind": "bokio_prepared_action",
+                "reference_ids": ["bokio-prepared-action-123"],
+                "evidence_refs": ["bokio-duplicate-check:check-123"],
+            }
+        ],
+        request_id="request-delivered-outcome",
+    )
+    deliverable_id = submitted["deliverable_id"]
+    assert submitted["success"] is True
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review-outcome")
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id=deliverable_id,
+        reviewer_agent_id="worker",
+        instructions="Confirm the prepared action and duplicate-check evidence.",
+        request_id="request-review-outcome",
+    )
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-accept-outcome")
+    state, accepted = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id=requested["review_request_id"],
+        state="accepted",
+        request_id="request-accept-outcome",
+    )
+
+    assert accepted["success"] is True
+    task = state.tasks["outcome-task"]
+    assert task.state == TeamTaskState.ACCEPTED
+    assert task.completion is not None
+    assert task.completion.kind == TaskCompletionKind.DELIVERED
+    assert task.completion.outcome_reference_ids == ["bokio-prepared-action-123"]
+
+
+def test_outcome_task_rejects_evidence_only_deliverable_and_allows_evidenced_noop(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-noop-task")
+    state, created = _command_service(repo).create_task_command(
+        session_id="session-lead",
+        task_id="noop-task",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Create the record if needed",
+        description="Do nothing when the durable record already exists.",
+        task_kind="outcome",
+        outcome_contract={
+            "required_outcome_kinds": [],
+            "allow_evidenced_noop": True,
+        },
+        request_id="request-create-noop-task",
+    )
+    assert created["success"] is True
+
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-noop-task")
+    unchanged, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="noop-task",
+        summary="The target record already exists.",
+        outcomes=[
+            {
+                "kind": "existing_record",
+                "evidence_refs": ["duplicate-check:123"],
+            }
+        ],
+        request_id="request-evidence-only-deliverable",
+    )
+
+    assert submitted["success"] is False
+    assert submitted["errors"][0]["code"] == "deliverable_validation_failed"
+    assert "reference_ids" in submitted["errors"][0]["message"]
+    assert unchanged.deliverables == {}
+
+    state, completed = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="noop-task",
+        state="finished",
+        completion={
+            "kind": "evidenced_noop",
+            "summary": "The target record already exists.",
+            "evidence_refs": ["duplicate-check:123"],
+        },
+        request_id="request-complete-evidenced-noop",
+    )
+
+    assert completed["success"] is True
+    task = state.tasks["noop-task"]
+    assert task.state == TeamTaskState.FINISHED
+    assert task.completion is not None
+    assert task.completion.kind == TaskCompletionKind.EVIDENCED_NOOP
+    assert task.completion.evidence_refs == ["duplicate-check:123"]
+
+
 def test_request_review_command_applies_matching_profile_and_enqueues_wake(
     tmp_path: Path,
 ) -> None:
@@ -8490,6 +8991,100 @@ def test_request_review_command_applies_matching_profile_and_enqueues_wake(
     assert [record.id for record in outbox_records] == result["outbox_record_ids"]
     assert outbox_records[0].status == TeamOutboxStatus.PENDING
     assert outbox_records[0].payload["payload"]["agent_id"] == "worker"
+
+
+def test_request_review_implicitly_selects_profile_by_deliverable_outcome(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _team_admin_service(repo).record_deliverable(
+        deliverable_id="deliverable",
+        task_id="task",
+        producer_agent_id="backend",
+        summary="Prepared action.",
+        outcomes=[
+            {
+                "kind": "prepared_action",
+                "reference_ids": ["prepared-action-1"],
+            }
+        ],
+    )
+    _seed_review_profile(
+        repo,
+        profile_id="action-review",
+        applicable_role_ids=["project__worker"],
+        required_outcome_kinds=["prepared_action"],
+    )
+    _seed_review_profile(
+        repo,
+        profile_id="evidence-review",
+        applicable_role_ids=["project__worker"],
+        required_outcome_kinds=["evidence_match"],
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-outcome-profile")
+
+    state, result = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Review the matching outcome.",
+        request_id="request-outcome-profile",
+    )
+
+    assert result["success"] is True
+    assert state.review_requests[result["review_request_id"]].review_profile_id == (
+        "action-review"
+    )
+
+
+def test_submit_deliverable_for_review_implicitly_selects_profile_by_outcome(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_review_profile(
+        repo,
+        profile_id="action-review",
+        applicable_role_ids=["project__worker"],
+        required_outcome_kinds=["prepared_action"],
+    )
+    _seed_review_profile(
+        repo,
+        profile_id="evidence-review",
+        applicable_role_ids=["project__worker"],
+        required_outcome_kinds=["evidence_match"],
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-submit-outcome-profile",
+    )
+
+    state, result = _command_service(repo).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "task_id": "task",
+            "summary": "Prepared action.",
+            "outcomes": [
+                {
+                    "kind": "prepared_action",
+                    "reference_ids": ["prepared-action-1"],
+                }
+            ],
+        },
+        reviews=[
+            {
+                "reviewer_agent_id": "worker",
+                "instructions": "Review the matching outcome.",
+            }
+        ],
+        request_id="request-submit-outcome-profile",
+    )
+
+    assert result["success"] is True
+    review_id = result["created_review_request_ids"][0]
+    assert state.review_requests[review_id].review_profile_id == "action-review"
 
 
 def test_submit_deliverable_for_review_command_enqueues_reviewer_wake(
@@ -8925,6 +9520,14 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert rework_item.payload["deliverable_id"] == "deliverable"
     assert rework_item.payload["supersedes_deliverable_id"] == "deliverable"
     assert rework_item.payload["findings"] == ["Needs rework."]
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "backend"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["reason"] == "inbox"
 
     _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=state.tasks["task"].state_entered_at + timedelta(minutes=1),
@@ -8949,6 +9552,11 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert result["success"] is True
     assert result["created_deliverable_ids"] == ["deliverable-v2"]
     assert state.deliverables["deliverable"].superseded_by_deliverable_id == ("deliverable-v2")
+    assert state.deliverables["deliverable"].supersession_reason == (
+        "Rework deliverable submitted."
+    )
+    assert state.deliverables["deliverable"].superseded_at is not None
+    assert state.deliverables["deliverable"].superseded_by_actor == "agent:backend"
     assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == ("deliverable")
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
@@ -12613,6 +13221,7 @@ def _seed_review_profile(
     project_id: str | None = "project",
     applicable_role_ids: list[str] | None = None,
     criteria: list[ReviewProfileCriterion] | None = None,
+    required_outcome_kinds: list[str] | None = None,
 ) -> None:
     _team_admin_service(repo).create_review_profile(
         profile_id=profile_id,
@@ -12632,18 +13241,20 @@ def _seed_review_profile(
                 id="docs", label="Docs updated", description="README/CHANGELOG", required=False
             ),
         ],
+        required_outcome_kinds=required_outcome_kinds,
     )
 
 
 def test_create_update_archive_review_profile(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    _seed_review_profile(repo)
+    _seed_review_profile(repo, required_outcome_kinds=["prepared_action"])
 
     state = repo.read()
     profile = state.review_profiles["profile"]
     assert profile.team_id == "team"
     assert profile.name == "Backend review"
     assert [c.id for c in profile.criteria] == ["tests", "docs"]
+    assert profile.required_outcome_kinds == ["prepared_action"]
     assert profile.applicable_role_ids == ["project__backend", "project__worker"]
     assert profile.archived is False
 
@@ -12651,11 +13262,13 @@ def test_create_update_archive_review_profile(tmp_path: Path) -> None:
         profile_id="profile",
         name="Renamed review",
         criteria=[ReviewProfileCriterion(id="tests", label="Tests pass")],
+        required_outcome_kinds=["final_action"],
         archived=True,
     )
     profile = state.review_profiles["profile"]
     assert profile.name == "Renamed review"
     assert [c.id for c in profile.criteria] == ["tests"]
+    assert profile.required_outcome_kinds == ["final_action"]
     assert profile.archived is True
 
 

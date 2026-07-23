@@ -5,6 +5,10 @@ from types import SimpleNamespace
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from evander.admin.services.codex_auth_admin_service import (
+    CodexAuthAdminDependencies,
+    CodexAuthAdminService,
+)
 from evander.admin.web import codex_auth as codex_auth_module
 
 
@@ -51,7 +55,7 @@ class FakeWorkerClient:
         return {"signed_in": False}
 
 
-def _service() -> SimpleNamespace:
+def _service(worker: FakeWorkerClient | None = None) -> SimpleNamespace:
     audit_events: list[object] = []
     provider_config = SimpleNamespace(
         resolve_for_directory=lambda directory_path: SimpleNamespace(
@@ -60,20 +64,27 @@ def _service() -> SimpleNamespace:
             container_worker_request_timeout_seconds=30.0,
         )
     )
+    runtime = SimpleNamespace(
+        provider_config=provider_config,
+        audit=SimpleNamespace(log=audit_events.append),
+    )
     return SimpleNamespace(
-        runtime=SimpleNamespace(
-            provider_config=provider_config,
-            audit=SimpleNamespace(log=audit_events.append),
+        runtime=runtime,
+        codex_auth_admin=CodexAuthAdminService(
+            CodexAuthAdminDependencies(
+                provider_config=provider_config,
+                audit=runtime.audit,
+                client_factory=lambda **_kwargs: worker or FakeWorkerClient(),
+            )
         ),
         audit_events=audit_events,
     )
 
 
-def test_admin_codex_auth_routes_proxy_account_actions_without_tokens(monkeypatch) -> None:  # noqa: ANN001
-    service = _service()
+def test_admin_codex_auth_routes_proxy_account_actions_without_tokens() -> None:
     auth = FakeAuth()
     worker = FakeWorkerClient()
-    monkeypatch.setattr(codex_auth_module, "ContainerWorkerClient", lambda **kwargs: worker)
+    service = _service(worker)
     app = Starlette(routes=codex_auth_module.codex_auth_routes(service, auth))
 
     with TestClient(app) as client:
@@ -106,13 +117,8 @@ def test_admin_codex_auth_routes_proxy_account_actions_without_tokens(monkeypatc
     assert all(check[1] == "root" for check in auth.permission_checks)
 
 
-def test_admin_codex_auth_requires_privileged_unlock(monkeypatch) -> None:  # noqa: ANN001
+def test_admin_codex_auth_requires_privileged_unlock() -> None:
     service = _service()
-    monkeypatch.setattr(
-        codex_auth_module,
-        "ContainerWorkerClient",
-        lambda **kwargs: FakeWorkerClient(),
-    )
     app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth(privileged=False)))
 
     with TestClient(app) as client:

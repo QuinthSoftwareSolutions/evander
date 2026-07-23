@@ -1309,6 +1309,7 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
             vm_provider="libvirt",
             directory_path="root",
             allowed_tools=[],
+            host_directory_grants={"shared": ["list", "import"]},
             allowed_contact_ids=["ops"],
             email_folder_allowlist_by_mailbox={
                 "primary": ["inbox"],
@@ -1347,6 +1348,9 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
     assert agents[0].host["session_policy"]["allowed_contact_ids"] == ["ops"]
+    assert agents[0].host["session_policy"]["host_directory_grants"] == {
+        "shared": ["list", "import"]
+    }
     assert agents[0].host["session_policy"]["email_folder_allowlist_by_mailbox"] == {
         "primary": ["inbox"],
         "archive": ["inbox", "archive"],
@@ -2329,6 +2333,14 @@ def test_create_container_agent_accepts_explicit_default_image_reference(
             "backend": "container_worker_vm",
             "session_id": "default-image-session",
             "container_image": "runner-base:latest",
+            "http_targets": {
+                "targets": {
+                    "docs": {
+                        "base_url": "https://docs.example.test/",
+                        "metadata": {"owner": "operator"},
+                    }
+                }
+            },
         }
     )
 
@@ -2352,6 +2364,14 @@ def test_create_container_agent_accepts_explicit_default_image_reference(
     assert manifest.metadata["container_worker"] == {
         "image": "runner-base:latest",
         "image_alias": None,
+    }
+    assert manifest.metadata["http_targets"] == {
+        "targets": {
+            "docs": {
+                "base_url": "https://docs.example.test",
+                "metadata": {"owner": "operator"},
+            }
+        }
     }
 
 
@@ -2464,6 +2484,13 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
             "vm_name": "lab-vm",
             "vm_image": "gpu",
             "model_provider_mode": "local_openai",
+            "http_targets": {
+                "targets": {
+                    "api": {
+                        "allowed_base_url": "https://api.example.test/v1/",
+                    }
+                }
+            },
         }
     )
 
@@ -2472,6 +2499,14 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
     assert result["vm_image_alias"] == "gpu"
     assert captured["metadata"] == {
         "model_provider_mode": "local_openai",
+        "http_targets": {
+            "targets": {
+                "api": {
+                    "base_url": "https://api.example.test/v1",
+                    "metadata": {},
+                }
+            }
+        },
         "libvirt_vm_template": {
             "image_ref": "ubuntu-24.04-gpu.img",
             "template_alias": "gpu",
@@ -5365,7 +5400,7 @@ def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch
     assert page["has_more_before"] is True
 
 
-def test_get_admin_agent_log_page_container_session_pages_across_runs(
+def test_get_admin_agent_log_page_container_session_fills_latest_page_across_runs(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -5389,9 +5424,9 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     )
     repository.put(
         ContainerWorkerExecutionRecord(
-            execution_id="exec-old",
+            execution_id="exec-agent",
             session_id="session-1",
-            worker_job_id="job-old",
+            worker_job_id="job-agent",
             worker_url="http://worker.test",
             target_name="target-1",
             started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
@@ -5401,9 +5436,9 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     )
     repository.put(
         ContainerWorkerExecutionRecord(
-            execution_id="exec-new",
+            execution_id="exec-artifact",
             session_id="session-1",
-            worker_job_id="job-new",
+            worker_job_id="job-artifact",
             worker_url="http://worker.test",
             target_name="target-1",
             started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
@@ -5414,7 +5449,8 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
 
     class FakeContainerBackend:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, int, str | None]] = []
+            self.page_calls: list[tuple[str, int, int, str | None, str | None]] = []
+            self.snapshot_calls: list[tuple[str, int, str | None]] = []
 
         def get_log_snapshot(
             self,
@@ -5423,10 +5459,44 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
             lines: int = 50,
             mode: str | None = None,
         ) -> str:
-            self.calls.append((target, lines, mode))
-            if target == "exec-new":
-                return "new line 1\nnew line 2\n"
-            return "old line 1\nold line 2\n"
+            self.snapshot_calls.append((target, lines, mode))
+            raise AssertionError("execution aggregation should use bounded paged log reads")
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            self.page_calls.append((target, limit, offset, query, mode))
+            if target == "exec-artifact":
+                text = (
+                    "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__\n"
+                    '{"success":true,"destination_path":"team-artifact-imports/report"}\n'
+                    "__EVANDER_ARTIFACT_EFFECT_JSON_END__\n"
+                )
+            else:
+                text = "\n".join(
+                    f"agent reasoning line {line_number}" for line_number in range(1, 1001)
+                )
+            lines = text.splitlines()
+            end_index = max(0, len(lines) - offset)
+            start_index = max(0, end_index - limit)
+            page_lines = lines[start_index:end_index]
+            return {
+                "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
+                "limit": limit,
+                "offset": offset,
+                "returned_lines": len(page_lines),
+                "total_lines": len(lines),
+                "start_line": start_index + 1 if page_lines else 0,
+                "end_line": end_index if page_lines else 0,
+                "has_more_before": start_index > 0,
+                "query": query,
+            }
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
@@ -5438,18 +5508,22 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     latest_page = service.vm_agent_admin.get_admin_agent_log_page(
         "session-1",
         backend="container_worker_vm",
-        limit=50,
+        limit=6,
     )
 
-    assert "execution=exec-new" in latest_page["text"]
-    assert "new line 2" in latest_page["text"]
-    assert "exec-old" not in latest_page["text"]
+    assert "execution=exec-artifact" in latest_page["text"]
+    assert "__EVANDER_ARTIFACT_EFFECT_JSON_END__" in latest_page["text"]
+    assert "agent reasoning line 1000" in latest_page["text"]
     assert "session transcript" not in latest_page["text"]
     assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
     assert latest_page["total_lines"] is None
     assert latest_page["view"] == "executions"
-    assert fake_backend.calls == [("exec-new", 0, "execution")]
+    assert fake_backend.page_calls == [
+        ("exec-artifact", 6, 0, None, "execution"),
+        ("exec-agent", 1, 0, None, "execution"),
+    ]
+    assert fake_backend.snapshot_calls == []
 
     older_page = service.vm_agent_admin.get_admin_agent_log_page(
         "session-1",
@@ -5458,18 +5532,20 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
         offset=int(latest_page["returned_lines"]),
     )
 
-    assert "execution=exec-old" in older_page["text"]
-    assert "old line 2" in older_page["text"]
-    assert "exec-new" not in older_page["text"]
+    assert "agent reasoning line 990" in older_page["text"]
+    assert "agent reasoning line 999" in older_page["text"]
+    assert "exec-artifact" not in older_page["text"]
     assert "session transcript" not in older_page["text"]
     assert "augmented" not in older_page["text"]
-    assert older_page["has_more_before"] is False
+    assert older_page["has_more_before"] is True
     assert older_page["view"] == "executions"
-    assert fake_backend.calls == [
-        ("exec-new", 0, "execution"),
-        ("exec-new", 0, "execution"),
-        ("exec-old", 0, "execution"),
+    assert fake_backend.page_calls == [
+        ("exec-artifact", 6, 0, None, "execution"),
+        ("exec-agent", 1, 0, None, "execution"),
+        ("exec-artifact", 16, 0, None, "execution"),
+        ("exec-agent", 11, 0, None, "execution"),
     ]
+    assert fake_backend.snapshot_calls == []
 
 
 def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_logs(
@@ -11873,7 +11949,8 @@ def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
 
 
 def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
+    config_path = write_config(tmp_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-a",
@@ -11890,6 +11967,28 @@ def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
+    service.config.pr_map_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "azure_devops:org/repo:42": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "42",
+                        "session_id": "session-a",
+                    },
+                    "azure_devops:org/repo:43": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "43",
+                        "session_id": "session-b",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = service.vm_agent_admin.delete_session("session-a")
 
@@ -11897,6 +11996,9 @@ def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
     assert result.success is True
     assert result.session_id == "session-a"
     assert set(remaining) == {"session-b"}
+    assert "removed_pr_map_entries=1" in result.message
+    pr_map = json.loads(service.config.pr_map_path.read_text(encoding="utf-8"))
+    assert set(pr_map["entries"]) == {"azure_devops:org/repo:43"}
 
 
 def test_delete_session_rejects_vm_linked_agent_session(tmp_path: Path) -> None:
@@ -13083,6 +13185,152 @@ def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
     assert result["status"] == "updated"
     assert updated is not None
     assert updated.teams_chat_allowlist == ["chat:chat-4"]
+
+
+def test_host_directory_policy_updates_validate_grants_and_enable_tools(
+    tmp_path: Path,
+) -> None:
+    host_root = tmp_path / "shared"
+    host_root.mkdir()
+    service = build_admin_runtime(
+        write_config(tmp_path, enable_directory_scoped_config=True)
+    )
+    assert service.operations_admin.write_directory_domain_config(
+        "root",
+        "host_directories",
+        {
+            "host_directories": {
+                "shared": {
+                    "display_name": "Shared",
+                    "description": "Files shared with selected sessions",
+                    "root": str(host_root),
+                    "capabilities": ["list", "import"],
+                }
+            }
+        },
+    ).ok
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-host-directory",
+            vm_id="vm-host-directory",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    result = service.operations_admin.update_session_policy(
+        "agent-host-directory",
+        {"host_directory_grants": {"shared": ["list"]}},
+    )
+
+    assert result.success is True
+    updated = service.runtime.session_repository.get_session("agent-host-directory")
+    assert updated is not None
+    assert updated.host_directory_grants == {"shared": ["list"]}
+    assert ToolName.HOST_DIRECTORY_LIST in updated.allowed_tools
+
+    agent_result = service.vm_agent_admin.update_admin_agent(
+        "vm-host-directory",
+        payload={"host_directory_grants": {"shared": ["import"]}},
+    )
+    assert agent_result["status"] == "updated"
+    updated = service.runtime.session_repository.get_session("agent-host-directory")
+    assert updated is not None
+    assert updated.host_directory_grants == {"shared": ["import"]}
+    assert ToolName.HOST_DIRECTORY_LIST in updated.allowed_tools
+    assert ToolName.HOST_DIRECTORY_IMPORT in updated.allowed_tools
+
+    with pytest.raises(ValueError, match="unavailable capabilities"):
+        service.operations_admin.update_session_policy(
+            "agent-host-directory",
+            {"host_directory_grants": {"shared": ["delete"]}},
+        )
+
+
+def test_admin_http_target_updates_are_validated_and_preserve_other_metadata(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-http-targets",
+            vm_id="vm-http-targets",
+            allowed_tools=[],
+            metadata={
+                "keep": {"workflow": "current"},
+                "example_app": {
+                    "environments": {"legacy": {"base_url": "https://legacy.example.test"}}
+                },
+                "http_targets": {
+                    "targets": {
+                        "old": {
+                            "base_url": "https://old.example.test",
+                            "metadata": {"owner": "workflow"},
+                        }
+                    }
+                },
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.operations_admin.update_session_policy(
+        "agent-http-targets",
+        {
+            "http_targets": {
+                "targets": {
+                    "api": {
+                        "allowed_base_url": "https://api.example.test/v1/",
+                        "metadata": {"owner": "workflow"},
+                    }
+                }
+            }
+        },
+    )
+
+    assert result.success is True
+    updated = service.runtime.session_repository.get_session("agent-http-targets")
+    assert updated is not None
+    assert updated.metadata["keep"] == {"workflow": "current"}
+    assert updated.metadata["http_targets"] == {
+        "targets": {
+            "api": {
+                "base_url": "https://api.example.test/v1",
+                "metadata": {"owner": "workflow"},
+            }
+        }
+    }
+
+    service.operations_admin.update_session_policy(
+        "agent-http-targets",
+        {"metadata": {"keep": {"operator": "edited"}}},
+    )
+    updated = service.runtime.session_repository.get_session("agent-http-targets")
+    assert updated is not None
+    assert updated.metadata["keep"] == {"operator": "edited"}
+    assert updated.http_target("api").base_url == "https://api.example.test/v1"
+
+    agent_result = service.vm_agent_admin.update_admin_agent(
+        "vm-http-targets",
+        payload={"http_targets": {"targets": {}}},
+    )
+    assert agent_result["status"] == "updated"
+    updated = service.runtime.session_repository.get_session("agent-http-targets")
+    assert updated is not None
+    assert updated.metadata["http_targets"] == {"targets": {}}
+    assert updated.http_targets_metadata().targets == {}
+
+    with pytest.raises(ValueError, match="http_targets is invalid"):
+        service.vm_agent_admin.update_admin_agent(
+            "vm-http-targets",
+            payload={
+                "http_targets": {
+                    "targets": {
+                        "bad": {"base_url": "file:///tmp/not-allowed"},
+                    }
+                }
+            },
+        )
 
 
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
@@ -15079,6 +15327,54 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     assert manifest.web_search_enabled is False
 
 
+def test_create_vm_upsert_enables_tools_for_host_directory_grants(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.process_helpers.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+        host_directory_grants={
+            "shared": ["list", "import", "delete"],
+        },
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.host_directory_grants == {
+        "shared": ["list", "import", "delete"],
+    }
+    assert {
+        ToolName.GET_AGENT_STATUS,
+        ToolName.HOST_DIRECTORY_LIST,
+        ToolName.HOST_DIRECTORY_IMPORT,
+        ToolName.HOST_DIRECTORY_DELETE,
+    } <= set(manifest.allowed_tools)
+
+
 def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -15091,6 +15387,7 @@ def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes
             directory_path="root/team-a",
             allowed_tools=[ToolName.CALL_CONNECTOR],
             connector_grants={"documents": ["get_document"]},
+            host_directory_grants={"shared": ["list"]},
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         )
     )
@@ -15120,6 +15417,7 @@ def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes
     assert manifest is not None
     assert manifest.directory_path == "root/team-b"
     assert manifest.connector_grants == {}
+    assert manifest.host_directory_grants == {}
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
