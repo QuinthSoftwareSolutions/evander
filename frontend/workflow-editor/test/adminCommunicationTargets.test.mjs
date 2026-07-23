@@ -10,6 +10,10 @@ const configurationNavigation = readFileSync(
   new URL("../src/features/configuration/configurationNavigation.ts", import.meta.url),
   "utf8",
 );
+const emailMailboxConfiguration = readFileSync(
+  new URL("../src/features/configuration/EmailMailboxConfiguration.tsx", import.meta.url),
+  "utf8",
+);
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("communication target editor preserves capability drafts and inserts Teams channels into the draft", () => {
@@ -45,12 +49,18 @@ test("communication target editor preserves capability drafts and inserts Teams 
 
 test("email policy mailbox references use structured mailbox and folder selectors", () => {
   assert.match(configuration, /isEmailMailboxFolderPolicyField\(field\)/);
-  assert.match(configuration, /renderEmailMailboxFolderPolicyEditor/);
-  assert.match(configuration, /Add mailbox policy/);
-  assert.match(configuration, /<strong>Allowed folders<\/strong>/);
-  assert.match(configuration, /renderEmailMailboxAllowlistEditor/);
-  assert.match(configuration, /Select the configured mailboxes that sessions in this directory may access/);
-  assert.match(configuration, /Configure an email mailbox before adding it to the policy/);
+  assert.match(configuration, /<EmailMailboxFolderPolicyEditor/);
+  assert.match(configuration, /<EmailMailboxAllowlistEditor/);
+  assert.match(emailMailboxConfiguration, /Add mailbox policy/);
+  assert.match(emailMailboxConfiguration, /<strong>Allowed folders<\/strong>/);
+  assert.match(
+    emailMailboxConfiguration,
+    /Select the configured mailboxes that sessions in this directory may access/,
+  );
+  assert.match(
+    emailMailboxConfiguration,
+    /Configure an email mailbox before adding it to the policy/,
+  );
 });
 
 test("configuration screen does not render raw secret-bearing Teams auth fields", () => {

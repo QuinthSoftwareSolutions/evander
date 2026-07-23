@@ -14,12 +14,10 @@ from pathlib import Path, PurePosixPath
 import pwd
 import re
 import shutil
-import signal
 import sqlite3
 import subprocess
 import tempfile
 import threading
-import time
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from urllib.error import HTTPError, URLError
@@ -27,6 +25,27 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from evander.admin.payloads import AdminRevisionConflict
+from evander.admin.services.managed_git_common import (
+    DEFAULT_STALE_WORKTREE_SECONDS,
+    ManagedGitConflictError,
+    ManagedGitNotFoundError,
+    _HEX_OBJECT_ID,
+    _SAFE_OPERATION_ID,
+    _delete_ref_cas as _delete_managed_ref_cas,
+    _managed_bare_path,
+    _normalize_object_id,
+    _normalize_ref,
+    _require_commit as _require_managed_commit,
+    _resolve_ref as _resolve_managed_ref,
+    _run_update_ref_transaction as _run_managed_update_ref_transaction,
+    _utc_now,
+    _with_git_config_environment,
+    _write_json_atomic,
+)
+from evander.admin.services.managed_git_worktree_service import (
+    ManagedGitWorktreeDependencies,
+    ManagedGitWorktreeService,
+)
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.consultations import consultation_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
@@ -45,11 +64,7 @@ REGISTRY_FILENAME = "managed-git-repositories.json"
 DEFAULT_HOST_COMMIT_NAME = "Truman Bot"
 DEFAULT_HOST_COMMIT_EMAIL = "truman@quinth.se"
 DEFAULT_GIT_OPERATION_TIMEOUT_SECONDS = 5 * 60
-DEFAULT_STALE_WORKTREE_SECONDS = 60 * 60
 _RESERVED_BRANCH_ROOTS = frozenset({"agents", "review", "team"})
-_MANIFEST_FILENAME = "manifest.json"
-_HEX_OBJECT_ID = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
-_SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _LEGACY_MANAGED_GIT_FIELDS = frozenset(
     {
         "host_repo_path",
@@ -75,18 +90,6 @@ _B64_ASSIGNMENT_PATTERN = re.compile(
 )
 _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
 _AZURE_PR_DESCRIPTION_MAX_CHARS = 4000
-
-
-class ManagedGitNotFoundError(LookupError):
-    status_code = 404
-
-
-class ManagedGitConflictError(RuntimeError):
-    status_code = 409
-
-    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.details = dict(details or {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,10 +123,6 @@ class _MigrationFileRewrite:
         return hashlib.sha256(self.after).hexdigest()
 
 
-def _utc_now() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 def _is_same_or_descendant(path: str, ancestor: str) -> bool:
     return path == ancestor or path.startswith(f"{ancestor}/")
 
@@ -145,30 +144,6 @@ def _normalize_branch(value: str, *, field_name: str) -> str:
     if result.returncode != 0:
         raise ValueError(f"{field_name} is not a valid Git branch name: {branch}")
     return branch
-
-
-def _normalize_ref(value: str, *, field_name: str) -> str:
-    ref_name = str(value or "").strip()
-    if not ref_name:
-        raise ValueError(f"{field_name} is required")
-    if not ref_name.startswith("refs/"):
-        ref_name = f"refs/heads/{ref_name}"
-    result = subprocess.run(
-        ["git", "check-ref-format", ref_name],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ValueError(f"{field_name} is not a valid Git ref: {ref_name}")
-    return ref_name
-
-
-def _normalize_object_id(value: str, *, field_name: str) -> str:
-    object_id = str(value or "").strip().lower()
-    if not _HEX_OBJECT_ID.fullmatch(object_id):
-        raise ValueError(f"{field_name} must be an exact 40- or 64-character Git object ID")
-    return object_id
 
 
 def _safe_checkout_name(value: object, *, fallback: str) -> str:
@@ -208,8 +183,28 @@ class ManagedGitAdminService:
         self._lock_root = self.runtime_dir / "managed-git-locks"
         self._migration_root = self.runtime_dir / "managed-git-migrations"
         self._migration_preflight_context = threading.local()
-        self._active_worktree_cleanups: dict[str, Any] = {}
-        self._active_worktree_cleanups_lock = threading.RLock()
+        self._worktrees = ManagedGitWorktreeService(
+            ManagedGitWorktreeDependencies(
+                stale_worktree_seconds=float(
+                    getattr(
+                        config,
+                        "managed_git_worktree_stale_seconds",
+                        DEFAULT_STALE_WORKTREE_SECONDS,
+                    )
+                ),
+                runtime_dir=self.runtime_dir,
+                managed_root=self._managed_root,
+                worktree_root=self._worktree_root,
+                require_record=lambda managed_repo_id: self._require_record(managed_repo_id),
+                require_migration_preflight=lambda: self._require_migration_preflight(),
+                read_registry=lambda: self._read_registry(),
+                repo_lock=lambda managed_repo_id, *, exclusive: self._repo_lock(
+                    managed_repo_id,
+                    exclusive=exclusive,
+                ),
+                run_git=lambda command, **kwargs: self._run_git(command, **kwargs),
+            )
+        )
         self._workflow_config_admin: Any | None = None
         self._agent_inventory_admin: Any | None = None
         self._registry_path = self.runtime_dir / REGISTRY_FILENAME
@@ -2563,150 +2558,17 @@ class ManagedGitAdminService:
         operation_id: str | None = None,
         purpose: str = "managed-git-operation",
     ) -> Iterator[Path]:
-        record = self._require_record(managed_repo_id)
-        bare_path = self._bare_path(record)
-        normalized_ref = _normalize_ref(source_ref, field_name="source_ref") if source_ref else None
-        expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
-        if normalized_ref is None and expected is None:
-            raise ValueError("temporary_worktree requires source_ref or commit_sha")
-        if normalized_ref is not None:
-            current = self._resolve_ref(bare_path, normalized_ref)
-            if current is None:
-                raise ManagedGitNotFoundError(
-                    f"Unknown source ref {normalized_ref} in {managed_repo_id}"
-                )
-            if expected is not None and current != expected:
-                raise ManagedGitConflictError(
-                    f"Source ref {normalized_ref} no longer equals {expected}"
-                )
-            expected = current
-        assert expected is not None
-        self._require_commit(bare_path, expected)
-        op_id = str(operation_id or f"op-{uuid4().hex}").strip()
-        if not _SAFE_OPERATION_ID.fullmatch(op_id):
-            raise ValueError("operation_id contains unsupported characters")
-        operation_ref = f"refs/evander/worktrees/{op_id}"
-        repo_worktree_root = self._worktree_root / managed_repo_id
-        operation_dir = repo_worktree_root / op_id
-        checkout_path = operation_dir / "checkout"
-        lock_path = repo_worktree_root / f".{op_id}.lock"
-        repo_worktree_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        repo_worktree_root.chmod(0o700)
-        if operation_dir.exists():
-            raise ManagedGitConflictError(f"Worktree operation already exists: {op_id}")
-
-        with self._repo_lock(managed_repo_id, exclusive=False):
-            with lock_path.open("a+", encoding="utf-8") as lock_handle:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-                operation_dir.mkdir(mode=0o700)
-                operation_dir.chmod(0o700)
-                cleanup_done = False
-                cleanup_lock = threading.Lock()
-                cleanup_key = f"{managed_repo_id}:{op_id}"
-
-                def cleanup() -> None:
-                    nonlocal cleanup_done
-                    with cleanup_lock:
-                        if cleanup_done:
-                            return
-                        self._remove_worktree(
-                            record,
-                            operation_dir=operation_dir,
-                            checkout_path=checkout_path,
-                            operation_ref=operation_ref,
-                            commit_sha=expected,
-                        )
-                        cleanup_done = True
-
-                old_handlers: dict[int, Any] = {}
-                self._register_active_worktree_cleanup(cleanup_key, cleanup)
-                try:
-                    transaction = [f"create {operation_ref} {expected}"]
-                    if normalized_ref:
-                        transaction.insert(0, f"verify {normalized_ref} {expected}")
-                    self._run_update_ref_transaction(bare_path, transaction)
-                    safe_env = self._safe_worktree_environment()
-                    self._write_json_atomic(
-                        operation_dir / _MANIFEST_FILENAME,
-                        {
-                            "schema": "evander.managed-git-worktree/v1",
-                            "managed_repo_id": managed_repo_id,
-                            "operation_id": op_id,
-                            "operation_ref": operation_ref,
-                            "commit_sha": expected,
-                            "source_ref": normalized_ref,
-                            "purpose": str(purpose or "managed-git-operation")[:200],
-                            "created_at": _utc_now(),
-                        },
-                        mode=0o600,
-                    )
-                    self._run_git(
-                        [
-                            "git",
-                            f"--git-dir={bare_path}",
-                            "worktree",
-                            "add",
-                            "--detach",
-                            "--no-checkout",
-                            str(checkout_path),
-                            operation_ref,
-                        ],
-                        env=safe_env,
-                    )
-                    self._run_git(
-                        [
-                            "git",
-                            "-C",
-                            str(checkout_path),
-                            "checkout",
-                            "--detach",
-                            expected,
-                            "--",
-                        ],
-                        env=safe_env,
-                    )
-                    old_handlers = self._install_cleanup_signal_handlers(cleanup)
-                    yield checkout_path
-                except Exception as exc:
-                    sanitized = self._sanitize_managed_worktree_error(
-                        str(exc), operation_dir=operation_dir
-                    )
-                    if sanitized != str(exc):
-                        raise ManagedGitConflictError(sanitized) from None
-                    raise
-                finally:
-                    self._restore_signal_handlers(old_handlers)
-                    try:
-                        cleanup()
-                    finally:
-                        self._unregister_active_worktree_cleanup(cleanup_key, cleanup)
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-            lock_path.unlink(missing_ok=True)
+        with self._worktrees.temporary_worktree(
+            managed_repo_id,
+            commit_sha=commit_sha,
+            source_ref=source_ref,
+            operation_id=operation_id,
+            purpose=purpose,
+        ) as worktree:
+            yield worktree
 
     def cleanup_active_worktrees(self) -> dict[str, int]:
-        with self._active_worktree_cleanups_lock:
-            cleanups = list(self._active_worktree_cleanups.values())
-        cleaned = 0
-        failed = 0
-        for cleanup in cleanups:
-            try:
-                cleanup()
-            except Exception:
-                failed += 1
-            else:
-                cleaned += 1
-        return {"cleaned": cleaned, "failed": failed}
-
-    def _register_active_worktree_cleanup(self, key: str, cleanup: Any) -> None:
-        with self._active_worktree_cleanups_lock:
-            if key in self._active_worktree_cleanups:
-                raise ManagedGitConflictError("Managed worktree cleanup is already registered")
-            self._active_worktree_cleanups[key] = cleanup
-
-    def _unregister_active_worktree_cleanup(self, key: str, cleanup: Any) -> None:
-        with self._active_worktree_cleanups_lock:
-            if self._active_worktree_cleanups.get(key) is cleanup:
-                self._active_worktree_cleanups.pop(key, None)
+        return self._worktrees.cleanup_active_worktrees()
 
     def reconcile_stale_worktrees(
         self,
@@ -2714,112 +2576,10 @@ class ManagedGitAdminService:
         *,
         older_than_seconds: float | None = None,
     ) -> dict[str, Any]:
-        self._require_migration_preflight()
-        threshold = (
-            float(older_than_seconds)
-            if older_than_seconds is not None
-            else float(
-                getattr(
-                    self.config,
-                    "managed_git_worktree_stale_seconds",
-                    DEFAULT_STALE_WORKTREE_SECONDS,
-                )
-            )
+        return self._worktrees.reconcile_stale_worktrees(
+            managed_repo_id,
+            older_than_seconds=older_than_seconds,
         )
-        if threshold < 0:
-            raise ValueError("older_than_seconds cannot be negative")
-        records = self._read_registry()["repositories"]
-        repo_ids = [managed_repo_id] if managed_repo_id else sorted(records)
-        removed: list[dict[str, str]] = []
-        skipped_locked: list[dict[str, str]] = []
-        skipped_recent: list[dict[str, str]] = []
-        invalid: list[dict[str, str]] = []
-        now = time.time()
-        for repo_id in repo_ids:
-            record = records.get(repo_id)
-            if not isinstance(record, dict):
-                if managed_repo_id:
-                    raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
-                continue
-            repo_root = self._worktree_root / repo_id
-            if not repo_root.exists():
-                continue
-            for operation_dir in sorted(path for path in repo_root.iterdir() if path.is_dir()):
-                manifest_path = operation_dir / _MANIFEST_FILENAME
-                manifest: dict[str, Any] | None = None
-                try:
-                    loaded_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if (
-                        not isinstance(loaded_manifest, dict)
-                        or loaded_manifest.get("schema") != "evander.managed-git-worktree/v1"
-                        or loaded_manifest.get("managed_repo_id") != repo_id
-                        or loaded_manifest.get("operation_id") != operation_dir.name
-                        or loaded_manifest.get("operation_ref")
-                        != f"refs/evander/worktrees/{operation_dir.name}"
-                        or not _HEX_OBJECT_ID.fullmatch(
-                            str(loaded_manifest.get("commit_sha") or "")
-                        )
-                    ):
-                        raise ValueError("manifest identity mismatch")
-                    manifest = loaded_manifest
-                    created = datetime.fromisoformat(str(manifest["created_at"]))
-                    age = now - created.timestamp()
-                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                    invalid.append(
-                        {
-                            "managed_repo_id": repo_id,
-                            "operation_id": operation_dir.name,
-                            "error": str(exc),
-                        }
-                    )
-                    try:
-                        age = now - operation_dir.stat().st_mtime
-                    except OSError:
-                        continue
-                    if not _SAFE_OPERATION_ID.fullmatch(operation_dir.name):
-                        continue
-                if age < threshold:
-                    skipped_recent.append(
-                        {"managed_repo_id": repo_id, "operation_id": operation_dir.name}
-                    )
-                    continue
-                lock_path = repo_root / f".{operation_dir.name}.lock"
-                with lock_path.open("a+", encoding="utf-8") as lock_handle:
-                    try:
-                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        skipped_locked.append(
-                            {"managed_repo_id": repo_id, "operation_id": operation_dir.name}
-                        )
-                        continue
-                    try:
-                        with self._repo_lock(repo_id, exclusive=False):
-                            if manifest is None:
-                                self._remove_unmanifested_worktree(
-                                    record,
-                                    operation_dir=operation_dir,
-                                    operation_id=operation_dir.name,
-                                )
-                            else:
-                                self._remove_worktree(
-                                    record,
-                                    operation_dir=operation_dir,
-                                    checkout_path=operation_dir / "checkout",
-                                    operation_ref=str(manifest["operation_ref"]),
-                                    commit_sha=str(manifest["commit_sha"]),
-                                )
-                        removed.append(
-                            {"managed_repo_id": repo_id, "operation_id": operation_dir.name}
-                        )
-                    finally:
-                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                lock_path.unlink(missing_ok=True)
-        return {
-            "removed": removed,
-            "skipped_locked": skipped_locked,
-            "skipped_recent": skipped_recent,
-            "invalid": invalid,
-        }
 
     def migrate(
         self,
@@ -6546,142 +6306,13 @@ class ManagedGitAdminService:
         return username, password
 
     def _safe_worktree_environment(self) -> dict[str, str]:
-        empty_hooks = self.runtime_dir / "managed-git-empty-hooks"
-        empty_hooks.mkdir(parents=True, exist_ok=True, mode=0o700)
-        empty_hooks.chmod(0o700)
-        env = os.environ.copy()
-        env.pop("EVANDER_GIT_USERNAME", None)
-        env.pop("EVANDER_GIT_PASSWORD", None)
-        env.update(
-            {
-                "GIT_TERMINAL_PROMPT": "0",
-                "GCM_INTERACTIVE": "never",
-                "GIT_LFS_SKIP_SMUDGE": "1",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_GLOBAL": os.devnull,
-            }
-        )
-        return self._with_git_config_environment(
-            env,
-            {
-                "credential.helper": "",
-                "core.hooksPath": str(empty_hooks),
-                "commit.gpgSign": "false",
-                "tag.gpgSign": "false",
-                "submodule.recurse": "false",
-                "filter.lfs.smudge": "",
-                "filter.lfs.required": "false",
-            },
-        )
+        return self._worktrees.safe_environment()
 
     @staticmethod
     def _with_git_config_environment(
         env: Mapping[str, str], config: Mapping[str, str]
     ) -> dict[str, str]:
-        result = dict(env)
-        for key in list(result):
-            if (
-                key in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
-                or re.fullmatch(r"GIT_CONFIG_(?:KEY|VALUE)_\d+", key)
-                or key.startswith("GIT_TRACE")
-                or key in {"GIT_CURL_VERBOSE", "GIT_TRANSPORT_HELPER_DEBUG"}
-            ):
-                result.pop(key, None)
-        result["GIT_CONFIG_COUNT"] = str(len(config))
-        for index, (key, value) in enumerate(config.items()):
-            result[f"GIT_CONFIG_KEY_{index}"] = key
-            result[f"GIT_CONFIG_VALUE_{index}"] = value
-        return result
-
-    def _remove_worktree(
-        self,
-        record: Mapping[str, Any],
-        *,
-        operation_dir: Path,
-        checkout_path: Path,
-        operation_ref: str,
-        commit_sha: str,
-    ) -> None:
-        bare_path = self._bare_path(record)
-        operation_id = operation_dir.name
-        try:
-            self._remove_checkout_and_registration(
-                bare_path,
-                checkout_path=checkout_path,
-            )
-            self._delete_ref_cas(bare_path, operation_ref, commit_sha)
-            if operation_dir.exists():
-                shutil.rmtree(operation_dir)
-        except Exception:
-            raise ManagedGitConflictError(
-                "Managed worktree cleanup failed; the operation remains available for "
-                f"reconciliation ({record['managed_repo_id']}/{operation_id})"
-            ) from None
-
-    def _remove_unmanifested_worktree(
-        self,
-        record: Mapping[str, Any],
-        *,
-        operation_dir: Path,
-        operation_id: str,
-    ) -> None:
-        """Reconcile an interrupted operation that died before its manifest was durable."""
-        bare_path = self._bare_path(record)
-        checkout_path = operation_dir / "checkout"
-        try:
-            self._remove_checkout_and_registration(
-                bare_path,
-                checkout_path=checkout_path,
-            )
-            operation_ref = f"refs/evander/worktrees/{operation_id}"
-            commit_sha = self._resolve_ref(bare_path, operation_ref)
-            if commit_sha is not None:
-                self._delete_ref_cas(bare_path, operation_ref, commit_sha)
-            if operation_dir.exists():
-                shutil.rmtree(operation_dir)
-        except BaseException:
-            raise ManagedGitConflictError(
-                "Managed worktree cleanup failed; the operation remains available for "
-                f"reconciliation ({record['managed_repo_id']}/{operation_id})"
-            ) from None
-
-    def _remove_checkout_and_registration(
-        self,
-        bare_path: Path,
-        *,
-        checkout_path: Path,
-    ) -> None:
-        if checkout_path.exists():
-            self._run_git(
-                [
-                    "git",
-                    f"--git-dir={bare_path}",
-                    "worktree",
-                    "remove",
-                    "--force",
-                    str(checkout_path),
-                ],
-                check=False,
-            )
-        # A failed Git removal can leave both the checkout and its registration.
-        # Remove the filesystem entry first, prune again, and verify registration
-        # before discarding the manifest that makes recovery discoverable.
-        if checkout_path.exists():
-            shutil.rmtree(checkout_path)
-        self._run_git(
-            ["git", f"--git-dir={bare_path}", "worktree", "prune", "--expire", "now"],
-            check=False,
-        )
-        registered = self._run_git(
-            ["git", f"--git-dir={bare_path}", "worktree", "list", "--porcelain"],
-            check=False,
-        )
-        checkout_real = checkout_path.resolve(strict=False)
-        for line in registered.stdout.splitlines():
-            if not line.startswith("worktree "):
-                continue
-            if Path(line.removeprefix("worktree ")).resolve(strict=False) == checkout_real:
-                raise ManagedGitConflictError("managed worktree registration is still active")
+        return _with_git_config_environment(env, config)
 
     def _sanitize_managed_worktree_error(
         self,
@@ -6689,39 +6320,10 @@ class ManagedGitAdminService:
         *,
         operation_dir: Path,
     ) -> str:
-        sanitized = str(message or "Managed worktree operation failed")
-        replacements = sorted(
-            {
-                str(self._worktree_root),
-                str(operation_dir),
-                str(operation_dir / "checkout"),
-            },
-            key=len,
-            reverse=True,
-        )
-        for path in replacements:
-            sanitized = sanitized.replace(path, "<managed-worktree>")
-        return sanitized
+        return self._worktrees.sanitize_error(message, operation_dir=operation_dir)
 
     def _has_registered_worktrees(self, record: Mapping[str, Any]) -> bool:
-        repo_id = str(record["managed_repo_id"])
-        repo_root = self._worktree_root / repo_id
-        if repo_root.exists() and any(path.is_dir() for path in repo_root.iterdir()):
-            return True
-        bare_path = self._bare_path(record)
-        result = self._run_git(
-            ["git", f"--git-dir={bare_path}", "worktree", "list", "--porcelain"],
-            check=False,
-        )
-        worktrees = [
-            line.removeprefix("worktree ")
-            for line in result.stdout.splitlines()
-            if line.startswith("worktree ")
-        ]
-        return any(
-            Path(path).resolve(strict=False) != bare_path.resolve(strict=False)
-            for path in worktrees
-        )
+        return self._worktrees.has_registered_worktrees(record)
 
     def _has_unresolved_migration(self, managed_repo_id: str) -> bool:
         for migration in self._read_registry()["migrations"].values():
@@ -6749,29 +6351,13 @@ class ManagedGitAdminService:
         return False
 
     def _bare_path(self, record: Mapping[str, Any]) -> Path:
-        path = Path(str(record["internal_bare_path"])).resolve(strict=False)
-        expected = (self._managed_root / f"{record['managed_repo_id']}.git").resolve(strict=False)
-        if path != expected:
-            raise ManagedGitConflictError(
-                f"Managed repository {record['managed_repo_id']} has an unsafe internal path"
-            )
-        return path
+        return _managed_bare_path(self._managed_root, record)
 
     def _resolve_ref(self, bare_path: Path, ref_name: str) -> str | None:
-        result = self._run_git(
-            ["git", f"--git-dir={bare_path}", "rev-parse", "--verify", ref_name],
-            check=False,
-        )
-        value = result.stdout.strip().lower()
-        return value if result.returncode == 0 and _HEX_OBJECT_ID.fullmatch(value) else None
+        return _resolve_managed_ref(self._run_git, bare_path, ref_name)
 
     def _require_commit(self, bare_path: Path, object_id: str) -> None:
-        result = self._run_git(
-            ["git", f"--git-dir={bare_path}", "cat-file", "-e", f"{object_id}^{{commit}}"],
-            check=False,
-        )
-        if result.returncode != 0:
-            raise ManagedGitNotFoundError(f"Unknown commit: {object_id}")
+        _require_managed_commit(self._run_git, bare_path, object_id)
 
     def _is_ancestor(self, bare_path: Path, ancestor: str, descendant: str) -> bool:
         return (
@@ -6807,19 +6393,10 @@ class ManagedGitAdminService:
         return refs
 
     def _run_update_ref_transaction(self, bare_path: Path, commands: list[str]) -> None:
-        payload = "\n".join(["start", *commands, "prepare", "commit", ""])
-        self._run_git(
-            ["git", f"--git-dir={bare_path}", "update-ref", "--stdin"], input_text=payload
-        )
+        _run_managed_update_ref_transaction(self._run_git, bare_path, commands)
 
     def _delete_ref_cas(self, bare_path: Path, ref_name: str, object_id: str) -> None:
-        current = self._resolve_ref(bare_path, ref_name)
-        if current != object_id:
-            return
-        self._run_git(
-            ["git", f"--git-dir={bare_path}", "update-ref", "-d", ref_name, object_id],
-            check=False,
-        )
+        _delete_managed_ref_cas(self._run_git, bare_path, ref_name, object_id)
 
     def _delete_namespace(self, bare_path: Path, prefix: str) -> None:
         refs = self._list_refs(bare_path, (prefix,)) if bare_path.exists() else {}
@@ -6893,51 +6470,7 @@ class ManagedGitAdminService:
 
     @staticmethod
     def _write_json_atomic(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        temp_path = Path(temp_name)
-        try:
-            os.fchmod(fd, mode)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, sort_keys=True)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
-
-    def _install_cleanup_signal_handlers(self, cleanup) -> dict[int, Any]:
-        if threading.current_thread() is not threading.main_thread():
-            return {}
-        old_handlers: dict[int, Any] = {}
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous = signal.getsignal(signum)
-
-            def handler(received: int, frame, *, previous_handler=previous):
-                cleanup()
-                if callable(previous_handler):
-                    previous_handler(received, frame)
-                    return
-                if received == signal.SIGINT:
-                    raise KeyboardInterrupt
-                raise SystemExit(128 + received)
-
-            signal.signal(signum, handler)
-            old_handlers[signum] = previous
-        return old_handlers
-
-    @staticmethod
-    def _restore_signal_handlers(old_handlers: Mapping[int, Any]) -> None:
-        if threading.current_thread() is not threading.main_thread():
-            return
-        for signum, previous in old_handlers.items():
-            signal.signal(signum, previous)
+        _write_json_atomic(path, payload, mode=mode)
 
     @staticmethod
     def _require_git_repository(path: Path) -> None:

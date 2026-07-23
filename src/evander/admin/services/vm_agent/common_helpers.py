@@ -31,8 +31,11 @@ from evander.managed_git_grants import (
     LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS,
     managed_git_grants_from_metadata,
 )
-from evander.admin.services.session_helpers import normalize_email_mailbox_grants
-from evander.models import EmailMailboxAccess, EmailMailboxGrant
+from evander.email.grants import (
+    normalize_email_mailbox_grants,
+    validate_email_mailbox_grants,
+)
+from evander.models import EmailMailboxGrant
 
 
 def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
@@ -358,39 +361,14 @@ def _admin_agent_email_mailbox_grants(
 
     config = runtime.provider_config.resolve_for_directory(directory_path)
     policy = runtime.policy_config.resolve_for_directory(directory_path)
-    mailboxes = {mailbox.mailbox_id: mailbox for mailbox in config.email_mailboxes}
-    allowed_mailbox_ids = set(policy.email_mailbox_allowlist)
-    validated: list[EmailMailboxGrant] = []
-    for grant in grants:
-        mailbox = mailboxes.get(grant.mailbox_id)
-        if mailbox is None or grant.mailbox_id not in allowed_mailbox_ids:
-            raise ValueError(
-                f"email_mailbox_grants contains unavailable mailbox {grant.mailbox_id!r} "
-                f"for directory {directory_path!r}"
-            )
-        folders = (
-            list(grant.folders)
-            if "folders" in grant.model_fields_set
-            else list(mailbox.folder_allowlist_defaults)
-        )
-        allowed_folders = set(
-            policy.email_folder_allowlist_by_mailbox.get(
-                grant.mailbox_id, mailbox.folder_allowlist_defaults
-            )
-        )
-        unavailable_folders = sorted(set(folders) - allowed_folders)
-        if unavailable_folders:
-            raise ValueError(
-                f"email_mailbox_grants contains unavailable folders for mailbox "
-                f"{grant.mailbox_id!r}: {', '.join(unavailable_folders)}"
-            )
-        if grant.access == EmailMailboxAccess.SEND and not policy.email_send_enabled:
-            raise ValueError(
-                f"email send is disabled for directory {directory_path!r}; "
-                f"mailbox {grant.mailbox_id!r} cannot receive send access"
-            )
-        validated.append(grant.model_copy(update={"folders": folders}))
-    return validated
+    return validate_email_mailbox_grants(
+        grants,
+        mailboxes=config.email_mailboxes,
+        allowed_mailbox_ids=policy.email_mailbox_allowlist,
+        folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_send_enabled=policy.email_send_enabled,
+        directory_path=directory_path,
+    )
 
 
 def _resolve_session_approval_notification_target_ids(

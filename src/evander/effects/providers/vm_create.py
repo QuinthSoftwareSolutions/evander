@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
-from evander.connectors.models import normalize_connector_grants
+from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.events.provider_models import VmCreateEffectDefinition
 from evander.provider_config import MODEL_PROVIDER_MODE_METADATA_KEY
 
@@ -188,24 +188,10 @@ def _validated_connector_grants(
 ) -> dict[str, list[str]] | None:
     if value is None:
         return None
-    grants = normalize_connector_grants(value)
-    if not grants:
-        return {}
     resolver = getattr(context, "provider_config_resolver", None)
-    if resolver is None or not hasattr(resolver, "resolve_connectors_for_directory"):
-        raise ValueError("connector grants require a directory connector configuration resolver")
-    config = resolver.resolve_connectors_for_directory(directory_path)
-    for connector_id, operation_names in grants.items():
-        connector = config.connectors.get(connector_id)
-        if connector is None or connector.disabled:
-            raise ValueError(
-                f"session {session_id!r} grants unknown or disabled connector {connector_id!r}"
-            )
-        for operation_name in operation_names:
-            operation = connector.operations.get(operation_name)
-            if operation is None or operation.disabled:
-                raise ValueError(
-                    f"session {session_id!r} grants unknown or disabled connector operation "
-                    f"{connector_id}.{operation_name}"
-                )
-    return grants
+    return resolve_and_validate_connector_grants(
+        resolver,
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )

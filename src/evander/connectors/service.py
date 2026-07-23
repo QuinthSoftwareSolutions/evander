@@ -15,12 +15,14 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
+from evander.addons import LoadedAddonCatalog
 from evander.connectors.drivers import (
     ConnectorInvocationError,
     ConnectorUpstreamAuthenticationError,
     FilesystemConnectorDriver,
     RestConnectorDriver,
 )
+from evander.connectors.grants import validate_connector_grant_mapping
 from evander.connectors.models import (
     ConnectorAuthProfile,
     ConnectorDefinition,
@@ -66,8 +68,16 @@ def connector_registry_from_addons(
 ) -> ConnectorRegistry:
     from evander.addons import load_addons
 
-    registry = default_connector_registry(rest_transport=rest_transport)
     catalog = load_addons(addon_loader, base_dir=base_dir)
+    return connector_registry_from_catalog(catalog, rest_transport=rest_transport)
+
+
+def connector_registry_from_catalog(
+    catalog: LoadedAddonCatalog,
+    *,
+    rest_transport: httpx.AsyncBaseTransport | None = None,
+) -> ConnectorRegistry:
+    registry = default_connector_registry(rest_transport=rest_transport)
     for registration in catalog.registrations:
         for driver_name, candidate in registration.connector_drivers.items():
             driver = candidate
@@ -122,19 +132,7 @@ class ConnectorService:
     ) -> None:
         config = self.provider_config.resolve_connectors_for_directory(directory_path)
         self.validate_config(config)
-        for connector_id, operations in grants.items():
-            connector = config.connectors.get(connector_id)
-            if connector is None or connector.disabled:
-                raise ValueError(
-                    f"session {session_id!r} grants unknown or disabled connector {connector_id!r}"
-                )
-            for operation_name in operations:
-                operation = connector.operations.get(operation_name)
-                if operation is None or operation.disabled:
-                    raise ValueError(
-                        f"session {session_id!r} grants unknown or disabled connector operation "
-                        f"{connector_id}.{operation_name}"
-                    )
+        validate_connector_grant_mapping(config, grants, session_id=session_id)
 
     def list_for_session(self, session: SessionManifest) -> list[dict[str, Any]]:
         config = self.config_for_session(session)

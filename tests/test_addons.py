@@ -66,6 +66,7 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     ) == {"addon_id": "team-addon", "module": "evander_team_addon"}
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-mail.js").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.js").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.css").is_file()
@@ -78,6 +79,9 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
 
 def test_team_addon_ui_distinguishes_acceptance_from_review_waiting() -> None:
     source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    mail_source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-mail.js").read_text(
         encoding="utf-8"
     )
     markup = (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").read_text(
@@ -94,6 +98,8 @@ def test_team_addon_ui_distinguishes_acceptance_from_review_waiting() -> None:
     assert 'waiting_for_acceptance: "Waiting for acceptance"' in source
     assert 'return "waiting_for_acceptance"' in source
     assert "taskStateLabel(task)" in source
+    assert "taskStateLabel," in source
+    assert "taskStateLabel(task)" in mail_source
     assert 'data-filter="waiting_for_acceptance"' in markup
     assert ".state-pill.waiting_for_acceptance" in stylesheet
 

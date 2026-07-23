@@ -20,11 +20,61 @@ _SERVICE_EXPORTS = {
         "CapacityHealthAdminDependencies",
     ),
     "CapacityHealthAdminService": (".capacity_health_service", "CapacityHealthAdminService"),
+    "CodexAuthAdminDependencies": (
+        ".codex_auth_admin_service",
+        "CodexAuthAdminDependencies",
+    ),
+    "CodexAuthAdminService": (".codex_auth_admin_service", "CodexAuthAdminService"),
+    "ConnectorAdminDependencies": (
+        ".connector_admin_service",
+        "ConnectorAdminDependencies",
+    ),
+    "ConnectorAdminService": (".connector_admin_service", "ConnectorAdminService"),
+    "ConnectorConfigRevisionConflict": (
+        ".connector_admin_service",
+        "ConnectorConfigRevisionConflict",
+    ),
     "DocumentationService": (".documentation_service", "DocumentationService"),
     "IssueGitAdminDependencies": (".issue_git_service", "IssueGitAdminDependencies"),
     "IssueGitAdminService": (".issue_git_service", "IssueGitAdminService"),
     "IssueGitAdminSupport": (".issue_git_service", "IssueGitAdminSupport"),
     "ManagedGitAdminService": (".managed_git_service", "ManagedGitAdminService"),
+    "ManagedGitMaintenancePort": (
+        ".managed_git_runtime_service",
+        "ManagedGitMaintenancePort",
+    ),
+    "ManagedGitMaintenanceService": (
+        ".managed_git_runtime_service",
+        "ManagedGitMaintenanceService",
+    ),
+    "ManagedGitRefreshAuthorizationDependencies": (
+        ".managed_git_runtime_service",
+        "ManagedGitRefreshAuthorizationDependencies",
+    ),
+    "ManagedGitRefreshAuthorizationPort": (
+        ".managed_git_runtime_service",
+        "ManagedGitRefreshAuthorizationPort",
+    ),
+    "ManagedGitRefreshAuthorizationService": (
+        ".managed_git_runtime_service",
+        "ManagedGitRefreshAuthorizationService",
+    ),
+    "ManagedGitRepositoryRefreshPort": (
+        ".managed_git_runtime_service",
+        "ManagedGitRepositoryRefreshPort",
+    ),
+    "ManagedGitRepositoryRefreshService": (
+        ".managed_git_runtime_service",
+        "ManagedGitRepositoryRefreshService",
+    ),
+    "ManagedGitWorktreeDependencies": (
+        ".managed_git_worktree_service",
+        "ManagedGitWorktreeDependencies",
+    ),
+    "ManagedGitWorktreeService": (
+        ".managed_git_worktree_service",
+        "ManagedGitWorktreeService",
+    ),
     "ModelUsageAdminDependencies": (".model_usage_service", "ModelUsageAdminDependencies"),
     "ModelUsageAdminService": (".model_usage_service", "ModelUsageAdminService"),
     "OperatorSteeringAdminDependencies": (

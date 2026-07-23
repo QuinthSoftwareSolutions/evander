@@ -12,7 +12,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function dedupeStrings(values: unknown): string[] {
+export function normalizedEmailMailboxStrings(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   const seen = new Set<string>();
   const result: string[] = [];
@@ -41,7 +41,7 @@ export function emailMailboxFolderPolicyEntriesFromConfig(
   if (!isRecord(value)) return [];
   return Object.entries(value).map(([mailboxId, folders]) => ({
     mailboxId,
-    folders: dedupeStrings(folders),
+    folders: normalizedEmailMailboxStrings(folders),
   }));
 }
 
@@ -61,7 +61,7 @@ export function parseEmailMailboxFolderPolicyDraftValue(
         const entry = isRecord(item) ? item : {};
         return {
           mailboxId: String(entry.mailboxId ?? entry.mailbox_id ?? ""),
-          folders: dedupeStrings(entry.folders),
+          folders: normalizedEmailMailboxStrings(entry.folders),
         };
       }),
       error: null,
@@ -92,7 +92,7 @@ export function emailMailboxFolderPolicyDraftEntriesToConfig(
     if (Object.prototype.hasOwnProperty.call(result, mailboxId)) {
       throw new Error(`Duplicate mailbox folder policy: ${mailboxId}.`);
     }
-    result[mailboxId] = dedupeStrings(entry.folders);
+    result[mailboxId] = normalizedEmailMailboxStrings(entry.folders);
   }
   return result;
 }

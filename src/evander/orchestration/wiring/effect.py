@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from evander.admin.composition import build_admin_runtime
+from evander.admin.services.managed_git_runtime_service import ManagedGitMaintenancePort
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.effects.registry import EffectProviderFactory
@@ -50,6 +52,7 @@ class EffectProviderRuntimeWiring:
     special_event_handlers: tuple[SpecialEventHandler, ...]
     lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...]
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...]
+    managed_git_maintenance: ManagedGitMaintenancePort
 
 
 @dataclass(frozen=True)
@@ -88,23 +91,27 @@ def build_effect_provider_runtime_wiring(
         addon_loader=worker_config.addon_loader,
         addon_base_dir=addon_base_dir if addon_base_dir is not None else config.runtime_dir.parent,
     )
+    admin_runtime = build_admin_runtime(config.runtime_dir)
     provider_factory = build_effect_provider_factory(
         runtime_dir=config.runtime_dir,
         provider_config_resolver=resolver,
         effect_providers=provider_catalog.effect_providers,
         env=os.environ,
+        admin_runtime=admin_runtime,
     )
     query_provider_factory = build_query_provider_factory(
         runtime_dir=config.runtime_dir,
         provider_config_resolver=resolver,
         query_providers=provider_catalog.query_providers,
         env=os.environ,
+        admin_runtime=admin_runtime,
     )
     gate_provider_factory = build_gate_provider_factory(
         runtime_dir=config.runtime_dir,
         provider_config_resolver=resolver,
         gate_providers=provider_catalog.gate_providers,
         env=os.environ,
+        admin_runtime=admin_runtime,
     )
     provider_factory.metadata.update(
         {
@@ -123,9 +130,13 @@ def build_effect_provider_runtime_wiring(
     if include_default_domain_handlers and not is_pure_orchestration_core_profile(
         worker_config.provider_profile
     ):
-        agent_run_status_port = build_agent_run_status_port(runtime_dir=config.runtime_dir)
+        agent_run_status_port = build_agent_run_status_port(
+            runtime_dir=config.runtime_dir,
+            admin_runtime=admin_runtime,
+        )
         agent_prompt_dispatch_port = build_agent_prompt_dispatch_port(
-            runtime_dir=config.runtime_dir
+            runtime_dir=config.runtime_dir,
+            admin_runtime=admin_runtime,
         )
 
         from ..providers import build_agent_default_effect_handlers
@@ -145,6 +156,7 @@ def build_effect_provider_runtime_wiring(
         special_event_handlers=special_event_handlers,
         lifecycle_reconciliation_hooks=lifecycle_reconciliation_hooks,
         completion_dispatch_hooks=completion_dispatch_hooks,
+        managed_git_maintenance=admin_runtime.managed_git_maintenance,
     )
 
 
@@ -269,6 +281,7 @@ class EffectWorkerWiring:
     special_event_handlers: tuple[SpecialEventHandler, ...]
     lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...]
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...]
+    managed_git_maintenance: ManagedGitMaintenancePort
 
 
 def build_effect_worker_wiring(
@@ -317,6 +330,7 @@ def build_effect_worker_wiring(
         special_event_handlers=runtime_wiring.special_event_handlers,
         lifecycle_reconciliation_hooks=runtime_wiring.lifecycle_reconciliation_hooks,
         completion_dispatch_hooks=runtime_wiring.completion_dispatch_hooks,
+        managed_git_maintenance=runtime_wiring.managed_git_maintenance,
     )
 
 

@@ -44,11 +44,28 @@ def _project(tmp_path: Path) -> Path:
         project / "docs" / "evander-user-manual.md",
         "# Generated Manual\n\nDuplicated content and history.\n",
     )
+    _write(
+        project / "docs" / "evander-user-manual" / "book.json",
+        """{
+  "parts": [
+    {
+      "chapters": [
+        "01-reading-paths.md",
+        "02-current.md",
+        "27-design-history.md",
+        "28-reference.md"
+      ]
+    }
+  ]
+}
+""",
+    )
     chapters = project / "docs" / "evander-user-manual" / "chapters"
     _write(chapters / "01-reading-paths.md", "# 1. Reading Paths\n\nHow to read.\n")
     _write(chapters / "02-current.md", "# 2. Current Detail\n\nTechnical needle.\n")
     _write(chapters / "27-design-history.md", "# 27. Design History\n\nHistorical detail.\n")
     _write(chapters / "28-reference.md", "# 28. Reference\n\nReference needle.\n")
+    _write(chapters / "99-unlisted.md", "# 99. Unlisted\n\nNot in the manual manifest.\n")
     return project
 
 
@@ -74,6 +91,7 @@ def test_documentation_catalog_includes_current_sources_and_technical_chapters(
     assert "docs/history.md" not in documents
     assert "docs/evander-user-manual/chapters/01-reading-paths.md" not in documents
     assert "docs/evander-user-manual/chapters/27-design-history.md" not in documents
+    assert "docs/evander-user-manual/chapters/99-unlisted.md" not in documents
 
 
 def test_documentation_reads_and_searches_live_files_with_bounds(tmp_path: Path) -> None:

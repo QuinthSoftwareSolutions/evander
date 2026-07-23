@@ -14,6 +14,7 @@ from uuid import uuid4
 from evander.addons import addon_storage_path
 
 from .client import BokioClient
+from .durable_operations import SQLiteDurableOperationLedger
 from .operations import bokio_write_failure_is_uncertain
 from .state import ADDON_ID
 
@@ -63,6 +64,12 @@ class BokioEvidenceStore:
         self.database_path = self.root / "evidence.db"
         self.root.mkdir(parents=True, exist_ok=True)
         self.blob_root.mkdir(parents=True, exist_ok=True)
+        self._operation_ledger = SQLiteDurableOperationLedger(
+            self.database_path,
+            table="journal_entry_operations",
+            identity_columns=("operation_key",),
+            foreign_keys=True,
+        )
         self._initialize()
 
     def ingest_bytes(
@@ -307,10 +314,8 @@ class BokioEvidenceStore:
             raise BokioEvidenceError("evidence_ids must contain at least one evidence ID")
         normalized_payload = _safe_json_object(payload)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM journal_entry_operations WHERE operation_key = ?", (normalized_key,)
-            ).fetchone()
+            self._operation_ledger.begin_immediate(connection)
+            row = self._operation_ledger.fetch_row(connection, (normalized_key,))
             if row is not None:
                 operation = _operation_from_row(row)
                 if (
@@ -324,20 +329,16 @@ class BokioEvidenceStore:
             for evidence_id in normalized_evidence_ids:
                 self._get_with_connection(connection, evidence_id)
             now = _storage_datetime(datetime.now(UTC))
-            connection.execute(
-                """
-                INSERT INTO journal_entry_operations (
-                    operation_key, payload_json, evidence_ids_json, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    normalized_key,
-                    json.dumps(normalized_payload, sort_keys=True),
-                    json.dumps(normalized_evidence_ids),
-                    "pending_create",
-                    now,
-                    now,
-                ),
+            self._operation_ledger.insert(
+                connection,
+                {
+                    "operation_key": normalized_key,
+                    "payload_json": json.dumps(normalized_payload, sort_keys=True),
+                    "evidence_ids_json": json.dumps(normalized_evidence_ids),
+                    "status": "pending_create",
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
             return self._operation_with_connection(connection, normalized_key)
 
@@ -351,20 +352,14 @@ class BokioEvidenceStore:
 
         normalized_key = _required_text(operation_key, "operation_key")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            claimed = connection.execute(
-                """
-                UPDATE journal_entry_operations
-                SET status = ?, updated_at = ?
-                WHERE operation_key = ? AND status = ?
-                """,
-                (
-                    "creating",
-                    _storage_datetime(datetime.now(UTC)),
-                    normalized_key,
-                    "pending_create",
-                ),
-            ).rowcount
+            self._operation_ledger.begin_immediate(connection)
+            claimed = self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status="pending_create",
+                new_status="creating",
+                values={"updated_at": _storage_datetime(datetime.now(UTC))},
+            )
             operation = self._operation_with_connection(connection, normalized_key)
             return operation, claimed == 1
 
@@ -373,21 +368,17 @@ class BokioEvidenceStore:
     ) -> dict[str, Any]:
         normalized_key = _required_text(operation_key, "operation_key")
         with self._connect() as connection:
-            updated = connection.execute(
-                """
-                UPDATE journal_entry_operations
-                SET status = ?, journal_entry_id = ?, result_json = ?, updated_at = ?
-                WHERE operation_key = ? AND status = ?
-                """,
-                (
-                    "pending_evidence",
-                    _required_text(journal_entry_id, "journal_entry_id"),
-                    json.dumps(_safe_json_value(result), sort_keys=True),
-                    _storage_datetime(datetime.now(UTC)),
-                    normalized_key,
-                    "creating",
-                ),
-            ).rowcount
+            updated = self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status="creating",
+                new_status="pending_evidence",
+                values={
+                    "journal_entry_id": _required_text(journal_entry_id, "journal_entry_id"),
+                    "result_json": json.dumps(_safe_json_value(result), sort_keys=True),
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
             if updated != 1:
                 raise BokioEvidenceError(
                     "Bokio journal-entry creation was not claimed by this operation"
@@ -397,9 +388,13 @@ class BokioEvidenceStore:
     def mark_journal_entry_operation_completed(self, *, operation_key: str) -> dict[str, Any]:
         normalized_key = _required_text(operation_key, "operation_key")
         with self._connect() as connection:
-            connection.execute(
-                "UPDATE journal_entry_operations SET status = ?, updated_at = ? WHERE operation_key = ?",
-                ("completed", _storage_datetime(datetime.now(UTC)), normalized_key),
+            self._operation_ledger.update(
+                connection,
+                (normalized_key,),
+                values={
+                    "status": "completed",
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
             )
             return self._operation_with_connection(connection, normalized_key)
 
@@ -413,19 +408,15 @@ class BokioEvidenceStore:
         normalized_key = _required_text(operation_key, "operation_key")
         normalized_expected_status = _required_text(expected_status, "expected_status")
         with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE journal_entry_operations
-                SET status = ?, error = ?, updated_at = ?
-                WHERE operation_key = ? AND status = ?
-                """,
-                (
-                    "needs_attention",
-                    str(error)[:2000],
-                    _storage_datetime(datetime.now(UTC)),
-                    normalized_key,
-                    normalized_expected_status,
-                ),
+            self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status=normalized_expected_status,
+                new_status="needs_attention",
+                values={
+                    "error": str(error)[:2000],
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
             )
             return self._operation_with_connection(connection, normalized_key)
 
@@ -439,19 +430,15 @@ class BokioEvidenceStore:
         normalized_key = _required_text(operation_key, "operation_key")
         normalized_expected_status = _required_text(expected_status, "expected_status")
         with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE journal_entry_operations
-                SET status = ?, error = ?, updated_at = ?
-                WHERE operation_key = ? AND status = ?
-                """,
-                (
-                    "failed",
-                    str(error)[:2000],
-                    _storage_datetime(datetime.now(UTC)),
-                    normalized_key,
-                    normalized_expected_status,
-                ),
+            self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status=normalized_expected_status,
+                new_status="failed",
+                values={
+                    "error": str(error)[:2000],
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
             )
             return self._operation_with_connection(connection, normalized_key)
 
@@ -464,7 +451,7 @@ class BokioEvidenceStore:
     ) -> dict[str, Any]:
         normalized_key = _required_text(operation_key, "operation_key")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._operation_ledger.begin_immediate(connection)
             operation = self._operation_with_connection(connection, normalized_key)
             status = str(operation["status"])
             if status not in {"failed", "needs_attention"}:
@@ -491,19 +478,16 @@ class BokioEvidenceStore:
                         "confirm_not_created only after confirming the journal entry is absent"
                     )
                 resumed_status = "pending_create"
-            updated = connection.execute(
-                """
-                UPDATE journal_entry_operations
-                SET status = ?, error = NULL, updated_at = ?
-                WHERE operation_key = ? AND status = ?
-                """,
-                (
-                    resumed_status,
-                    _storage_datetime(datetime.now(UTC)),
-                    normalized_key,
-                    status,
-                ),
-            ).rowcount
+            updated = self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status=status,
+                new_status=resumed_status,
+                values={
+                    "error": None,
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
             if updated != 1:
                 raise BokioEvidenceError(
                     "Bokio journal-entry operation changed while it was being resumed"
@@ -558,12 +542,7 @@ class BokioEvidenceStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        return connection
+        return self._operation_ledger.connect()
 
     def _get_with_connection(
         self, connection: sqlite3.Connection, evidence_id: str
@@ -626,9 +605,7 @@ class BokioEvidenceStore:
     def _operation_with_connection(
         self, connection: sqlite3.Connection, operation_key: str
     ) -> dict[str, Any]:
-        row = connection.execute(
-            "SELECT * FROM journal_entry_operations WHERE operation_key = ?", (operation_key,)
-        ).fetchone()
+        row = self._operation_ledger.fetch_row(connection, (operation_key,))
         if row is None:
             raise BokioEvidenceError("Bokio journal-entry operation was not recorded")
         return _operation_from_row(row)

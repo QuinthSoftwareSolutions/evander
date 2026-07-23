@@ -6,7 +6,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import pwd
 import re
 import socket
 import socketserver
@@ -16,11 +15,9 @@ import threading
 from typing import Any
 
 from evander.admin.composition import build_admin_runtime
-from evander.directories import DirectoryService
-from evander.directory_config import (
-    DirectoryConfigResolver,
-    get_domain_base_config,
-    validate_effective_domain_payload,
+from evander.admin.services.managed_git_runtime_service import (
+    ManagedGitRefreshAuthorizationPort,
+    ManagedGitRepositoryRefreshPort,
 )
 
 
@@ -52,12 +49,20 @@ class _RefreshFlight:
 
 
 class ManagedGitRefreshBroker:
-    def __init__(self, *, runtime_dir: Path, allowed_uid: int | None = None) -> None:
-        components = build_admin_runtime(runtime_dir=runtime_dir)
-        self._managed_git = components.managed_git_admin
-        self._config = components.config
-        self._directory_store = components.directory_store
-        self._directory_config_store = components.directory_config_store
+    def __init__(
+        self,
+        *,
+        runtime_dir: Path,
+        allowed_uid: int | None = None,
+        repository_refresh: ManagedGitRepositoryRefreshPort | None = None,
+        authorization: ManagedGitRefreshAuthorizationPort | None = None,
+    ) -> None:
+        if repository_refresh is None or authorization is None:
+            components = build_admin_runtime(runtime_dir=runtime_dir)
+            repository_refresh = repository_refresh or components.managed_git_repository_refresh
+            authorization = authorization or components.managed_git_refresh_authorization
+        self._repository_refresh = repository_refresh
+        self._authorization = authorization
         self._allowed_uid = os.getuid() if allowed_uid is None else allowed_uid
         self._refresh_flights: dict[str, _RefreshFlight] = {}
         self._refresh_flights_lock = threading.Lock()
@@ -83,7 +88,7 @@ class ManagedGitRefreshBroker:
             return dict(flight.result)
 
         try:
-            result = self._managed_git.refresh_repository(managed_repo_id)
+            result = self._repository_refresh.refresh_repository(managed_repo_id)
             response = {
                 "managed_repo_id": managed_repo_id,
                 "refreshed_at": result.get("refreshed_at"),
@@ -100,49 +105,7 @@ class ManagedGitRefreshBroker:
                     self._refresh_flights.pop(managed_repo_id, None)
 
     def _configured_git_uids(self) -> set[int]:
-        directory_service = DirectoryService(self._directory_store)
-        resolver = DirectoryConfigResolver(
-            directory_service,
-            base_gateway_config=self._config,
-            config_store=self._directory_config_store,
-        )
-        directories = [
-            directory_service.show("root").directory,
-            *directory_service.list_descendants("root"),
-        ]
-        base_config = get_domain_base_config(self._config, "issue_setup")
-        users: set[str] = set()
-        for directory in directories:
-            try:
-                resolution = resolver.resolve_domain(
-                    directory.path,
-                    domain="issue_setup",
-                    base_config=base_config,
-                    validator=lambda candidate: validate_effective_domain_payload(
-                        "issue_setup", candidate
-                    ),
-                )
-                git_user = str(resolution.effective_config.get("git_user") or "").strip()
-            except Exception as exc:
-                LOGGER.warning(
-                    "Managed Git refresh authorization config failed directory=%s category=%s",
-                    directory.path,
-                    type(exc).__name__,
-                )
-                continue
-            if git_user:
-                users.add(git_user)
-
-        allowed_uids: set[int] = set()
-        for git_user in users:
-            try:
-                allowed_uids.add(pwd.getpwnam(git_user).pw_uid)
-            except KeyError:
-                LOGGER.warning(
-                    "Managed Git refresh authorization user does not exist user=%s",
-                    git_user,
-                )
-        return allowed_uids
+        return self._authorization.configured_git_uids()
 
     def authorize_peer(self, connection: socket.socket) -> None:
         credentials = _peer_credentials(connection)

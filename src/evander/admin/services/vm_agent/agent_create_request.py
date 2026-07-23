@@ -21,7 +21,7 @@ from evander.admin.services.vm_agent.common import (
 )
 from evander.session_auth import ensure_session_mcp_auth_token
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
-from evander.connectors.models import normalize_connector_grants
+from evander.connectors.grants import resolve_and_validate_connector_grants
 
 
 def _connector_grants_for_admin_agent(
@@ -31,19 +31,12 @@ def _connector_grants_for_admin_agent(
     directory_path: str,
     value: object,
 ) -> dict[str, list[str]]:
-    grants = normalize_connector_grants(value)
-    config = runtime.provider_config.resolve_connectors_for_directory(directory_path)
-    for connector_id, operation_names in grants.items():
-        connector = config.connectors.get(connector_id)
-        if connector is None or connector.disabled:
-            raise ValueError(f"unknown or disabled connector: {connector_id}")
-        for operation_name in operation_names:
-            operation = connector.operations.get(operation_name)
-            if operation is None or operation.disabled:
-                raise ValueError(
-                    f"unknown or disabled connector operation: {connector_id}.{operation_name}"
-                )
-    return grants
+    return resolve_and_validate_connector_grants(
+        runtime.provider_config,
+        directory_path=directory_path,
+        session_id=session_id,
+        value=value,
+    )
 
 
 class VmAgentCreateRequestMixin:

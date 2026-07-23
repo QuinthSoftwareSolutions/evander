@@ -23,25 +23,29 @@ const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
   "utf8",
 );
+const mailboxConfiguration = readFileSync(
+  new URL("../src/features/configuration/EmailMailboxConfiguration.tsx", import.meta.url),
+  "utf8",
+);
 
 test("email mailboxes use a structured configuration editor", () => {
   assert.match(configuration, /isEmailMailboxesConfigField\(field\)/);
-  assert.match(configuration, /renderEmailMailboxesEditor/);
-  assert.match(configuration, /Add mailbox/);
-  assert.match(configuration, /Microsoft Graph \(Office 365\)/);
-  assert.match(configuration, /OAuth client credentials \(automatic\)/);
-  assert.match(configuration, /Tenant ID env var/);
-  assert.match(configuration, /Client ID env var/);
-  assert.match(configuration, /Client secret env var/);
-  assert.match(configuration, /Host access-token env var/);
-  assert.match(configuration, /Map policy folder names to provider folder names/);
-  assert.match(configuration, /Add folder/);
+  assert.match(configuration, /<EmailMailboxesEditor/);
+  assert.match(mailboxConfiguration, /Add mailbox/);
+  assert.match(mailboxConfiguration, /Microsoft Graph \(Office 365\)/);
+  assert.match(mailboxConfiguration, /OAuth client credentials \(automatic\)/);
+  assert.match(mailboxConfiguration, /Tenant ID env var/);
+  assert.match(mailboxConfiguration, /Client ID env var/);
+  assert.match(mailboxConfiguration, /Client secret env var/);
+  assert.match(mailboxConfiguration, /Host access-token env var/);
+  assert.match(mailboxConfiguration, /Map policy folder names to provider folder names/);
+  assert.match(mailboxConfiguration, /Add folder/);
   assert.match(configuration, /emailMailboxDraftEntriesToConfig/);
 });
 
 test("unset root mailbox overrides keep effective mailboxes available to selectors", () => {
-  assert.match(configuration, /if \(fieldState\.clear && fieldState\.include\) \{\s*return \[\];/);
-  assert.doesNotMatch(configuration, /fieldState\.clear && \(isRoot \|\| fieldState\.include\)/);
+  assert.match(mailboxConfiguration, /if \(fieldState\.clear && fieldState\.include\) \{\s*return \[\];/);
+  assert.doesNotMatch(mailboxConfiguration, /fieldState\.clear && \(isRoot \|\| fieldState\.include\)/);
   assert.match(
     configuration,
     /snapshot\?\.effective\.config\[EMAIL_MAILBOXES_FIELD_NAME\]/,

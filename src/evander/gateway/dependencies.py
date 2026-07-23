@@ -8,6 +8,10 @@ import sys
 
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.web.chat import ChatStore, admin_chat_store_path
+from evander.code_consultation_service import (
+    BoundCodeConsultationServiceFactory,
+    CodeConsultationServiceFactoryPort,
+)
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.issues.service import IssueService
 from evander.runtime import RuntimeContext
@@ -34,6 +38,7 @@ class GatewayToolDependencies:
     chat_store_factory: Callable[[], ChatStore]
     semantic_adapter: GatewaySemanticAdapter
     communication_artifact_store_factory: Callable[[], CommunicationArtifactStore]
+    code_consultation_service_factory: CodeConsultationServiceFactoryPort
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "GatewayToolDependencies":
@@ -51,10 +56,17 @@ class GatewayToolDependencies:
             store.cleanup_expired()
             return store
 
+        def admin_runtime_factory() -> AdminRuntimeComponents:
+            return admin_runtime_builder(context.config.runtime_dir)
+
         return cls(
-            admin_runtime_factory=lambda: admin_runtime_builder(context.config.runtime_dir),
+            admin_runtime_factory=admin_runtime_factory,
             issue_service_factory=lambda: issue_service_cls(context.provider_config),
             chat_store_factory=lambda: ChatStore(admin_chat_store_path(context.config.runtime_dir)),
             semantic_adapter=GatewaySemanticAdapter(context),
             communication_artifact_store_factory=communication_artifact_store_factory,
+            code_consultation_service_factory=BoundCodeConsultationServiceFactory(
+                lambda: admin_runtime_factory().managed_git_admin,
+                config=context.config,
+            ),
         )

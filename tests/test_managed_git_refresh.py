@@ -10,7 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 import evander.managed_git_refresh as refresh
+from evander.admin.services.managed_git_runtime_service import (
+    ManagedGitRefreshAuthorizationDependencies,
+    ManagedGitRefreshAuthorizationService,
+)
 from evander.admin.services.managed_git_service import ManagedGitAdminService
+from evander.config import GatewayConfig
 
 
 class _FakeBroker:
@@ -131,10 +136,8 @@ def test_broker_delegates_to_managed_git_service(
         refresh,
         "build_admin_runtime",
         lambda **_kwargs: SimpleNamespace(
-            managed_git_admin=_ManagedGit(),
-            config=object(),
-            directory_store=object(),
-            directory_config_store=object(),
+            managed_git_repository_refresh=_ManagedGit(),
+            managed_git_refresh_authorization=SimpleNamespace(configured_git_uids=lambda: set()),
         ),
     )
     broker = refresh.ManagedGitRefreshBroker(runtime_dir=tmp_path, allowed_uid=os.getuid())
@@ -153,10 +156,8 @@ def test_broker_rejects_invalid_repository_id(
         refresh,
         "build_admin_runtime",
         lambda **_kwargs: SimpleNamespace(
-            managed_git_admin=object(),
-            config=object(),
-            directory_store=object(),
-            directory_config_store=object(),
+            managed_git_repository_refresh=object(),
+            managed_git_refresh_authorization=SimpleNamespace(configured_git_uids=lambda: set()),
         ),
     )
     broker = refresh.ManagedGitRefreshBroker(runtime_dir=tmp_path, allowed_uid=os.getuid())
@@ -173,9 +174,6 @@ def test_broker_authorizes_all_effective_directory_git_users(
     child = SimpleNamespace(path="root/team")
 
     class _DirectoryService:
-        def __init__(self, _store: object) -> None:
-            pass
-
         def show(self, reference: str) -> SimpleNamespace:
             assert reference == "root"
             return SimpleNamespace(directory=root)
@@ -185,9 +183,6 @@ def test_broker_authorizes_all_effective_directory_git_users(
             return [child]
 
     class _Resolver:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
         def resolve_domain(self, directory_path: str, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(
                 effective_config={
@@ -195,26 +190,24 @@ def test_broker_authorizes_all_effective_directory_git_users(
                 }
             )
 
-    monkeypatch.setattr(
-        refresh,
-        "build_admin_runtime",
-        lambda **_kwargs: SimpleNamespace(
-            managed_git_admin=object(),
-            config=object(),
-            directory_store=object(),
-            directory_config_store=object(),
-        ),
-    )
-    monkeypatch.setattr(refresh, "DirectoryService", _DirectoryService)
-    monkeypatch.setattr(refresh, "DirectoryConfigResolver", _Resolver)
-    monkeypatch.setattr(refresh, "get_domain_base_config", lambda *_args: {})
-    monkeypatch.setattr(
-        refresh.pwd,
-        "getpwnam",
-        lambda user: SimpleNamespace(pw_uid={"root-git": 2001, "team-git": 2002}[user]),
+    authorization = ManagedGitRefreshAuthorizationService(
+        ManagedGitRefreshAuthorizationDependencies(
+            config=GatewayConfig(runtime_dir=tmp_path),
+            directory_service=_DirectoryService(),  # type: ignore[arg-type]
+            directory_config_resolver=_Resolver(),  # type: ignore[arg-type]
+            resolve_user_uid=lambda user: {
+                "root-git": 2001,
+                "team-git": 2002,
+            }[user],
+        )
     )
     monkeypatch.setattr(refresh, "_peer_credentials", lambda _connection: (99, 2002, 2002))
-    broker = refresh.ManagedGitRefreshBroker(runtime_dir=tmp_path, allowed_uid=1000)
+    broker = refresh.ManagedGitRefreshBroker(
+        runtime_dir=tmp_path,
+        allowed_uid=1000,
+        repository_refresh=object(),  # type: ignore[arg-type]
+        authorization=authorization,
+    )
 
     assert broker._configured_git_uids() == {2001, 2002}  # noqa: SLF001
     broker.authorize_peer(object())  # type: ignore[arg-type]
@@ -242,10 +235,8 @@ def test_broker_coalesces_overlapping_refreshes_for_one_repository(
         refresh,
         "build_admin_runtime",
         lambda **_kwargs: SimpleNamespace(
-            managed_git_admin=managed_git,
-            config=object(),
-            directory_store=object(),
-            directory_config_store=object(),
+            managed_git_repository_refresh=managed_git,
+            managed_git_refresh_authorization=SimpleNamespace(configured_git_uids=lambda: set()),
         ),
     )
     broker = refresh.ManagedGitRefreshBroker(runtime_dir=tmp_path, allowed_uid=os.getuid())

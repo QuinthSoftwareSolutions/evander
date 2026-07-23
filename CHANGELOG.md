@@ -68,6 +68,18 @@
 - Kept the exception limited to `team_reply_to_chat`; teamless agents remain unable to invoke
   ordinary Team state mutations.
 
+## 2026-07-22 - Cross-Domain Service Boundary Refactoring
+
+- Extracted managed-Git worktree/lifecycle handling and code-consultation orchestration behind
+  typed services instead of coordinating them through daemon, gateway, and provider internals.
+- Centralized connector and mailbox grant policy, moved Connector and Codex account workflows out
+  of Admin Web routes, and shared one add-on catalog across Admin runtime consumers.
+- Split Team release verification/review handoff, Bokio durable-operation mechanics, ADO activity
+  pagination, local-OpenAI tool compatibility, and mailbox/Team Mail UI features into focused
+  collaborators while preserving their existing public contracts.
+- Made the live documentation catalog consume the technical manual's authoritative chapter
+  manifest instead of independently discovering another chapter list.
+
 ## 2026-07-22 - Hierarchical Team Blocker Escalation
 
 - Added durable Team blocker records and event history for explicit blockers and blocked tasks,

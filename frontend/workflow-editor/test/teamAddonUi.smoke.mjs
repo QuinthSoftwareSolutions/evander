@@ -30,6 +30,7 @@ const teamViewIds = [
 test("team add-on static UI exposes runtime control hooks", async () => {
   const markup = await readFile(path.join(staticRoot, "index.html"), "utf8");
   const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
+  const mailScript = await readFile(path.join(staticRoot, "team-mail.js"), "utf8");
   const stylesheet = await readFile(path.join(staticRoot, "team-ui.css"), "utf8");
   const orgFlowScript = await readFile(path.join(staticRoot, "team-org-flow.js"), "utf8");
   const orgFlowStylesheet = await readFile(path.join(staticRoot, "team-org-flow.css"), "utf8");
@@ -57,8 +58,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-timeline-filter/);
   assert.match(markup, /data-team-view="mail"/);
   assert.match(markup, /id="team-mail-page"/);
-  assert.match(script, /\/inbox\?/);
-  assert.match(script, /renderMailReader/);
+  assert.match(script, /createTeamMailController/);
+  assert.match(mailScript, /\/inbox\?/);
+  assert.match(mailScript, /function renderReader/);
   assert.match(stylesheet, /\.mail-layout/);
   assert.match(script, /data-planning-task-status/);
   assert.match(script, /data-task-board-team/);
@@ -1456,6 +1458,10 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-ui.js") {
         await serveStatic(response, "team-ui.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-mail.js") {
+        await serveStatic(response, "team-mail.js", "application/javascript; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-ui.css") {

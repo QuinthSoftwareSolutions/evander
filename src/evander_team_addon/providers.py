@@ -5,8 +5,6 @@ import hashlib
 import json
 import re
 import shlex
-import subprocess
-import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,8 +12,6 @@ from typing import Any
 
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from evander.effects.providers.agent_create import AgentCreateEffectProvider
-from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.agent_session import (
     container_backend,
@@ -48,8 +44,6 @@ from evander.events.scheduled import (
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
-    AgentCreateEffectDefinition,
-    AgentDestroyEffectDefinition,
     AgentExecEffectDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
@@ -178,7 +172,11 @@ from .services.domain.wake import (
 )
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
-from .services.release_gate_service import TeamReleaseGateService
+from .services.release_verification_effects import EffectReleaseVerificationExecutor
+from .services.release_verification_runner import (
+    ReleaseVerificationExecutor,
+    TeamReleaseVerificationRunner,
+)
 from .services.memory_service import (
     DEFAULT_MEMORY_LIMIT,
     TeamMemorySemanticService,
@@ -3153,245 +3151,16 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         run_id = _required_text(payload.get("verification_run_id"), "verification_run_id")
         candidate_sha = _required_text(payload.get("candidate_commit_sha"), "candidate_commit_sha")
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        state = repo.read()
-        release = state.release_packages.get(release_id)
-        run = state.release_verification_runs.get(run_id)
-        if release is None or run is None:
-            raise ValueError("release package or verification run does not exist")
-        if (
-            release.candidate_commit_sha != candidate_sha
-            or run.candidate_commit_sha != candidate_sha
-        ):
-            raise ValueError("release verification request does not match the pinned candidate")
-        if run.state in {"passed", "failed", "timed_out"}:
-            return {
-                "success": True,
-                "release_package_id": release_id,
-                "verification_run_id": run_id,
-                "verification_state": run.state,
-                "skipped": True,
-            }
-        project = state.projects.get(release.project_id)
-        policy = project.release_policy if project is not None else None
-        git = project.git if project is not None else None
-        manifest = release.manifest
-        if project is None or git is None or manifest is None:
-            raise ValueError(
-                "release project, Git configuration, or frozen candidate manifest is missing"
-            )
-        verification_commands = manifest.verification_commands
-        if not verification_commands:
-            raise ValueError("release verification run has no frozen commands")
-
-        command_results: list[dict[str, Any]] = []
-        terminal_state = "passed"
-        failure_kind: str | None = None
-        terminal_error: str | None = None
-        created = False
-        try:
-            create = AgentCreateEffectProvider()
-            create.initialize(
-                AgentCreateEffectDefinition(
-                    id=f"team-create-release-verifier-{run_id}",
-                    display_name="Create disposable release verifier",
-                    type="effect:agent:create",
-                    execution_backend="container_worker_vm",
-                    session_id=run.session_id,
-                    existing_agent_behavior="upsert",
-                    container_image=(policy.container_image if policy is not None else None),
-                    directory_path=git.directory_path,
-                    dotnet=True,
-                    nuget=True,
-                    ttl_hours=4,
-                    metadata={
-                        "team_release_verification": True,
-                        "release_package_id": release.id,
-                        "candidate_commit_sha": candidate_sha,
-                    },
-                ),
-                self.runtime_context,
-            )
-            create_result = create.execute()
-            if not bool(create_result.get("success")):
-                raise RuntimeError(
-                    _optional_text(create_result.get("message"))
-                    or "failed to create disposable release verifier"
-                )
-            created = True
-
-            clone = AgentCloneRepoEffectProvider()
-            clone.initialize(
-                AgentCloneRepoEffectDefinition(
-                    id=f"team-clone-release-candidate-{run_id}",
-                    display_name="Clone release candidate",
-                    type="effect:agent:clone-repo",
-                    session_id=run.session_id,
-                    managed_repo_id=git.managed_repo_id,
-                    clone_branch=release.release_branch,
-                    git_access_mode="read-only",
-                ),
-                self.runtime_context,
-            )
-            clone_result = clone.execute()
-            if not bool(clone_result.get("success")):
-                raise RuntimeError(
-                    _optional_text(clone_result.get("message"))
-                    or "failed to clone release candidate"
-                )
-            target_dir = _required_text(clone_result.get("target_dir"), "target_dir")
-            checkout_commands = (
-                (
-                    "pin",
-                    "Pin release candidate checkout",
-                    ["git", "checkout", "--detach", "--force", candidate_sha],
-                ),
-                (
-                    "reset",
-                    "Reset release candidate checkout",
-                    ["git", "reset", "--hard", candidate_sha],
-                ),
-                (
-                    "clean",
-                    "Clean release candidate checkout",
-                    ["git", "clean", "-ffdx"],
-                ),
-            )
-            for operation, display_name, checkout_command in checkout_commands:
-                checkout = AgentExecEffectProvider()
-                checkout.initialize(
-                    AgentExecEffectDefinition(
-                        id=f"team-{operation}-release-candidate-{run_id}",
-                        display_name=display_name,
-                        type="effect:agent:exec",
-                        session_id=run.session_id,
-                        command=checkout_command,
-                        working_directory=target_dir,
-                        timeout_seconds=120,
-                        check=True,
-                    ),
-                    self.runtime_context,
-                )
-                checkout.execute()
-
-            for command in verification_commands:
-                started = time.monotonic()
-                executor = AgentExecEffectProvider()
-                executor.initialize(
-                    AgentExecEffectDefinition(
-                        id=f"team-release-check-{run_id}-{len(command_results)}",
-                        display_name=command.name,
-                        type="effect:agent:exec",
-                        session_id=run.session_id,
-                        command=list(command.argv),
-                        working_directory=_release_verification_working_directory(
-                            target_dir,
-                            command.cwd,
-                        ),
-                        timeout_seconds=command.timeout_seconds,
-                        check=False,
-                    ),
-                    self.runtime_context,
-                )
-                try:
-                    command_output = executor.execute()
-                except (TimeoutError, subprocess.TimeoutExpired) as exc:
-                    duration = time.monotonic() - started
-                    error = str(exc) or f"release verification command {command.name!r} timed out"
-                    command_results.append(
-                        {
-                            "name": command.name,
-                            "state": "timed_out",
-                            "duration_seconds": duration,
-                            "log_excerpt": error[-8000:],
-                        }
-                    )
-                    terminal_state = "timed_out"
-                    failure_kind = "timeout"
-                    terminal_error = error
-                    break
-                duration = time.monotonic() - started
-                success = bool(command_output.get("success"))
-                command_status = str(command_output.get("status") or "").strip().casefold()
-                command_timed_out = not success and (
-                    command_output.get("failure_kind") == "timeout"
-                    or command_status in {"unknown", "preparing", "starting", "running"}
-                )
-                excerpt = "\n".join(
-                    part
-                    for part in (
-                        _optional_text(command_output.get("stdout")),
-                        _optional_text(command_output.get("stderr")),
-                    )
-                    if part
-                )[-8000:]
-                command_results.append(
-                    {
-                        "name": command.name,
-                        "state": (
-                            "passed" if success else "timed_out" if command_timed_out else "failed"
-                        ),
-                        "job_id": _optional_text(command_output.get("execution_id")),
-                        "exit_code": command_output.get("exit_code"),
-                        "duration_seconds": duration,
-                        "log_excerpt": excerpt or None,
-                    }
-                )
-                if not success:
-                    if command_timed_out:
-                        terminal_state = "timed_out"
-                        failure_kind = "timeout"
-                        terminal_error = f"release verification command {command.name!r} timed out"
-                    else:
-                        terminal_state = "failed"
-                        failure_kind = (
-                            "candidate"
-                            if command_output.get("failure_kind") == "command"
-                            else "infrastructure"
-                        )
-                        terminal_error = f"release verification command {command.name!r} failed"
-                    break
-        except (TimeoutError, subprocess.TimeoutExpired) as exc:
-            terminal_state = "timed_out"
-            failure_kind = "timeout"
-            terminal_error = str(exc) or "release verification timed out"
-        except Exception as exc:
-            terminal_state = "failed"
-            failure_kind = "infrastructure"
-            terminal_error = str(exc) or type(exc).__name__
-        finally:
-            if created:
-                try:
-                    destroy = AgentDestroyEffectProvider()
-                    destroy.initialize(
-                        AgentDestroyEffectDefinition(
-                            id=f"team-destroy-release-verifier-{run_id}",
-                            display_name="Destroy disposable release verifier",
-                            type="effect:agent:destroy",
-                            session_id=run.session_id,
-                            execution_backend="container_worker_vm",
-                        ),
-                        self.runtime_context,
-                    )
-                    destroy_result = destroy.execute()
-                    if not bool(destroy_result.get("success")):
-                        raise RuntimeError(
-                            _optional_text(destroy_result.get("message"))
-                            or "release verifier deletion reported failure"
-                        )
-                except Exception as exc:
-                    if terminal_state == "passed":
-                        terminal_state = "failed"
-                        failure_kind = "infrastructure"
-                        terminal_error = f"failed to destroy release verifier: {exc}"
-
-        _state, result = TeamReleaseGateService(repo).record_verification_result(
+        executor: ReleaseVerificationExecutor = EffectReleaseVerificationExecutor(
+            self.runtime_context
+        )
+        result = TeamReleaseVerificationRunner(
+            repo,
+            executor,
+        ).run(
             release_package_id=release_id,
             verification_run_id=run_id,
             candidate_commit_sha=candidate_sha,
-            verification_state=terminal_state,
-            command_results=command_results,
-            failure_kind=failure_kind,
-            error=terminal_error,
         )
         published_event_ids = _publish_team_events(
             self.runtime_context,
@@ -5415,16 +5184,6 @@ def _project_repo_prompt_guidance(project_repo: object) -> str:
         "The project host checkout is not mounted in the guest; use this guest "
         f"repo and its configured Git helpers for code changes.{git_context_guidance}\n\n"
     )
-
-
-def _release_verification_working_directory(repo_root: str, cwd: str) -> str:
-    normalized = cwd.strip()
-    if normalized in {"", "."}:
-        return repo_root
-    path = Path(normalized)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError("release verification cwd must stay within the candidate checkout")
-    return f"{repo_root.rstrip('/')}/{normalized.strip('/')}"
 
 
 def _prepare_project_repo(
