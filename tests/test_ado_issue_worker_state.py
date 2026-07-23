@@ -1803,6 +1803,55 @@ def test_load_ado_pr_feedback_session_bindings_matches_worker_directory_exactly(
     assert sorted(child_bindings) == [("org/repo", "6071")]
 
 
+def test_load_ado_pr_feedback_session_bindings_prefers_session_directory(
+    worker_config: WorkerConfig,
+) -> None:
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6070": {
+                    "session_id": "session-6070",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-09T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:6070": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6070",
+                        "session_id": "session-6070",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    root_bindings = _load_ado_pr_feedback_session_bindings(
+        runtime_dir=worker_config.runtime_dir,
+        pr_map_path=pr_map_path,
+        directory_path="root",
+    )
+    session_bindings = _load_ado_pr_feedback_session_bindings(
+        runtime_dir=worker_config.runtime_dir,
+        pr_map_path=pr_map_path,
+        directory_path="root/team-a",
+    )
+
+    assert root_bindings == {}
+    assert sorted(session_bindings) == [("org/repo", "6070")]
+
+
 @pytest.mark.parametrize(
     ("suppress_agent_authored_feedback", "expected_published"),
     [(False, 1), (True, 0)],

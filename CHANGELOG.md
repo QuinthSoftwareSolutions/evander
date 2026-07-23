@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23 - Session-Owned Pull Request Tracking
+
+- Recorded session-backed pull requests under the session's canonical directory instead of the
+  workflow graph's execution directory.
+- Made pull-request tracking readers treat the current session manifest as authoritative so stale
+  directory fields cannot hide feedback or completion streams from exact-directory ADO polling.
+
 ## 2026-07-23 - Focused Worker Navigation
 
 - Replaced the Workers fleet summary and tall service cards with worker search, status filtering,

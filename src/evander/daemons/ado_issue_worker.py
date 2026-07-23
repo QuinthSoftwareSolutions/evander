@@ -1826,9 +1826,9 @@ def _load_ado_pr_feedback_session_bindings(
         repo = str(raw.get("repo", "")).strip()
         pr_id = str(raw.get("pr_id", "")).strip()
         session_id = str(raw.get("session_id", "")).strip()
-        mapped_directory_path = str(
-            raw.get("directory_path", "")
-        ).strip() or session_directory_paths.get(session_id, "root")
+        mapped_directory_path = session_directory_paths.get(session_id) or (
+            str(raw.get("directory_path", "")).strip() or "root"
+        )
         if provider != "azure_devops" or not repo or not pr_id:
             continue
         if directory_path and mapped_directory_path != directory_path:

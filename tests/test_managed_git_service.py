@@ -1184,6 +1184,87 @@ def test_pr_tracking_persists_map_and_session_feedback_binding(tmp_path: Path) -
     assert ToolName.POST_PR_FEEDBACK_REPLY in session.allowed_tools
 
 
+def test_pr_tracking_uses_session_directory_instead_of_workflow_directory(
+    tmp_path: Path,
+) -> None:
+    config = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        pr_map_path=tmp_path / "runtime" / "pr-map.json",
+        session_store_path=tmp_path / "runtime" / "sessions.json",
+    )
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="issue-42-run",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    service = ManagedGitAdminService(
+        config,
+        SimpleNamespace(session_repository=sessions),
+        tmp_path,
+    )
+
+    service._persist_pr_tracking(
+        {
+            "canonical_repository_url": "https://dev.azure.com/Org/Project/_git/Repo",
+            "provider": "azure_devops",
+        },
+        pr={
+            "provider": "azure_devops",
+            "pr_id": "42",
+            "pr_url": "https://dev.azure.com/Org/Project/_git/Repo/pullrequest/42",
+        },
+        source_branch="feature/issue-42",
+        target_branch="main",
+        session_id="issue-42-run",
+        directory_path="root",
+    )
+
+    pr_map = json.loads(config.pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map["entries"]["azure_devops:Org/Project/Repo:42"]
+    assert entry["session_id"] == "issue-42-run"
+    assert entry["directory_path"] == "root/team-a"
+
+
+def test_pr_tracking_without_session_keeps_workflow_directory(tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        pr_map_path=tmp_path / "runtime" / "pr-map.json",
+        session_store_path=tmp_path / "runtime" / "sessions.json",
+    )
+    service = ManagedGitAdminService(
+        config,
+        SimpleNamespace(
+            session_repository=JsonSessionManifestRepository(config.session_store_path)
+        ),
+        tmp_path,
+    )
+
+    service._persist_pr_tracking(
+        {
+            "canonical_repository_url": "https://github.com/example/repo.git",
+            "provider": "github",
+        },
+        pr={
+            "provider": "github",
+            "pr_id": "42",
+            "pr_url": "https://github.com/example/repo/pull/42",
+        },
+        source_branch="feature/issue-42",
+        target_branch="main",
+        session_id="",
+        directory_path="root/team-a",
+    )
+
+    pr_map = json.loads(config.pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map["entries"]["github:example/repo:42"]
+    assert entry["session_id"] == ""
+    assert entry["directory_path"] == "root/team-a"
+
+
 def test_pr_create_rejects_unsupported_provider_before_push(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

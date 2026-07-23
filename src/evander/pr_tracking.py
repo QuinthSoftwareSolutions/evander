@@ -78,8 +78,8 @@ def list_pr_map_entries(
         pr_id = str(raw.get("pr_id", "")).strip()
         session_id = str(raw.get("session_id", "")).strip()
         mapped_directory_path = (
-            str(raw.get("directory_path", "")).strip()
-            or session_directories.get(session_id)
+            session_directories.get(session_id)
+            or str(raw.get("directory_path", "")).strip()
             or "root"
         )
         if expected_provider and row_provider != expected_provider:

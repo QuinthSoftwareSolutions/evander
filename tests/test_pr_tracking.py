@@ -10,6 +10,7 @@ from evander.pr_tracking import (
     completion_event_id,
     completion_event_payload,
     is_pr_completed,
+    list_pr_map_entries,
     status_snapshot_from_pull_request,
 )
 
@@ -82,6 +83,59 @@ def test_pr_map_store_updates_status_and_tracks_completion_publication(
         "trigger-pr-completed"
     ]
     assert event_record["event_id"] == event_id
+
+
+def test_list_pr_map_entries_prefers_session_directory_over_stale_mapping(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-42": {
+                    "session_id": "session-42",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-08-01T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "azure_devops:org/repo:42": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "42",
+                        "session_id": "session-42",
+                        "directory_path": "root",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    root_entries = list_pr_map_entries(
+        pr_map_path,
+        directory_path="root",
+        runtime_dir=runtime_dir,
+    )
+    session_entries = list_pr_map_entries(
+        pr_map_path,
+        directory_path="root/team-a",
+        runtime_dir=runtime_dir,
+    )
+
+    assert [entry.pr_id for entry in root_entries] == ["42"]
+    assert [entry.directory_path for entry in root_entries] == ["root/team-a"]
+    assert [entry.pr_id for entry in session_entries] == ["42"]
 
 
 def test_pr_terminal_state_detection_includes_closed_and_abandoned() -> None:

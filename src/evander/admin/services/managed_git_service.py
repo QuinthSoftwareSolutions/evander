@@ -2151,6 +2151,12 @@ class ManagedGitAdminService:
             raise ValueError(f"Unsupported PR tracking provider: {provider}")
         if session_id and tracking_session is None:
             tracking_session = self._resolve_pr_tracking_session(session_id)
+        tracking_directory_path = directory_path
+        if session_id:
+            assert tracking_session is not None
+            tracking_directory_path = (
+                str(tracking_session[1].directory_path or "").strip() or "root"
+            )
         PrMapStore(self._pr_map_path()).upsert_binding(
             provider=provider,
             repo=repo,
@@ -2159,7 +2165,7 @@ class ManagedGitAdminService:
             source_branch=source_branch,
             target_branch=target_branch,
             session_id=session_id,
-            directory_path=directory_path,
+            directory_path=tracking_directory_path,
         )
         if not session_id:
             return
