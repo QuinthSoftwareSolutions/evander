@@ -59,15 +59,13 @@ from ..models import (
     TeamRecordState,
     TeamRole,
     TeamState,
-    TaskCompletion,
-    TaskCompletionKind,
     TaskOutcomeContract,
     TeamTaskKind,
     TeamTaskState,
     _ensure_unique,
-    outcome_kind_snapshots,
     _unique_text_list,
     agent_project_ids,
+    outcome_kind_snapshots,
     release_package_payload_with_derived,
 )
 from ..templates import get_template
@@ -97,7 +95,6 @@ from .domain.outcome_catalog import (
 from .domain.blockers import (
     active_blockers_for_source,
     open_or_get_blocker,
-    resolve_active_blockers_for_source,
     resolve_blocker,
 )
 from .domain.common import (
@@ -127,7 +124,6 @@ from .domain.context_rotation import (
     _set_context_clearing_policy,
 )
 from .domain.deliverables import (
-    _active_task_deliverables,
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
 )
@@ -147,6 +143,8 @@ from .domain.review import (
     _reopen_accepted_deliverable_for_pending_review,
     _review_decision_policy_error,
     _review_profile_for_request,
+    retire_terminal_review,
+    withdraw_pending_review,
 )
 from .domain.work_due import _mark_agent_work_due
 from .commands.outbox import _team_event_outbox_records
@@ -3097,12 +3095,17 @@ class TeamAdminService:
         findings: list[str] | None = None,
         review_profile_id: str | None = None,
         instructions: str | None = None,
+        requested_by_actor: str = "operator",
         decision_at: datetime | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_review_request_id = _optional_text(review_request_id)
         normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
         normalized_reviewer_agent_id = _required_text(reviewer_agent_id, "reviewer_agent_id")
+        normalized_requested_by_actor = _required_text(
+            requested_by_actor,
+            "requested_by_actor",
+        )
         blocker_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -3166,6 +3169,7 @@ class TeamAdminService:
                 id=effective_review_request_id,
                 deliverable_id=normalized_deliverable_id,
                 reviewer_agent_id=normalized_reviewer_agent_id,
+                requested_by_actor=normalized_requested_by_actor,
                 state=state,
                 findings=findings or [],
                 review_profile_id=effective_review_profile_id,
@@ -3249,6 +3253,11 @@ class TeamAdminService:
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
+            if review.retired_at is not None:
+                action = "withdrawn" if review.decision_at is None else "retired"
+                raise ValueError(
+                    f"review {review.id} was {action} and cannot receive a decision"
+                )
             effective_criteria = (
                 criterion_results if criterion_results is not None else list(review.criteria)
             )
@@ -3302,6 +3311,24 @@ class TeamAdminService:
             expected_revision=expected_revision,
         )
 
+    def withdraw_review_request(
+        self,
+        *,
+        review_request_id: str,
+        reason: str,
+        operator_actor_id: str = "operator",
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        """Withdraw one current pending non-release review without a decision."""
+
+        return self._close_review_request_as_operator(
+            review_request_id=review_request_id,
+            reason=reason,
+            operator_actor_id=operator_actor_id,
+            expected_revision=expected_revision,
+            action="withdraw",
+        )
+
     def retire_review_request(
         self,
         *,
@@ -3310,25 +3337,36 @@ class TeamAdminService:
         operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> TeamState:
-        """Retire one current non-release review attempt without changing its decision."""
+        """Retire one current terminal non-release review without changing its decision."""
 
+        return self._close_review_request_as_operator(
+            review_request_id=review_request_id,
+            reason=reason,
+            operator_actor_id=operator_actor_id,
+            expected_revision=expected_revision,
+            action="retire",
+        )
+
+    def _close_review_request_as_operator(
+        self,
+        *,
+        review_request_id: str,
+        reason: str,
+        operator_actor_id: str,
+        expected_revision: int | None,
+        action: str,
+    ) -> TeamState:
         normalized_id = _required_text(review_request_id, "review_request_id")
         normalized_reason = _required_text(reason, "reason")
         normalized_actor = _required_text(operator_actor_id, "operator_actor_id")
+        closure_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(
-                state_model.review_requests, normalized_id, "review request"
+                state_model.review_requests,
+                normalized_id,
+                "review request",
             )
-            if review.release_package_id is not None:
-                raise ValueError(
-                    "release review attempts must be recovered through release gates"
-                )
-            if review.superseded_by_review_request_id is not None:
-                raise ValueError(
-                    f"review {review.id} is already superseded by "
-                    f"{review.superseded_by_review_request_id}"
-                )
             if review.retired_at is not None:
                 if (
                     review.retirement_reason == normalized_reason
@@ -3336,85 +3374,38 @@ class TeamAdminService:
                 ):
                     return state_model
                 raise ValueError(f"review {review.id} is already retired")
+            if action == "withdraw":
+                closed_review = withdraw_pending_review(
+                    state_model,
+                    review_request_id=normalized_id,
+                    reason=normalized_reason,
+                    retired_by=normalized_actor,
+                    actor=None,
+                    result=closure_result,
+                )
+            else:
+                closed_review = retire_terminal_review(
+                    state_model,
+                    review_request_id=normalized_id,
+                    reason=normalized_reason,
+                    retired_by=normalized_actor,
+                    actor=None,
+                    result=closure_result,
+                )
             deliverable = _require_present(
-                state_model.deliverables, review.deliverable_id, "deliverable"
+                state_model.deliverables,
+                closed_review.deliverable_id,
+                "deliverable",
             )
             task = _require_present(state_model.tasks, deliverable.task_id, "task")
-            now = utc_now()
-            review.retired_at = now
-            review.retired_by = normalized_actor
-            review.retirement_reason = normalized_reason
-            resolve_active_blockers_for_source(
-                state_model,
-                source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
-                source_id=review.id,
-                actor_agent_id=None,
-                dispatch_id=None,
-                note=f"Review attempt retired by {normalized_actor}: {normalized_reason}",
-                now=now,
-            )
-            current_reviews = [
-                state_model.review_requests[review_id]
-                for review_id in deliverable.review_request_ids
-                if review_id in state_model.review_requests
-                and state_model.review_requests[
-                    review_id
-                ].superseded_by_review_request_id
-                is None
-                and state_model.review_requests[review_id].retired_at is None
-            ]
-            if any(
-                item.state == TeamRecordState.BLOCKED for item in current_reviews
-            ):
-                deliverable.state = TeamRecordState.BLOCKED
-                _set_task_state(task, TeamTaskState.BLOCKED, now=now)
-            elif any(
-                item.state == TeamRecordState.REJECTED for item in current_reviews
-            ):
-                deliverable.state = TeamRecordState.REJECTED
-                _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
-            elif current_reviews and all(
-                item.state == TeamRecordState.ACCEPTED for item in current_reviews
-            ):
-                if any(
-                    finding.state == "open"
-                    for finding in deliverable.carried_findings
-                ):
-                    deliverable.state = TeamRecordState.PENDING
-                    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
-                else:
-                    deliverable.state = TeamRecordState.ACCEPTED
-                    task_deliverables = _active_task_deliverables(state_model, task)
-                    if all(
-                        item.state == TeamRecordState.ACCEPTED
-                        for item in task_deliverables
-                    ):
-                        if task.task_kind == TeamTaskKind.OUTCOME:
-                            task.completion = TaskCompletion(
-                                kind=TaskCompletionKind.DELIVERED,
-                                summary=(
-                                    "Accepted deliverables satisfied the task outcome contract."
-                                ),
-                                outcome_reference_ids=[
-                                    reference_id
-                                    for item in task_deliverables
-                                    for outcome in item.outcomes
-                                    for reference_id in outcome.reference_ids
-                                ],
-                            )
-                        _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
-            elif current_reviews:
-                deliverable.state = TeamRecordState.PENDING
-                _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
-            else:
-                deliverable.state = TeamRecordState.PENDING
-                _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
-            task.updated_at = now
             _recalculate_project_status(state_model, task.project_id)
             return state_model
 
-        return self._repository.update(
+        return self._repository.update_with_outbox(
             _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                closure_result.get("events") or []
+            ),
             expected_revision=expected_revision,
         )
 

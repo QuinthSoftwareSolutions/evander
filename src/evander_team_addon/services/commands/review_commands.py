@@ -44,7 +44,9 @@ from ..domain.review import (
     _apply_review_decision,
     _apply_review_request,
     _review_request_was_created,
+    retire_terminal_review,
     retry_blocked_review,
+    withdraw_pending_review,
 )
 from ..domain.work_due import (
     _mark_agent_work_due,
@@ -467,6 +469,174 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 },
                 created_domain_ids=[retry.id, *created_inbox_ids],
                 progress_classification="review_retry",
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
+    def withdraw_review_command(
+        self,
+        *,
+        session_id: str,
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        return self._close_review_command(
+            session_id=session_id,
+            review_request_id=review_request_id,
+            reason=reason,
+            request_id=request_id,
+            handled_inbox_item_ids=handled_inbox_item_ids,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+            action="withdraw",
+        )
+
+    def retire_review_command(
+        self,
+        *,
+        session_id: str,
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        return self._close_review_command(
+            session_id=session_id,
+            review_request_id=review_request_id,
+            reason=reason,
+            request_id=request_id,
+            handled_inbox_item_ids=handled_inbox_item_ids,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+            action="retire",
+        )
+
+    def _close_review_command(
+        self,
+        *,
+        session_id: str,
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None,
+        correlation_id: str | None,
+        causation_id: str | None,
+        action: str,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_payload = {
+            "review_request_id": _required_text(
+                review_request_id,
+                "review_request_id",
+            ),
+            "reason": _required_text(reason, "reason"),
+            "handled_inbox_item_ids": sorted(
+                _unique_text_list(
+                    handled_inbox_item_ids or [],
+                    "handled_inbox_item_ids",
+                )
+            ),
+            "correlation_id": _optional_text(correlation_id),
+            "causation_id": _optional_text(causation_id),
+        }
+        normalized_handled_ids = list(normalized_payload["handled_inbox_item_ids"])
+        tool_name = f"team_{action}_review"
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name=tool_name,
+            request_id=normalized_request_id,
+            correlation_id=normalized_payload["correlation_id"],
+            causation_id=normalized_payload["causation_id"],
+            progress_classification=f"review_{action}",
+        )
+
+        def _apply(
+            command_state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, tool_name)
+            closure_result: dict[str, Any] = {
+                "closed_inbox_item_ids": [],
+                "created_inbox_item_ids": [],
+                "resolved_blocker_ids": [],
+                "events": [],
+            }
+            try:
+                review = (
+                    withdraw_pending_review(
+                        command_state,
+                        review_request_id=normalized_payload["review_request_id"],
+                        reason=normalized_payload["reason"],
+                        retired_by=f"agent:{agent.id}",
+                        actor=agent,
+                        result=closure_result,
+                    )
+                    if action == "withdraw"
+                    else retire_terminal_review(
+                        command_state,
+                        review_request_id=normalized_payload["review_request_id"],
+                        reason=normalized_payload["reason"],
+                        retired_by=f"agent:{agent.id}",
+                        actor=agent,
+                        result=closure_result,
+                    )
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code=f"review_{action}_invalid",
+                    message=str(exc),
+                    correction_context={
+                        "review_request_id": normalized_payload["review_request_id"],
+                    },
+                ) from exc
+            deliverable = command_state.deliverables[review.deliverable_id]
+            task = command_state.tasks[deliverable.task_id]
+            _recalculate_project_status(command_state, task.project_id)
+            created_inbox_ids = list(closure_result["created_inbox_item_ids"])
+            events = list(closure_result["events"])
+            return TeamCommandApplyResult(
+                response_payload={
+                    "review_request_id": review.id,
+                    "action": "withdrawn" if action == "withdraw" else "retired",
+                    "review": review.model_dump(mode="json"),
+                    "deliverable": deliverable.model_dump(mode="json"),
+                    "task": task_payload_with_derived(command_state, task),
+                    "closed_inbox_item_ids": list(
+                        closure_result["closed_inbox_item_ids"]
+                    ),
+                    "created_inbox_item_ids": created_inbox_ids,
+                    "resolved_blocker_ids": list(
+                        closure_result["resolved_blocker_ids"]
+                    ),
+                    "open_finding_ids": [
+                        finding.id
+                        for finding in deliverable.carried_findings
+                        if finding.state == "open"
+                    ],
+                    "events": events,
+                    "intent_recorded": True,
+                    "async_effect_pending": bool(created_inbox_ids or events),
+                    "progress_made": True,
+                },
+                created_domain_ids=[
+                    *list(closure_result["closed_inbox_item_ids"]),
+                    *created_inbox_ids,
+                ],
+                progress_classification=f"review_{action}",
             )
 
         return self._execute_team_command(

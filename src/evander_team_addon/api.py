@@ -2099,6 +2099,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 findings=_optional_string_list(payload, "findings"),
                 review_profile_id=_optional(payload, "review_profile_id"),
                 instructions=_optional(payload, "instructions"),
+                requested_by_actor=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
                 decision_at=datetime.fromisoformat(raw_decision_at) if raw_decision_at else None,
                 expected_revision=expected_revision,
             ),
@@ -2144,6 +2148,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.retire_review_request(
+                review_request_id=review_request_id,
+                reason=_required(payload, "reason"),
+                operator_actor_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                expected_revision=expected_revision,
+            ),
+            target_collection="review_requests",
+            target_id=review_request_id,
+        )
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def withdraw_review_request(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        review_request_id = request.path_params["review_request_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.withdraw_review_request(
                 review_request_id=review_request_id,
                 reason=_required(payload, "reason"),
                 operator_actor_id=_operator_actor_from_request(
@@ -2844,6 +2867,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/review-requests/{review_request_id}/decision",
             decide_review_request,
+            methods=["POST"],
+        ),
+        route(
+            "/review-requests/{review_request_id}/withdraw",
+            withdraw_review_request,
             methods=["POST"],
         ),
         route(

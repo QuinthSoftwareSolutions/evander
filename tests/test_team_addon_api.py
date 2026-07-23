@@ -115,8 +115,30 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/review-requests/{review_request_id}/retire"
     )
     assert review_retire_route.methods == {"POST"}
+    review_withdraw_route = next(
+        route
+        for route in routes
+        if route.path == "/review-requests/{review_request_id}/withdraw"
+    )
+    assert review_withdraw_route.methods == {"POST"}
     activity_route = next(route for route in routes if route.path == "/dispatch-events")
     assert activity_route.methods == {"GET", "HEAD"}
+    outcome_collection_routes = [
+        route for route in routes if route.path == "/outcome-kinds"
+    ]
+    assert {frozenset(route.methods or set()) for route in outcome_collection_routes} == {
+        frozenset({"GET", "HEAD"}),
+        frozenset({"POST"}),
+    }
+    outcome_detail_routes = [
+        route
+        for route in routes
+        if route.path == "/outcome-kinds/{definition_id}"
+    ]
+    assert {frozenset(route.methods or set()) for route in outcome_detail_routes} == {
+        frozenset({"GET", "HEAD"}),
+        frozenset({"PATCH"}),
+    }
 
 
 @pytest.fixture(autouse=True)

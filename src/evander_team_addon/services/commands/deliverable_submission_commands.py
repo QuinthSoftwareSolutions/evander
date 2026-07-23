@@ -311,7 +311,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                         f"{deliverable.superseded_by_deliverable_id}"
                     ),
                 )
-            if deliverable_requires_formal_review(deliverable):
+            if deliverable_requires_formal_review(deliverable, state=state):
                 raise TeamCommandValidationError(
                     code="formal_review_required",
                     message=(

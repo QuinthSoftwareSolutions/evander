@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 31
+SQLITE_SCHEMA_VERSION = 32
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1057,6 +1057,8 @@ class TeamStateSqliteStore:
                     definition="TEXT",
                 )
                 for column_name in (
+                    "requested_by_agent_id",
+                    "requested_by_actor",
                     "supersedes_review_request_id",
                     "superseded_by_review_request_id",
                     "retry_reason",
@@ -2419,6 +2421,8 @@ class TeamStateSqliteStore:
                 "release_package_id": row["release_package_id"],
                 "candidate_commit_sha": row["candidate_commit_sha"],
                 "reviewer_agent_id": row["reviewer_agent_id"],
+                "requested_by_agent_id": row["requested_by_agent_id"],
+                "requested_by_actor": row["requested_by_actor"],
                 "state": row["state"],
                 "findings": findings.get(row["id"], []),
                 "review_profile_id": row["review_profile_id"],
@@ -2452,14 +2456,15 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_review_requests(
                     id, deliverable_id, release_package_id, candidate_commit_sha,
-                    reviewer_agent_id, state, review_profile_id, criteria_snapshot_json,
+                    reviewer_agent_id, requested_by_agent_id, requested_by_actor,
+                    state, review_profile_id, criteria_snapshot_json,
                     required_outcome_kind_definitions_json, instructions,
                     reviewed_commit_sha, supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
                     retry_requested_by, block_kind, retired_at, retired_by,
                     retirement_reason, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2467,6 +2472,8 @@ class TeamStateSqliteStore:
                     request.get("release_package_id"),
                     request.get("candidate_commit_sha"),
                     request["reviewer_agent_id"],
+                    request.get("requested_by_agent_id"),
+                    request.get("requested_by_actor"),
                     request.get("state", "pending"),
                     request.get("review_profile_id"),
                     (
@@ -4662,6 +4669,8 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     release_package_id TEXT,
     candidate_commit_sha TEXT,
     reviewer_agent_id TEXT NOT NULL,
+    requested_by_agent_id TEXT,
+    requested_by_actor TEXT,
     state TEXT NOT NULL,
     review_profile_id TEXT,
     criteria_snapshot_json TEXT,

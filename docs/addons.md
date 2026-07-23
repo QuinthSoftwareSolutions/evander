@@ -970,6 +970,8 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_request_review`
 - `team_decide_review`
 - `team_retry_review`
+- `team_withdraw_review`
+- `team_retire_review`
 - `team_link_deliverable_replacement`
 - `team_publish_review_branch`
 - `team_update_feature_branch`
@@ -1277,16 +1279,18 @@ an active deliverable, review, or blocker is blocked.
 
 Review decisions are immutable attempts. A blocked non-release review records a
 `block_kind` and can be retried with `team_retry_review`; the successor is linked
-to the preserved attempt and becomes the only current review. A blocked or
-rejected deliverable can be replaced by a normal same-task rework submission, or
-a project lead/manager can explicitly link an accepted cross-task replacement
-with `team_link_deliverable_replacement`. An operator can retire one erroneous
-current non-release review through
-`POST /api/addons/team-addon/review-requests/{id}/retire`. Migrations never infer
-or repair these relationships automatically, so historical blocked records stay
-blocked until an explicit retry, replacement, retirement, or blocker resolution.
-Retirement removes the erroneous attempt from the current review set but does
-not erase it or accept a deliverable that still has open carried findings.
+to the preserved attempt and becomes the only current review. An authorized
+requester, producer, supervisor, project lead, or manager can withdraw a mistaken
+pending non-release review with `team_withdraw_review`; no decision is invented.
+A project lead or manager can retire a terminal non-release attempt with
+`team_retire_review`. Operators have equivalent revision-checked `/withdraw` and
+`/retire` routes. Both actions preserve history; retirement preserves the
+decision and never resolves or waives open findings.
+
+A blocked or rejected deliverable can be replaced by a normal same-task rework
+submission, which carries its open findings, or a project lead/manager can link
+an accepted cross-task replacement with `team_link_deliverable_replacement`.
+Migrations never infer these relationships.
 
 Terminal commands reject a stale dispatch snapshot when a newer high-priority
 inbox item arrived after the agent woke. The agent must read the item and include

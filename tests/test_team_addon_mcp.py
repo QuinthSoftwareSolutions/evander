@@ -25,15 +25,19 @@ from evander_team_addon.mcp import (
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
+    TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
@@ -41,6 +45,7 @@ from evander_team_addon.mcp import (
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
@@ -359,6 +364,13 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     )
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
+    decide_review_description = tools[TEAM_DECIDE_REVIEW_TOOL].description or ""
+    retry_review_description = tools[TEAM_RETRY_REVIEW_TOOL].description or ""
+    withdraw_review_description = tools[TEAM_WITHDRAW_REVIEW_TOOL].description or ""
+    retire_review_description = tools[TEAM_RETIRE_REVIEW_TOOL].description or ""
+    replacement_description = (
+        tools[TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL].description or ""
+    )
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
     assert "Only the superior recorded on that handoff" in decide_deliverable_description
@@ -369,6 +381,12 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     )
     assert "infrastructure-failed or timed-out verification" in retry_release_description
     assert "process-blocked reviews" in retry_release_description
+    assert "all current reviews are accepted" in decide_review_description
+    assert "supersedes a current blocked" in retry_review_description
+    assert "pending non-release review" in withdraw_review_description
+    assert "project lead or team manager" in retire_review_description
+    assert "open findings are not resolved or waived" in retire_review_description
+    assert "accepted replacement in the same project" in replacement_description
 
 
 def test_teamless_governance_agent_can_reply_to_active_team_chat(

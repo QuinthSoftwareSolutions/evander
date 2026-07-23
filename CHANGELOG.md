@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-23 - Agent Review Recovery
+
+- Added authorized pending-review withdrawal and project-lead/manager retirement of terminal
+  non-release reviews without deleting decisions or findings.
+- Recorded review request provenance, closed stale reviewer inbox work, and returned review-free
+  deliverables to direct superior acceptance.
+- Added compact agent guidance for retry, withdrawal, retirement, rework lineage, and carried
+  findings, with detail kept in the relevant tools and review records.
+
 ## 2026-07-23 - Configurable Team Outcome Catalog
 
 - Added first-class team-wide and project-specific outcome-kind definitions with names,

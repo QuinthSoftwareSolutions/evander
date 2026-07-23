@@ -197,15 +197,19 @@ A blocked non-release review can be retried with <code>team_retry_review</code>.
 the blocked attempt, links a new pending successor, reopens the deliverable, and resolves the
 obsolete review blocker. Do not overwrite the original decision.
 
+An authorized requester, producer, supervisor, project lead, or manager can withdraw a mistaken
+pending non-release review with <code>team_withdraw_review</code>. A project lead or manager can
+retire a terminal non-release attempt with <code>team_retire_review</code>. Withdrawal records no
+decision; both actions preserve history. Retirement preserves the decision and does not resolve or
+waive open findings.
+
 A rejected or blocked deliverable can be replaced by a same-task rework submission. When an
 accepted deliverable from another task is the intentional replacement, an authorized project
 lead or manager can link it explicitly with <code>team_link_deliverable_replacement</code>.
 Migration does not guess replacement lineage.
 
-An unlocked operator can retire an erroneous current non-release review through
-<code>POST /api/addons/team-addon/review-requests/{id}/retire</code>, with a reason and expected
-revision. Retirement keeps the terminal attempt in history and removes it from the current review
-set. It does not accept a deliverable that still carries open findings.
+An unlocked operator has equivalent revision-checked <code>/withdraw</code> and
+<code>/retire</code> routes. Release reviews continue through their release-gate recovery path.
 
 ## Multi-review cascades
 
@@ -245,6 +249,8 @@ The distinction operators should remember is that **seeing a review is not the s
 > - <code>team_request_review</code>;
 > - <code>team_decide_review</code>;
 > - <code>team_retry_review</code>;
+> - <code>team_withdraw_review</code>;
+> - <code>team_retire_review</code>;
 > - <code>team_link_deliverable_replacement</code>;
 > - delivery list/get tools;
 > - Git promotion and release tools covered in Chapter 24.

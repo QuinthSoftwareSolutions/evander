@@ -16,7 +16,6 @@ from ...models import (
     TeamInboxItemState,
     TeamState,
     agent_project_ids,
-    deliverable_requires_formal_review,
     task_payload_with_derived,
 )
 
@@ -776,7 +775,7 @@ def _manager_fallback_deliverable_needs_review(
 ) -> bool:
     if not _is_active_deliverable_work(deliverable):
         return False
-    if deliverable_requires_formal_review(deliverable):
+    if any(finding.state == "open" for finding in deliverable.carried_findings):
         return True
     return any(review.release_package_id is None for review in reviews)
 

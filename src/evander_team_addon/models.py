@@ -1403,6 +1403,8 @@ class ReviewRequest(TeamModel):
     release_package_id: str | None = None
     candidate_commit_sha: str | None = None
     reviewer_agent_id: str
+    requested_by_agent_id: str | None = None
+    requested_by_actor: str | None = None
     state: TeamRecordState = TeamRecordState.PENDING
     findings: list[str] = Field(default_factory=list)
     review_profile_id: str | None = None
@@ -1441,6 +1443,8 @@ class ReviewRequest(TeamModel):
         "deliverable_id",
         "release_package_id",
         "candidate_commit_sha",
+        "requested_by_agent_id",
+        "requested_by_actor",
         "supersedes_review_request_id",
         "superseded_by_review_request_id",
         "retry_reason",
@@ -1459,6 +1463,10 @@ class ReviewRequest(TeamModel):
         if targets != 1:
             raise ValueError(
                 "review request requires exactly one of deliverable_id or release_package_id"
+            )
+        if self.requested_by_agent_id is not None and self.requested_by_actor is not None:
+            raise ValueError(
+                "review request cannot set both requested_by_agent_id and requested_by_actor"
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
@@ -3578,6 +3586,14 @@ class TeamState(TeamModel):
                 errors.append(
                     f"review request {review.id} references missing reviewer {review.reviewer_agent_id}"
                 )
+            if (
+                review.requested_by_agent_id is not None
+                and review.requested_by_agent_id not in self.agents
+            ):
+                errors.append(
+                    f"review request {review.id} references missing requester "
+                    f"{review.requested_by_agent_id}"
+                )
             profile = None
             if review.review_profile_id is not None:
                 profile = self.review_profiles.get(review.review_profile_id)
@@ -4210,8 +4226,20 @@ def outcome_kind_snapshots(
     return snapshots
 
 
-def deliverable_requires_formal_review(deliverable: Deliverable) -> bool:
-    return bool(deliverable.review_request_ids) or any(
+def deliverable_requires_formal_review(
+    deliverable: Deliverable,
+    *,
+    state: TeamState | None = None,
+) -> bool:
+    has_current_review = bool(deliverable.review_request_ids)
+    if state is not None:
+        has_current_review = any(
+            review_id in state.review_requests
+            and state.review_requests[review_id].superseded_by_review_request_id is None
+            and state.review_requests[review_id].retired_at is None
+            for review_id in deliverable.review_request_ids
+        )
+    return has_current_review or any(
         finding.state == "open" for finding in deliverable.carried_findings
     )
 
@@ -4231,7 +4259,10 @@ def _task_waiting_reason(state: TeamState, task: AgentTask) -> str | None:
         and state.deliverables[deliverable_id].superseded_by_deliverable_id is None
         and state.deliverables[deliverable_id].state in active_deliverable_states
     ]
-    if any(deliverable_requires_formal_review(deliverable) for deliverable in deliverables):
+    if any(
+        deliverable_requires_formal_review(deliverable, state=state)
+        for deliverable in deliverables
+    ):
         return "review"
     if deliverables:
         return "superior_acceptance"

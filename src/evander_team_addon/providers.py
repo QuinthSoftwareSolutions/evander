@@ -90,7 +90,6 @@ from .mcp import (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_OUTCOME_KINDS_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
-    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -103,7 +102,6 @@ from .mcp import (
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
-    TEAM_RETRY_REVIEW_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
@@ -191,7 +189,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 20
+TEAM_AGENT_GUIDANCE_VERSION = 21
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -4669,16 +4667,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "manage_outcome_kinds, create a project-scoped definition with "
         f"{TEAM_CREATE_OUTCOME_KIND_TOOL}; otherwise escalate the catalog gap to "
         "your operator.\n"
-        "- When responding to a review_rejected inbox item, create a revised "
-        "deliverable with supersedes_deliverable_id set to the "
-        "payload's supersedes_deliverable_id.\n"
-        f"- Use {TEAM_DECIDE_REVIEW_TOOL} only for review requests assigned to "
-        "you. Accepting a review is what cascades to deliverable/task acceptance "
-        "once all attached reviews are accepted.\n"
-        f"- Use {TEAM_RETRY_REVIEW_TOOL} to replace a current blocked review "
-        "attempt after its dependency or system problem is corrected. Use "
-        f"{TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL} when an accepted replacement "
-        "must retire a blocked or rejected predecessor across tasks.\n"
+        "- Review decisions and findings are durable history. Follow the relevant "
+        "inbox or blocker next action and the selected Team tool's description for "
+        "rework, retry, withdrawal, retirement, or replacement; lifecycle actions "
+        "never waive findings.\n"
         "- During manager fallback, routing_gaps take priority. If a gap says an "
         "idle profile-eligible reviewer has review work, create a fresh "
         f"{TEAM_REQUEST_REVIEW_TOOL} call for that reviewer instead of accepting "

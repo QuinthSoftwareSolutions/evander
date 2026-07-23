@@ -102,6 +102,8 @@ TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL = "team_link_deliverable_replacement"
 TEAM_REQUEST_REVIEW_TOOL = "team_request_review"
 TEAM_DECIDE_REVIEW_TOOL = "team_decide_review"
 TEAM_RETRY_REVIEW_TOOL = "team_retry_review"
+TEAM_WITHDRAW_REVIEW_TOOL = "team_withdraw_review"
+TEAM_RETIRE_REVIEW_TOOL = "team_retire_review"
 TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
@@ -170,6 +172,8 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_RETRY_REVIEW_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -243,6 +247,8 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_RETRY_REVIEW_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -291,6 +297,8 @@ MCP_TOOL_NAMES = (
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_RETRY_REVIEW_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -1675,8 +1683,9 @@ def _register_slice7_tools(
             "unknown with a summary. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "
             "context. Call team_publish_review_branch separately only when a "
-            "durable review branch is needed. Requires task_id, summary, and "
-            "request_id."
+            "durable review branch is needed. Set supersedes_deliverable_id when "
+            "reworking a rejected or blocked same-task deliverable; its open "
+            "findings carry forward. Requires task_id, summary, and request_id."
         ),
     )
 
@@ -1761,7 +1770,9 @@ def _register_slice7_tools(
             "deliverable, reviews, and request_id. The deliverable may include "
             "verification status and git_refs. Git deliverables must include "
             "deliverable.branch_context_id; git_refs do not publish a review "
-            "branch by themselves and must match that context."
+            "branch by themselves and must match that context. A rework may set "
+            "deliverable.supersedes_deliverable_id to a rejected or blocked "
+            "same-task predecessor; its open findings carry forward."
         ),
     )
 
@@ -1897,8 +1908,10 @@ def _register_slice7_tools(
             "the candidate failed review; blocked is reserved for a non-candidate "
             "process or evidence-access blocker and requires a finding. For blocked "
             "decisions, block_kind may identify dependency, input_unavailable, policy, "
-            "system, or unspecified. Requires "
-            "review_request_id, state, and request_id."
+            "system, or unspecified. An accepted review must use finding_resolutions "
+            "for every open carried finding owned by its profile or reviewer role; "
+            "acceptance cascades only when all current reviews are accepted and no "
+            "finding remains open. Requires review_request_id, state, and request_id."
         ),
     )
 
@@ -1939,6 +1952,82 @@ def _register_slice7_tools(
             "non-release review without rewriting its immutable decision. The producer, "
             "supervisor, project lead, or team manager may retry it and optionally choose "
             "another eligible reviewer. Requires review_request_id, reason, and request_id."
+        ),
+    )
+
+    def team_withdraw_review(
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_WITHDRAW_REVIEW_TOOL,
+        )
+        try:
+            _state, result = review_commands.withdraw_review_command(
+                session_id=caller.session_id,
+                review_request_id=review_request_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_withdraw_review,
+        name=TEAM_WITHDRAW_REVIEW_TOOL,
+        description=(
+            "Withdraw a mistaken or unnecessary current pending non-release review "
+            "without recording a decision. The requester, deliverable producer, "
+            "producer's supervisor, project lead, or team manager may withdraw it. "
+            "History is preserved. Requires review_request_id, reason, and request_id."
+        ),
+    )
+
+    def team_retire_review(
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RETIRE_REVIEW_TOOL,
+        )
+        try:
+            _state, result = review_commands.retire_review_command(
+                session_id=caller.session_id,
+                review_request_id=review_request_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_retire_review,
+        name=TEAM_RETIRE_REVIEW_TOOL,
+        description=(
+            "Retire a current accepted, rejected, or blocked non-release review. "
+            "Only a project lead or team manager may do this. The decision and "
+            "history remain; open findings are not resolved or waived. Requires "
+            "review_request_id, reason, and request_id."
         ),
     )
 
