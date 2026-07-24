@@ -60,6 +60,7 @@ from evander_team_addon.models import (
     agent_project_ids,
     effective_outcome_kind_definitions,
     project_lead_agent_id,
+    runtime_operations_payload,
 )
 from evander_team_addon.repository import (
     TeamStateConflictError,
@@ -9425,6 +9426,116 @@ def test_project_lead_can_retire_blocked_review_without_clearing_findings(
     assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
 
 
+def test_retiring_rejected_review_preserves_owner_rework_notice(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-request-review")
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Verify the result.",
+        request_id="request-review-before-rejection",
+    )
+    review_id = requested["review_request_id"]
+    assignment_id = requested["created_inbox_item_ids"][0]
+
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-reject-review")
+    state, rejected = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id=review_id,
+        state="rejected",
+        findings=["The evidence is incomplete."],
+        request_id="request-reject-review",
+    )
+    rework_id = rejected["created_inbox_item_ids"][0]
+    assert state.inbox[assignment_id].state == TeamInboxItemState.PENDING
+    assert state.inbox[rework_id].payload["kind"] == "review_rejected"
+    assert state.inbox[rework_id].state == TeamInboxItemState.PENDING
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-retire-rejected")
+    state, retired = _command_service(repo).retire_review_command(
+        session_id="session-lead",
+        review_request_id=review_id,
+        reason="The rejected review attempt was attached in error.",
+        request_id="request-retire-rejected",
+    )
+
+    assert retired["success"] is True
+    assert retired["closed_inbox_item_ids"] == [assignment_id]
+    assert retired["created_inbox_item_ids"] == []
+    assert state.inbox[assignment_id].state == TeamInboxItemState.HANDLED
+    assert state.inbox[rework_id].state == TeamInboxItemState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+
+
+def test_retiring_blocked_review_restores_owner_rework_and_wake_due(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-request-review")
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Verify the result.",
+        request_id="request-review-before-block",
+    )
+    review_id = requested["review_request_id"]
+
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-block-review")
+    state, blocked = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id=review_id,
+        state="blocked",
+        block_kind="system",
+        findings=["The review environment is unavailable."],
+        request_id="request-block-review",
+    )
+    assert blocked["success"] is True
+
+    def _exhaust_owner_runtime(state_model) -> None:
+        runtime = state_model.agent_runtimes.setdefault(
+            "backend",
+            AgentRuntime(agent_id="backend"),
+        )
+        runtime.no_progress_count = 3
+        runtime.next_wake_at = datetime.now(UTC) + timedelta(hours=1)
+
+    repo.update(_exhaust_owner_runtime)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-retire-blocked")
+    state, retired = _command_service(repo).retire_review_command(
+        session_id="session-lead",
+        review_request_id=review_id,
+        reason="The blocked review attempt was attached in error.",
+        request_id="request-retire-blocked",
+    )
+
+    assert retired["success"] is True
+    assert len(retired["created_inbox_item_ids"]) == 1
+    rework = state.inbox[retired["created_inbox_item_ids"][0]]
+    assert rework.recipient_agent_id == "backend"
+    assert rework.state == TeamInboxItemState.PENDING
+    assert rework.payload["kind"] == "review_rework_restored"
+    assert rework.payload["review_request_id"] == review_id
+    assert rework.payload["open_findings"]
+    owner_runtime = state.agent_runtimes["backend"]
+    assert owner_runtime.no_progress_count == 0
+    assert owner_runtime.next_wake_at is None
+    owner_operations = next(
+        item
+        for item in runtime_operations_payload(state)["agents"]
+        if item["id"] == "backend"
+    )
+    assert owner_operations["wake_due"] is True
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+
+
 def test_operator_review_retirement_is_explicit_and_preserves_the_blocked_attempt(
     tmp_path: Path,
 ) -> None:
@@ -9618,6 +9729,54 @@ def test_withdrawing_reopened_review_preserves_active_acceptance_blocker(
     assert state.blockers[blocker_id].state == TeamBlockerState.OPEN
     assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
     assert state.tasks["task"].state == TeamTaskState.BLOCKED
+
+
+def test_withdrawing_last_review_preserves_sibling_review_task_blocker(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(repo, deliverable_id="deliverable-target", task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable-sibling", task_id="task")
+    admin = _team_admin_service(repo)
+    state = admin.record_review_request(
+        review_request_id="review-target",
+        deliverable_id="deliverable-target",
+        reviewer_agent_id="worker",
+    )
+    state = admin.record_review_request(
+        review_request_id="review-sibling",
+        deliverable_id="deliverable-sibling",
+        reviewer_agent_id="worker",
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_decision(
+        review_request_id="review-sibling",
+        state=TeamRecordState.BLOCKED,
+        findings=["The sibling review environment is unavailable."],
+        expected_revision=state.revision,
+    )
+    sibling_blocker = next(
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_id == "review-sibling" and blocker.state == TeamBlockerState.OPEN
+    )
+    assert state.tasks["task"].state == TeamTaskState.BLOCKED
+
+    state = admin.withdraw_review_request(
+        review_request_id="review-target",
+        reason="The target review is no longer needed.",
+        expected_revision=state.revision,
+    )
+
+    assert state.blockers[sibling_blocker.id].state == TeamBlockerState.OPEN
+    assert state.deliverables["deliverable-target"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.BLOCKED
+    assert all(
+        item.item_type != TeamInboxItemType.DELIVERABLE_NOTICE
+        or item.payload.get("deliverable_id") != "deliverable-target"
+        for item in state.inbox.values()
+    )
 
 
 def test_withdrawing_review_does_not_accept_deliverable_with_open_carried_findings(

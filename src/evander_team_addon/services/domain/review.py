@@ -64,6 +64,12 @@ _TERMINAL_REVIEW_STATES = frozenset(
         TeamRecordState.BLOCKED,
     }
 )
+_REVIEW_ASSIGNMENT_INBOX_KINDS = frozenset(
+    {
+        "review_request",
+        "review_retry_request",
+    }
+)
 
 
 def _is_team_manager_for_task_project(
@@ -639,6 +645,7 @@ def _close_review_attempt(
     closed_inbox_ids = _close_review_inbox_items(
         state,
         review_request_id=review.id,
+        reviewer_agent_id=review.reviewer_agent_id,
         now=now,
     )
     if result is not None:
@@ -655,6 +662,7 @@ def _close_review_attempt(
     )
     _recalculate_deliverable_after_review_closure(
         state,
+        closed_review=review,
         deliverable=deliverable,
         task=task,
         sender_agent_id=actor_agent_id or deliverable.producer_agent_id,
@@ -667,12 +675,15 @@ def _close_review_inbox_items(
     state: TeamState,
     *,
     review_request_id: str,
+    reviewer_agent_id: str,
     now: datetime,
 ) -> list[str]:
     closed_ids: list[str] = []
     for item in state.inbox.values():
         if (
             item.state == TeamInboxItemState.PENDING
+            and item.recipient_agent_id == reviewer_agent_id
+            and item.payload.get("kind") in _REVIEW_ASSIGNMENT_INBOX_KINDS
             and item.payload.get("review_request_id") == review_request_id
         ):
             item.state = TeamInboxItemState.HANDLED
@@ -697,6 +708,7 @@ def _current_deliverable_reviews(
 def _recalculate_deliverable_after_review_closure(
     state: TeamState,
     *,
+    closed_review: ReviewRequest,
     deliverable: Deliverable,
     task: AgentTask,
     sender_agent_id: str,
@@ -738,6 +750,15 @@ def _recalculate_deliverable_after_review_closure(
         deliverable.state = TeamRecordState.PENDING
         deliverable.acceptance_recipient_agent_id = None
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+        _restore_owner_rework_after_review_closure(
+            state,
+            closed_review=closed_review,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        )
     elif (
         deliverable.acceptance_decision is not None
         and deliverable.acceptance_decision.decision == "accepted"
@@ -752,6 +773,9 @@ def _recalculate_deliverable_after_review_closure(
                 task=task,
                 now=now,
             )
+    elif active_acceptance_blocker_ids:
+        deliverable.state = TeamRecordState.PENDING
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
     else:
         _route_to_superior_acceptance(
             state,
@@ -762,6 +786,68 @@ def _recalculate_deliverable_after_review_closure(
             now=now,
         )
     task.updated_at = now
+
+
+def _restore_owner_rework_after_review_closure(
+    state: TeamState,
+    *,
+    closed_review: ReviewRequest,
+    deliverable: Deliverable,
+    task: AgentTask,
+    sender_agent_id: str,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    owner_agent_id = task.owner_agent_id
+    existing = next(
+        (
+            item
+            for item in state.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.item_type == TeamInboxItemType.STATUS_REQUEST
+            and item.recipient_agent_id == owner_agent_id
+            and item.task_id == task.id
+            and item.payload.get("deliverable_id") == deliverable.id
+            and item.payload.get("kind")
+            in {
+                "review_rejected",
+                "review_rework_restored",
+            }
+        ),
+        None,
+    )
+    if existing is not None:
+        _mark_agent_work_due(state, agent_id=owner_agent_id, now=now)
+        return
+    queue_actionable_inbox_item(
+        state,
+        recipient_agent_id=owner_agent_id,
+        sender_agent_id=sender_agent_id,
+        task_id=task.id,
+        priority=TeamInboxPriority.NORMAL,
+        payload={
+            "kind": "review_rework_restored",
+            "review_request_id": closed_review.id,
+            "review_state": closed_review.state.value,
+            "retirement_reason": closed_review.retirement_reason,
+            "deliverable_id": deliverable.id,
+            "task_id": task.id,
+            "summary": "Review closed with open findings; obtain a resolving review.",
+            "open_findings": [
+                finding.model_dump(mode="json")
+                for finding in deliverable.carried_findings
+                if finding.state == "open"
+            ],
+            "next_action": (
+                f"Request a new review for deliverable {deliverable.id} and resolve "
+                "every carried finding with evidence; use an explicit replacement "
+                "path if the deliverable itself must change."
+            ),
+            "artifact_refs": list(deliverable.artifact_refs),
+        },
+        result=result,
+        now=now,
+    )
 
 
 def _route_to_superior_acceptance(

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-24 - Team Review Closure Reliability
+
+- Kept sibling task blockers authoritative when the last review on another deliverable closes.
+- Limited review inbox cleanup to reviewer assignments so owner rework notices remain actionable.
+- Restored an actionable owner notice and wake eligibility when retiring a blocked review exposes
+  open-finding rework.
+
 ## 2026-07-23 - Team Review Lifecycle Hardening
 
 - Scoped review withdrawal and retirement by Team so managers cannot mutate another Team's work.
