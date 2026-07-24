@@ -142,7 +142,9 @@ class VmAgentLogChunkMixin:
                     "text": f"[log unavailable: {exc}]\n",
                     "returned_lines": 1,
                     "has_more_before": False,
+                    "log_unavailable": True,
                 }
+        log_unavailable = False
         try:
             snapshot_line_limit = max(1, int(limit)) + max(0, int(offset))
             text = worker_backend.get_log_snapshot(
@@ -152,6 +154,7 @@ class VmAgentLogChunkMixin:
             )
         except Exception as exc:
             text = f"[log unavailable: {exc}]\n"
+            log_unavailable = True
         lines = str(text or "").splitlines()
         normalized_query = str(query or "").strip()
         if normalized_query:
@@ -168,6 +171,7 @@ class VmAgentLogChunkMixin:
             "end_line": end_index if selected else 0,
             "has_more_before": start_index > 0
             or (not normalized_query and len(lines) >= snapshot_line_limit and bool(selected)),
+            "log_unavailable": log_unavailable,
         }
 
     def _container_legacy_artifact_metadata(

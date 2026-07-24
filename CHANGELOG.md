@@ -13,6 +13,11 @@
   staging, and publishing as compact inline events instead of separate log-owning executions.
 - Made Threads history load newest-first through bounded continuation cursors so opening the tab
   no longer downloads every historical execution or a complete long transcript.
+- Kept fallback thread history reachable beyond 25 executions, prevented recurring thread IDs
+  from being emitted twice across record windows, and recovered execution logs when session-log
+  reads fail.
+- Preserved failed artifact-command outcomes after worker cleanup and excluded known setup and
+  utility effects from the legacy current-agent-run fallback.
 
 ## 2026-07-24 - Team Review Closure Reliability
 

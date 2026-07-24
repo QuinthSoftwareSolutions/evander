@@ -78,6 +78,10 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
         last_status="exited",
         metadata={"codex_outcome": {"status": "failed"}},
     )
+    cleaned_failed_record = SimpleNamespace(
+        last_status="removed",
+        metadata={"exit_code": 7, "worker_terminal_kind": "command_exit"},
+    )
 
     assert (
         VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=False)
@@ -89,6 +93,7 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
     )
     assert VmAgentAdminService._container_execution_status(running_record) == "running"
     assert VmAgentAdminService._container_execution_status(failed_record) == "failed"
+    assert VmAgentAdminService._container_execution_status(cleaned_failed_record) == "failed"
     assert VmAgentAdminService._container_session_status([]) == "prepared"
     assert VmAgentAdminService._container_session_status([running_record]) == "running"
     assert VmAgentAdminService._normalize_agent_log_view(None) == "executions"

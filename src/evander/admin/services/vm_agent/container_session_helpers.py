@@ -96,7 +96,20 @@ class VmAgentContainerSessionHelperMixin:
             status = str(outcome.get("status") or "").strip().casefold()
             if status == "failed":
                 return "failed"
-        return cls._container_agent_status(getattr(record, "last_status", None))
+        status = cls._container_agent_status(getattr(record, "last_status", None))
+        metadata = getattr(record, "metadata", None)
+        if status in {"destroyed", "stopped"} and isinstance(metadata, Mapping):
+            terminal_kind = str(metadata.get("worker_terminal_kind") or "").strip().casefold()
+            if terminal_kind == "infrastructure":
+                return "failed"
+            raw_exit_code = metadata.get("exit_code")
+            if raw_exit_code is not None:
+                try:
+                    if int(raw_exit_code) != 0:
+                        return "failed"
+                except (TypeError, ValueError):
+                    pass
+        return status
 
     @staticmethod
     def _agent_status_is_active(status: str | None) -> bool:

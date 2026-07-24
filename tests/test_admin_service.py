@@ -5451,6 +5451,8 @@ def test_get_admin_agent_log_page_container_session_shows_artifacts_inline_with_
                 "operation_label": "Import Team artifact",
                 "artifact_key": "team/report/v1",
                 "artifact_destination_path": "team-artifact-imports/report",
+                "exit_code": 7,
+                "worker_terminal_kind": "command_exit",
             },
         )
     )
@@ -5525,6 +5527,7 @@ def test_get_admin_agent_log_page_container_session_shows_artifacts_inline_with_
     assert "Import Team artifact" in latest_page["text"]
     assert "key=team/report/v1" in latest_page["text"]
     assert "destination=/artifacts/team-artifact-imports/report" in latest_page["text"]
+    assert "status=failed" in latest_page["text"]
     assert "session transcript" not in latest_page["text"]
     assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
@@ -5759,6 +5762,65 @@ def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_l
     assert all(mode == "execution" for _, _, mode in fake_backend.calls)
 
 
+def test_get_admin_agent_log_page_container_session_excludes_known_utility_executions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-utilities-only",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-utilities-only",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-utilities-only",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index, effect_type in enumerate(
+        (
+            "effect:agent:clone-repo",
+            "effect:agent:bootstrap-frontend",
+        )
+    ):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-utility-{index}",
+                session_id="session-utilities-only",
+                worker_job_id=f"job-utility-{index}",
+                worker_url="http://worker.test",
+                target_name="target-utilities-only",
+                started_at=datetime(2026, 7, 24, 8, index, tzinfo=UTC),
+                last_status="removed",
+                directory_path="root",
+                metadata={"effect_type": effect_type},
+            )
+        )
+
+    fake_backend = SimpleNamespace()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-utilities-only",
+        backend="container_worker_vm",
+        limit=20,
+    )
+
+    assert page["text"] == ("No agent executions have run for session session-utilities-only.\n")
+    assert "Current agent run" not in page["text"]
+
+
 def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
     tmp_path: Path,
     monkeypatch,
@@ -5966,6 +6028,92 @@ def test_get_admin_agent_log_page_container_session_threads_use_stored_thread_id
     assert fake_backend.calls == [("exec-stored-1", 199, "session")]
 
 
+def test_get_admin_agent_log_page_container_session_threads_do_not_regroup_emitted_threads(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-recurring-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-recurring-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-recurring-threads",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    execution_threads: dict[str, str] = {}
+    for index in range(25):
+        thread_id = (
+            "thread-c" if index in {0, 5, 10} else ("thread-a" if index % 2 == 0 else "thread-b")
+        )
+        execution_id = f"exec-recurring-{index:02d}"
+        execution_threads[execution_id] = thread_id
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=execution_id,
+                session_id="session-recurring-threads",
+                worker_job_id=f"job-recurring-{index:02d}",
+                worker_url="http://worker.test",
+                target_name="target-recurring-threads",
+                started_at=datetime(2026, 7, 24, 9, 0, tzinfo=UTC) + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+                metadata={"resume_thread_id": thread_id},
+            )
+        )
+
+    class FakeContainerBackend:
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            if mode == "raw":
+                raise AssertionError("stored thread ids should avoid raw log probes")
+            if mode == "session":
+                return f"{execution_threads[target]} transcript\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    latest_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-recurring-threads",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+    older_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-recurring-threads",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+        cursor=str(latest_page["next_cursor"]),
+    )
+
+    assert latest_page["text"].count("thread=thread-a") == 1
+    assert latest_page["text"].count("thread=thread-b") == 1
+    assert "thread=thread-c" not in latest_page["text"]
+    assert "thread=thread-a" not in older_page["text"]
+    assert "thread=thread-b" not in older_page["text"]
+    assert older_page["text"].count("thread=thread-c") == 1
+
+
 def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execution_logs(
     tmp_path: Path,
     monkeypatch,
@@ -6064,6 +6212,91 @@ def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execut
         ("exec-claude-1", 199, "session"),
         ("exec-claude-2", 199, "execution"),
         ("exec-claude-1", 198, "execution"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_falls_back_after_session_read_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-pruned-thread-log",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-pruned-thread-log",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-pruned-thread-log",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(2):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-pruned-{index}",
+                session_id="session-pruned-thread-log",
+                worker_job_id=f"job-pruned-{index}",
+                worker_url="http://worker.test",
+                target_name="target-pruned-thread-log",
+                started_at=datetime(2026, 7, 24, 10, index, tzinfo=UTC),
+                last_status="removed",
+                directory_path="root",
+                metadata={"resume_thread_id": "thread-pruned"},
+            )
+        )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None]] = []
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            self.calls.append((target, mode))
+            if mode == "session":
+                raise RuntimeError("session log was pruned")
+            if mode == "execution":
+                return {
+                    "text": f"execution fallback for {target}\n",
+                    "returned_lines": 1,
+                    "has_more_before": False,
+                }
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-pruned-thread-log",
+        backend="container_worker_vm",
+        view="threads",
+        limit=20,
+    )
+
+    assert "log unavailable" not in page["text"]
+    assert "execution fallback for exec-pruned-0" in page["text"]
+    assert "execution fallback for exec-pruned-1" in page["text"]
+    assert fake_backend.calls == [
+        ("exec-pruned-0", "session"),
+        ("exec-pruned-1", "execution"),
+        ("exec-pruned-0", "execution"),
     ]
 
 
@@ -6413,21 +6646,31 @@ def test_get_admin_agent_log_page_container_session_threads_large_history_rebuil
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
-    page = service.vm_agent_admin.get_admin_agent_log_page(
-        "session-thread-large-fallback",
-        backend="container_worker_vm",
-        view="threads",
-        limit=400,
-    )
+    page_texts: list[str] = []
+    cursor: str | None = None
+    for _ in range(20):
+        page = service.vm_agent_admin.get_admin_agent_log_page(
+            "session-thread-large-fallback",
+            backend="container_worker_vm",
+            view="threads",
+            limit=40,
+            cursor=cursor,
+        )
+        page_texts.append(str(page["text"]))
+        next_cursor = page.get("next_cursor")
+        if not next_cursor:
+            break
+        cursor = str(next_cursor)
+    else:
+        pytest.fail("fallback thread pagination did not terminate")
 
+    combined_text = "\n".join(page_texts)
     assert page["view"] == "threads"
-    assert "thread=thread-large-fallback" in page["text"]
-    assert "executions=150" in page["text"]
-    assert "fallback body for exec-large-fallback-149" in page["text"]
-    assert "fallback body for exec-large-fallback-125" in page["text"]
-    assert "fallback body for exec-large-fallback-000" not in page["text"]
-    assert page["has_more_before"] is True
-    assert len(fake_backend.calls) == 26
+    assert "thread=thread-large-fallback" in combined_text
+    assert "executions=150" in combined_text
+    for index in range(150):
+        assert combined_text.count(f"fallback body for exec-large-fallback-{index:03d}") == 1
+    assert page["has_more_before"] is False
     assert all(mode != "raw" for _target, _lines, mode in fake_backend.calls)
 
 
