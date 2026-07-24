@@ -30,6 +30,7 @@ from .common import (
     _set_task_state,
     _string_list,
 )
+from .git_work_contexts import finalize_active_git_work_contexts_for_task
 
 
 _DELIVERABLE_VERIFICATION_STATUSES = frozenset(
@@ -275,6 +276,11 @@ def _accept_deliverable_and_maybe_task(
             outcome_reference_ids=outcome_reference_ids,
         )
     _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
+    finalize_active_git_work_contexts_for_task(
+        state,
+        task_id=task.id,
+        now=now,
+    )
     task.updated_at = now
     return True
 

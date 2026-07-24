@@ -20,7 +20,6 @@ from ..models import (
     AgentStandDown,
     AgentStandDownSource,
     AgentStatus,
-    GitWorkContextState,
     GovernanceRuntime,
     TeamDispatchActivityStatus,
     TeamDispatchActivity,
@@ -78,6 +77,10 @@ from .domain.governance import (
     _governance_member_team_payload,
     _pending_governance_agenda_for_group,
 )
+from .domain.git_work_contexts import (
+    finalize_active_git_work_contexts_for_dispatch,
+    reconcile_git_work_context_lifecycle,
+)
 from .domain.manager_fallback import _manager_fallback_summary_payload
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
@@ -102,6 +105,9 @@ from .domain.work_due import (
     _mark_agent_work_due,
 )
 from .commands.outbox import _team_event_outbox_records
+
+
+GIT_WORK_CONTEXT_RETENTION_DAYS = 30
 
 
 def utc_now() -> datetime:
@@ -285,6 +291,11 @@ class TeamRuntimeService:
             return self._repository.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
+            reconcile_git_work_context_lifecycle(
+                state_model,
+                now=effective_now,
+                prune_before=effective_now - timedelta(days=GIT_WORK_CONTEXT_RETENTION_DAYS),
+            )
             availability_result: dict[str, Any] = {"events": [], "errors": []}
             reconcile_unavailable_blocker_assignments(
                 state_model,
@@ -319,6 +330,12 @@ class TeamRuntimeService:
                         blocker_routing_events.extend(expiry_result.get("events") or [])
                         if processed_blockers:
                             runtime.no_progress_count += 1
+                        finalize_active_git_work_contexts_for_dispatch(
+                            state_model,
+                            agent_id=agent.id,
+                            dispatch_id=expired_dispatch_id,
+                            now=effective_now,
+                        )
                         runtime.active_dispatch_id = None
                         runtime.wake_leased_until = None
                         runtime.wake_reason = None
@@ -893,22 +910,50 @@ class TeamRuntimeService:
                     f"dispatch {normalized_dispatch_id} no longer owns the wake lease "
                     f"for agent {normalized_agent_id}"
                 )
+            completed_at = utc_now()
+            finalize_active_git_work_contexts_for_dispatch(
+                state,
+                agent_id=normalized_agent_id,
+                dispatch_id=normalized_dispatch_id,
+                now=completed_at,
+            )
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
             runtime.next_wake_at = None
-            runtime.updated_at = utc_now()
-            for context in state.git_work_contexts.values():
-                if (
-                    context.agent_id == normalized_agent_id
-                    and context.dispatch_id == normalized_dispatch_id
-                    and context.state == GitWorkContextState.ACTIVE
-                ):
-                    context.state = GitWorkContextState.ABANDONED
-                    context.updated_at = runtime.updated_at
+            runtime.updated_at = completed_at
             return state
 
         return self._repository.update(_mutate)
+
+    def reconcile_git_work_contexts(
+        self,
+        *,
+        now: datetime | None = None,
+        prune_before: datetime | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, int]]:
+        effective_now = _ensure_utc(now or utc_now())
+        effective_prune_before = (
+            _ensure_utc(prune_before) if prune_before is not None else None
+        )
+        result: dict[str, int] = {}
+
+        def _mutate(state: TeamState) -> TeamState:
+            result.update(
+                reconcile_git_work_context_lifecycle(
+                    state,
+                    now=effective_now,
+                    prune_before=effective_prune_before,
+                )
+            )
+            return state
+
+        state = self._repository.update(
+            _mutate,
+            expected_revision=expected_revision,
+        )
+        return state, result
 
     def finalize_agent_dispatch_from_activity(
         self,
@@ -1066,6 +1111,12 @@ class TeamRuntimeService:
                 agent_id=agent.id,
                 dispatch_id=normalized_dispatch_id,
                 result=result,
+                now=completed_at,
+            )
+            finalize_active_git_work_contexts_for_dispatch(
+                state,
+                agent_id=agent.id,
+                dispatch_id=normalized_dispatch_id,
                 now=completed_at,
             )
             runtime.active_dispatch_id = None

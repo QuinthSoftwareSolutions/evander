@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-24 - Team Git Work Context Lifecycle
+
+- Marked Git work contexts as submitted when deliverables consume them and abandoned remaining
+  contexts when their dispatch ends, task becomes terminal, or task ownership changes.
+- Added automatic stale-context reconciliation and 30-day pruning for unreferenced abandoned
+  metadata while retaining deliverable-linked provenance.
+
 ## 2026-07-24 - Agent Log Run and Thread Paging
 
 - Kept the Executions log focused on the latest agent run while rendering artifact imports,

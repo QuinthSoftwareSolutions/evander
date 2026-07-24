@@ -82,7 +82,11 @@ from .domain.git_promotion import (
     _apply_git_feature_update,
     _apply_git_review_promotion,
 )
-from .domain.git_work_contexts import bind_deliverable_git_refs_to_work_context
+from .domain.git_work_contexts import (
+    bind_deliverable_git_refs_to_work_context,
+    finalize_active_git_work_contexts_for_task,
+    mark_git_work_context_submitted,
+)
 from .domain.operator_escalation import _apply_operator_escalation
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
@@ -382,6 +386,12 @@ class TeamAgentActionService:
                     now = utc_now()
                     if raw_state is not None:
                         _set_task_state(task, TeamTaskState(raw_state), now=now)
+                        if task.state not in _NON_TERMINAL_TASK_STATES:
+                            finalize_active_git_work_contexts_for_task(
+                                state_model,
+                                task_id=task.id,
+                                now=now,
+                            )
                         projects_to_recalc.add(task.project_id)
                         changed = True
                     if priority is not None:
@@ -395,6 +405,11 @@ class TeamAgentActionService:
                         changed = True
                     if has_owner_reassignment and new_owner_id is not None:
                         old_owner_id = task.owner_agent_id
+                        finalize_active_git_work_contexts_for_task(
+                            state_model,
+                            task_id=task.id,
+                            now=now,
+                        )
                         task.owner_agent_id = new_owner_id
                         _maybe_mark_idle_context_rotation_due(
                             state_model,
@@ -760,6 +775,11 @@ class TeamAgentActionService:
                         superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                     now = utc_now()
+                    mark_git_work_context_submitted(
+                        state_model,
+                        branch_context_id=deliverable.git_refs.branch_context_id,
+                        now=now,
+                    )
                     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
                     task.updated_at = now
                     projects_to_recalc.add(task.project_id)

@@ -52,6 +52,7 @@ from ..domain.common import (
     _set_task_state,
 )
 from ..domain.context_rotation import _maybe_mark_idle_context_rotation_due
+from ..domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from ..domain.project_status import _recalculate_project_status
 from ..domain.wake import _append_agent_wake_requested_event
 from ..domain.work_due import _mark_agent_work_due
@@ -409,6 +410,12 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             previous_task_state = task.state
             if next_state is not None:
                 changed = _set_task_state(task, next_state, now=now) or changed
+                if task.state not in _NON_TERMINAL_TASK_STATES:
+                    finalize_active_git_work_contexts_for_task(
+                        state_model,
+                        task_id=task.id,
+                        now=now,
+                    )
             if has_priority:
                 next_priority = int(normalized_updates["priority"])
                 if task.priority != next_priority:
@@ -431,6 +438,11 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     changed = True
             if has_owner_reassignment and isinstance(new_owner_id, str):
                 old_owner_id = task.owner_agent_id
+                finalize_active_git_work_contexts_for_task(
+                    state_model,
+                    task_id=task.id,
+                    now=now,
+                )
                 task.owner_agent_id = new_owner_id
                 _maybe_mark_idle_context_rotation_due(
                     state_model,

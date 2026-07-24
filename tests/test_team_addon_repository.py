@@ -25,6 +25,7 @@ from evander_team_addon.models import (
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
     GitWorkContext,
+    GitWorkContextState,
     GitPromotionRecord,
     GovernanceAgendaItemType,
     GovernanceAgendaItemState,
@@ -182,9 +183,11 @@ def _seed_git_work_context(
     dispatch_id: str | None = "dispatch-slice7",
     agent_branch: str = "agents/session-backend/task",
     commit_sha: str | None = "abc123",
+    context_state: GitWorkContextState = GitWorkContextState.ACTIVE,
+    updated_at: datetime | None = None,
 ) -> None:
-    def _mutate(state):
-        state.git_work_contexts[context_id] = GitWorkContext(
+    def _mutate(state_model):
+        state_model.git_work_contexts[context_id] = GitWorkContext(
             id=context_id,
             agent_id=agent_id,
             task_id=task_id,
@@ -194,6 +197,8 @@ def _seed_git_work_context(
             base_commit="base123",
             agent_branch=agent_branch,
             commit_sha=commit_sha,
+            state=context_state,
+            **({"updated_at": updated_at} if updated_at is not None else {}),
         )
 
     repo.update(_mutate)
@@ -1939,6 +1944,7 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         "agents/session-backend/task"
     )
     assert state.deliverables["deliverable-1"].git_refs.commit_sha == "abc123"
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.SUBMITTED
     assert state.deliverables["deliverable-1"].verification == DeliverableVerification(
         status="not_run",
         summary="pytest is unavailable in this VM.",
@@ -2647,7 +2653,9 @@ def test_repository_finalize_agent_dispatch_without_activity_counts_no_progress(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
     _lease_backend(repo, dispatch_id="dispatch-empty", no_progress_count=2)
+    _seed_git_work_context(repo, dispatch_id="dispatch-empty")
 
     state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
@@ -2662,6 +2670,74 @@ def test_repository_finalize_agent_dispatch_without_activity_counts_no_progress(
     assert runtime.no_progress_count == 3
     assert runtime.last_progress_at is None
     assert state.action_records == {}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
+
+
+def test_repository_reconciles_and_prunes_git_work_context_metadata(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_backend(repo, dispatch_id="dispatch-current")
+    now = datetime(2026, 7, 24, 8, 0, tzinfo=UTC)
+    old = now - timedelta(days=31)
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-referenced",
+        dispatch_id="dispatch-stale",
+        updated_at=old,
+    )
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-stale",
+        dispatch_id="dispatch-stale",
+        updated_at=old,
+    )
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-current",
+        dispatch_id="dispatch-current",
+        updated_at=old,
+    )
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-old-abandoned",
+        dispatch_id="dispatch-old",
+        context_state=GitWorkContextState.ABANDONED,
+        updated_at=old,
+    )
+
+    def _attach_context_to_deliverable(state):
+        state.deliverables["deliverable"].git_refs = DeliverableGitRefs(
+            branch_context_id="ctx-referenced",
+            agent_branch="agents/session-backend/task",
+            commit_sha="abc123",
+        )
+        return state
+
+    repo.update(_attach_context_to_deliverable)
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(
+        now=now,
+        prune_before=now - timedelta(days=30),
+    )
+
+    assert result == {"submitted": 1, "abandoned": 1, "pruned": 1}
+    assert state.git_work_contexts["ctx-referenced"].state == (
+        GitWorkContextState.SUBMITTED
+    )
+    assert state.git_work_contexts["ctx-stale"].state == GitWorkContextState.ABANDONED
+    assert state.git_work_contexts["ctx-current"].state == GitWorkContextState.ACTIVE
+    assert "ctx-old-abandoned" not in state.git_work_contexts
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(
+        now=now + timedelta(days=31),
+        prune_before=now + timedelta(seconds=1),
+    )
+
+    assert result == {"submitted": 0, "abandoned": 0, "pruned": 1}
+    assert set(state.git_work_contexts) == {"ctx-referenced", "ctx-current"}
 
 
 def test_blocker_owner_no_progress_transfers_despite_unrelated_progress(
@@ -3984,6 +4060,7 @@ def test_repository_update_task_command_owner_finishes_without_deliverable_notic
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="backend-task")
+    _seed_git_work_context(repo, task_id="backend-task")
     _team_admin_service(repo).create_or_reprioritize_task(
         task_id="follow-up-task",
         owner_agent_id="worker",
@@ -4006,6 +4083,7 @@ def test_repository_update_task_command_owner_finishes_without_deliverable_notic
     assert state.tasks["backend-task"].state == TeamTaskState.FINISHED
     assert state.dependency_status("follow-up-task") == "satisfied"
     assert state.deliverables == {}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
     assert not any(
         item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE for item in state.inbox.values()
     )

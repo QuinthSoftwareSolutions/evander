@@ -127,6 +127,7 @@ from .domain.deliverables import (
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
 )
+from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from .domain.governance import (
     _governance_agenda_effective_team_id,
     _governance_goals_with_generated_ids,
@@ -2215,6 +2216,12 @@ class TeamAdminService:
                 task.priority = priority
             if state is not None:
                 _set_task_state(task, state, now=now)
+                if task.state not in _NON_TERMINAL_TASK_STATES:
+                    finalize_active_git_work_contexts_for_task(
+                        state_model,
+                        task_id=task.id,
+                        now=now,
+                    )
             if title is not None:
                 task.title = title
             if description is not None:

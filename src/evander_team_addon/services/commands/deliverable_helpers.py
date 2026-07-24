@@ -59,6 +59,7 @@ from ..domain.deliverables import (
 from ..domain.git_work_contexts import (
     GitWorkContextValidationError,
     bind_deliverable_git_refs_to_work_context,
+    mark_git_work_context_submitted,
 )
 from ..domain.project_status import _recalculate_project_status
 from ..domain.outcome_catalog import snapshot_deliverable_outcomes
@@ -653,6 +654,11 @@ def _apply_command_deliverable_submission(
         superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
     task.deliverable_ids = _append_unique(task.deliverable_ids, new_deliverable.id)
     now = utc_now()
+    mark_git_work_context_submitted(
+        state,
+        branch_context_id=new_deliverable.git_refs.branch_context_id,
+        now=now,
+    )
     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
     task.updated_at = now
     _recalculate_project_status(state, task.project_id)
