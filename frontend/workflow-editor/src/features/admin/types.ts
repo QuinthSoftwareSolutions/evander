@@ -449,6 +449,7 @@ export type AgentLogResponse = {
   end_line?: number | null;
   has_more_before?: boolean;
   query?: string | null;
+  next_cursor?: string | null;
 };
 
 export type AgentActionResponse = {

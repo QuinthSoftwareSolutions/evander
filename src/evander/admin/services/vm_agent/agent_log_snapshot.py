@@ -52,36 +52,24 @@ class VmAgentAdminLogSnapshotMixin:
             if not execution_records:
                 return f"No container executions have run for session {session_id}.\n"
             if self._normalize_agent_log_view(view) == "threads":
-                return self._join_container_log_chunks(
-                    self._container_thread_log_chunks(
-                        worker_backend,
-                        execution_records,
-                        lines=lines,
-                    )
+                return str(
+                    self._container_thread_log_page(
+                        session_id=session_id,
+                        execution_records=execution_records,
+                        worker_backend=worker_backend,
+                        limit=max(1, lines),
+                        offset=0,
+                        query=None,
+                    )["text"]
                 )
-            per_execution_lines = lines
-            if lines > 0:
-                per_execution_lines = max(1, lines // max(1, len(execution_records)))
-            chunks: list[str] = []
-            for execution in execution_records:
-                header_parts = [
-                    f"execution={execution.execution_id}",
-                    f"status={self._container_execution_status(execution)}",
-                    f"worker_job={execution.worker_job_id}",
-                    "log=execution",
-                ]
-                if execution.started_at is not None:
-                    header_parts.append(f"started={execution.started_at.isoformat()}")
-                if execution.finished_at is not None:
-                    header_parts.append(f"finished={execution.finished_at.isoformat()}")
-                try:
-                    text = worker_backend.get_log_snapshot(
-                        execution.execution_id,
-                        lines=per_execution_lines,
-                        mode="execution",
-                    ).rstrip()
-                except Exception as exc:
-                    text = f"[log unavailable: {exc}]"
-                chunks.append("=== " + " ".join(header_parts) + " ===\n" + text)
-            return "\n\n".join(chunks).rstrip() + "\n"
+            return str(
+                self._container_execution_log_page(
+                    session_id=session_id,
+                    execution_records=execution_records,
+                    worker_backend=worker_backend,
+                    limit=max(1, lines),
+                    offset=0,
+                    query=None,
+                )["text"]
+            )
         raise ValueError(f"Unknown agent backend: {selected_backend}")

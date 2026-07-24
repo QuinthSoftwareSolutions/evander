@@ -5400,7 +5400,7 @@ def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch
     assert page["has_more_before"] is True
 
 
-def test_get_admin_agent_log_page_container_session_fills_latest_page_across_runs(
+def test_get_admin_agent_log_page_container_session_shows_artifacts_inline_with_latest_agent_run(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -5432,6 +5432,7 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
             started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
             last_status="removed",
             directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt", "thread_id": "thread-agent"},
         )
     )
     repository.put(
@@ -5444,6 +5445,13 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
             started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
             last_status="removed",
             directory_path="root",
+            metadata={
+                "effect_type": "effect:agent:exec",
+                "operation_kind": "artifact_import",
+                "operation_label": "Import Team artifact",
+                "artifact_key": "team/report/v1",
+                "artifact_destination_path": "team-artifact-imports/report",
+            },
         )
     )
 
@@ -5511,17 +5519,19 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
         limit=6,
     )
 
-    assert "execution=exec-artifact" in latest_page["text"]
-    assert "__EVANDER_ARTIFACT_EFFECT_JSON_END__" in latest_page["text"]
+    assert "execution=exec-artifact" not in latest_page["text"]
+    assert "__EVANDER_ARTIFACT_EFFECT_JSON" not in latest_page["text"]
     assert "agent reasoning line 1000" in latest_page["text"]
+    assert "Import Team artifact" in latest_page["text"]
+    assert "key=team/report/v1" in latest_page["text"]
+    assert "destination=/artifacts/team-artifact-imports/report" in latest_page["text"]
     assert "session transcript" not in latest_page["text"]
     assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
     assert latest_page["total_lines"] is None
     assert latest_page["view"] == "executions"
     assert fake_backend.page_calls == [
-        ("exec-artifact", 6, 0, None, "execution"),
-        ("exec-agent", 1, 0, None, "execution"),
+        ("exec-agent", 5, 0, None, "execution"),
     ]
     assert fake_backend.snapshot_calls == []
 
@@ -5533,19 +5543,133 @@ def test_get_admin_agent_log_page_container_session_fills_latest_page_across_run
     )
 
     assert "agent reasoning line 990" in older_page["text"]
-    assert "agent reasoning line 999" in older_page["text"]
+    assert "agent reasoning line 995" in older_page["text"]
     assert "exec-artifact" not in older_page["text"]
+    assert "Import Team artifact" not in older_page["text"]
     assert "session transcript" not in older_page["text"]
     assert "augmented" not in older_page["text"]
     assert older_page["has_more_before"] is True
     assert older_page["view"] == "executions"
     assert fake_backend.page_calls == [
-        ("exec-artifact", 6, 0, None, "execution"),
-        ("exec-agent", 1, 0, None, "execution"),
-        ("exec-artifact", 16, 0, None, "execution"),
-        ("exec-agent", 11, 0, None, "execution"),
+        ("exec-agent", 5, 0, None, "execution"),
+        ("exec-agent", 15, 0, None, "execution"),
     ]
     assert fake_backend.snapshot_calls == []
+
+
+def test_get_admin_agent_log_page_container_session_recognizes_legacy_artifact_logs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-legacy-artifact",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-legacy-artifact",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-legacy-artifact",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="agent-session-legacy",
+            session_id="session-legacy-artifact",
+            worker_job_id="job-agent",
+            worker_url="http://worker.test",
+            target_name="target-legacy-artifact",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt"},
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-session-legacy",
+            session_id="session-legacy-artifact",
+            worker_job_id="job-artifact",
+            worker_url="http://worker.test",
+            target_name="target-legacy-artifact",
+            started_at=datetime(2026, 5, 18, 6, 30, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, int, str | None, str | None]] = []
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            self.calls.append((target, limit, offset, query, mode))
+            if target == "exec-session-legacy":
+                lines = [
+                    "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__",
+                    '{"success":true,"destination_path":"team-artifact-imports/legacy"}',
+                    "__EVANDER_ARTIFACT_EFFECT_JSON_END__",
+                ]
+            else:
+                lines = ["agent line one", "agent line two"]
+            if query:
+                needle = query.casefold()
+                lines = [line for line in lines if needle in line.casefold()]
+            end_index = max(0, len(lines) - offset)
+            start_index = max(0, end_index - limit)
+            selected = lines[start_index:end_index]
+            return {
+                "text": "\n".join(selected) + ("\n" if selected else ""),
+                "returned_lines": len(selected),
+                "has_more_before": start_index > 0,
+            }
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-legacy-artifact",
+        backend="container_worker_vm",
+        limit=10,
+    )
+
+    assert "execution=agent-session-legacy" in page["text"]
+    assert "agent line two" in page["text"]
+    assert "Import artifact" in page["text"]
+    assert "destination=/artifacts/team-artifact-imports/legacy" in page["text"]
+    assert page["text"].index("Import artifact") < page["text"].index("agent line one")
+    assert "execution=exec-session-legacy" not in page["text"]
+    assert "__EVANDER_ARTIFACT_EFFECT_JSON" not in page["text"]
+    assert fake_backend.calls == [
+        (
+            "exec-session-legacy",
+            1,
+            0,
+            "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__",
+            "execution",
+        ),
+        ("exec-session-legacy", 1, 0, '"destination_path"', "execution"),
+        ("agent-session-legacy", 10, 0, None, "execution"),
+    ]
 
 
 def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_logs(
@@ -5579,6 +5703,7 @@ def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_l
             target_name="target-raw-default",
             last_status="running",
             directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt"},
         )
     )
 
@@ -5745,11 +5870,11 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
     assert "thread-b transcript" in page["text"]
     assert "thread-a transcript" in page["text"]
     assert fake_backend.calls == [
-        ("exec-b1", 0, "raw"),
-        ("exec-a1", 0, "raw"),
         ("exec-a2", 0, "raw"),
-        ("exec-b1", 0, "session"),
-        ("exec-a1", 0, "session"),
+        ("exec-a1", 0, "raw"),
+        ("exec-b1", 0, "raw"),
+        ("exec-a1", 199, "session"),
+        ("exec-b1", 196, "session"),
     ]
 
 
@@ -5838,7 +5963,7 @@ def test_get_admin_agent_log_page_container_session_threads_use_stored_thread_id
     assert page["text"].count("thread=thread-stored") == 1
     assert "executions=2" in page["text"]
     assert "stored thread transcript" in page["text"]
-    assert fake_backend.calls == [("exec-stored-1", 0, "session")]
+    assert fake_backend.calls == [("exec-stored-1", 199, "session")]
 
 
 def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execution_logs(
@@ -5934,15 +6059,15 @@ def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execut
     assert "Claude response from second execution." in page["text"]
     assert "\nsession id: claude-thread\n" not in page["text"]
     assert fake_backend.calls == [
-        ("exec-claude-1", 0, "raw"),
         ("exec-claude-2", 0, "raw"),
-        ("exec-claude-1", 0, "session"),
-        ("exec-claude-1", 0, "execution"),
-        ("exec-claude-2", 0, "execution"),
+        ("exec-claude-1", 0, "raw"),
+        ("exec-claude-1", 199, "session"),
+        ("exec-claude-2", 199, "execution"),
+        ("exec-claude-1", 198, "execution"),
     ]
 
 
-def test_get_admin_agent_log_page_container_session_threads_fetches_offset_window(
+def test_get_admin_agent_log_page_container_session_threads_uses_cursor_for_older_lines(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -6004,20 +6129,33 @@ def test_get_admin_agent_log_page_container_session_threads_fetches_offset_windo
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
-    page = service.vm_agent_admin.get_admin_agent_log_page(
+    latest_page = service.vm_agent_admin.get_admin_agent_log_page(
         "session-thread-window",
         backend="container_worker_vm",
         view="threads",
-        limit=3,
-        offset=3,
+        limit=4,
     )
 
-    assert page["view"] == "threads"
-    assert page["text"] == "thread line 3\nthread line 4\nthread line 5\n"
-    assert page["has_more_before"] is True
+    assert latest_page["view"] == "threads"
+    assert "thread line 8\nthread line 9\nthread line 10\n" in latest_page["text"]
+    assert latest_page["has_more_before"] is True
+    assert latest_page["next_cursor"]
+
+    older_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-window",
+        backend="container_worker_vm",
+        view="threads",
+        limit=4,
+        cursor=str(latest_page["next_cursor"]),
+    )
+
+    assert "continuation=older" in older_page["text"]
+    assert "thread line 5\nthread line 6\nthread line 7\n" in older_page["text"]
     assert fake_backend.calls == [
         ("exec-thread-window", 0, "raw"),
-        ("exec-thread-window", 0, "session"),
+        ("exec-thread-window", 3, "session"),
+        ("exec-thread-window", 0, "raw"),
+        ("exec-thread-window", 6, "session"),
     ]
 
 
@@ -6054,27 +6192,36 @@ def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_h
                 started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
+                metadata={"resume_thread_id": "thread-large"},
             )
         )
 
     class FakeContainerBackend:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, int, str | None]] = []
+            self.calls: list[tuple[str, int, int, str | None]] = []
 
-        def get_log_snapshot(
+        def get_log_page(
             self,
             target: str,
             *,
-            lines: int = 50,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
             mode: str | None = None,
-        ) -> str:
-            self.calls.append((target, lines, mode))
+        ) -> dict[str, object]:
+            self.calls.append((target, limit, offset, mode))
             if target != "exec-large-000":
-                raise AssertionError(f"large thread page should not probe {target}")
-            if mode == "raw":
-                return "session id: thread-large-000\nraw log\n"
+                raise AssertionError(f"large thread page should not read {target}")
             if mode == "session":
-                return "\n".join(f"large thread line {line}" for line in range(1, 360)) + "\n"
+                lines = [f"large thread line {line}" for line in range(1, 360)]
+                end_index = max(0, len(lines) - offset)
+                start_index = max(0, end_index - limit)
+                page_lines = lines[start_index:end_index]
+                return {
+                    "text": "\n".join(page_lines) + "\n",
+                    "returned_lines": len(page_lines),
+                    "has_more_before": start_index > 0,
+                }
             raise AssertionError(f"unexpected log request: {target} {mode}")
 
     fake_backend = FakeContainerBackend()
@@ -6094,12 +6241,111 @@ def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_h
     assert page["view"] == "threads"
     assert page["has_more_before"] is True
     assert page["total_lines"] is None
-    assert "thread=thread-large-000" in page["text"]
-    assert "large thread line 1" in page["text"]
+    assert "thread=thread-large" in page["text"]
+    assert "large thread line 359" in page["text"]
     assert fake_backend.calls == [
-        ("exec-large-000", 0, "raw"),
-        ("exec-large-000", 0, "session"),
+        ("exec-large-000", 299, 0, "session"),
     ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_bounds_legacy_probes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-legacy-history",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-legacy-history",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-legacy-history",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(150):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"agent-legacy-{index:03d}",
+                session_id="session-thread-legacy-history",
+                worker_job_id=f"job-legacy-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-legacy-history",
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+                metadata={"effect_type": "effect:agent:prompt"},
+            )
+        )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, int, str | None, str | None]] = []
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            self.calls.append((target, limit, offset, query, mode))
+            thread_id = target.removeprefix("agent-legacy-")
+            if mode == "raw":
+                text = f"session id: thread-{thread_id}\n"
+            elif mode == "session":
+                text = f"transcript for thread-{thread_id}\n"
+            else:
+                raise AssertionError(f"unexpected log request: {target} {mode}")
+            return {
+                "text": text,
+                "returned_lines": 1,
+                "has_more_before": False,
+            }
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-legacy-history",
+        backend="container_worker_vm",
+        view="threads",
+        limit=300,
+    )
+
+    assert page["has_more_before"] is True
+    assert page["next_cursor"]
+    assert len(fake_backend.calls) == 20
+    assert {target for target, *_rest in fake_backend.calls} == {
+        f"agent-legacy-{index:03d}" for index in range(140, 150)
+    }
+
+    older_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-legacy-history",
+        backend="container_worker_vm",
+        view="threads",
+        limit=300,
+        cursor=str(page["next_cursor"]),
+    )
+
+    assert older_page["has_more_before"] is True
+    assert len(fake_backend.calls) == 40
+    assert {target for target, *_rest in fake_backend.calls[20:]} == {
+        f"agent-legacy-{index:03d}" for index in range(130, 140)
+    }
 
 
 def test_get_admin_agent_log_page_container_session_threads_large_history_rebuilds_grouped_fallback(
@@ -6177,9 +6423,11 @@ def test_get_admin_agent_log_page_container_session_threads_large_history_rebuil
     assert page["view"] == "threads"
     assert "thread=thread-large-fallback" in page["text"]
     assert "executions=150" in page["text"]
-    assert "fallback body for exec-large-fallback-000" in page["text"]
     assert "fallback body for exec-large-fallback-149" in page["text"]
-    assert ("exec-large-fallback-149", 0, "execution") in fake_backend.calls
+    assert "fallback body for exec-large-fallback-125" in page["text"]
+    assert "fallback body for exec-large-fallback-000" not in page["text"]
+    assert page["has_more_before"] is True
+    assert len(fake_backend.calls) == 26
     assert all(mode != "raw" for _target, _lines, mode in fake_backend.calls)
 
 
@@ -6215,6 +6463,7 @@ def test_get_admin_agent_log_page_container_session_threads_searches_full_transc
             started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
             last_status="running",
             directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt"},
         )
     )
 
@@ -6298,6 +6547,7 @@ def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_ex
             started_at=datetime(2026, 5, 18, 9, 0, tzinfo=UTC),
             last_status="running",
             directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt"},
         )
     )
 
@@ -6313,7 +6563,7 @@ def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_ex
             mode: str | None = None,
         ) -> str:
             self.calls.append((target, lines, mode))
-            if mode == "raw" and target == "exec-alone":
+            if mode in {"raw", "execution"} and target == "exec-alone":
                 return "raw log without thread id\n"
             raise AssertionError(f"unexpected log request: {target} {mode}")
 
@@ -6336,7 +6586,10 @@ def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_ex
     assert "first_execution=exec-alone" in page["text"]
     assert "executions=1" in page["text"]
     assert "raw log without thread id" in page["text"]
-    assert fake_backend.calls == [("exec-alone", 0, "raw")]
+    assert fake_backend.calls == [
+        ("exec-alone", 0, "raw"),
+        ("exec-alone", 199, "execution"),
+    ]
 
 
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
@@ -13192,9 +13445,7 @@ def test_host_directory_policy_updates_validate_grants_and_enable_tools(
 ) -> None:
     host_root = tmp_path / "shared"
     host_root.mkdir()
-    service = build_admin_runtime(
-        write_config(tmp_path, enable_directory_scoped_config=True)
-    )
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     assert service.operations_admin.write_directory_domain_config(
         "root",
         "host_directories",

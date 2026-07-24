@@ -26,6 +26,7 @@ function logResponse({
   totalLines,
   startLine,
   endLine,
+  nextCursor = null,
 }) {
   return {
     agent_id: "session-1",
@@ -41,6 +42,7 @@ function logResponse({
     limit,
     offset,
     query,
+    next_cursor: nextCursor,
   };
 }
 
@@ -277,8 +279,9 @@ test("admin shell agents page forwards the selected log view through executions,
       const limit = url.searchParams.get("limit");
       const offset = url.searchParams.get("offset");
       const query = url.searchParams.get("query");
+      const cursor = url.searchParams.get("cursor");
       assert.equal(limit, "300");
-      logRequests.push({ view, limit, offset, query });
+      logRequests.push({ view, limit, offset, query, cursor });
 
       if (view === "threads") {
         if (query) {
@@ -300,7 +303,7 @@ test("admin shell agents page forwards the selected log view through executions,
           return;
         }
 
-        if (offset && offset !== "0") {
+        if (cursor === "older-1") {
           await route.fulfill(
             jsonResponse(
               logResponse({
@@ -313,6 +316,7 @@ test("admin shell agents page forwards the selected log view through executions,
                 totalLines: 6,
                 startLine: 1,
                 endLine: 3,
+                nextCursor: null,
               }),
             ),
           );
@@ -331,6 +335,7 @@ test("admin shell agents page forwards the selected log view through executions,
               totalLines: 6,
               startLine: 4,
               endLine: 6,
+              nextCursor: "older-1",
             }),
           ),
         );
@@ -396,6 +401,19 @@ test("admin shell agents page forwards the selected log view through executions,
       (request) => request.view === "threads" && request.limit === "300" && request.offset === "0" && request.query === null,
     ),
   );
+  assert.equal(await page.getByRole("button", { name: "Load older" }).isEnabled(), true);
+  await page.getByRole("button", { name: "Load older" }).click();
+  await assert.doesNotReject(() => page.getByText("thread older").waitFor({ state: "visible" }));
+  assert.ok(
+    logRequests.some(
+      (request) =>
+        request.view === "threads" &&
+        request.limit === "300" &&
+        request.offset === "0" &&
+        request.query === null &&
+        request.cursor === "older-1",
+    ),
+  );
 
   await page.getByLabel("Search logs").fill("thread");
   await page.getByRole("button", { name: "Search", exact: true }).click();
@@ -406,8 +424,8 @@ test("admin shell agents page forwards the selected log view through executions,
     ),
   );
 
-  assert.equal(await page.getByRole("button", { name: "Load more" }).isEnabled(), true);
-  await page.getByRole("button", { name: "Load more" }).click();
+  assert.equal(await page.getByRole("button", { name: "Load older" }).isEnabled(), true);
+  await page.getByRole("button", { name: "Load older" }).click();
   await page.waitForTimeout(1000);
   assert.ok(
     logRequests.some(

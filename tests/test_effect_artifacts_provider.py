@@ -56,8 +56,11 @@ def _script_payload(stdout: str) -> dict[str, object]:
 def test_artifact_stage_effect_returns_staged_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    resolved_configs: list[dict[str, object] | None] = []
+
     def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
-        del self, resolved_config
+        del self
+        resolved_configs.append(resolved_config)
         return {
             "success": True,
             "session_id": "session-1",
@@ -95,6 +98,16 @@ def test_artifact_stage_effect_returns_staged_path(
     assert result["artifact_path"] == "reports/report.html"
     assert result["copied_count"] == 1
     assert result["byte_count"] == 42
+    assert resolved_configs == [
+        {
+            "execution_metadata": {
+                "operation_kind": "artifact_stage",
+                "operation_label": "Stage",
+                "artifact_source_path": "repos/project/report.html",
+                "artifact_destination_path": "reports/report.html",
+            }
+        }
+    ]
 
 
 def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
@@ -107,11 +120,13 @@ def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
         tar.add(source, arcname="source.txt")
     archive_content = archive.read_bytes()
     calls = 0
+    resolved_configs: list[dict[str, object] | None] = []
 
     def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
         nonlocal calls
-        del self, resolved_config
+        del self
         calls += 1
+        resolved_configs.append(resolved_config)
         return {
             "success": True,
             "session_id": "session-1",
@@ -152,6 +167,15 @@ def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
     with pytest.raises(ValueError, match="already exists"):
         provider.execute()
     assert calls == 1
+    assert resolved_configs == [
+        {
+            "execution_metadata": {
+                "operation_kind": "artifact_publish",
+                "operation_label": "Publish",
+                "artifact_key": "runs/session-1/report",
+            }
+        }
+    ]
 
 
 def test_artifact_publish_effect_accepts_source_paths(
@@ -267,6 +291,7 @@ def test_artifact_import_published_copies_archive_and_extracts_into_session(
     )
     copy_calls: list[dict[str, object]] = []
     exec_commands: list[str] = []
+    exec_configs: list[dict[str, object] | None] = []
 
     def fake_copy(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
         del resolved_config
@@ -282,7 +307,7 @@ def test_artifact_import_published_copies_archive_and_extracts_into_session(
         }
 
     def fake_exec(self: AgentExecEffectProvider, *, resolved_config=None):
-        del resolved_config
+        exec_configs.append(resolved_config)
         effect = self.effect_definition
         exec_commands.append(str(effect.command))  # type: ignore[attr-defined]
         return {
@@ -323,6 +348,16 @@ def test_artifact_import_published_copies_archive_and_extracts_into_session(
     assert result["success"] is True
     assert result["key"] == "manuals/reviewed/run-1"
     assert result["sha256"] == record.sha256
+    assert exec_configs == [
+        {
+            "execution_metadata": {
+                "operation_kind": "artifact_import",
+                "operation_label": "Import",
+                "artifact_key": "manuals/reviewed/run-1",
+                "artifact_destination_path": "input",
+            }
+        }
+    ]
     assert result["imported_file_count"] == 1
     assert copy_calls[0]["session_id"] == "session-1"
     copied_file = copy_calls[0]["files"][0]  # type: ignore[index]

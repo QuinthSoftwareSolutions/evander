@@ -293,7 +293,8 @@ def agent_routes(
             limit_requested = request.query_params.get("limit") is not None
             offset_requested = request.query_params.get("offset") is not None
             query_requested = request.query_params.get("query") is not None
-            if limit_requested or offset_requested or query_requested:
+            cursor_requested = request.query_params.get("cursor") is not None
+            if limit_requested or offset_requested or query_requested or cursor_requested:
                 page = await run_in_threadpool(
                     service.vm_agent_admin.get_admin_agent_log_page,
                     agent_id,
@@ -302,6 +303,7 @@ def agent_routes(
                     limit=max(1, _int_query(request, "limit", default=lines)),
                     offset=max(0, _int_query(request, "offset", default=0)),
                     query=_string_query(request, "query"),
+                    cursor=_string_query(request, "cursor"),
                     repo_name=repo_name,
                 )
                 return JSONResponse(
@@ -319,6 +321,7 @@ def agent_routes(
                         "end_line": page["end_line"],
                         "has_more_before": page["has_more_before"],
                         "query": page["query"],
+                        "next_cursor": page.get("next_cursor"),
                     }
                 )
             text = await run_in_threadpool(

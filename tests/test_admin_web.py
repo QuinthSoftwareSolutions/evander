@@ -14219,6 +14219,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             target_name="target-1",
             last_status="removed",
             directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt", "thread_id": "thread-b"},
         )
     )
     repository.put(
@@ -14230,6 +14231,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             target_name="target-1",
             last_status="running",
             directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt", "thread_id": "thread-a"},
         )
     )
 
@@ -14286,17 +14288,23 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             limit: int = 200,
             offset: int = 0,
             query: str | None = None,
+            mode: str | None = None,
         ) -> dict[str, object]:
             self.paged.append((target, limit, offset, query))
+            text = (
+                "repo execution line for exec-1\n"
+                if target == "exec-1"
+                else "other execution line for exec-2\n"
+            )
             return {
-                "text": "paged line\n",
+                "text": text,
                 "limit": limit,
                 "offset": offset,
                 "returned_lines": 1,
                 "total_lines": 8,
                 "start_line": 5,
                 "end_line": 5,
-                "has_more_before": True,
+                "has_more_before": False,
                 "query": query,
             }
 
@@ -14354,11 +14362,11 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
 
     assert log_response.status_code == 200
     assert log_response.json()["view"] == "executions"
-    assert "execution=exec-2" in log_response.json()["text"]
     assert "execution=exec-1" in log_response.json()["text"]
+    assert "execution=exec-2" not in log_response.json()["text"]
     assert "log=execution" in log_response.json()["text"]
     assert "repo execution line for exec-1" in log_response.json()["text"]
-    assert "other execution line for exec-2" in log_response.json()["text"]
+    assert "other execution line for exec-2" not in log_response.json()["text"]
     assert "session transcript" not in log_response.json()["text"]
     assert "augmented transcript" not in log_response.json()["text"]
     assert paged_response.status_code == 200
@@ -14371,15 +14379,11 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert destroy_response.status_code == 200
     assert destroy_response.json()["status"] == "destroyed"
     assert fake_backend.inspected == []
-    assert sorted(fake_backend.logged) == sorted(
-        [
-            ("exec-1", 2, "execution"),
-            ("exec-2", 2, "execution"),
-            ("exec-1", 0, "execution"),
-            ("exec-2", 0, "execution"),
-        ]
-    )
-    assert fake_backend.paged == []
+    assert fake_backend.logged == []
+    assert fake_backend.paged == [
+        ("exec-1", 4, 0, None),
+        ("exec-1", 4, 0, "repo"),
+    ]
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
 
@@ -14493,11 +14497,11 @@ def test_admin_web_container_agent_log_threads_view_groups_threads(
     assert "thread-b transcript" in response.json()["text"]
     assert "thread-a transcript" in response.json()["text"]
     assert fake_backend.logged == [
-        ("exec-b1", 0, "raw"),
-        ("exec-a1", 0, "raw"),
         ("exec-a2", 0, "raw"),
-        ("exec-b1", 200, "session"),
-        ("exec-a1", 200, "session"),
+        ("exec-a1", 0, "raw"),
+        ("exec-b1", 0, "raw"),
+        ("exec-a1", 199, "session"),
+        ("exec-b1", 196, "session"),
     ]
 
 

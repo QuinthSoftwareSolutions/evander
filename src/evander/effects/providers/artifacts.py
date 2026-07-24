@@ -343,6 +343,12 @@ class ArtifactStageEffectProvider(EffectProviderBase):
             display_name="Stage artifact",
             command=_python_stdin_command(_STAGE_SCRIPT, path, destination_path),
             timeout_seconds=300,
+            execution_metadata={
+                "operation_kind": "artifact_stage",
+                "operation_label": effect.display_name,
+                "artifact_source_path": path,
+                "artifact_destination_path": destination_path,
+            },
         )
         script_payload = _parse_script_payload(
             str(exec_result.get("stdout") or ""), effect_type="effect:artifact:stage"
@@ -405,6 +411,11 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
                 else _python_stdin_command(_PUBLISH_SCRIPT)
             ),
             timeout_seconds=1800,
+            execution_metadata={
+                "operation_kind": "artifact_publish",
+                "operation_label": effect.display_name,
+                "artifact_key": key,
+            },
         )
         script_payload = _parse_script_payload(
             str(exec_result.get("stdout") or ""),
@@ -512,6 +523,12 @@ class ArtifactImportPublishedEffectProvider(EffectProviderBase):
                 "1" if overwrite else "0",
             ),
             timeout_seconds=1800,
+            execution_metadata={
+                "operation_kind": "artifact_import",
+                "operation_label": effect.display_name,
+                "artifact_key": key,
+                "artifact_destination_path": destination_path,
+            },
         )
         script_payload = _parse_script_payload(
             str(exec_result.get("stdout") or ""),
@@ -591,6 +608,7 @@ def _run_agent_exec(
     display_name: str,
     command: str,
     timeout_seconds: int,
+    execution_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     exec_payload = _agent_exec_target_payload(context, payload)
     effect = AgentExecEffectDefinition(
@@ -608,7 +626,9 @@ def _run_agent_exec(
     )
     provider = AgentExecEffectProvider()
     provider.initialize(effect_definition=effect, runtime_context=context)
-    result = provider.execute()
+    result = provider.execute(
+        resolved_config={"execution_metadata": dict(execution_metadata or {})}
+    )
     if not isinstance(result, Mapping):
         raise RuntimeError("artifact agent execution did not return a mapping")
     return dict(result)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-24 - Agent Log Run and Thread Paging
+
+- Kept the Executions log focused on the latest agent run while rendering artifact imports,
+  staging, and publishing as compact inline events instead of separate log-owning executions.
+- Made Threads history load newest-first through bounded continuation cursors so opening the tab
+  no longer downloads every historical execution or a complete long transcript.
+
 ## 2026-07-24 - Team Review Closure Reliability
 
 - Kept sibling task blockers authoritative when the last review on another deliverable closes.
