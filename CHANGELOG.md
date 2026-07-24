@@ -4,6 +4,8 @@
 
 - Marked Git work contexts as submitted when deliverables consume them and abandoned remaining
   contexts when their dispatch ends, task becomes terminal, or task ownership changes.
+- Rejected terminal-task context creation and binding, closed every context when legacy actions
+  end their dispatch, and treated missing or expired matching dispatch leases as stale.
 - Added automatic stale-context reconciliation and 30-day pruning for unreferenced abandoned
   metadata while retaining deliverable-linked provenance.
 

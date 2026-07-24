@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from ...models import GitWorkContextState, TeamState, TeamTaskState
-from .common import _optional_mapping, _optional_text
+from .common import _ensure_utc, _optional_mapping, _optional_text
 
 
 class GitWorkContextValidationError(ValueError):
@@ -133,6 +133,7 @@ def reconcile_git_work_context_lifecycle(
 ) -> dict[str, int]:
     """Repair stale lifecycle state and prune old unreferenced terminal metadata."""
 
+    effective_now = _ensure_utc(now)
     referenced_context_ids = _referenced_git_work_context_ids(state)
     submitted = 0
     abandoned = 0
@@ -150,6 +151,8 @@ def reconcile_git_work_context_lifecycle(
                 and (
                     runtime is None
                     or runtime.active_dispatch_id != context.dispatch_id
+                    or runtime.wake_leased_until is None
+                    or _ensure_utc(runtime.wake_leased_until) <= effective_now
                 )
             )
         )
@@ -260,6 +263,29 @@ def bind_deliverable_git_refs_to_work_context(
                 "branch_context_id": branch_context_id,
                 "context_task_id": context.task_id,
                 "deliverable_task_id": task_id,
+            },
+        )
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise GitWorkContextValidationError(
+            code="branch_context_task_not_found",
+            message=f"Git work context {branch_context_id} references missing task {task_id}",
+            correction_context={
+                "branch_context_id": branch_context_id,
+                "task_id": task_id,
+            },
+        )
+    if task.state in _TERMINAL_TASK_STATES:
+        raise GitWorkContextValidationError(
+            code="branch_context_task_terminal",
+            message=(
+                f"Git work context {branch_context_id} cannot be used because task "
+                f"{task_id} is {task.state.value}"
+            ),
+            correction_context={
+                "branch_context_id": branch_context_id,
+                "task_id": task_id,
+                "task_state": task.state.value,
             },
         )
     if context.dispatch_id is not None:

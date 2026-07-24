@@ -84,6 +84,7 @@ from .domain.git_promotion import (
 )
 from .domain.git_work_contexts import (
     bind_deliverable_git_refs_to_work_context,
+    finalize_active_git_work_contexts_for_dispatch,
     finalize_active_git_work_contexts_for_task,
     mark_git_work_context_submitted,
 )
@@ -1023,11 +1024,17 @@ class TeamAgentActionService:
                 error="; ".join(result["errors"]) if result["errors"] else None,
             )
             state_model.action_records[record.id] = record
+            completed_at = utc_now()
+            finalize_active_git_work_contexts_for_dispatch(
+                state_model,
+                agent_id=agent.id,
+                dispatch_id=effective_dispatch_id or record.dispatch_id,
+                now=completed_at,
+            )
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
             runtime.no_progress_count = 0 if progress else runtime.no_progress_count + 1
-            completed_at = utc_now()
             if context_rotation_activity:
                 runtime.last_progress_at = completed_at
             runtime.updated_at = completed_at

@@ -2422,6 +2422,80 @@ def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -
     assert repo.read().git_work_contexts[context_id].worktree_path == ("/worktrees/backend-task")
 
 
+@pytest.mark.parametrize(
+    "terminal_state",
+    [
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+    ],
+)
+def test_admin_service_rejects_git_work_context_for_terminal_task(
+    tmp_path: Path,
+    terminal_state: TeamTaskState,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    state = _team_admin_service(repo).update_task(
+        task_id="task",
+        state=terminal_state,
+    )
+
+    with pytest.raises(ValueError, match="cannot have an active Git work context"):
+        _team_admin_service(repo).create_git_work_context_with_id(
+            context_id="ctx-terminal",
+            agent_id="backend",
+            task_id="task",
+            dispatch_id="dispatch-terminal",
+            worktree_path="/worktrees/backend-task",
+            base_branch="main",
+            agent_branch="agents/session-backend/task",
+            expected_revision=state.revision,
+        )
+
+    assert repo.read().git_work_contexts == {}
+
+
+@pytest.mark.parametrize(
+    "terminal_state",
+    [
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+    ],
+)
+def test_submit_deliverable_command_rejects_active_context_for_terminal_task(
+    tmp_path: Path,
+    terminal_state: TeamTaskState,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _team_admin_service(repo).update_task(
+        task_id="task",
+        state=terminal_state,
+    )
+    _seed_git_work_context(repo, dispatch_id="dispatch-terminal")
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-terminal",
+    )
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-terminal",
+        task_id="task",
+        summary="This late result must not reopen terminal work.",
+        branch_context_id="ctx-task",
+        request_id="request-submit-terminal",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "branch_context_task_terminal"
+    assert state.tasks["task"].state == terminal_state
+    assert state.deliverables == {}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ACTIVE
+
+
 def test_submit_deliverable_command_rejects_git_refs_without_context(
     tmp_path: Path,
 ) -> None:
@@ -2673,6 +2747,83 @@ def test_repository_finalize_agent_dispatch_without_activity_counts_no_progress(
     assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
 
 
+def test_legacy_agent_action_finalizes_every_context_for_ended_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task-a")
+    _seed_task(repo, task_id="task-b")
+    _lease_backend(repo, dispatch_id="dispatch-batch")
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-task-a",
+        task_id="task-a",
+        dispatch_id="dispatch-batch",
+    )
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-task-b",
+        task_id="task-b",
+        dispatch_id="dispatch-batch",
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": "dispatch-batch",
+            "task_updates": [
+                {
+                    "task_id": "task-a",
+                    "state": "finished",
+                }
+            ],
+        },
+        dispatch_id="dispatch-batch",
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is True
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    assert state.git_work_contexts["ctx-task-a"].state == GitWorkContextState.ABANDONED
+    assert state.git_work_contexts["ctx-task-b"].state == GitWorkContextState.ABANDONED
+
+
+def test_legacy_agent_action_mismatch_finalizes_active_dispatch_contexts(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task-a")
+    _seed_task(repo, task_id="task-b")
+    _lease_backend(repo, dispatch_id="dispatch-batch")
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-task-a",
+        task_id="task-a",
+        dispatch_id="dispatch-batch",
+    )
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-task-b",
+        task_id="task-b",
+        dispatch_id="dispatch-batch",
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": "dispatch-wrong",
+        },
+        dispatch_id="dispatch-wrong",
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is False
+    assert result["errors"] == ["dispatch_id does not match active team runtime lease"]
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    assert state.git_work_contexts["ctx-task-a"].state == GitWorkContextState.ABANDONED
+    assert state.git_work_contexts["ctx-task-b"].state == GitWorkContextState.ABANDONED
+
+
 def test_repository_reconciles_and_prunes_git_work_context_metadata(
     tmp_path: Path,
 ) -> None:
@@ -2738,6 +2889,39 @@ def test_repository_reconciles_and_prunes_git_work_context_metadata(
 
     assert result == {"submitted": 0, "abandoned": 0, "pruned": 1}
     assert set(state.git_work_contexts) == {"ctx-referenced", "ctx-current"}
+
+
+@pytest.mark.parametrize(
+    "wake_leased_until",
+    [
+        None,
+        datetime(2026, 7, 24, 7, 59, tzinfo=UTC),
+    ],
+    ids=["missing-lease", "expired-lease"],
+)
+def test_repository_reconcile_abandons_matching_dispatch_without_live_lease(
+    tmp_path: Path,
+    wake_leased_until: datetime | None,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    now = datetime(2026, 7, 24, 8, 0, tzinfo=UTC)
+
+    def _set_stale_runtime(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="dispatch-stale",
+            wake_leased_until=wake_leased_until,
+        )
+        return state
+
+    repo.update(_set_stale_runtime)
+    _seed_git_work_context(repo, dispatch_id="dispatch-stale")
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(now=now)
+
+    assert result == {"submitted": 0, "abandoned": 1, "pruned": 0}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
 
 
 def test_blocker_owner_no_progress_transfers_despite_unrelated_progress(

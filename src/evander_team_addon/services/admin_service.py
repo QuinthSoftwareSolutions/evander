@@ -1269,6 +1269,11 @@ class TeamAdminService:
             nonlocal created_context_id
             agent = _require_present(state.agents, normalized_agent_id, "agent")
             task = _require_present(state.tasks, normalized_task_id, "task")
+            if task.state not in _NON_TERMINAL_TASK_STATES:
+                raise ValueError(
+                    f"task {task.id} is {task.state.value} and cannot have an active "
+                    "Git work context"
+                )
             if task.owner_agent_id != agent.id:
                 raise ValueError(f"agent {agent.id} cannot own Git work context for task {task.id}")
             if agent.team_id is None:

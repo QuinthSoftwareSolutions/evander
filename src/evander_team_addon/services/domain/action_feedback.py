@@ -13,6 +13,7 @@ from ...models import (
 from .chat import _append_pending_chat_message_queued_event_for_agent
 from .common import utc_now
 from .context_rotation import _maybe_mark_idle_context_rotation_due
+from .git_work_contexts import finalize_active_git_work_contexts_for_dispatch
 
 
 def _append_action_item_error(
@@ -81,11 +82,18 @@ def _mark_action_failure(
     action_id: str,
     result: dict[str, Any],
 ) -> None:
+    completed_at = utc_now()
+    finalize_active_git_work_contexts_for_dispatch(
+        state,
+        agent_id=agent_id,
+        dispatch_id=runtime.active_dispatch_id or dispatch_id,
+        now=completed_at,
+    )
     runtime.active_dispatch_id = None
     runtime.wake_leased_until = None
     runtime.wake_reason = None
     runtime.no_progress_count += 1
-    runtime.updated_at = utc_now()
+    runtime.updated_at = completed_at
     _maybe_mark_idle_context_rotation_due(state, agent_id=agent_id, now=runtime.updated_at)
     state.action_records[action_id] = AgentActionRecord(
         id=action_id,
