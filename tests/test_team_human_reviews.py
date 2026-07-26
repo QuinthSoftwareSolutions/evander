@@ -33,6 +33,7 @@ from evander_team_addon.models import (
     TeamBlockerRoute,
     TeamBlockerState,
     TeamInboxItemState,
+    TeamOutboxStatus,
     TeamRecordState,
     TeamRole,
     TeamState,
@@ -65,6 +66,8 @@ from evander_team_addon.services.domain.release_packages import (
     _build_release_package,
 )
 from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.git_release_service import TeamGitReleaseService
+from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
@@ -1539,6 +1542,178 @@ def test_changes_requested_successor_inherits_review_for_open_findings() -> None
     assert correction_manifest.human_review_requirement == (
         predecessor.manifest.human_review_requirement
     )
+
+
+def test_successor_carries_open_findings_from_the_full_release_lineage() -> None:
+    state, predecessor, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(
+        status="passed"
+    )
+    advance_release_gates(
+        state,
+        release=predecessor,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    first_request = next(iter(state.human_review_requests.values()))
+    record_human_review_decision(
+        state,
+        human_review_request_id=first_request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="lineage-first-finding",
+        expected_revision=first_request.revision,
+        checklist_results={"smoke": True},
+        findings=[
+            {
+                "text": "The original alarm recovery remains incorrect.",
+                "target_deliverable_ids": ["source-deliverable"],
+            }
+        ],
+        result={"events": []},
+    )
+
+    middle_manifest = _successor_manifest(
+        state,
+        predecessor=predecessor,
+        release_id="lineage-middle",
+    )
+    middle = state.release_packages["lineage-middle"]
+    middle.manifest = middle_manifest
+    middle_promotion = state.git_promotions["lineage-middle-promotion"]
+    advance_release_gates(
+        state,
+        release=middle,
+        release_promotion=middle_promotion,
+        result={"events": []},
+    )
+    middle_request = next(
+        request
+        for request in state.human_review_requests.values()
+        if request.release_package_id == middle.id
+    )
+    record_human_review_decision(
+        state,
+        human_review_request_id=middle_request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="lineage-second-finding",
+        expected_revision=middle_request.revision,
+        checklist_results={"smoke": True},
+        findings=[
+            {
+                "text": "The new correction still drops acknowledgements.",
+                "target_deliverable_ids": ["source-deliverable"],
+            }
+        ],
+        result={"events": []},
+    )
+
+    successor_manifest = _successor_manifest(
+        state,
+        predecessor=middle,
+        release_id="lineage-successor",
+    )
+
+    assert {
+        finding.text for finding in successor_manifest.carried_human_findings
+    } == {
+        "The new correction still drops acknowledgements.",
+        "The original alarm recovery remains incorrect.",
+    }
+
+
+def test_git_promotion_queues_initial_human_review_notifications_in_outbox(
+    tmp_path: Path,
+) -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.projects["project"].release_policy = ProjectReleasePolicy(
+        human_review_requirement=HumanReviewRequirement(
+            reviewer_group_ids=["release-reviewers"],
+            resolved_reviewer_user_ids=["reviewer"],
+        )
+    )
+    promotion.state = "pending"
+    repository = TeamStateRepository(tmp_path)
+    repository.update(lambda _current: state)
+
+    _state, result = TeamGitReleaseService(
+        repository,
+        human_review_eligibility_resolver=lambda _requirement: ["reviewer"],
+    ).record_git_promotion_result(
+        promotion_id=promotion.id,
+        success=True,
+        commit_sha=release.candidate_commit_sha,
+        outputs={"tree_hash": release.candidate_tree_hash},
+    )
+
+    assert any(
+        event["event_type"] == "team.release.human_review_requested"
+        for event in result["events"]
+    )
+    outbox = repository.list_outbox_records(
+        status=TeamOutboxStatus.PENDING,
+        intent_type="team.release.human_review_requested",
+    )
+    assert len(outbox) == 1
+    assert outbox[0].payload["payload"]["recipient_user_id"] == "reviewer"
+
+
+def test_verification_queues_initial_human_review_notifications_in_outbox(
+    tmp_path: Path,
+) -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    verification_command = ReleaseVerificationCommand(
+        name="candidate-tests",
+        argv=["pytest", "-q"],
+    )
+    state.projects["project"].release_policy = ProjectReleasePolicy(
+        verification_commands=[verification_command],
+        human_review_requirement=HumanReviewRequirement(
+            reviewer_group_ids=["release-reviewers"],
+            resolved_reviewer_user_ids=["reviewer"],
+        ),
+    )
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha=release.candidate_commit_sha or "",
+        candidate_tree_hash=release.candidate_tree_hash,
+        result={"events": [], "git_promotion_event_ids": []},
+    )
+    verification_run = next(iter(state.release_verification_runs.values()))
+    repository = TeamStateRepository(tmp_path)
+    repository.update(lambda _current: state)
+
+    _state, result = TeamReleaseGateService(
+        repository,
+        human_review_eligibility_resolver=lambda _requirement: ["reviewer"],
+    ).record_verification_result(
+        release_package_id=release.id,
+        verification_run_id=verification_run.id,
+        candidate_commit_sha=release.candidate_commit_sha or "",
+        verification_state="passed",
+        command_results=[
+            {
+                "name": verification_command.name,
+                "state": "passed",
+                "exit_code": 0,
+            }
+        ],
+    )
+
+    assert any(
+        event["event_type"] == "team.release.human_review_requested"
+        for event in result["events"]
+    )
+    outbox = repository.list_outbox_records(
+        status=TeamOutboxStatus.PENDING,
+        intent_type="team.release.human_review_requested",
+    )
+    assert len(outbox) == 1
 
 
 def test_successor_rejects_unchanged_predecessor_tree() -> None:

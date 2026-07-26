@@ -28,6 +28,8 @@ from evander_team_addon.models import (
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
+    HumanReviewRequirementSnapshot,
+    HumanReviewRequest,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -41,6 +43,8 @@ from evander_team_addon.models import (
     ReviewProfileCriterion,
     ReviewRequest,
     Team,
+    TeamBlocker,
+    TeamBlockerSourceKind,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamInboxItemType,
@@ -1048,6 +1052,45 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         row["kind"] == "waiting_dependency_task" and row["id"] == "task"
         for row in runtime_operations["attention"]
     )
+
+
+def test_team_state_payload_serializes_human_review_and_stall_blockers() -> None:
+    state = _valid_state()
+    state.human_review_requests["human-review"] = HumanReviewRequest(
+        id="human-review",
+        release_package_id="release",
+        candidate_commit_sha="a" * 40,
+        candidate_tree_hash="b" * 40,
+        requirement_snapshot=HumanReviewRequirementSnapshot(
+            directory_path="root",
+            configured_group_ids=["reviewers"],
+            initially_eligible_user_ids=[],
+        ),
+        state="blocked",
+    )
+    state.blockers["human-review-blocker"] = TeamBlocker(
+        id="human-review-blocker",
+        team_id="team",
+        source_kind=TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST,
+        source_id="human-review",
+        owner_agent_id="manager",
+        summary="A reviewer must be reassigned.",
+    )
+    state.blockers["stall-blocker"] = TeamBlocker(
+        id="stall-blocker",
+        team_id="team",
+        source_kind=TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+        source_id="ui",
+        owner_agent_id="manager",
+        summary="The agent made no scoped progress.",
+    )
+
+    payload = team_state_payload(state)
+
+    assert payload["human_review_requests"]["human-review"]["active_blocker_ids"] == [
+        "human-review-blocker"
+    ]
+    assert payload["agents"]["ui"]["active_blocker_ids"] == ["stall-blocker"]
 
 
 def test_team_state_payload_distinguishes_superior_acceptance_from_review() -> None:

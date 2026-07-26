@@ -222,8 +222,9 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         for finding in state.human_review_findings.values()
         if finding.source_human_review_request_id in project_human_request_ids
     ]
+    assessment_service = TaskAssessmentService(state)
     assessments = {
-        task.id: TaskAssessmentService(state).assess(task.id)
+        task.id: assessment_service.assess(task.id)
         for task in project_tasks
     }
     project_blockers = [

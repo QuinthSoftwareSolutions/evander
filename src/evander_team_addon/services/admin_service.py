@@ -2825,6 +2825,15 @@ class TeamAdminService:
                     f"task {task.id} cannot be cancelled while descendants remain "
                     f"unresolved: {', '.join(assessment.unresolved_descendant_ids)}"
                 )
+            active_handoff_ids = sorted(
+                set(assessment.active_acceptance_ids)
+                | set(assessment.active_review_request_ids)
+            )
+            if active_handoff_ids:
+                raise ValueError(
+                    f"task {task.id} cannot be cancelled while acceptance or review "
+                    f"handoffs remain active: {', '.join(active_handoff_ids)}"
+                )
             if normalized_successor_id is not None:
                 successor = _require_present(
                     state_model.tasks,

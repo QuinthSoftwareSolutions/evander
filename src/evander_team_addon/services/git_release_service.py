@@ -38,11 +38,13 @@ from .domain.release_packages import (
 )
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+    HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
 from .domain.task_assessment import (
     TaskAssessmentBoundaryError,
     require_release_scope,
 )
+from .commands.outbox import _team_event_outbox_records
 
 
 class TeamGitReleaseService:
@@ -128,7 +130,17 @@ class TeamGitReleaseService:
             result["success"] = True
             return state_model
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            expected_revision=expected_revision,
+            outbox_records=lambda: _team_event_outbox_records(
+                [
+                    event
+                    for event in result["events"]
+                    if event.get("event_type") == HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+                ]
+            ),
+        )
         result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         return state, result

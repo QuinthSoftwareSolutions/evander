@@ -348,6 +348,12 @@ class TeamCommandExecutor:
                 dispatch=dispatch,
                 payload=normalized_payload,
             )
+        if resolved.context.tool_name == "team_link_deliverable_replacement":
+            _validate_deliverable_replacement_dispatch_scope(
+                state,
+                dispatch=dispatch,
+                payload=normalized_payload,
+            )
 
     def _validate_dispatch_freshness(
         self,
@@ -821,7 +827,6 @@ _TASK_SCOPE_TOOLS = frozenset(
         "team_update_task",
         "team_submit_deliverable",
         "team_submit_deliverable_for_review",
-        "team_link_deliverable_replacement",
         "team_request_ephemeral_agent",
         "team_request_ephemeral_agents",
         "team_accept_ephemeral_result",
@@ -984,6 +989,102 @@ def _validate_cancel_task_dispatch_scope(
         requested_ids=[task_id],
         allowed_ids=[
             *dispatch.task_ids,
+            *dispatch.inbox_item_ids,
+            *dispatch.blocker_ids,
+        ],
+    )
+
+
+def _validate_deliverable_replacement_dispatch_scope(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    payload: Mapping[str, Any],
+) -> None:
+    """Authorize manager lineage work from project or delivered intervention scope.
+
+    The accepted replacement is often already terminal and belongs to another
+    owner, so it cannot be validated as actionable task work for the caller.
+    """
+
+    predecessor_id = _optional_text(payload.get("predecessor_deliverable_id"))
+    replacement_id = _optional_text(payload.get("replacement_deliverable_id"))
+    predecessor = state.deliverables.get(predecessor_id or "")
+    replacement = state.deliverables.get(replacement_id or "")
+    predecessor_task = (
+        state.tasks.get(predecessor.task_id) if predecessor is not None else None
+    )
+    replacement_task = (
+        state.tasks.get(replacement.task_id) if replacement is not None else None
+    )
+    if (
+        predecessor is None
+        or replacement is None
+        or predecessor_task is None
+        or replacement_task is None
+        or predecessor_task.project_id != replacement_task.project_id
+    ):
+        # The domain command reports missing or cross-project records with its
+        # usual validation error; scope extraction must not mask that error.
+        return
+
+    if predecessor_task.project_id in dispatch.project_ids:
+        _validate_dispatch_project_scope(
+            state,
+            dispatch=dispatch,
+            project_ids={predecessor_task.project_id},
+        )
+        return
+
+    deliverable_ids = {predecessor.id, replacement.id}
+    task_ids = {predecessor_task.id, replacement_task.id}
+    matching_inbox_ids = {
+        item.id
+        for item in state.inbox.values()
+        if item.id in dispatch.inbox_item_ids
+        and item.recipient_agent_id == dispatch.agent_id
+        and item.state == TeamInboxItemState.PENDING
+        and (
+            item.task_id in task_ids
+            or _optional_text(item.payload.get("deliverable_id")) in deliverable_ids
+            or _optional_text(item.payload.get("predecessor_deliverable_id"))
+            in deliverable_ids
+            or _optional_text(item.payload.get("replacement_deliverable_id"))
+            in deliverable_ids
+        )
+    }
+    if matching_inbox_ids:
+        _validate_dispatch_inbox_scope(
+            state,
+            dispatch=dispatch,
+            inbox_item_ids=matching_inbox_ids,
+        )
+        return
+
+    matching_blocker_ids = {
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.id in dispatch.blocker_ids
+        and (
+            blocker.source_id in deliverable_ids
+            or blocker.task_id in task_ids
+            or bool(set(blocker.affected_task_ids).intersection(task_ids))
+        )
+    }
+    if matching_blocker_ids:
+        _validate_dispatch_blocker_scope(
+            state,
+            dispatch=dispatch,
+            blocker_ids=matching_blocker_ids,
+        )
+        return
+
+    raise _dispatch_scope_error(
+        dispatch,
+        scope_kind="project or delivered deliverable intervention",
+        requested_ids=[predecessor.id, replacement.id],
+        allowed_ids=[
+            *dispatch.project_ids,
             *dispatch.inbox_item_ids,
             *dispatch.blocker_ids,
         ],

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-26 - Team Lifecycle Review Fixes
+
+- Carried open human findings through the full successor-release lineage, made reviewer-request
+  notifications transactional through the Team outbox, and kept provider publication on the
+  outbox path so Admin notifications are durable.
+- Added human-review and execution-stall blocker projection, authorized accepted replacement links
+  from project or delivered intervention scope, and rejected task cancellation while direct
+  acceptance or review handoffs remain active.
+- Treated cancelled tasks as terminal across activity, runtime, API, access, outcome-catalog, and
+  Git-work-context projections, and reused one task-assessment evaluator per project-status pass.
+
 ## 2026-07-25 - Unified Team Hierarchy and Human Release Review
 
 - Added one recursive `TaskAssessment` for support completion, accepted outcomes and evidenced

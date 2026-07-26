@@ -32,6 +32,7 @@ _TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
 )
 

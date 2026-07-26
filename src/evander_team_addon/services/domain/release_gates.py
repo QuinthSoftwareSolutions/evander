@@ -851,11 +851,11 @@ def _candidate_manifest(
         for deliverable_id in release.deliverable_ids
         if deliverable_id not in predecessor_deliverable_ids
     ]
+    predecessor_lineage_ids = _predecessor_release_package_ids(state, release)
     predecessor_requests = [
         request
         for request in state.human_review_requests.values()
-        if predecessor is not None
-        and request.release_package_id == predecessor.id
+        if request.release_package_id in predecessor_lineage_ids
     ]
     predecessor_request_ids = {request.id for request in predecessor_requests}
     carried_findings = [
@@ -912,6 +912,25 @@ def _candidate_manifest(
         carried_human_findings=carried_findings,
         contribution_graph=lineage["graph"],
     )
+
+
+def _predecessor_release_package_ids(
+    state: TeamState,
+    release: ReleasePackage,
+) -> set[str]:
+    """Return every predecessor of a successor attempt, guarding malformed history."""
+
+    predecessor_ids: set[str] = set()
+    seen_ids = {release.id}
+    predecessor_id = release.supersedes_release_package_id
+    while predecessor_id is not None and predecessor_id not in seen_ids:
+        predecessor_ids.add(predecessor_id)
+        seen_ids.add(predecessor_id)
+        predecessor = state.release_packages.get(predecessor_id)
+        if predecessor is None:
+            break
+        predecessor_id = predecessor.supersedes_release_package_id
+    return predecessor_ids
 
 
 def _unchanged_failed_release(

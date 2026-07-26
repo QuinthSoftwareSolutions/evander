@@ -100,6 +100,7 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     for task in state.tasks.values():
         if task.state in terminal_task_states:

@@ -5408,6 +5408,7 @@ def _activity_open_tasks(state: TeamState, agent_id: str) -> list[AgentTask]:
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     return [
         task
@@ -5684,6 +5685,8 @@ def team_state_payload(
             TeamBlockerSourceKind.DELIVERABLE: "deliverables",
             TeamBlockerSourceKind.REVIEW_REQUEST: "review_requests",
             TeamBlockerSourceKind.RELEASE_PACKAGE: "release_packages",
+            TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: "human_review_requests",
+            TeamBlockerSourceKind.AGENT_EXECUTION_STALL: "agents",
             TeamBlockerSourceKind.EXPLICIT: None,
         }[blocker.source_kind]
         if collection_name is not None:
@@ -6250,6 +6253,7 @@ def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[Age
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     return [
         task
@@ -6706,6 +6710,7 @@ def _failed_promotion_rows(state: TeamState) -> list[dict[str, Any]]:
             if task is not None and task.state in {
                 TeamTaskState.ACCEPTED,
                 TeamTaskState.REJECTED,
+                TeamTaskState.CANCELLED,
             }:
                 continue
         rows.append(

@@ -162,6 +162,25 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         ),
                     },
                 )
+            active_handoff_ids = sorted(
+                set(assessment.active_acceptance_ids)
+                | set(assessment.active_review_request_ids)
+            )
+            if active_handoff_ids:
+                raise TeamCommandValidationError(
+                    code="task_cancellation_active_handoff",
+                    message=(
+                        f"task {task.id} cannot be cancelled while acceptance or review "
+                        "handoffs remain active"
+                    ),
+                    correction_context={
+                        "task_id": task.id,
+                        "active_acceptance_ids": list(assessment.active_acceptance_ids),
+                        "active_review_request_ids": list(
+                            assessment.active_review_request_ids
+                        ),
+                    },
+                )
             if normalized_successor_id is not None:
                 successor = state_model.tasks.get(normalized_successor_id)
                 if successor is None:

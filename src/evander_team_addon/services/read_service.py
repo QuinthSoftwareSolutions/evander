@@ -1027,6 +1027,7 @@ def _task_sort_key(task: AgentTask) -> tuple[int, int, str, str]:
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     return (1 if terminal else 0, -task.priority, _json_value(task.updated_at) or "", task.id)
 

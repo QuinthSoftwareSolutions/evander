@@ -23,6 +23,7 @@ from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands import (
     TeamBlockerCommandService,
+    TeamDeliverableSubmissionCommandService,
     TeamNoteCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
@@ -374,6 +375,128 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
     assert state.tasks["child-task"].cancellation.actor_id == "worker"
     assert state.inbox["child-supervision"].state.value == "handled"
     assert assess_task(state, "task").readiness.value == "actionable"
+
+
+def test_cancellation_rejects_an_active_direct_acceptance_handoff(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _add_direct_acceptance_handoff(state):
+        state.deliverables["pending-acceptance"] = Deliverable(
+            id="pending-acceptance",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="Awaiting superior acceptance.",
+            acceptance_recipient_agent_id="lead",
+        )
+        state.tasks["task"].deliverable_ids = ["pending-acceptance"]
+        state.inbox["cancellation-context"] = AgentInboxItem(
+            id="cancellation-context",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            task_id="task",
+            payload={"task_id": "task", "kind": "cancellation_review"},
+        )
+        return state
+
+    repository.update(_add_direct_acceptance_handoff)
+    state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert assess_task(state, "task").active_acceptance_ids == ["pending-acceptance"]
+
+    state, rejected = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-worker",
+        task_id="task",
+        reason_code="obsolete",
+        reason="The task should not be cancelled before the acceptance handoff closes.",
+        handled_inbox_item_ids=["cancellation-context"],
+        request_id="reject-active-acceptance-cancellation",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_cancellation_active_handoff"
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+
+
+def test_project_lead_links_accepted_cross_task_replacement_from_inbox_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="replacement-task",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=1,
+        title="Accepted replacement",
+        description="Historical work replacing the rejected deliverable.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+
+    def _add_replacement_handoff(state):
+        state.deliverables["rejected-deliverable"] = Deliverable(
+            id="rejected-deliverable",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="Rejected work that requires a replacement link.",
+            state="rejected",
+        )
+        state.tasks["task"].deliverable_ids = ["rejected-deliverable"]
+        state.deliverables["accepted-replacement"] = Deliverable(
+            id="accepted-replacement",
+            task_id="replacement-task",
+            producer_agent_id="worker",
+            summary="Accepted replacement from a completed task.",
+            state="accepted",
+        )
+        state.tasks["replacement-task"].deliverable_ids = ["accepted-replacement"]
+        state.inbox["replacement-link"] = AgentInboxItem(
+            id="replacement-link",
+            recipient_agent_id="lead",
+            sender_agent_id="worker",
+            item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+            task_id="task",
+            payload={
+                "deliverable_id": "rejected-deliverable",
+                "kind": "replacement_link_required",
+            },
+        )
+        return state
+
+    repository.update(_add_replacement_handoff)
+    _state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="lead",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["inbox_item_ids"] == ["replacement-link"]
+
+    state, result = TeamDeliverableSubmissionCommandService(
+        repository
+    ).link_deliverable_replacement_command(
+        session_id="session-lead",
+        predecessor_deliverable_id="rejected-deliverable",
+        replacement_deliverable_id="accepted-replacement",
+        reason="The accepted deliverable is the audited correction.",
+        handled_inbox_item_ids=["replacement-link"],
+        request_id="lead-links-accepted-cross-task-replacement",
+    )
+
+    assert result["success"] is True
+    assert state.deliverables["rejected-deliverable"].superseded_by_deliverable_id == (
+        "accepted-replacement"
+    )
+    assert state.deliverables["accepted-replacement"].supersedes_deliverable_id == (
+        "rejected-deliverable"
+    )
 
 
 def test_delivered_task_context_does_not_grant_cancellation_authority(

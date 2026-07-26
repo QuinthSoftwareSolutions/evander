@@ -5637,6 +5637,7 @@ def _build_agent_voice_projection(
             TeamTaskState.FINISHED.value,
             TeamTaskState.ACCEPTED.value,
             TeamTaskState.REJECTED.value,
+            TeamTaskState.CANCELLED.value,
         }
     ]
     open_tasks.sort(

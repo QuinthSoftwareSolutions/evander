@@ -169,6 +169,7 @@ def active_outcome_kind_references(
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     for task in state.tasks.values():
         if task.state in terminal_task_states or task.outcome_contract is None:

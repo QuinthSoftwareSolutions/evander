@@ -3483,7 +3483,11 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
             }
         published_event_ids = _publish_team_events(
             self.runtime_context,
-            result.get("events"),
+            [
+                event
+                for event in (result.get("events") or [])
+                if event.get("event_type") != HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+            ],
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
@@ -3604,7 +3608,11 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         )
         published_event_ids = _publish_team_events(
             self.runtime_context,
-            result.get("events"),
+            [
+                event
+                for event in (result.get("events") or [])
+                if event.get("event_type") != HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+            ],
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
