@@ -349,6 +349,8 @@ def record_human_review_decision(
         )
     if normalized_decision == "changes_requested" and not findings:
         raise ValueError("changes_requested requires at least one actionable finding")
+    if normalized_decision == "changes_requested":
+        _validate_human_finding_targets(release, findings)
 
     decision_record = HumanReviewDecision(
         id=f"human-decision-{_stable_token(request.id, normalized_request_id, length=24)}",
@@ -1085,6 +1087,40 @@ def _apply_changes_requested(
     release.updated_at = now
     result["human_review_changes_requested"] = True
     result["case_id"] = case.id
+
+
+def _validate_human_finding_targets(
+    release: ReleasePackage,
+    finding_inputs: Sequence[Mapping[str, Any]],
+) -> None:
+    candidate_deliverable_ids = {
+        evidence.deliverable_id
+        for evidence in (release.manifest.deliverables if release.manifest else [])
+    }
+    for position, raw in enumerate(finding_inputs):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"human finding {position + 1} must be an object")
+        raw_target_ids = raw.get("target_deliverable_ids", [])
+        if raw_target_ids is None:
+            raw_target_ids = []
+        if isinstance(raw_target_ids, (str, bytes)) or not isinstance(
+            raw_target_ids, Sequence
+        ):
+            raise ValueError(
+                f"human finding {position + 1} target_deliverable_ids must be an array"
+            )
+        target_ids = {
+            str(value).strip()
+            for value in raw_target_ids
+            if str(value).strip()
+        }
+        invalid_target_ids = sorted(target_ids - candidate_deliverable_ids)
+        if invalid_target_ids:
+            raise ValueError(
+                f"human finding {position + 1} targets deliverables outside the "
+                "reviewed release candidate: "
+                + ", ".join(invalid_target_ids)
+            )
 
 
 def _specific_finding_route(

@@ -6300,6 +6300,162 @@ def test_get_admin_agent_log_page_container_session_threads_falls_back_after_ses
     ]
 
 
+def test_get_admin_agent_log_page_container_session_threads_honors_cursorless_offset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-offset",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-offset",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-offset",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-thread-offset",
+            session_id="session-thread-offset",
+            worker_job_id="job-thread-offset",
+            worker_url="http://worker.test",
+            target_name="target-thread-offset",
+            started_at=datetime(2026, 7, 26, 8, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+            metadata={"resume_thread_id": "thread-offset"},
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            assert target == "exec-thread-offset"
+            assert mode == "session"
+            return "\n".join(f"thread line {index}" for index in range(1, 11)) + "\n"
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-offset",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+        offset=3,
+    )
+
+    assert page["offset"] == 3
+    assert page["returned_lines"] == 3
+    assert page["text"] == "thread line 5\nthread line 6\nthread line 7\n"
+    assert page["next_cursor"] is None
+    assert fake_backend.calls == [("exec-thread-offset", 0, "session")]
+
+
+def test_get_admin_agent_log_page_container_session_threads_stays_within_line_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-line-limit",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-line-limit",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-line-limit",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index, thread_id in enumerate(("thread-a", "thread-b")):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-{thread_id}",
+                session_id="session-thread-line-limit",
+                worker_job_id=f"job-{thread_id}",
+                worker_url="http://worker.test",
+                target_name="target-thread-line-limit",
+                started_at=datetime(2026, 7, 26, 8, index, tzinfo=UTC),
+                last_status="removed",
+                directory_path="root",
+                metadata={"resume_thread_id": thread_id},
+            )
+        )
+
+    class FakeContainerBackend:
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            assert mode == "session"
+            assert query is None
+            return {
+                "text": f"body for {target}\n",
+                "returned_lines": 1,
+                "has_more_before": False,
+            }
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    short_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-line-limit",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+    )
+    one_line_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-line-limit",
+        backend="container_worker_vm",
+        view="threads",
+        limit=1,
+    )
+
+    assert short_page["returned_lines"] == 2
+    assert len(str(short_page["text"]).splitlines()) <= 3
+    assert short_page["next_cursor"]
+    assert one_line_page["returned_lines"] == 1
+    assert one_line_page["text"] == "body for exec-thread-b\n"
+
+
 def test_get_admin_agent_log_page_container_session_threads_uses_cursor_for_older_lines(
     tmp_path: Path,
     monkeypatch,

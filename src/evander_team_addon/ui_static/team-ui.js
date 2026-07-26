@@ -176,6 +176,7 @@ let activeTeamView = initialHumanReviewDeepLink.enabled
   ? "delivery"
   : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
+const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
@@ -609,6 +610,10 @@ function emptyTimelineState() {
     limit: 10,
     offset: 0,
     has_more: false,
+    facets: {
+      types: [],
+      statuses: [],
+    },
     entries: [],
   };
 }
@@ -2345,6 +2350,12 @@ const lockedMutationControlSelectors = [
 
 function applyLockedMutationControls(root = document) {
   if (!teamMutationLocked()) {
+    const controls = [];
+    if (root?.matches?.(".is-locked")) {
+      controls.push(root);
+    }
+    root?.querySelectorAll?.(".is-locked").forEach((control) => controls.push(control));
+    controls.forEach(unlockMutationControl);
     return;
   }
   for (const [selector, action] of lockedMutationControlSelectors) {
@@ -2361,6 +2372,19 @@ function lockMutationControl(control, action = "make changes") {
   if (!control) {
     return;
   }
+  if (!lockedMutationControlStates.has(control)) {
+    lockedMutationControlStates.set(control, {
+      disabled:
+        control instanceof HTMLButtonElement ||
+        control instanceof HTMLInputElement ||
+        control instanceof HTMLSelectElement ||
+        control instanceof HTMLTextAreaElement
+          ? control.disabled
+          : null,
+      ariaDisabled: control.getAttribute("aria-disabled"),
+      title: control.getAttribute("title"),
+    });
+  }
   const message = lockedMutationMessage(action);
   if (
     control instanceof HTMLButtonElement ||
@@ -2373,6 +2397,28 @@ function lockMutationControl(control, action = "make changes") {
   control.setAttribute("aria-disabled", "true");
   control.setAttribute("title", message);
   control.classList?.add?.("is-locked");
+}
+
+function unlockMutationControl(control) {
+  const previous = lockedMutationControlStates.get(control);
+  if (!control || !previous) {
+    return;
+  }
+  if (previous.disabled !== null) {
+    control.disabled = previous.disabled;
+  }
+  restoreOptionalAttribute(control, "aria-disabled", previous.ariaDisabled);
+  restoreOptionalAttribute(control, "title", previous.title);
+  control.classList?.remove?.("is-locked");
+  lockedMutationControlStates.delete(control);
+}
+
+function restoreOptionalAttribute(control, name, value) {
+  if (value === null) {
+    control.removeAttribute(name);
+  } else {
+    control.setAttribute(name, value);
+  }
 }
 
 function registeredTeamSessionIds() {
@@ -9680,6 +9726,17 @@ function renderProjectFocus() {
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
   }
+  const projectTargets = Array.from(
+    document.querySelectorAll(
+      "[data-projects-focus-list], [data-projects-focus-detail]",
+    ),
+  );
+  if (!projectTargets.some(targetIsActive)) {
+    projectTargets.forEach((target) => {
+      target.innerHTML = "";
+    });
+    return;
+  }
   syncProjectCreatePanel();
   const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter(isVisibleProject);
@@ -9717,6 +9774,7 @@ function renderProjectFocus() {
     decorateFieldTooltips(target);
   });
   syncProjectCreatePanel();
+  applyLockedMutationControls();
 }
 
 function renderProjectFocusListItem(project) {
@@ -16852,6 +16910,21 @@ function buildTimelineSelectOptions() {
     .sort(byId)
     .forEach((agent) => {
       agentLabels.set(agent.id, `${agent.id} - ${agentRoleLabel(agent)}`);
+    });
+
+  (Array.isArray(timelineState.facets?.types) ? timelineState.facets.types : [])
+    .forEach((type) => {
+      const normalizedType = text(type);
+      if (normalizedType) {
+        typeLabels.set(normalizedType, humanizeToken(normalizedType));
+      }
+    });
+  (Array.isArray(timelineState.facets?.statuses) ? timelineState.facets.statuses : [])
+    .forEach((status) => {
+      const normalizedStatus = text(status);
+      if (normalizedStatus) {
+        statusLabels.set(normalizedStatus, humanizeToken(normalizedStatus));
+      }
     });
 
   timelineState.entries.forEach((entry) => {

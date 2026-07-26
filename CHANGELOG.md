@@ -13,6 +13,15 @@
 - Synchronized Admin theme and privilege changes into the mounted Team Add-on, repaired project
   release-detail refresh, aligned the team-wide outcome checkbox, and escaped runtime errors
   exactly once.
+- Excluded retired or superseded reviews from immutable release evidence, rejected retirement of
+  historical reviews after deliverable replacement, and rejected human findings that target work
+  outside the reviewed release candidate.
+- Preserved cursorless offset paging for thread logs and kept grouped thread responses within the
+  requested line budget, including one-line pages.
+- Restored Team project mutation controls in both directions as Admin privileges change, required
+  browser revalidation of Team static assets, and populated timeline type and status filters from
+  full-history facets instead of the current page while keeping release-detail DOM identities
+  unique to the active surface.
 
 ## 2026-07-26 - Team Stand-down UI Clarity
 

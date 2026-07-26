@@ -65,6 +65,32 @@ def derive_team_timeline(
     normalized_offset = max(0, offset)
 
     entries = _collect_timeline_entries(state)
+    type_facet_entries = [
+        entry
+        for entry in entries
+        if _entry_matches_filters(
+            entry,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            types=None,
+            statuses=normalized_statuses,
+            attention_needed=attention_needed,
+        )
+    ]
+    status_facet_entries = [
+        entry
+        for entry in entries
+        if _entry_matches_filters(
+            entry,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            types=normalized_types,
+            statuses=None,
+            attention_needed=attention_needed,
+        )
+    ]
     filtered_entries = [
         entry
         for entry in entries
@@ -99,6 +125,12 @@ def derive_team_timeline(
         "limit": normalized_limit,
         "offset": normalized_offset,
         "has_more": normalized_offset + len(windowed_entries) < total_count,
+        "facets": {
+            "types": sorted({entry.type for entry in type_facet_entries}),
+            "statuses": sorted(
+                {entry.status for entry in status_facet_entries if entry.status is not None}
+            ),
+        },
         "entries": [entry.model_dump(mode="json") for entry in windowed_entries],
     }
 

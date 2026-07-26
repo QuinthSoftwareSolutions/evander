@@ -334,6 +334,7 @@ class VmAgentThreadLogMixin:
         raw_text: str | None,
         limit: int,
         offset: int,
+        include_header: bool = True,
     ) -> tuple[str, int, bool]:
         ordered_records = sorted(records, key=self._container_execution_sort_key)
         first_execution = ordered_records[0]
@@ -376,8 +377,11 @@ class VmAgentThreadLogMixin:
             str(page.get("text") or raw_text or "")
         ).rstrip()
         consumed_lines = int(page.get("returned_lines") or len(body.splitlines()))
+        chunk = header if not body else header + "\n" + body
+        if not include_header:
+            chunk = body or header
         return (
-            header if not body else header + "\n" + body,
+            chunk,
             consumed_lines,
             bool(page.get("has_more_before")),
         )
@@ -493,10 +497,19 @@ class VmAgentThreadLogMixin:
         next_group_offset = group_offset
         next_line_offset = line_offset
         next_cursor: str | None = None
-        while next_group_offset < len(groups) and used_lines < max(1, limit):
+        page_limit = max(1, limit)
+        while next_group_offset < len(groups) and used_lines < page_limit:
             thread_id, records, raw_text = groups[next_group_offset]
             separator_lines = 1 if chunks_newest_first else 0
-            body_limit = max(1, max(1, limit) - used_lines - separator_lines - 1)
+            body_limit = page_limit - used_lines - separator_lines - 1
+            include_header = True
+            if body_limit <= 0:
+                if chunks_newest_first:
+                    break
+                # A one-line request cannot fit both the group header and body.
+                # Return one body line and carry the body offset in the cursor.
+                body_limit = 1
+                include_header = False
             chunk, consumed_lines, has_more_in_thread = self._container_thread_page_chunk(
                 worker_backend,
                 thread_id=thread_id,
@@ -504,6 +517,7 @@ class VmAgentThreadLogMixin:
                 raw_text=raw_text,
                 limit=body_limit,
                 offset=next_line_offset,
+                include_header=include_header,
             )
             chunks_newest_first.append(chunk)
             used_lines += len(chunk.splitlines()) + separator_lines
@@ -568,13 +582,14 @@ class VmAgentThreadLogMixin:
                 query=query,
             )
         normalized_query = str(query or "").strip()
-        if not normalized_query:
+        normalized_cursor = str(cursor or "").strip()
+        if not normalized_query and (offset == 0 or normalized_cursor):
             return self._container_lazy_thread_log_page(
                 session_id=session_id,
                 execution_records=execution_records,
                 worker_backend=worker_backend,
                 limit=limit,
-                cursor=cursor,
+                cursor=normalized_cursor or None,
             )
         chunks: list[str] = []
         groups = self._container_thread_groups(worker_backend, execution_records)

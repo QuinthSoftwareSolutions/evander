@@ -11918,6 +11918,27 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.FINISHED
 
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-retire-superseded-review",
+    )
+    state, retirement = _command_service(repo).retire_review_command(
+        session_id="session-lead",
+        review_request_id="review-1",
+        reason="The rejected historical review was attached in error.",
+        request_id="request-retire-superseded-review",
+    )
+
+    assert retirement["success"] is False
+    assert retirement["errors"][0]["code"] == "review_retire_invalid"
+    assert "belongs to superseded deliverable deliverable" in (
+        retirement["errors"][0]["message"]
+    )
+    assert state.review_requests["review-1"].retired_at is None
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.FINISHED
+
 
 def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
     tmp_path: Path,

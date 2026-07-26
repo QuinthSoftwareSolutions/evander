@@ -562,8 +562,15 @@ function buildTimelinePayload(state, url) {
     status: normalizedQueryValues(url.searchParams, "status"),
     attention_needed: queryBool(url.searchParams, "attention_needed"),
   };
-  const entries = collectTimelineEntries(state).filter((entry) =>
+  const allEntries = collectTimelineEntries(state);
+  const entries = allEntries.filter((entry) =>
     matchesTimelineFilters(entry, filters),
+  );
+  const typeFacetEntries = allEntries.filter((entry) =>
+    matchesTimelineFilters(entry, { ...filters, type: null }),
+  );
+  const statusFacetEntries = allEntries.filter((entry) =>
+    matchesTimelineFilters(entry, { ...filters, status: null }),
   );
   entries.sort(compareTimelineEntries);
   const totalCount = entries.length;
@@ -582,6 +589,10 @@ function buildTimelinePayload(state, url) {
     limit,
     offset,
     has_more: offset + windowedEntries.length < totalCount,
+    facets: {
+      types: unique(typeFacetEntries.map((entry) => entry.type)).sort(),
+      statuses: unique(statusFacetEntries.map((entry) => entry.status).filter(Boolean)).sort(),
+    },
     entries: windowedEntries,
   };
 }
@@ -3793,6 +3804,79 @@ test("team add-on privilege messages update controls without losing selected man
     const button = detail?.querySelector('[data-stand-down-revoke-agent-id="manager"]');
     return Boolean(detail?.textContent?.includes("Ops Manager") && button?.disabled);
   });
+});
+
+test("team add-on project controls follow privilege changes and partial rerenders", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const projectsPage = page.locator("#team-projects-page");
+  const createProjectButton = projectsPage.getByRole("button", { name: "Create project" }).first();
+  const addOutcomeButton = projectsPage.getByRole("button", { name: "Add outcome kind" });
+  const addReviewProfileButton = projectsPage.getByRole("button", { name: "Add review profile" });
+
+  await addOutcomeButton.waitFor({ state: "visible" });
+  assert.equal(await createProjectButton.isDisabled(), true);
+  assert.equal(await addOutcomeButton.isDisabled(), true);
+  assert.equal(await addReviewProfileButton.isDisabled(), true);
+
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: true },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => {
+    const projectButton = document.querySelector("[data-project-create-toggle]");
+    const outcomeButton = document.querySelector(
+      '#team-projects-page form[data-form-id="create-outcome-kind-form"] button[type="submit"]',
+    );
+    const profileButton = document.querySelector(
+      "#team-projects-page [data-project-review-profile-create-toggle]",
+    );
+    return Boolean(
+      projectButton && !projectButton.disabled
+      && outcomeButton && !outcomeButton.disabled
+      && profileButton && !profileButton.disabled
+    );
+  });
+
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: false },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => {
+    const projectButton = document.querySelector("[data-project-create-toggle]");
+    const outcomeButton = document.querySelector(
+      '#team-projects-page form[data-form-id="create-outcome-kind-form"] button[type="submit"]',
+    );
+    const profileButton = document.querySelector(
+      "#team-projects-page [data-project-review-profile-create-toggle]",
+    );
+    return Boolean(
+      projectButton?.disabled
+      && outcomeButton?.disabled
+      && profileButton?.disabled
+    );
+  });
+
+  await projectsPage.locator("[data-project-focus-id]").first().click();
+
+  assert.equal(await createProjectButton.isDisabled(), true);
+  assert.equal(await projectsPage.getByRole("button", { name: "Add outcome kind" }).isDisabled(), true);
+  assert.equal(await projectsPage.getByRole("button", { name: "Add review profile" }).isDisabled(), true);
 });
 
 test("team add-on admin context overrides the browser color scheme", async (t) => {
@@ -7331,6 +7415,56 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await page.getByText(/Review review-waiting accepted/).first().waitFor({
     state: "visible",
   });
+});
+
+test("team add-on timeline filter options use full-history facets", async (t) => {
+  const timelinePayload = {
+    revision: 1,
+    derived: true,
+    audit_log: false,
+    source: "derived_from_current_team_state",
+    description: "Derived timeline from the current TeamState snapshot.",
+    filters: {},
+    timestampless_count: 0,
+    total_count: 30,
+    limit: 10,
+    offset: 0,
+    has_more: true,
+    facets: {
+      types: ["action", "inbox_item", "review"],
+      statuses: ["handled", "succeeded"],
+    },
+    entries: [
+      timelineEntry({
+        id: "action:latest:created",
+        type: "action",
+        category: "created",
+        timestamp: "2026-07-26T10:00:00Z",
+        timestamp_source: "created_at",
+        actor_agent_id: "agent",
+        status: "succeeded",
+        attention_needed: false,
+        summary: "Latest action succeeded",
+      }),
+    ],
+  };
+  const { port } = await createTeamAddonServer(t, { timelinePayload });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.locator("#team-timeline-page").waitFor({ state: "visible" });
+  await waitForSelectOption(page, "#focused-timeline-type-filter", "review");
+  await waitForSelectOption(page, "#focused-timeline-type-filter", "inbox_item");
+  await waitForSelectOption(page, "#focused-timeline-status-filter", "handled");
+
+  assert.deepEqual(
+    await page.locator("#focused-timeline-type-filter option").allTextContents(),
+    ["All types", "Inbox Item", "Review", "Action"],
+  );
+  assert.deepEqual(
+    await page.locator("#focused-timeline-status-filter option").allTextContents(),
+    ["All statuses", "Handled", "Succeeded"],
+  );
 });
 
 test("team add-on timeline keeps naive timestamps in server UTC order", async (t) => {

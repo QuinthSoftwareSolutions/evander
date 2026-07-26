@@ -3844,6 +3844,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
         "limit": 50,
         "offset": 0,
         "has_more": False,
+        "facets": {"types": [], "statuses": []},
         "entries": [],
         "source": "derived_from_current_team_state",
         "description": "Derived timeline from the current TeamState snapshot.",
@@ -3852,6 +3853,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
 
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
+    assert ui.headers["cache-control"] == "no-cache"
     assert "data-team-addon-ui" in ui.text
     assert 'name="manager_display_name"' in ui.text
     assert 'name="lead_agent_id"' in ui.text
@@ -3898,6 +3900,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
 
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
+    assert script.headers["cache-control"] == "no-cache"
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
     assert "createTeamMailController" in script.text
 
@@ -4919,6 +4922,10 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     assert windowed_payload["offset"] == 1
     assert windowed_payload["has_more"] is True
     assert len(windowed_payload["entries"]) == 2
+    assert windowed_payload["facets"] == {
+        "types": ["review", "task"],
+        "statuses": ["accepted", "finished"],
+    }
 
     clamped = client.get("/api/addons/team-addon/timeline?limit=999")
     assert clamped.status_code == 200

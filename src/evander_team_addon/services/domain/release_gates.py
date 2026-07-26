@@ -781,6 +781,8 @@ def _candidate_manifest(
             for review_id in deliverable.review_request_ids
             if review_id in state.review_requests
             and state.review_requests[review_id].state == TeamRecordState.ACCEPTED
+            and state.review_requests[review_id].superseded_by_review_request_id is None
+            and state.review_requests[review_id].retired_at is None
         ]
         review_evidence = [
             ReleaseCandidateReviewEvidence(

@@ -629,6 +629,11 @@ def _review_closure_target(
         review.deliverable_id,
         "deliverable",
     )
+    if deliverable.superseded_by_deliverable_id is not None:
+        raise ValueError(
+            f"review {review.id} belongs to superseded deliverable {deliverable.id}; "
+            "historical review attempts cannot be closed"
+        )
     task = _require_present(state.tasks, deliverable.task_id, "task")
     return review, deliverable, task
 

@@ -405,6 +405,37 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
     assert all(entry["team_id"] == "beta-team" for entry in beta_view["entries"])
 
 
+def test_derive_team_timeline_facets_cover_filtered_history_before_paging() -> None:
+    state = _timeline_state()
+
+    timeline = derive_team_timeline(state, limit=1)
+
+    assert len(timeline["entries"]) == 1
+    assert timeline["facets"] == {
+        "types": [
+            "action",
+            "deliverable",
+            "ephemeral_assignment",
+            "git_promotion",
+            "inbox_item",
+            "release_package",
+            "review",
+            "task",
+        ],
+        "statuses": ["accepted", "blocked", "failed", "handled"],
+    }
+
+    accepted = derive_team_timeline(
+        state,
+        types="task",
+        statuses="accepted",
+        limit=1,
+    )
+
+    assert accepted["facets"]["types"] == ["deliverable", "review", "task"]
+    assert accepted["facets"]["statuses"] == ["accepted"]
+
+
 def test_derive_team_timeline_keeps_dismissed_failed_action_out_of_attention() -> None:
     state = _timeline_state()
     state.action_records["alpha-action"].dismissed_at = _dt(1, 14)

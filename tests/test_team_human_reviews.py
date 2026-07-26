@@ -28,6 +28,7 @@ from evander_team_addon.models import (
     ReleaseReviewRequirement,
     ReleaseVerificationCommand,
     ReleaseVerificationCommandResult,
+    ReviewRequest,
     ReviewProfile,
     Team,
     TeamBlockerRoute,
@@ -64,6 +65,7 @@ from evander_team_addon.services.domain.release_gates import (
 )
 from evander_team_addon.services.domain.release_packages import (
     _build_release_package,
+    _reviewed_commit_for_release,
 )
 from evander_team_addon.services.domain.review import _cascade_review_decision
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
@@ -264,6 +266,37 @@ def _persist_pending_human_review(
     repository = TeamStateRepository(tmp_path / "runtime")
     repository.update(lambda _current: state)
     return repository, request.id
+
+
+def test_retired_reviews_are_not_release_candidate_evidence() -> None:
+    state, release, _promotion = _human_state(eligible_user_ids=["reviewer"])
+    review = ReviewRequest(
+        id="retired-review",
+        deliverable_id="source-deliverable",
+        reviewer_agent_id="lead",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha="reviewed-commit",
+        retired_at=datetime(2026, 7, 26, tzinfo=UTC),
+        retired_by="agent:lead",
+        retirement_reason="The review was attached in error.",
+    )
+    state.review_requests[review.id] = review
+    deliverable = state.deliverables["source-deliverable"]
+    deliverable.review_request_ids = [review.id]
+
+    reviewed_commit, error = _reviewed_commit_for_release(state, deliverable)
+    successor_manifest = _successor_manifest(
+        state,
+        predecessor=release,
+        release_id="release-after-retirement",
+    )
+
+    assert reviewed_commit == ""
+    assert error == (
+        "git-backed deliverable source-deliverable has no accepted review with an "
+        "immutable reviewed commit"
+    )
+    assert successor_manifest.deliverables[0].accepted_reviews == []
 
 
 def test_human_gate_creates_pinned_request_before_approval() -> None:
@@ -558,6 +591,67 @@ def test_changes_requested_allows_incomplete_checklist() -> None:
 
     assert decision.checklist_results == {"smoke": False}
     assert request.state == "changes_requested"
+
+
+def test_changes_requested_rejects_deliverables_outside_reviewed_candidate() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.tasks["foreign-task"] = AgentTask(
+        id="foreign-task",
+        owner_agent_id="owner",
+        project_id="project",
+        priority=2,
+        state=TeamTaskState.FINISHED,
+        title="Foreign work",
+        description="Existing work outside this release candidate.",
+        created_by_agent_id="lead",
+        deliverable_ids=["foreign-deliverable"],
+    )
+    state.deliverables["foreign-deliverable"] = Deliverable(
+        id="foreign-deliverable",
+        task_id="foreign-task",
+        producer_agent_id="owner",
+        summary="Not included in the reviewed release.",
+        state=TeamRecordState.ACCEPTED,
+    )
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+    original_revision = request.revision
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "human finding 1 targets deliverables outside the reviewed release "
+            "candidate: foreign-deliverable"
+        ),
+    ):
+        record_human_review_decision(
+            state,
+            human_review_request_id=request.id,
+            reviewer_user_id="reviewer",
+            reviewer_display_name="Reviewer",
+            decision="changes_requested",
+            request_id="foreign-finding-target",
+            expected_revision=request.revision,
+            checklist_results={"smoke": True},
+            findings=[
+                {
+                    "text": "Change unrelated work.",
+                    "target_deliverable_ids": ["foreign-deliverable"],
+                }
+            ],
+            result={"events": []},
+        )
+
+    assert request.state == "pending"
+    assert request.revision == original_revision
+    assert state.human_review_decisions == {}
+    assert state.human_review_findings == {}
+    assert state.cases == {}
 
 
 def test_human_approval_queues_exact_candidate_once() -> None:
