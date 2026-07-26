@@ -245,7 +245,7 @@ class TeamWorktreeCleanupService:
         grace = timedelta(seconds=max(0, int(grace_seconds)))
         recovery_after = timedelta(seconds=max(1, int(recovery_seconds)))
         snapshot = self._repository.read()
-        execution_backends: dict[str, str] = {}
+        execution_targets: dict[str, tuple[str, str]] = {}
         for context in snapshot.git_work_contexts.values():
             task = snapshot.tasks.get(context.task_id)
             if task is None:
@@ -254,13 +254,15 @@ class TeamWorktreeCleanupService:
             agent = snapshot.agents.get(context.agent_id)
             if project is None or project.git is None or agent is None:
                 continue
+            session_id = _git_work_context_session_id(snapshot, context)
+            if session_id is None:
+                continue
             try:
-                execution_backends[agent.session_id] = (
-                    self._backend.execution_backend_for_session(
-                        session_id=agent.session_id,
-                        directory_path=project.git.directory_path,
-                    )
+                execution_backend = self._backend.execution_backend_for_session(
+                    session_id=session_id,
+                    directory_path=project.git.directory_path,
                 )
+                execution_targets[context.id] = (session_id, execution_backend)
             except Exception:
                 # Candidate creation remains fail closed. A later pass can
                 # resolve the session backend once its runtime metadata exists.
@@ -317,7 +319,10 @@ class TeamWorktreeCleanupService:
                 reassigned = task.owner_agent_id != context.agent_id
                 if not resolved and not reassigned:
                     continue
-                execution_backend = execution_backends.get(agent.session_id)
+                execution_target = execution_targets.get(context.id)
+                if execution_target is None:
+                    continue
+                session_id, execution_backend = execution_target
                 if execution_backend not in {"libvirt_vm", "container_worker_vm"}:
                     continue
                 try:
@@ -333,7 +338,7 @@ class TeamWorktreeCleanupService:
                 identity = _cleanup_candidate_identity(
                     task_id=task.id,
                     managed_repo_id=project.git.managed_repo_id,
-                    session_id=agent.session_id,
+                    session_id=session_id,
                     worktree_path=context.worktree_path,
                 )
                 existing = state.worktree_cleanup_candidates.get(identity)
@@ -382,7 +387,7 @@ class TeamWorktreeCleanupService:
                 state.worktree_cleanup_candidates[identity] = WorktreeCleanupCandidate(
                     id=identity,
                     agent_id=context.agent_id,
-                    session_id=agent.session_id,
+                    session_id=session_id,
                     task_id=task.id,
                     project_id=project.id,
                     managed_repo_id=project.git.managed_repo_id,
@@ -748,13 +753,17 @@ class TeamWorktreeCleanupService:
             _prune_cleaned_git_context_metadata(state, current)
             return state
 
-        self._repository.update(_mutate)
-        self._append_audit(
-            candidate,
-            status=TeamDispatchActivityStatus.SUCCESS,
-            failed_check=None,
-            message=str(outcome.get("message") or "task worktree cleanup succeeded"),
-            now=now,
+        self._repository.update_with_dispatch_activity(
+            _mutate,
+            activity=self._audit_activity(
+                candidate,
+                status=TeamDispatchActivityStatus.SUCCESS,
+                failed_check=None,
+                message=str(
+                    outcome.get("message") or "task worktree cleanup succeeded"
+                ),
+                now=now,
+            ),
         )
 
     def _record_dry_run(
@@ -794,6 +803,37 @@ class TeamWorktreeCleanupService:
             now=now,
         )
 
+    def _audit_activity(
+        self,
+        candidate: WorktreeCleanupCandidate,
+        *,
+        status: TeamDispatchActivityStatus,
+        failed_check: str | None,
+        message: str,
+        now: datetime,
+    ) -> TeamDispatchActivity:
+        return TeamDispatchActivity(
+            id=f"activity-worktree-cleanup-{uuid4().hex}",
+            tool_name="team_worktree_cleanup",
+            caller_session_id=candidate.session_id,
+            caller_identity="system:team-worktree-cleanup",
+            agent_id=candidate.agent_id,
+            status=status,
+            progress_classification="none",
+            audit_record_id=candidate.id,
+            error_code=failed_check,
+            error_message=(
+                message if status == TeamDispatchActivityStatus.FAILURE else None
+            ),
+            correction_context_summary=(
+                f"task={candidate.task_id}; repository={candidate.managed_repo_id}; "
+                f"path={candidate.worktree_path}; branch={candidate.branch}; "
+                f"check={failed_check or 'passed'}"
+            ),
+            created_at=now,
+            updated_at=now,
+        )
+
     def _append_audit(
         self,
         candidate: WorktreeCleanupCandidate,
@@ -804,24 +844,12 @@ class TeamWorktreeCleanupService:
         now: datetime,
     ) -> None:
         self._repository.append_dispatch_activity(
-            TeamDispatchActivity(
-                id=f"activity-worktree-cleanup-{uuid4().hex}",
-                tool_name="team_worktree_cleanup",
-                caller_session_id=candidate.session_id,
-                caller_identity="system:team-worktree-cleanup",
-                agent_id=candidate.agent_id,
+            self._audit_activity(
+                candidate,
                 status=status,
-                progress_classification="none",
-                audit_record_id=candidate.id,
-                error_code=failed_check,
-                error_message=message if status == TeamDispatchActivityStatus.FAILURE else None,
-                correction_context_summary=(
-                    f"task={candidate.task_id}; repository={candidate.managed_repo_id}; "
-                    f"path={candidate.worktree_path}; branch={candidate.branch}; "
-                    f"check={failed_check or 'passed'}"
-                ),
-                created_at=now,
-                updated_at=now,
+                failed_check=failed_check,
+                message=message,
+                now=now,
             )
         )
 
@@ -1027,6 +1055,23 @@ def _cleanup_candidate_identity(
         (task_id, managed_repo_id, session_id, worktree_path)
     ).encode("utf-8")
     return f"worktree-cleanup-{hashlib.sha256(material).hexdigest()[:32]}"
+
+
+def _git_work_context_session_id(
+    state: TeamState,
+    context: GitWorkContext,
+) -> str | None:
+    if context.dispatch_id is not None:
+        dispatch = state.dispatches.get(context.dispatch_id)
+        if (
+            dispatch is None
+            or dispatch.agent_id != context.agent_id
+            or context.task_id not in dispatch.task_ids
+        ):
+            return None
+        return dispatch.session_id
+    agent = state.agents.get(context.agent_id)
+    return agent.session_id if agent is not None else None
 
 
 @contextmanager

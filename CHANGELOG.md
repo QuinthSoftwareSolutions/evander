@@ -2,6 +2,9 @@
 
 ## 2026-07-26 - Team Review Follow-up Fixes
 
+- Routed historical human-review corrections away from detached owners, enforced one active
+  successor per predecessor, made cleanup success and its audit atomic, pinned cleanup to the
+  originating dispatch session, and migrated review outcome snapshots with project overrides.
 - Rejected deliverable submissions after task resolution, kept post-release case source,
   release provenance, and unresolved task membership protected across agent and Admin updates,
   and made evidence-backed post-release closure terminal.

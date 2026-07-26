@@ -4734,11 +4734,22 @@ def _migrate_legacy_outcome_kind_definitions(
 
     review_rows = connection.execute(
         """
-        SELECT review.id, profile.team_id, profile.project_id,
+        SELECT review.id, profile.team_id,
+               COALESCE(
+                   task.project_id,
+                   release.project_id,
+                   profile.project_id
+               ) AS reviewed_project_id,
                profile.required_outcome_kinds_json
         FROM team_review_requests AS review
         JOIN team_review_profiles AS profile
           ON profile.id = review.review_profile_id
+        LEFT JOIN team_deliverables AS deliverable
+          ON deliverable.id = review.deliverable_id
+        LEFT JOIN team_tasks AS task
+          ON task.id = deliverable.task_id
+        LEFT JOIN team_release_packages AS release
+          ON release.id = review.release_package_id
         """
     ).fetchall()
     for row in review_rows:
@@ -4748,7 +4759,7 @@ def _migrate_legacy_outcome_kind_definitions(
             if (
                 snapshot := snapshot_for(
                     team_id=row["team_id"],
-                    project_id=row["project_id"],
+                    project_id=row["reviewed_project_id"],
                     kind=str(kind),
                 )
             )

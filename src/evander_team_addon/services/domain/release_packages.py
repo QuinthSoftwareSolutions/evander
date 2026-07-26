@@ -751,6 +751,25 @@ def _successor_release_request_error(
             f"predecessor release {predecessor.id} belongs to project "
             f"{predecessor.project_id}, not {project_id}"
         )
+    requested_correction_set = set(correction_deliverable_ids)
+    for successor in sorted(
+        state.release_packages.values(),
+        key=lambda item: (item.created_at, item.id),
+    ):
+        if (
+            successor.supersedes_release_package_id != predecessor.id
+            or successor.state in _TERMINAL_RELEASE_STATES
+        ):
+            continue
+        existing_correction_set = (
+            set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
+        )
+        if existing_correction_set != requested_correction_set:
+            return (
+                f"predecessor release {predecessor.id} already has active "
+                f"successor {successor.id}; complete or recover it before "
+                "requesting a different successor"
+            )
     if predecessor.state == TeamRecordState.ACCEPTED:
         return _post_release_successor_request_error(
             state,

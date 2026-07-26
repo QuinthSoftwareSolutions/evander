@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from ...models import (
+    AgentStatus,
     AgentInboxItem,
     AgentTask,
     HumanReviewAssignment,
@@ -1159,7 +1160,15 @@ def _specific_finding_route(
         or deliverable.id not in _reviewed_candidate_deliverable_ids(release)
     ):
         return None, lead_id
-    return task.id, task.owner_agent_id
+    owner = state.agents.get(task.owner_agent_id)
+    if (
+        owner is None
+        or owner.status != AgentStatus.ACTIVE
+        or owner.team_id != project.team_id
+        or not agent_has_project_assignment(state, owner.id, project.id)
+    ):
+        return task.id, lead_id
+    return task.id, owner.id
 
 
 def _ensure_system_task(

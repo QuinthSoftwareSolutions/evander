@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from evander.effects.providers.base import EffectRuntimeContext
 from evander_team_addon.models import (
     EphemeralAgentPolicy,
@@ -205,6 +207,35 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
 
 
+def test_cleanup_audit_failure_rolls_back_success_and_context_prune(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    backend = FakeCleanupBackend([_removed_outcome()])
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+    service = TeamWorktreeCleanupService(repository, backend)
+
+    def _reject_audit(_connection, _activity):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(
+        repository.store,
+        "_insert_dispatch_activity",
+        _reject_audit,
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        service.reconcile(now=now, grace_seconds=0)
+
+    state = repository.read()
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
+    assert candidate.state == WorktreeCleanupState.PROCESSING
+    assert candidate.completed_at is None
+    assert "context" in state.git_work_contexts
+    assert repository.list_dispatch_activity(tool_name="team_worktree_cleanup") == []
+
+
 def test_rejected_task_remains_unresolved_and_is_not_enqueued_for_worktree_cleanup(
     tmp_path,
 ) -> None:
@@ -337,6 +368,42 @@ def test_reassignment_enqueues_the_previous_owner_checkout(tmp_path) -> None:
     candidate = next(iter(state.worktree_cleanup_candidates.values()))
     assert candidate.reason == "task_reassigned"
     assert candidate.agent_id == "backend"
+    assert candidate.session_id == "session-backend"
+
+
+def test_enqueue_uses_originating_dispatch_session_after_agent_rebind(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+
+    def _rebind_agent(state: TeamState) -> TeamState:
+        context = state.git_work_contexts["context"]
+        context.dispatch_id = "origin-dispatch"
+        state.dispatches["origin-dispatch"] = TeamDispatch(
+            id="origin-dispatch",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="task",
+            cause_id="task",
+            task_ids=["task"],
+            project_ids=["project"],
+            managed_repo_ids=[_MANAGED_REPO_ID],
+            status=TeamDispatchStatus.COMPLETED,
+            created_at=now - timedelta(hours=1),
+            completed_at=now - timedelta(minutes=30),
+        )
+        state.agents["backend"].session_id = "session-rebound"
+        return state
+
+    repository.update(_rebind_agent)
+    state, counts = TeamWorktreeCleanupService(
+        repository,
+        FakeCleanupBackend([_removed_outcome()]),
+    ).enqueue_candidates(now=now, grace_seconds=0)
+
+    assert counts["enqueued"] == 1
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
     assert candidate.session_id == "session-backend"
 
 

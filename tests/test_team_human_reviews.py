@@ -1377,6 +1377,46 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     assert len(state.inbox) == 1
 
 
+def test_specific_finding_routes_to_lead_when_historical_owner_is_detached() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+    state.project_assignments.pop("owner-project")
+    owner = state.agents["owner"]
+    owner.team_id = None
+    owner.role_id = None
+    owner.reports_to_agent_id = None
+
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="changes-detached-owner",
+        expected_revision=request.revision,
+        checklist_results={"smoke": True},
+        findings=[
+            {
+                "text": "Correct the historical source behavior.",
+                "target_deliverable_ids": ["source-deliverable"],
+            }
+        ],
+        result={"events": []},
+    )
+
+    finding = next(iter(state.human_review_findings.values()))
+    correction = state.tasks[finding.correction_task_id]
+    assert correction.originating_task_id == "source-task"
+    assert correction.owner_agent_id == "lead"
+    TeamState.model_validate(state.model_dump(mode="json"))
+
+
 def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
@@ -1739,6 +1779,76 @@ def test_successor_rejects_unrelated_work_and_derives_exact_candidate_baseline()
         "correction-deliverable",
     ]
     assert finding.state == "open"
+
+    duplicate_result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "git_promotion_event_ids": [],
+    }
+    assert (
+        _build_release_package(
+            state,
+            project=state.projects["project"],
+            request={
+                "id": "duplicate-successor-request",
+                "deliverable_ids": [correction.id],
+                "supersedes_release_package_id": predecessor.id,
+                "waiver_actor_kind": "operator",
+                "waiver_actor_id": "admin",
+            },
+            result=duplicate_result,
+            projects_to_recalc=set(),
+            actor_agent_id="lead",
+            team_id="team",
+        )
+        == successor.id
+    )
+    assert duplicate_result["duplicate"] is True
+
+    second_correction = Deliverable(
+        id="second-correction-deliverable",
+        task_id=correction_task.id,
+        producer_agent_id=correction_task.owner_agent_id,
+        artifact_refs=["artifact:second-correction"],
+        summary="An additional corrected alarm behavior",
+        state=TeamRecordState.ACCEPTED,
+        verification=DeliverableVerification(status="passed"),
+    )
+    state.deliverables[second_correction.id] = second_correction
+    correction_task.deliverable_ids.append(second_correction.id)
+    _mark_deliverable_as_reviewed_git_correction(
+        state,
+        deliverable=second_correction,
+        commit_sha="d" * 40,
+    )
+    sibling_result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "git_promotion_event_ids": [],
+    }
+    assert (
+        _build_release_package(
+            state,
+            project=state.projects["project"],
+            request={
+                "id": "different-successor",
+                "deliverable_ids": [correction.id, second_correction.id],
+                "supersedes_release_package_id": predecessor.id,
+                "waiver_actor_kind": "operator",
+                "waiver_actor_id": "admin",
+            },
+            result=sibling_result,
+            projects_to_recalc=set(),
+            actor_agent_id="lead",
+            team_id="team",
+        )
+        is None
+    )
+    assert sibling_result["errors"] == [
+        "predecessor release release already has active successor successor; "
+        "complete or recover it before requesting a different successor"
+    ]
+    assert "different-successor" not in state.release_packages
 
 
 def test_post_release_successor_without_findings_follows_current_human_policy() -> None:

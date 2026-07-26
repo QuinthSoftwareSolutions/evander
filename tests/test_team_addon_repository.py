@@ -5703,6 +5703,91 @@ def test_repository_migrates_legacy_task_and_deliverable_outcome_kinds(
     )
 
 
+def test_repository_migrates_team_review_snapshot_with_reviewed_project_override(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_outcome_kind_definition(
+        definition_id="outcome-kind-team-prepared-action",
+        team_id="team",
+        project_id=None,
+        kind="prepared_action",
+        name="Team prepared action",
+        description="Team-wide definition.",
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_outcome_kind_definition(
+        definition_id="outcome-kind-project-prepared-action",
+        team_id="team",
+        project_id="project",
+        kind="prepared_action",
+        name="Project prepared action",
+        description="Project-specific definition.",
+        expected_revision=state.revision,
+    )
+    _seed_task(repo, task_id="project-outcome-review-task")
+    state = admin.record_deliverable(
+        deliverable_id="project-outcome-review-deliverable",
+        task_id="project-outcome-review-task",
+        producer_agent_id="backend",
+        summary="Prepared the project action.",
+        outcomes=[
+            {
+                "kind": "prepared_action",
+                "reference_ids": ["prepared-action:project"],
+            }
+        ],
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_review_profile(
+        profile_id="team-outcome-review-profile",
+        team_id="team",
+        name="Team outcome review",
+        required_outcome_kinds=["prepared_action"],
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="project-outcome-review",
+        deliverable_id="project-outcome-review-deliverable",
+        reviewer_agent_id="worker",
+        review_profile_id="team-outcome-review-profile",
+        expected_revision=state.revision,
+    )
+    assert (
+        state.review_requests["project-outcome-review"]
+        .required_outcome_kind_definitions[0]
+        .name
+        == "Project prepared action"
+    )
+
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE team_review_requests
+            SET required_outcome_kind_definitions_json = '[]'
+            WHERE id = 'project-outcome-review'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = '30'
+            WHERE key = 'sqlite_schema_version'
+            """
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert (
+        migrated.review_requests["project-outcome-review"]
+        .required_outcome_kind_definitions[0]
+        .name
+        == "Project prepared action"
+    )
+
+
 def test_repository_migrates_global_chat_conversation_unique_constraint(
     tmp_path: Path,
 ) -> None:
