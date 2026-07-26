@@ -222,6 +222,29 @@ SIGKILL leftovers; routine reconciliation is rate-limited to at most once every 
 lock-free managed worktrees older than the configured stale threshold are removed; the default
 threshold is one hour.
 
+Team task worktrees are a separate lifecycle. A persistent coding task keeps a
+deterministic physical checkout for the same session/repository/task identity so
+later dispatches can resume it, while each dispatch receives a fresh
+`GitWorkContext` bound to that dispatch's immutable scope. Team prompt and UI
+payloads map task, project, managed repository, worktree, branch, and context;
+the base repository checkout is control-only.
+
+When a task resolves or is reassigned away from the checkout owner, Team creates
+a durable `WorktreeCleanupCandidate`. The reconciler starts in dry-run mode by
+default and refuses removal while a preparing/leased dispatch or active Git
+context references the checkout, while retained commit evidence is incomplete,
+or when repository/path/branch/`HEAD`/dirty-file checks disagree. Preparation
+and cleanup share a session/repository coordinator lock; the execution backend
+then repeats physical Git inspection under its repository lock immediately
+before `git worktree remove` and pruning.
+
+Ignored caches may be reclaimed only after tracked and non-ignored untracked
+source checks pass. A refusal remains `recovery_required` with the exact task,
+repository, path, branch, failed check, timestamp, inventory, and byte counts.
+Successful physical removal is audited before obsolete unreferenced context
+metadata is pruned. Do not use managed-Git operation maintenance or a recursive
+delete as a substitute for this task-checkout recovery path.
+
 ## Credentials
 
 Upstream authentication uses Evander's fixed host-owned askpass path and credential environment.

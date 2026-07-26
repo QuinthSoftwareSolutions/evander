@@ -6,6 +6,7 @@ from typing import Any
 from ...models import (
     AgentActionRecord,
     AgentRuntime,
+    TeamDispatchStatus,
     TeamInboxPriority,
     TeamState,
 )
@@ -89,6 +90,15 @@ def _mark_action_failure(
         dispatch_id=runtime.active_dispatch_id or dispatch_id,
         now=completed_at,
     )
+    dispatch = state.dispatches.get(runtime.active_dispatch_id or dispatch_id)
+    if (
+        dispatch is not None
+        and dispatch.status
+        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
+    ):
+        dispatch.status = TeamDispatchStatus.FAILED
+        dispatch.completed_at = completed_at
+        dispatch.error = error
     runtime.active_dispatch_id = None
     runtime.wake_leased_until = None
     runtime.wake_reason = None

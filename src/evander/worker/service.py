@@ -40,6 +40,10 @@ from evander.session_artifacts import (
 )
 from evander.git_ssh_authorized_keys import public_key_body_from_line
 from evander.managed_git_grants import managed_git_ssh_alias
+from evander.execution.task_worktree_cleanup import (
+    cleanup_task_worktree as cleanup_task_worktree_checkout,
+    task_worktree_repository_lock,
+)
 
 from .docker_runtime import DockerContainerRuntime
 from .codex_auth_broker import CodexAuthBroker
@@ -73,6 +77,8 @@ from .models import (
     WorkerSessionPaths,
     WorkerSessionRecord,
     WorkerSessionStorageTelemetry,
+    WorkerTaskWorktreeCleanupRecord,
+    WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRecord,
     WorkerTaskWorktreeRequest,
     WorkerTelemetryPayload,
@@ -1065,6 +1071,16 @@ class WorkerDaemon:
         request: WorkerTaskWorktreeRequest,
     ) -> WorkerTaskWorktreeRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        with task_worktree_repository_lock(
+            self._task_worktree_lock_path(paths, request.repo_name)
+        ):
+            return self._prepare_task_worktree_locked(paths, request)
+
+    def _prepare_task_worktree_locked(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerTaskWorktreeRequest,
+    ) -> WorkerTaskWorktreeRecord:
         repo_dir = paths.repo_root / request.repo_name
         ensure_resolved_path_within(
             base=paths.repo_root,
@@ -1144,13 +1160,77 @@ class WorkerDaemon:
         if helper_source.is_dir() and not helper_target.exists():
             shutil.copytree(helper_source, helper_target)
         return WorkerTaskWorktreeRecord(
-            session_id=session_id,
+            session_id=paths.session_id,
             repo_name=request.repo_name,
             target_dir=(f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"),
             branch=request.branch,
             commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
             created=created,
         )
+
+    def cleanup_task_worktree(
+        self,
+        session_id: str,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> WorkerTaskWorktreeCleanupRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        repo_dir = paths.repo_root / request.repo_name
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=repo_dir,
+            description="task worktree repository",
+        )
+        worktrees_root = paths.agent_home / "worktrees" / request.repo_name
+        target_dir = worktrees_root / request.worktree_name
+        ensure_resolved_path_within(
+            base=paths.agent_home,
+            candidate=target_dir,
+            description="task worktree target",
+        )
+        expected_target_dir = (
+            f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"
+        )
+        if request.expected_target_dir != expected_target_dir:
+            raise ValueError(
+                "expected_target_dir does not match the deterministic task worktree path"
+            )
+        outcome = cleanup_task_worktree_checkout(
+            repo_dir=repo_dir,
+            worktrees_root=worktrees_root,
+            target_dir=target_dir,
+            branch=request.branch,
+            expected_commit_sha=request.expected_commit_sha,
+            lock_path=self._task_worktree_lock_path(paths, request.repo_name),
+            dry_run=request.dry_run,
+        )
+        return WorkerTaskWorktreeCleanupRecord(
+            session_id=paths.session_id,
+            repo_name=request.repo_name,
+            worktree_name=request.worktree_name,
+            target_dir=expected_target_dir,
+            branch=request.branch,
+            expected_commit_sha=request.expected_commit_sha,
+            actual_branch=outcome.actual_branch,
+            actual_commit_sha=outcome.actual_commit_sha,
+            state=outcome.state,
+            safe_to_remove=outcome.safe_to_remove,
+            removed=outcome.removed,
+            pruned=outcome.pruned,
+            dry_run=request.dry_run,
+            validation_count=outcome.validation_count,
+            failed_check=outcome.failed_check,
+            message=outcome.message,
+            tracked_paths=outcome.tracked_paths,
+            untracked_paths=outcome.untracked_paths,
+            ignored_paths=outcome.ignored_paths,
+            ignored_bytes=outcome.ignored_bytes,
+            worktree_bytes=outcome.worktree_bytes,
+            reclaimed_bytes=outcome.reclaimed_bytes,
+        )
+
+    @staticmethod
+    def _task_worktree_lock_path(paths: WorkerSessionPaths, repo_name: str) -> Path:
+        return paths.root / ".locks" / f"task-worktree-{repo_name}.lock"
 
     def provision_git_write_key(
         self,

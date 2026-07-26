@@ -2317,6 +2317,7 @@ class ManagedGitAdminService:
         *,
         directory_path: str,
         base_branch: str | None = None,
+        base_commit_sha: str | None = None,
         expected_source_commits: Mapping[str, str] | None = None,
         allowed_changed_paths: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -2345,6 +2346,14 @@ class ManagedGitAdminService:
         normalized_base = (
             _normalize_branch(base_branch, field_name="base_branch") if base_branch else None
         )
+        normalized_base_commit = (
+            _normalize_object_id(
+                base_commit_sha,
+                field_name="base_commit_sha",
+            )
+            if base_commit_sha
+            else None
+        )
         allowed_paths = (
             _manifest_path_names(allowed_changed_paths)
             if allowed_changed_paths is not None
@@ -2363,13 +2372,19 @@ class ManagedGitAdminService:
             self._target_lock(managed_repo_id, target_ref),
         ):
             previous_target = self._resolve_ref(bare_path, target_ref)
-            if normalized_base:
+            if normalized_base_commit:
+                self._require_commit(bare_path, normalized_base_commit)
+                base_ref = normalized_base_commit
+                base_commit = normalized_base_commit
+            elif normalized_base:
                 base_ref = f"refs/heads/{normalized_base}"
+                base_commit = self._resolve_ref(bare_path, base_ref)
             elif previous_target:
                 base_ref = target_ref
+                base_commit = self._resolve_ref(bare_path, base_ref)
             else:
                 base_ref = f"refs/heads/{record['default_branch']}"
-            base_commit = self._resolve_ref(bare_path, base_ref)
+                base_commit = self._resolve_ref(bare_path, base_ref)
             if base_commit is None:
                 raise ManagedGitNotFoundError(
                     f"Unknown consolidation base ref {base_ref} in {managed_repo_id}"
@@ -2411,10 +2426,10 @@ class ManagedGitAdminService:
                 self._require_commit(bare_path, commit)
 
             base_operation_ref = f"{operation_root}/base"
-            pin_commands = [
-                f"verify {base_ref} {base_commit}",
-                f"create {base_operation_ref} {base_commit}",
-            ]
+            pin_commands = []
+            if normalized_base_commit is None:
+                pin_commands.append(f"verify {base_ref} {base_commit}")
+            pin_commands.append(f"create {base_operation_ref} {base_commit}")
             source_operation_refs: dict[str, str] = {}
             for index, branch in enumerate(normalized_sources):
                 source_ref = f"refs/heads/{branch}"

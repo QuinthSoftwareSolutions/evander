@@ -32,6 +32,7 @@ from .common import (
     _string_list,
     utc_now,
 )
+from .task_assessment import task_payload_with_assessment
 
 
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
@@ -275,6 +276,7 @@ def _ephemeral_assignment_event_payload(
             "session_id": assignment.session_id,
             "title": assignment.title,
             "prompt": _build_ephemeral_prompt(
+                state=state,
                 assignment=assignment,
                 parent=parent,
                 task=task,
@@ -299,6 +301,7 @@ def _ephemeral_assignment_event_payload(
 
 def _build_ephemeral_prompt(
     *,
+    state: TeamState,
     assignment: EphemeralAssignment,
     parent: PersistentAgent,
     task: AgentTask,
@@ -309,7 +312,7 @@ def _build_ephemeral_prompt(
             mode="json",
             exclude=AGENT_OPERATOR_ONLY_FIELDS,
         ),
-        "task": task.model_dump(mode="json"),
+        "task": task_payload_with_assessment(state, task),
         "report_tool_name": EPHEMERAL_WORKER_REPORT_TOOL,
         "expected_agent_branch": ephemeral_agent_branch(
             assignment.session_id,

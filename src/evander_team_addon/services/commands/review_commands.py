@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import (
+    Callable,
     Mapping,
     Sequence,
 )
@@ -31,7 +32,6 @@ from .validators import (
 from ...models import (
     TeamState,
     _unique_text_list,
-    task_payload_with_derived,
 )
 from ..domain.agent_access import _is_team_manager
 from ..domain.common import (
@@ -39,6 +39,9 @@ from ..domain.common import (
     _required_text,
 )
 from ..domain.manager_fallback import _manager_fallback_review_decision_guard_error
+from ..domain.human_reviews import (
+    HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+)
 from ..domain.project_status import _recalculate_project_status
 from ..domain.review import (
     _apply_review_decision,
@@ -48,12 +51,24 @@ from ..domain.review import (
     retry_blocked_review,
     withdraw_pending_review,
 )
+from ..domain.task_assessment import task_payload_with_assessment
 from ..domain.work_due import (
     _mark_agent_work_due,
 )
 
 
 class TeamReviewCommandService(TeamCommandExecutor):
+    def __init__(
+        self,
+        repository,
+        *,
+        human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+    ) -> None:
+        super().__init__(repository)
+        self._human_review_eligibility_resolver = (
+            human_review_eligibility_resolver
+        )
+
     def request_review_command(
         self,
         *,
@@ -284,6 +299,10 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 "events": [],
                 "git_promotion_event_ids": [],
             }
+            if self._human_review_eligibility_resolver is not None:
+                decision_result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                    self._human_review_eligibility_resolver
+                )
             projects_to_recalc: set[str] = set()
             decided_id = _apply_review_decision(
                 command_state,
@@ -292,6 +311,10 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 result=decision_result,
                 projects_to_recalc=projects_to_recalc,
                 enforce_manager_fallback_routing_guard=guard_error is not None,
+            )
+            decision_result.pop(
+                HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+                None,
             )
             if decided_id is None:
                 raise TeamCommandValidationError(
@@ -344,7 +367,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "created_inbox_item_ids": list(decision_result["created_inbox_item_ids"]),
                     "review": decided_review.model_dump(mode="json"),
                     "deliverable": deliverable.model_dump(mode="json"),
-                    "task": task_payload_with_derived(command_state, task),
+                    "task": task_payload_with_assessment(command_state, task),
                     "deliverable_id": deliverable.id,
                     "task_id": task.id,
                     "created_blocker_ids": list(
@@ -460,7 +483,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "replacement_review_request_id": retry.id,
                     "review": retry.model_dump(mode="json"),
                     "deliverable": deliverable.model_dump(mode="json"),
-                    "task": task_payload_with_derived(command_state, task),
+                    "task": task_payload_with_assessment(command_state, task),
                     "created_inbox_item_ids": created_inbox_ids,
                     "resolved_blocker_ids": list(
                         intent_result.get("resolved_blocker_ids") or []
@@ -614,7 +637,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "action": "withdrawn" if action == "withdraw" else "retired",
                     "review": review.model_dump(mode="json"),
                     "deliverable": deliverable.model_dump(mode="json"),
-                    "task": task_payload_with_derived(command_state, task),
+                    "task": task_payload_with_assessment(command_state, task),
                     "closed_inbox_item_ids": list(
                         closure_result["closed_inbox_item_ids"]
                     ),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -14,6 +16,7 @@ from evander.worker.models import (
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeCleanupRequest,
     WorkerTelemetryPayload,
 )
 
@@ -355,6 +358,64 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         ("GET", "/v1/sessions/session-1/artifacts/reports/summary.txt"),
         ("DELETE", "/v1/sessions/session-1"),
     ]
+
+
+def test_container_worker_client_requests_structured_task_worktree_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    seen_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/sessions/session-1/worktrees/cleanup"
+        seen_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "session_id": "session-1",
+                "repo_name": "repo",
+                "worktree_name": "task-a-1234",
+                "target_dir": "/home/agent/worktrees/repo/task-a-1234",
+                "branch": "agents/session-1/tasks/task-a-1234",
+                "expected_commit_sha": "a" * 40,
+                "actual_branch": "agents/session-1/tasks/task-a-1234",
+                "actual_commit_sha": "a" * 40,
+                "state": "dry_run",
+                "safe_to_remove": True,
+                "removed": False,
+                "pruned": False,
+                "dry_run": True,
+                "validation_count": 1,
+                "failed_check": None,
+                "message": "task worktree is safe to remove",
+                "tracked_paths": [],
+                "untracked_paths": [],
+                "ignored_paths": ["cache/generated.bin"],
+                "ignored_bytes": 9,
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    request = WorkerTaskWorktreeCleanupRequest(
+        repo_name="repo",
+        worktree_name="task-a-1234",
+        branch="agents/session-1/tasks/task-a-1234",
+        expected_commit_sha="a" * 40,
+        expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
+        dry_run=True,
+    )
+
+    result = worker.cleanup_task_worktree("session-1", request)
+
+    assert result.state == "dry_run"
+    assert result.ignored_bytes == 9
+    assert seen_payloads == [request.model_dump(mode="json")]
 
 
 def test_container_worker_client_provisions_lists_and_drops_mssql_databases(

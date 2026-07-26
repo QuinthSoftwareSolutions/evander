@@ -30,6 +30,7 @@ from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRequest,
 )
 from evander.worker_daemon import (
@@ -735,6 +736,174 @@ def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None
     assert reused.created is False
     assert created.commit_sha == clone.commit_sha
     assert reused.target_dir == "/home/agent/worktrees/repo/task-a-1234"
+
+
+def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    clone = daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    worktree_name = "task-a-1234"
+    branch = "agents/session-1/tasks/task-a-1234"
+    prepared = daemon.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name=worktree_name,
+            branch=branch,
+            base_ref="main",
+        ),
+    )
+    target = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / "worktrees"
+        / "repo"
+        / worktree_name
+    )
+    cache = target / "cache"
+    cache.mkdir()
+    generated = cache / "generated.bin"
+    generated.write_bytes(b"generated")
+    request = WorkerTaskWorktreeCleanupRequest(
+        repo_name="repo",
+        worktree_name=worktree_name,
+        branch=branch,
+        expected_commit_sha=prepared.commit_sha,
+        expected_target_dir=prepared.target_dir,
+    )
+
+    inventory = daemon.cleanup_task_worktree(
+        "session-1",
+        request.model_copy(update={"dry_run": True}),
+    )
+    assert inventory.state == "dry_run"
+    assert inventory.safe_to_remove is True
+    assert inventory.removed is False
+    assert inventory.pruned is False
+    assert inventory.validation_count == 1
+    assert target.exists()
+
+    removed = daemon.cleanup_task_worktree("session-1", request)
+    repeated = daemon.cleanup_task_worktree("session-1", request)
+
+    assert removed.state == "removed"
+    assert removed.safe_to_remove is True
+    assert removed.removed is True
+    assert removed.pruned is True
+    assert removed.validation_count == 2
+    assert removed.ignored_paths == ["cache/generated.bin"]
+    assert removed.ignored_bytes == len(b"generated")
+    assert removed.worktree_bytes >= removed.ignored_bytes
+    assert removed.reclaimed_bytes == removed.worktree_bytes
+    assert not target.exists()
+    assert repeated.state == "already_absent"
+    assert repeated.removed is False
+    assert repeated.pruned is True
+    assert repeated.validation_count == 2
+    assert repeated.reclaimed_bytes == 0
+    assert clone.commit_sha == prepared.commit_sha
+
+
+@pytest.mark.parametrize(
+    ("change_kind", "failed_check", "expected_paths"),
+    [
+        ("tracked", "tracked_changes", ["README.md"]),
+        ("untracked", "untracked_files", ["notes.txt"]),
+    ],
+)
+def test_worker_cleanup_refuses_unsafe_task_worktree(
+    tmp_path: Path,
+    change_kind: str,
+    failed_check: str,
+    expected_paths: list[str],
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    worktree_name = "task-a-1234"
+    branch = "agents/session-1/tasks/task-a-1234"
+    prepared = daemon.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name=worktree_name,
+            branch=branch,
+            base_ref="main",
+        ),
+    )
+    target = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / "worktrees"
+        / "repo"
+        / worktree_name
+    )
+    if change_kind == "tracked":
+        (target / "README.md").write_text("changed\n", encoding="utf-8")
+    else:
+        (target / "notes.txt").write_text("untracked\n", encoding="utf-8")
+
+    result = daemon.cleanup_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeCleanupRequest(
+            repo_name="repo",
+            worktree_name=worktree_name,
+            branch=branch,
+            expected_commit_sha=prepared.commit_sha,
+            expected_target_dir=prepared.target_dir,
+        ),
+    )
+
+    assert result.state == "refused"
+    assert result.safe_to_remove is False
+    assert result.removed is False
+    assert result.failed_check == failed_check
+    assert result.validation_count == 1
+    assert (
+        result.tracked_paths if change_kind == "tracked" else result.untracked_paths
+    ) == expected_paths
+    assert target.exists()
 
 
 def test_worker_provisions_session_git_write_key_and_preserves_config(

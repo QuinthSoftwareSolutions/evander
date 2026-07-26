@@ -11,6 +11,7 @@ from types import MethodType, SimpleNamespace
 import httpx
 from PIL import Image
 import pytest
+from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from evander.addons import AddonContext
@@ -29,27 +30,43 @@ from evander_team_addon import api as team_addon_api
 from evander_team_addon.api import (
     _bootstrap_payload_for_request,
     _conversation_snapshot_events,
+    _require_human_review_decision_identity,
+    _resolved_release_policy_for_admin,
     _state_snapshot_events,
+    _strict_human_identity_from_request,
     _team_state_payload_for_request,
 )
 from evander_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
+    AgentTask,
     AgentStatus,
     AgentVoiceProfile,
+    Deliverable,
     DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
+    HumanReviewAssignment,
+    HumanReviewFinding,
+    HumanReviewRequest,
+    HumanReviewRequirementSnapshot,
+    ProjectGitConfig,
     ProjectReleasePolicy,
+    ReleaseCandidateManifest,
+    ReleaseGateFailure,
     ReleasePackage,
     ReleaseScopeValidation,
     TeamConversationMessage,
+    TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerRoute,
+    TeamBlockerSourceKind,
     TeamBlockerState,
+    TeamCase,
+    TeamCaseStatus,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
     TeamInboxItemState,
@@ -60,8 +77,15 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.providers import _filtered_team_state_payload
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from evander_team_addon.services.domain.human_reviews import (
+    HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
+    HUMAN_REVIEW_PREPARATION_FAILED,
+    HUMAN_REVIEW_TARGET_EXPIRED,
+    HUMAN_REVIEW_TESTING_BLOCKED,
+)
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
@@ -85,6 +109,64 @@ def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionServ
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_human_release_policy_resolves_directory_groups_and_rejects_empty_pool() -> None:
+    assignments = [
+        SimpleNamespace(
+            login="Reviewer@Example.com",
+            group_id="release-reviewers",
+            directory_path="root/team",
+        )
+    ]
+    permitted = {"reviewer@example.com"}
+    user_store = SimpleNamespace(
+        get_group=lambda group_id: (
+            SimpleNamespace(group_id=group_id)
+            if group_id == "release-reviewers"
+            else None
+        ),
+        list_user_group_assignments=lambda: list(assignments),
+        get_user=lambda login: (
+            SimpleNamespace(login=login)
+            if str(login).casefold() == "reviewer@example.com"
+            else None
+        ),
+        can=lambda login, permission, directory_path=None: (
+            str(login).casefold() in permitted
+            and permission == "team.human_reviews.decide"
+            and directory_path == "root/team/project"
+        ),
+    )
+    payload = {
+        "release_policy": {
+            "human_review_requirement": {
+                "reviewer_group_ids": ["release-reviewers"],
+                "checklist": [{"id": "smoke", "label": "Smoke test"}],
+            }
+        }
+    }
+
+    policy = _resolved_release_policy_for_admin(
+        SimpleNamespace(user_store=user_store),
+        payload,
+        directory_path="root/team/project",
+    )
+
+    assert policy is not None
+    assert policy.human_review_requirement is not None
+    assert policy.human_review_requirement.directory_path == "root/team/project"
+    assert policy.human_review_requirement.resolved_reviewer_user_ids == [
+        "reviewer@example.com"
+    ]
+
+    permitted.clear()
+    with pytest.raises(ValueError, match="no active reviewer"):
+        _resolved_release_policy_for_admin(
+            SimpleNamespace(user_store=user_store),
+            payload,
+            directory_path="root/team/project",
+        )
 
 
 def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> None:
@@ -115,12 +197,56 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/review-requests/{review_request_id}/retire"
     )
     assert review_retire_route.methods == {"POST"}
+    task_repair_route = next(
+        route
+        for route in routes
+        if route.path == "/tasks/{task_id}/repair-state"
+    )
+    assert task_repair_route.methods == {"POST"}
     review_withdraw_route = next(
         route
         for route in routes
         if route.path == "/review-requests/{review_request_id}/withdraw"
     )
     assert review_withdraw_route.methods == {"POST"}
+    human_review_collection_route = next(
+        route for route in routes if route.path == "/human-review-requests"
+    )
+    assert human_review_collection_route.methods == {"GET", "HEAD"}
+    human_review_detail_route = next(
+        route
+        for route in routes
+        if route.path
+        == "/human-review-requests/{human_review_request_id}"
+    )
+    assert human_review_detail_route.methods == {"GET", "HEAD"}
+    for suffix in (
+        "decisions",
+        "reassign",
+        "resume",
+        "preparation-result",
+    ):
+        mutation_route = next(
+            route
+            for route in routes
+            if route.path
+            == f"/human-review-requests/{{human_review_request_id}}/{suffix}"
+        )
+        assert mutation_route.methods == {"POST"}
+    report_issue_route = next(
+        route
+        for route in routes
+        if route.path
+        == "/release-packages/{release_package_id}/report-issue"
+    )
+    assert report_issue_route.methods == {"POST"}
+    for path in (
+        "/human-review-findings/{human_review_finding_id}/resolution-proposal",
+        "/human-review-findings/{human_review_finding_id}/correction-root",
+        "/cases/{case_id}/close-post-release",
+    ):
+        mutation_route = next(route for route in routes if route.path == path)
+        assert mutation_route.methods == {"POST"}
     activity_route = next(route for route in routes if route.path == "/dispatch-events")
     assert activity_route.methods == {"GET", "HEAD"}
     outcome_collection_routes = [
@@ -453,6 +579,1373 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
 
     repo.update(_mutate)
     return repo
+
+
+def _attach_pending_human_review(repo: TeamStateRepository) -> None:
+    requirement = HumanReviewRequirementSnapshot(
+        directory_path="root/team",
+        configured_group_ids=["human-reviewers"],
+        initially_eligible_user_ids=["reviewer@example.com"],
+        test_instructions="Exercise the candidate before deciding.",
+    )
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.candidate_commit_sha = "candidate-sha"
+        release.candidate_tree_hash = "candidate-tree"
+        release.manifest = ReleaseCandidateManifest(
+            project_id=release.project_id,
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            candidate_tree_hash="candidate-tree",
+            release_branch=release.release_branch,
+            deliverables=[{"deliverable_id": "deliverable"}],
+            human_review_requirement=requirement,
+        )
+        state.human_review_requests["human-review-1"] = HumanReviewRequest(
+            id="human-review-1",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            candidate_tree_hash="candidate-tree",
+            requirement_snapshot=requirement,
+            current_assignment=HumanReviewAssignment(
+                eligible_user_ids=["reviewer@example.com"],
+            ),
+            state="pending",
+            ready_at=now,
+            created_at=now,
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+class _HumanApiAuthStub:
+    def __init__(
+        self,
+        *,
+        login: str,
+        auth_mode: str = "local_password",
+        owner: bool = False,
+        privileged: bool = True,
+        allow_decide: bool = True,
+        group_assignments: list[object] | None = None,
+        known_users: list[str] | None = None,
+        permission_users: list[str] | None = None,
+    ) -> None:
+        self.config = SimpleNamespace(auth_mode=auth_mode)
+        self.login = login
+        self.owner = owner
+        self.privileged = privileged
+        self.allow_decide = allow_decide
+        self.permission_calls: list[tuple[str, str | None]] = []
+        known = {
+            value.casefold()
+            for value in (known_users or [login])
+        }
+        permitted = {
+            value.casefold()
+            for value in (permission_users or [login])
+        }
+        self.user_store = SimpleNamespace(
+            list_user_group_assignments=lambda _login=None: list(
+                group_assignments or ()
+            ),
+            get_user=lambda value: (
+                SimpleNamespace(login=str(value).casefold())
+                if str(value).casefold() in known
+                else None
+            ),
+            can=lambda value, permission, directory_path=None: (
+                permission == "team.human_reviews.decide"
+                and str(value).casefold() in permitted
+                and directory_path is not None
+            ),
+        )
+
+    def read_session(self, _request) -> dict[str, str]:
+        return {
+            "sid": f"session-{self.login}",
+            "login": self.login,
+            "name": self.login.split("@", 1)[0].title(),
+        }
+
+    def require(self, request) -> dict[str, str]:
+        return self.read_session(request)
+
+    def privileged_for_request(self, _request) -> bool:
+        return self.privileged
+
+    def can(
+        self,
+        _request,
+        permission: str,
+        directory_path: str | None = None,
+    ) -> bool:
+        del directory_path
+        return self.owner and permission == "admin.owner"
+
+    def require_permission(
+        self,
+        _request,
+        permission: str,
+        directory_path: str | None = None,
+    ) -> None:
+        self.permission_calls.append((permission, directory_path))
+        if permission == "team.human_reviews.decide" and self.allow_decide:
+            return
+        if permission == "admin.owner" and self.owner:
+            return
+        raise PermissionError(f"Permission required: {permission}")
+
+
+def test_human_identity_rejects_generic_admin_fallback() -> None:
+    class FallbackAuth:
+        config = SimpleNamespace(auth_mode="local_password")
+
+        @staticmethod
+        def read_session(_request):
+            return None
+
+        @staticmethod
+        def require(_request):
+            return {
+                "sid": "local-dev",
+                "login": "admin",
+                "name": "Admin",
+            }
+
+    with pytest.raises(PermissionError, match="real authenticated"):
+        _strict_human_identity_from_request(FallbackAuth(), object())  # type: ignore[arg-type]
+
+    auth_none = _HumanApiAuthStub(
+        login="reviewer@example.com",
+        auth_mode="none",
+    )
+    with pytest.raises(PermissionError, match="real authenticated"):
+        _strict_human_identity_from_request(auth_none, object())  # type: ignore[arg-type]
+
+
+def test_human_decision_identity_enforces_assignment_group_scope_and_permission() -> None:
+    auth = _HumanApiAuthStub(
+        login="Reviewer@Example.com",
+        group_assignments=[
+            SimpleNamespace(
+                login="reviewer@example.com",
+                group_id="human-reviewers",
+                directory_path="root/team",
+            )
+        ],
+    )
+    human_request = SimpleNamespace(
+        requirement_snapshot=SimpleNamespace(
+            directory_path="root/team/sub",
+            configured_group_ids=["human-reviewers"],
+        ),
+        current_assignment=SimpleNamespace(
+            eligible_user_ids=["reviewer@example.com"],
+            explicitly_assigned_user_ids=[],
+        ),
+    )
+
+    identity = _require_human_review_decision_identity(
+        auth,
+        object(),  # type: ignore[arg-type]
+        human_request,
+        payload={"decision": "approved"},
+    )
+
+    assert identity["user_id"] == "reviewer@example.com"
+    assert auth.permission_calls == [
+        ("team.human_reviews.decide", "root/team/sub")
+    ]
+    with pytest.raises(ValueError, match="derived from the authenticated session"):
+        _require_human_review_decision_identity(
+            auth,
+            object(),  # type: ignore[arg-type]
+            human_request,
+            payload={
+                "decision": "approved",
+                "reviewer_user_id": "spoofed@example.com",
+            },
+        )
+
+    stale_membership_auth = _HumanApiAuthStub(login="reviewer@example.com")
+    with pytest.raises(PermissionError, match="no longer a member"):
+        _require_human_review_decision_identity(
+            stale_membership_auth,
+            object(),  # type: ignore[arg-type]
+            human_request,
+        )
+
+    class PermissionDeniedAuth(_HumanApiAuthStub):
+        def require_permission(
+            self,
+            _request,
+            permission: str,
+            directory_path: str | None = None,
+        ) -> None:
+            del directory_path
+            raise PermissionError(f"Permission required: {permission}")
+
+    permission_denied_auth = PermissionDeniedAuth(
+        login="reviewer@example.com",
+        group_assignments=[
+            SimpleNamespace(
+                login="reviewer@example.com",
+                group_id="human-reviewers",
+                directory_path="root/team",
+            )
+        ],
+    )
+    with pytest.raises(PermissionError, match="team.human_reviews.decide"):
+        _require_human_review_decision_identity(
+            permission_denied_auth,
+            object(),  # type: ignore[arg-type]
+            human_request,
+        )
+
+
+def test_explicit_human_assignment_can_decide_but_agent_principal_cannot(
+    tmp_path: Path,
+) -> None:
+    explicit_runtime_dir = tmp_path / "explicit" / "runtime"
+    explicit_repository = _seed_runtime_operations_state(explicit_runtime_dir)
+    _attach_pending_human_review(explicit_repository)
+
+    def _assign_explicit_user(state):
+        request = state.human_review_requests["human-review-1"]
+        request.current_assignment = HumanReviewAssignment(
+            eligible_user_ids=["explicit@example.com"],
+            explicitly_assigned_user_ids=["explicit@example.com"],
+            assigned_by_user_id="owner@example.com",
+            assigned_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        return state
+
+    explicit_repository.update(_assign_explicit_user)
+    explicit_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=explicit_runtime_dir,
+                    addon_runtime_dir=(
+                        explicit_runtime_dir / "addons" / "team-addon"
+                    ),
+                    auth=_HumanApiAuthStub(login="explicit@example.com"),
+                )
+            )
+        )
+    )
+    decided = explicit_client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={
+            "decision": "blocked",
+            "summary": "The assigned manual test is temporarily unavailable.",
+            "expected_revision": 0,
+            "request_id": "explicit-assignment-decision",
+        },
+    )
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["human_review_request"]["state"] == "blocked"
+    assert next(
+        iter(explicit_repository.read().human_review_decisions.values())
+    ).reviewer_user_id == "explicit@example.com"
+
+    agent_runtime_dir = tmp_path / "agent" / "runtime"
+    agent_repository = _seed_runtime_operations_state(agent_runtime_dir)
+    _attach_pending_human_review(agent_repository)
+
+    class _AgentPrincipalAuth(_HumanApiAuthStub):
+        def read_session(self, request) -> dict[str, str]:
+            session = super().read_session(request)
+            session["kind"] = "agent"
+            session["agent_id"] = "backend"
+            return session
+
+    agent_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=agent_runtime_dir,
+                    addon_runtime_dir=agent_runtime_dir / "addons" / "team-addon",
+                    auth=_AgentPrincipalAuth(
+                        login="reviewer@example.com",
+                        group_assignments=[
+                            SimpleNamespace(
+                                login="reviewer@example.com",
+                                group_id="human-reviewers",
+                                directory_path="root/team",
+                            )
+                        ],
+                    ),
+                )
+            )
+        )
+    )
+    rejected = agent_client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={
+            "decision": "blocked",
+            "summary": "An agent must not decide a human gate.",
+            "expected_revision": 0,
+            "request_id": "agent-principal-decision",
+        },
+    )
+    assert rejected.status_code == 403
+    assert "real authenticated Admin Web session" in rejected.json()["error"]
+    assert agent_repository.read().human_review_decisions == {}
+
+
+def test_human_review_api_is_strict_scoped_and_projects_release_detail(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _attach_pending_human_review(repo)
+    reviewer_auth = _HumanApiAuthStub(login="reviewer@example.com")
+    reviewer_app = Starlette(
+        routes=team_addon_api.admin_api_routes(
+            AddonContext(
+                addon_id="team-addon",
+                runtime_dir=runtime_dir,
+                addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                auth=reviewer_auth,
+            )
+        )
+    )
+    reviewer_client = TestClient(reviewer_app)
+
+    listed = reviewer_client.get(
+        "/human-review-requests?assigned_to=me&state=pending"
+    )
+    detail = reviewer_client.get("/human-review-requests/human-review-1")
+    release_detail = reviewer_client.get("/release-packages/release-1")
+
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()["human_review_requests"]] == [
+        "human-review-1"
+    ]
+    assert detail.status_code == 200
+    assert detail.json()["release"]["candidate_commit_sha"] == "candidate-sha"
+    assert detail.json()["project"]["name"] == "Project"
+    assert release_detail.status_code == 200
+    assert release_detail.json()["human_review"]["requests"][0]["id"] == (
+        "human-review-1"
+    )
+
+    compact_state = _team_state_payload_for_request(
+        reviewer_auth,
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+    assert "human_review_requests" not in compact_state
+    assert "human_review_decisions" not in compact_state
+    assert "human_review_findings" not in compact_state
+    release_summary = compact_state["release_packages"]["release-1"]
+    assert release_summary["human_review"]["state"] == "pending"
+    assert release_summary["manifest"]["human_review_requirement"] == {
+        "required": True,
+        "preparation_mode": "manual",
+    }
+    agent_payload = _filtered_team_state_payload(
+        repo.read(),
+        team_id="team",
+        project_id="project",
+        agent_id="backend",
+    )
+    assert "human_review_requests" not in agent_payload
+    assert agent_payload["release_packages"]["release-1"]["human_review"][
+        "state"
+    ] == "pending"
+    assert agent_payload["release_packages"]["release-1"]["manifest"][
+        "human_review_requirement"
+    ] == {
+        "required": True,
+        "preparation_mode": "manual",
+    }
+
+    outsider_auth = _HumanApiAuthStub(login="outsider@example.com")
+    outsider_app = Starlette(
+        routes=team_addon_api.admin_api_routes(
+            AddonContext(
+                addon_id="team-addon",
+                runtime_dir=runtime_dir,
+                addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                auth=outsider_auth,
+            )
+        )
+    )
+    outsider_client = TestClient(outsider_app)
+    assert (
+        outsider_client.get("/human-review-requests/human-review-1").status_code
+        == 403
+    )
+    outsider_release = outsider_client.get("/release-packages/release-1")
+    assert outsider_release.status_code == 200
+    assert "requests" not in outsider_release.json()["human_review"]
+    assert outsider_release.json()["manifest"]["human_review_requirement"] == {
+        "required": True,
+        "preparation_mode": "manual",
+    }
+
+
+def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _attach_pending_human_review(repo)
+    auth = _HumanApiAuthStub(
+        login="Reviewer@Example.com",
+        privileged=False,
+        group_assignments=[
+            SimpleNamespace(
+                login="reviewer@example.com",
+                group_id="human-reviewers",
+                directory_path="root/team",
+            )
+        ],
+    )
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=auth,
+                )
+            )
+        )
+    )
+    payload = {
+        "decision": "blocked",
+        "summary": "Preview credentials are unavailable.",
+        "expected_revision": 0,
+        "request_id": "decision-request-1",
+    }
+
+    locked = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+    assert locked.status_code == 403
+    assert locked.json()["error"] == "Privileged operations are locked."
+
+    auth.privileged = True
+    decided = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["result"]["idempotent_replay"] is False
+    assert decided.json()["human_review_request"]["state"] == "blocked"
+    first_revision = decided.json()["revision"]
+    state = repo.read()
+    assert len(state.human_review_decisions) == 1
+    decision = next(iter(state.human_review_decisions.values()))
+    assert decision.reviewer_user_id == "reviewer@example.com"
+    assert decision.reviewer_display_name_snapshot == "Reviewer"
+
+    replay = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["result"]["idempotent_replay"] is True
+    assert replay.json()["revision"] == first_revision
+    assert repo.read().revision == first_revision
+    assert len(repo.read().human_review_decisions) == 1
+
+    conflict = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={**payload, "summary": "Different inputs."},
+    )
+    assert conflict.status_code == 409
+    assert "idempotency key reused" in conflict.json()["error"]
+
+    spoofed = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={
+            **payload,
+            "request_id": "decision-request-spoofed",
+            "reviewer_user_id": "somebody-else@example.com",
+        },
+    )
+    assert spoofed.status_code == 400
+    assert "derived from the authenticated session" in spoofed.json()["error"]
+
+
+def test_human_review_owner_reassign_resume_and_preparation_result_api(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _attach_pending_human_review(repo)
+
+    def _block_for_assignment(state):
+        request = state.human_review_requests["human-review-1"]
+        request.state = "blocked"
+        request.ready_at = None
+        request.current_assignment.eligible_user_ids = []
+        state.release_packages["release-1"].state = TeamRecordState.BLOCKED
+        return state
+
+    repo.update(_block_for_assignment)
+    owner_auth = _HumanApiAuthStub(
+        login="owner@example.com",
+        owner=True,
+        known_users=["owner@example.com", "reviewer@example.com"],
+        permission_users=["reviewer@example.com"],
+    )
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=owner_auth,
+                )
+            )
+        )
+    )
+
+    reassigned = client.post(
+        "/human-review-requests/human-review-1/reassign",
+        json={
+            "user_ids": ["Reviewer@Example.com"],
+            "expected_revision": 0,
+            "request_id": "reassign-request-1",
+        },
+    )
+    assert reassigned.status_code == 200, reassigned.text
+    reassigned_request = reassigned.json()["human_review_request"]
+    assert reassigned_request["state"] == "pending"
+    assert reassigned_request["assignment_generation"] == 2
+    assert reassigned_request["current_assignment"][
+        "explicitly_assigned_user_ids"
+    ] == ["reviewer@example.com"]
+    assert reassigned_request["current_assignment"]["assigned_by_user_id"] == (
+        "owner@example.com"
+    )
+    reassign_revision = reassigned.json()["revision"]
+    notification_count = len(
+        repo.list_outbox_records(
+            intent_type="team.release.human_review_requested",
+        )
+    )
+    assert notification_count == 1
+    replay = client.post(
+        "/human-review-requests/human-review-1/reassign",
+        json={
+            "user_ids": ["Reviewer@Example.com"],
+            "expected_revision": 0,
+            "request_id": "reassign-request-1",
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.json()["result"]["idempotent_replay"] is True
+    assert replay.json()["revision"] == reassign_revision
+    assert (
+        len(
+            repo.list_outbox_records(
+                intent_type="team.release.human_review_requested",
+            )
+        )
+        == notification_count
+    )
+
+    repeated_assignment = client.post(
+        "/human-review-requests/human-review-1/reassign",
+        json={
+            "user_ids": ["Reviewer@Example.com"],
+            "expected_revision": 1,
+            "request_id": "reassign-request-2",
+        },
+    )
+    assert repeated_assignment.status_code == 200, repeated_assignment.text
+    repeated_request = repeated_assignment.json()["human_review_request"]
+    assert repeated_request["assignment_generation"] == 3
+    generation_notifications = repo.list_outbox_records(
+        intent_type="team.release.human_review_requested",
+    )
+    assert len(generation_notifications) == notification_count + 1
+    assert {
+        (
+            record.payload["payload"]["recipient_user_id"],
+            record.payload["payload"]["assignment_generation"],
+        )
+        for record in generation_notifications
+    } == {
+        ("reviewer@example.com", 2),
+        ("reviewer@example.com", 3),
+    }
+
+    def _block_for_resume(state):
+        request = state.human_review_requests["human-review-1"]
+        request.state = "blocked"
+        request.ready_at = None
+        state.release_packages["release-1"].state = TeamRecordState.BLOCKED
+        return state
+
+    repo.update(_block_for_resume)
+    resumed = client.post(
+        "/human-review-requests/human-review-1/resume",
+        json={
+            "expected_revision": 2,
+            "request_id": "resume-request-1",
+        },
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["human_review_request"]["state"] == "pending"
+    assert resumed.json()["human_review_request"]["revision"] == 3
+
+    def _prepare_again(state):
+        request = state.human_review_requests["human-review-1"]
+        request.state = "preparing"
+        request.ready_at = None
+        request.requirement_snapshot.preparation_mode = "workflow"
+        release = state.release_packages["release-1"]
+        release.state = TeamRecordState.PENDING
+        if release.manifest is not None:
+            release.manifest.human_review_requirement.preparation_mode = "workflow"
+        return state
+
+    repo.update(_prepare_again)
+    prepared = client.post(
+        "/human-review-requests/human-review-1/preparation-result",
+        json={
+            "candidate_commit_sha": "candidate-sha",
+            "candidate_tree_hash": "candidate-tree",
+            "preparation_generation": 1,
+            "target": {
+                "url": "https://preview.example.test/release-1",
+                "alias": "release-preview",
+            },
+            "expected_revision": 3,
+            "request_id": "preparation-request-1",
+        },
+    )
+    assert prepared.status_code == 200, prepared.text
+    prepared_request = prepared.json()["human_review_request"]
+    assert prepared_request["state"] == "pending"
+    assert prepared_request["test_target"]["alias"] == "release-preview"
+
+    non_owner_auth = _HumanApiAuthStub(login="reviewer@example.com")
+    non_owner_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=non_owner_auth,
+                )
+            )
+        )
+    )
+    denied = non_owner_client.post(
+        "/human-review-requests/human-review-1/reassign",
+        json={
+            "user_ids": ["reviewer@example.com"],
+            "expected_revision": 4,
+            "request_id": "reassign-request-denied",
+        },
+    )
+    assert denied.status_code == 403
+    assert "admin.owner" in denied.json()["error"]
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "recovery_action"),
+    [
+        (HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE, "reassign"),
+        (HUMAN_REVIEW_TESTING_BLOCKED, "resume"),
+        (HUMAN_REVIEW_PREPARATION_FAILED, "resume"),
+        (HUMAN_REVIEW_TARGET_EXPIRED, "resume"),
+    ],
+)
+def test_generic_operator_blocker_resolution_rejects_human_review_recovery_without_mutation(
+    tmp_path: Path,
+    reason_code: str,
+    recovery_action: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _attach_pending_human_review(repo)
+
+    def _block_human_review(state):
+        human_request = state.human_review_requests["human-review-1"]
+        human_request.state = "blocked"
+        human_request.ready_at = None
+        if reason_code == HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE:
+            human_request.current_assignment.eligible_user_ids = []
+        state.release_packages["release-1"].state = TeamRecordState.BLOCKED
+        state.blockers["human-review-terminal-blocker"] = TeamBlocker(
+            id="human-review-terminal-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST,
+            source_id=human_request.id,
+            reason_code=reason_code,
+            owner_agent_id="lead",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="Human review recovery requires an audited action.",
+        )
+        return state
+
+    repo.update(_block_human_review)
+    before = repo.read().model_dump(mode="json")
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="operator@example.com"),
+                )
+            )
+        )
+    )
+
+    rejected = client.post(
+        "/blockers/human-review-terminal-blocker/resolve",
+        json={
+            "note": "Attempt generic terminal resolution.",
+            "expected_revision": before["revision"],
+        },
+    )
+
+    assert rejected.status_code == 400
+    assert (
+        f"POST /human-review-requests/human-review-1/{recovery_action}"
+        in rejected.json()["error"]
+    )
+    assert "generic blocker resolution cannot bypass" in rejected.json()["error"]
+    assert repo.read().model_dump(mode="json") == before
+
+
+def test_post_release_report_api_uses_session_identity_and_idempotency(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _publish(state):
+        release = state.release_packages["release-1"]
+        release.state = TeamRecordState.ACCEPTED
+        release.candidate_commit_sha = "candidate-sha"
+        release.approved_commit_sha = "candidate-sha"
+        release.published_commit_sha = "candidate-sha"
+        release.published_at = datetime(2026, 1, 3, tzinfo=UTC)
+        release.error = None
+        return state
+
+    repo.update(_publish)
+    published_before = repo.read().release_packages["release-1"].model_copy(
+        deep=True
+    )
+    release_ids_before = set(repo.read().release_packages)
+    promotion_ids_before = set(repo.read().git_promotions)
+    auth = _HumanApiAuthStub(login="Reporter@Example.com")
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=auth,
+                )
+            )
+        )
+    )
+    expected_revision = repo.read().revision
+    missing_evidence = client.post(
+        "/release-packages/release-1/report-issue",
+        json={
+            "report": "This report has no supporting evidence.",
+            "evidence_refs": [],
+            "expected_revision": expected_revision,
+            "request_id": "report-request-without-evidence",
+        },
+    )
+    assert missing_evidence.status_code == 400
+    assert repo.read().revision == expected_revision
+
+    payload = {
+        "report": "The published workflow fails on the final confirmation.",
+        "evidence_refs": ["artifact-space:reports/release-1.png"],
+        "expected_revision": expected_revision,
+        "request_id": "report-request-1",
+    }
+
+    reported = client.post(
+        "/release-packages/release-1/report-issue",
+        json=payload,
+    )
+    assert reported.status_code == 200, reported.text
+    assert reported.json()["case"]["source"] == "post_release_feedback"
+    assert reported.json()["case"]["metadata"]["reporter_user_id"] == (
+        "reporter@example.com"
+    )
+    first_revision = reported.json()["revision"]
+    first_result = reported.json()["result"]
+    reported_state = repo.read()
+    feedback_cases = [
+        case
+        for case in reported_state.cases.values()
+        if case.source == "post_release_feedback"
+    ]
+    assert len(feedback_cases) == 1
+    feedback_case = feedback_cases[0]
+    assert feedback_case.id == first_result["case_id"]
+    assert feedback_case.task_ids == [first_result["triage_task_id"]]
+    triage_task = reported_state.tasks[first_result["triage_task_id"]]
+    assert triage_task.parent_task_id is None
+    assert triage_task.case_id == feedback_case.id
+    feedback_inbox = [
+        item
+        for item in reported_state.inbox.values()
+        if item.payload.get("case_id") == feedback_case.id
+    ]
+    assert len(feedback_inbox) == 1
+    assert feedback_inbox[0].task_id == triage_task.id
+    assert reported_state.agent_runtimes["lead"].next_wake_at is None
+    assert len(first_result["outbox_record_ids"]) == 1
+    report_outbox = {
+        record.id: record for record in repo.list_outbox_records()
+    }[first_result["outbox_record_ids"][0]]
+    assert report_outbox.intent_type == "team.agent.wake_requested"
+    assert report_outbox.payload["payload"]["agent_id"] == "lead"
+    assert set(reported_state.release_packages) == release_ids_before
+
+    replay = client.post(
+        "/release-packages/release-1/report-issue",
+        json=payload,
+    )
+    assert replay.status_code == 200
+    assert replay.json()["result"]["idempotent_replay"] is True
+    assert replay.json()["revision"] == first_revision
+    replay_state = repo.read()
+    assert len(
+        [
+            case
+            for case in replay_state.cases.values()
+            if case.source == "post_release_feedback"
+        ]
+    ) == 1
+    assert len(
+        [
+            task
+            for task in replay_state.tasks.values()
+            if task.case_id == feedback_case.id
+        ]
+    ) == 1
+    assert len(
+        [
+            item
+            for item in replay_state.inbox.values()
+            if item.payload.get("case_id") == feedback_case.id
+        ]
+    ) == 1
+    assert {
+        record.id
+        for record in repo.list_outbox_records()
+        if record.id in first_result["outbox_record_ids"]
+    } == set(first_result["outbox_record_ids"])
+
+    conflict = client.post(
+        "/release-packages/release-1/report-issue",
+        json={**payload, "report": "A different report."},
+    )
+    assert conflict.status_code == 409
+
+    other_reporter = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="other@example.com"),
+                )
+            )
+        )
+    )
+    caller_collision = other_reporter.post(
+        "/release-packages/release-1/report-issue",
+        json={
+            **payload,
+            "expected_revision": first_revision,
+        },
+    )
+    assert caller_collision.status_code == 400
+    assert "request_id was reused" in caller_collision.json()["error"]
+
+    spoofed = client.post(
+        "/release-packages/release-1/report-issue",
+        json={
+            **payload,
+            "request_id": "report-request-spoofed",
+            "reporter_user_id": "somebody-else@example.com",
+        },
+    )
+    assert spoofed.status_code == 400
+    assert "derived from the authenticated session" in spoofed.json()["error"]
+
+    correction_created = client.post(
+        "/tasks",
+        json={
+            "id": "post-release-correction-root",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "case_id": feedback_case.id,
+            "priority": 1,
+            "title": "Correct the reported production regression",
+            "description": "Implement and verify the triaged correction.",
+            "originating_task_id": triage_task.id,
+            "expected_revision": repo.read().revision,
+        },
+    )
+    assert correction_created.status_code == 201, correction_created.text
+    final_state = repo.read()
+    correction_root = final_state.tasks["post-release-correction-root"]
+    assert correction_root.parent_task_id is None
+    assert correction_root.originating_task_id == triage_task.id
+    assert correction_root.case_id == feedback_case.id
+    assert correction_root.id in final_state.cases[feedback_case.id].task_ids
+
+    published_after = final_state.release_packages["release-1"]
+    assert published_after == published_before
+    assert published_after.state == published_before.state
+    assert published_after.candidate_commit_sha == (
+        published_before.candidate_commit_sha
+    )
+    assert published_after.approved_commit_sha == (
+        published_before.approved_commit_sha
+    )
+    assert published_after.published_commit_sha == (
+        published_before.published_commit_sha
+    )
+    assert published_after.published_at == published_before.published_at
+    assert set(final_state.release_packages) == release_ids_before
+    assert set(final_state.git_promotions) == promotion_ids_before
+    assert not any(
+        promotion.promotion_kind == "rollback"
+        for promotion in final_state.git_promotions.values()
+    )
+
+
+def test_human_finding_correction_and_post_release_closure_admin_api(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    now = datetime(2026, 1, 4, tzinfo=UTC)
+
+    def _seed(state):
+        release = state.release_packages["release-1"]
+        release.candidate_commit_sha = "candidate-sha"
+        release.candidate_tree_hash = "candidate-tree"
+        state.human_review_requests["human-review-correction"] = (
+            HumanReviewRequest(
+                id="human-review-correction",
+                release_package_id=release.id,
+                candidate_commit_sha="candidate-sha",
+                candidate_tree_hash="candidate-tree",
+                requirement_snapshot=HumanReviewRequirementSnapshot(
+                    directory_path="root",
+                    configured_group_ids=["release-reviewers"],
+                    initially_eligible_user_ids=["reviewer@example.com"],
+                ),
+                state="changes_requested",
+                completed_at=now,
+            )
+        )
+        state.cases["human-correction-case"] = TeamCase(
+            id="human-correction-case",
+            team_id="team",
+            project_id="project",
+            title="Human correction case",
+            status=TeamCaseStatus.IN_PROGRESS,
+            owner_agent_id="lead",
+            source="human_release_review",
+            source_ref="human-review-correction",
+            task_ids=["human-correction-triage"],
+        )
+        state.tasks["human-correction-triage"] = AgentTask(
+            id="human-correction-triage",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="human-correction-case",
+            priority=0,
+            state=TeamTaskState.PENDING,
+            task_kind="support",
+            title="Triage release-wide finding",
+            description="Route this finding to an independent correction.",
+            created_by_actor="system:human-review",
+        )
+        state.human_review_findings["human-finding-api"] = HumanReviewFinding(
+            id="human-finding-api",
+            source_human_review_request_id="human-review-correction",
+            text="Release-wide behavior must be corrected.",
+            correction_task_id="human-correction-triage",
+        )
+        state.cases["post-release-case-api"] = TeamCase(
+            id="post-release-case-api",
+            team_id="team",
+            project_id="project",
+            title="Post-release feedback",
+            status=TeamCaseStatus.IN_PROGRESS,
+            owner_agent_id="lead",
+            source="post_release_feedback",
+            source_ref="release-1:post-release-api",
+            metadata={
+                "release_package_id": "release-1",
+                "evidence_refs": ["artifact:production-report"],
+            },
+            task_ids=["post-release-triage-api"],
+        )
+        state.tasks["post-release-triage-api"] = AgentTask(
+            id="post-release-triage-api",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="post-release-case-api",
+            priority=0,
+            state=TeamTaskState.FINISHED,
+            task_kind="support",
+            title="Triage post-release feedback",
+            description="The correction has been verified.",
+            created_by_actor="system:post-release-feedback",
+        )
+        return state
+
+    repo.update(_seed)
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="operator@example.com"),
+                )
+            )
+        )
+    )
+
+    created = client.post(
+        "/human-review-findings/human-finding-api/correction-root",
+        json={
+            "owner_agent_id": "backend",
+            "title": "Correct release-wide behavior",
+            "description": "Implement and verify the independent correction.",
+            "originating_task_id": "human-correction-triage",
+            "expected_revision": repo.read().revision,
+            "request_id": "create-correction-root-api",
+        },
+    )
+    assert created.status_code == 201, created.text
+    correction_task_id = created.json()["correction_task"]["id"]
+    assert created.json()["correction_task"]["parent_task_id"] is None
+    assert created.json()["correction_task"]["assessment"]["task_id"] == (
+        correction_task_id
+    )
+
+    def _accept_correction(state):
+        task = state.tasks[correction_task_id]
+        task.state = TeamTaskState.FINISHED
+        task.deliverable_ids.append("human-correction-api-deliverable")
+        state.deliverables["human-correction-api-deliverable"] = Deliverable(
+            id="human-correction-api-deliverable",
+            task_id=correction_task_id,
+            producer_agent_id="backend",
+            summary="Corrected release-wide behavior.",
+            state=TeamRecordState.ACCEPTED,
+        )
+        return state
+
+    repo.update(_accept_correction)
+    proposed = client.post(
+        "/human-review-findings/human-finding-api/resolution-proposal",
+        json={
+            "proposed_resolution": "The verified safe-state path is restored.",
+            "evidence_refs": ["test:safe-state"],
+            "proposed_by_deliverable_ids": [
+                "human-correction-api-deliverable"
+            ],
+            "expected_revision": repo.read().revision,
+            "request_id": "propose-resolution-api",
+        },
+    )
+    assert proposed.status_code == 200, proposed.text
+    assert proposed.json()["human_review_finding"][
+        "proposed_by_deliverable_ids"
+    ] == ["human-correction-api-deliverable"]
+
+    before_close_revision = repo.read().revision
+    generic_close = client.patch(
+        "/cases/post-release-case-api",
+        json={
+            "status": "closed",
+            "expected_revision": before_close_revision,
+        },
+    )
+    assert generic_close.status_code == 400
+    assert "evidence-backed" in generic_close.json()["error"]
+    assert repo.read().revision == before_close_revision
+
+    closed = client.post(
+        "/cases/post-release-case-api/close-post-release",
+        json={
+            "reason": "The correction was verified in production.",
+            "evidence_refs": ["monitoring:recovery"],
+            "expected_revision": repo.read().revision,
+            "request_id": "close-post-release-case-api",
+        },
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["case"]["status"] == "closed"
+    assert closed.json()["case"]["metadata"][
+        "post_release_feedback_resolution"
+    ]["actor_id"] == "operator:operator@example.com"
+
+
+def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    candidate_sha = "a" * 40
+    candidate_tree = "b" * 40
+    requirement = HumanReviewRequirementSnapshot(
+        directory_path="root",
+        configured_group_ids=["release-reviewers"],
+        initially_eligible_user_ids=["reviewer@example.com"],
+    )
+
+    def _seed(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True
+        )
+        state.tasks["human-source-task"] = AgentTask(
+            id="human-source-task",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            state=TeamTaskState.FINISHED,
+            title="Accepted predecessor work",
+            description="The immutable predecessor release scope.",
+            created_by_agent_id="lead",
+            deliverable_ids=["human-source-deliverable"],
+        )
+        state.deliverables["human-source-deliverable"] = Deliverable(
+            id="human-source-deliverable",
+            task_id="human-source-task",
+            producer_agent_id="backend",
+            artifact_refs=["artifact:predecessor"],
+            summary="Accepted predecessor work",
+            state=TeamRecordState.ACCEPTED,
+            verification=DeliverableVerification(status="passed"),
+        )
+        predecessor = state.release_packages["release-1"]
+        predecessor.deliverable_ids = ["human-source-deliverable"]
+        predecessor.candidate_commit_sha = candidate_sha
+        predecessor.candidate_tree_hash = candidate_tree
+        predecessor.state = TeamRecordState.REJECTED
+        predecessor.gate_failure = ReleaseGateFailure(
+            stage="human_review",
+            kind="changes_requested",
+            source_id="human-review-successor-api",
+            message="Human review requested corrections.",
+        )
+        predecessor.error = predecessor.gate_failure.message
+        predecessor.manifest = ReleaseCandidateManifest(
+            project_id="project",
+            release_package_id=predecessor.id,
+            candidate_commit_sha=candidate_sha,
+            candidate_tree_hash=candidate_tree,
+            release_branch=predecessor.release_branch,
+            deliverables=[{"deliverable_id": "human-source-deliverable"}],
+            human_review_requirement=requirement,
+        )
+        state.human_review_requests["human-review-successor-api"] = (
+            HumanReviewRequest(
+                id="human-review-successor-api",
+                release_package_id=predecessor.id,
+                candidate_commit_sha=candidate_sha,
+                candidate_tree_hash=candidate_tree,
+                requirement_snapshot=requirement,
+                state="changes_requested",
+                completed_at=now,
+            )
+        )
+        state.cases["human-successor-case-api"] = TeamCase(
+            id="human-successor-case-api",
+            team_id="team",
+            project_id="project",
+            title="Human review corrections",
+            status=TeamCaseStatus.IN_PROGRESS,
+            owner_agent_id="lead",
+            source="human_release_review",
+            source_ref="human-review-successor-api",
+            task_ids=[
+                "human-stale-triage-api",
+                "human-current-correction-api",
+            ],
+        )
+        state.tasks["human-stale-triage-api"] = AgentTask(
+            id="human-stale-triage-api",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="human-successor-case-api",
+            priority=1,
+            state=TeamTaskState.PENDING,
+            task_kind="support",
+            title="Original ambiguous-finding triage",
+            description="This task was left behind after retargeting.",
+            created_by_actor="system:human-review",
+        )
+        state.tasks["human-current-correction-api"] = AgentTask(
+            id="human-current-correction-api",
+            owner_agent_id="backend",
+            project_id="project",
+            case_id="human-successor-case-api",
+            priority=1,
+            state=TeamTaskState.FINISHED,
+            task_kind="support",
+            title="Current human correction",
+            description="The retargeted correction root.",
+            created_by_agent_id="lead",
+            originating_task_id="human-source-task",
+            deliverable_ids=["human-correction-deliverable-api"],
+        )
+        state.deliverables["human-correction-deliverable-api"] = Deliverable(
+            id="human-correction-deliverable-api",
+            task_id="human-current-correction-api",
+            producer_agent_id="backend",
+            artifact_refs=["artifact:correction"],
+            summary="Accepted human correction",
+            state=TeamRecordState.ACCEPTED,
+            verification=DeliverableVerification(status="passed"),
+        )
+        state.human_review_findings["human-finding-successor-api"] = (
+            HumanReviewFinding(
+                id="human-finding-successor-api",
+                source_human_review_request_id="human-review-successor-api",
+                text="Correct the release-wide behavior.",
+                correction_task_id="human-current-correction-api",
+                proposed_resolution="The retargeted correction is verified.",
+                resolution_evidence_refs=["test:retargeted-correction"],
+                proposed_by_deliverable_ids=[
+                    "human-correction-deliverable-api"
+                ],
+            )
+        )
+        state.tasks["unrelated-accepted-task-api"] = AgentTask(
+            id="unrelated-accepted-task-api",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=2,
+            state=TeamTaskState.FINISHED,
+            title="Unrelated accepted work",
+            description="This task is outside the human correction case.",
+            created_by_agent_id="lead",
+            deliverable_ids=["unrelated-accepted-deliverable-api"],
+        )
+        state.deliverables["unrelated-accepted-deliverable-api"] = Deliverable(
+            id="unrelated-accepted-deliverable-api",
+            task_id="unrelated-accepted-task-api",
+            producer_agent_id="backend",
+            artifact_refs=["artifact:unrelated"],
+            summary="Unrelated accepted work",
+            state=TeamRecordState.ACCEPTED,
+            verification=DeliverableVerification(status="passed"),
+        )
+        return state
+
+    seeded = repo.update(_seed)
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="operator@example.com"),
+                )
+            )
+        )
+    )
+
+    unresolved = client.post(
+        "/release-packages",
+        json={
+            "id": "successor-before-triage",
+            "project_id": "project",
+            "deliverable_ids": ["human-correction-deliverable-api"],
+            "supersedes_release_package_id": "release-1",
+            "expected_revision": seeded.revision,
+        },
+    )
+    assert unresolved.status_code == 400
+    assert "human-stale-triage-api" in unresolved.json()["error"]
+    assert repo.read().revision == seeded.revision
+
+    def _complete_triage(state):
+        state.tasks["human-stale-triage-api"].state = TeamTaskState.FINISHED
+        return state
+
+    completed = repo.update(_complete_triage)
+    unrelated = client.post(
+        "/release-packages",
+        json={
+            "id": "successor-with-unrelated-work",
+            "project_id": "project",
+            "deliverable_ids": [
+                "human-correction-deliverable-api",
+                "unrelated-accepted-deliverable-api",
+            ],
+            "supersedes_release_package_id": "release-1",
+            "expected_revision": completed.revision,
+        },
+    )
+    assert unrelated.status_code == 400
+    assert (
+        "unrelated-accepted-deliverable-api is not authorized by human review case"
+        in unrelated.json()["error"]
+    )
+    assert repo.read().revision == completed.revision
+
+    accepted = client.post(
+        "/release-packages",
+        json={
+            "id": "successor-after-complete-triage",
+            "project_id": "project",
+            "deliverable_ids": ["human-correction-deliverable-api"],
+            "supersedes_release_package_id": "release-1",
+            "expected_revision": completed.revision,
+        },
+    )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["release_packages"][
+        "successor-after-complete-triage"
+    ]["deliverable_ids"] == [
+        "human-source-deliverable",
+        "human-correction-deliverable-api",
+    ]
 
 
 def test_operator_api_resolves_terminal_blocker_with_audit_identity(tmp_path: Path) -> None:
@@ -3189,6 +4682,102 @@ def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) 
     )
 
 
+def test_task_blocked_state_requires_audited_operator_repair_api(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    assert client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).status_code == 201
+    assert client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": 1,
+        },
+    ).status_code == 201
+    _post_backend_role(client, expected_revision=2)
+    assert client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": 3,
+        },
+    ).status_code == 201
+    assert client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 1,
+            "title": "Repair legacy state",
+            "description": "Exercise the reason-required repair path.",
+            "created_by_agent_id": "lead",
+            "expected_revision": 4,
+        },
+    ).status_code == 201
+
+    rejected = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={"state": "blocked", "expected_revision": 5},
+    )
+    assert rejected.status_code == 400
+    assert "operator repair endpoint" in rejected.json()["error"]
+
+    blocked = client.post(
+        "/api/addons/team-addon/tasks/task/repair-state",
+        json={
+            "state": "blocked",
+            "reason": "Imported legacy state omitted its intrinsic blocker.",
+            "reference_ids": ["incident-42"],
+            "expected_revision": 5,
+        },
+    )
+    assert blocked.status_code == 200
+    blocked_payload = blocked.json()
+    assert blocked_payload["tasks"]["task"]["state"] == "blocked"
+    blocker = next(iter(blocked_payload["blockers"].values()))
+    assert blocker["reason_code"] == "operator_repair"
+    assert blocker["reporter_actor"]
+
+    rejected_exit = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={"state": "in_progress", "expected_revision": 6},
+    )
+    assert rejected_exit.status_code == 400
+
+    repaired = client.post(
+        "/api/addons/team-addon/tasks/task/repair-state",
+        json={
+            "state": "in_progress",
+            "reason": "The dependency was repaired and verified.",
+            "reference_ids": ["incident-42", "verification-7"],
+            "expected_revision": 6,
+        },
+    )
+    assert repaired.status_code == 200
+    repaired_payload = repaired.json()
+    assert repaired_payload["tasks"]["task"]["state"] == "in_progress"
+    assert next(iter(repaired_payload["blockers"].values()))["state"] == "resolved"
+
+
 def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -3236,7 +4825,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "title": "Build backend",
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
-            "state": "accepted",
+            "state": "finished",
             "expected_revision": 4,
         },
     )
@@ -3279,6 +4868,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             ("type", "task"),
             ("type", "review"),
             ("status", "accepted"),
+            ("status", "finished"),
             ("attention_needed", "false"),
             ("agent_id", "lead"),
         ],
@@ -3292,7 +4882,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     assert payload["filters"] == {
         "agent_id": "lead",
         "type": ["task", "review"],
-        "status": ["accepted"],
+        "status": ["accepted", "finished"],
         "attention_needed": False,
     }
     assert payload["timestampless_count"] == 0
@@ -3302,7 +4892,10 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
         "review:review:created",
         "review:review:decision",
     }
-    assert all(entry["status"] == "accepted" for entry in payload["entries"])
+    assert all(
+        entry["status"] == ("finished" if entry["type"] == "task" else "accepted")
+        for entry in payload["entries"]
+    )
     assert all(entry["attention_needed"] is False for entry in payload["entries"])
 
     windowed = client.get(
@@ -3311,6 +4904,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             ("type", "task"),
             ("type", "review"),
             ("status", "accepted"),
+            ("status", "finished"),
             ("attention_needed", "false"),
             ("agent_id", "lead"),
             ("limit", "2"),
@@ -3402,17 +4996,6 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     assert response.status_code == 201
     assert response.json()["tasks"]["task"]["state"] == "pending"
 
-    response = client.patch(
-        "/api/addons/team-addon/tasks/task",
-        json={
-            "state": "waiting_for_review",
-            "expected_revision": 5,
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["tasks"]["task"]["state"] == "waiting_for_review"
-    assert response.json()["tasks"]["task"]["waiting_reason"] is None
-
     response = client.post(
         "/api/addons/team-addon/deliverables",
         json={
@@ -3421,12 +5004,13 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
             "artifact_refs": ["artifacts/backend.tar.gz"],
-            "expected_revision": 6,
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 201
     assert response.json()["tasks"]["task"]["deliverable_ids"] == ["deliverable"]
-    assert response.json()["tasks"]["task"]["waiting_reason"] == "superior_acceptance"
+    assert response.json()["tasks"]["task"]["state"] == "pending"
+    assert response.json()["tasks"]["task"]["waiting_reason"] is None
 
     response = client.post(
         "/api/addons/team-addon/review-requests",
@@ -3434,13 +5018,26 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
-            "expected_revision": 7,
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
+    assert response.json()["revision"] == 7
+    assert response.json()["deliverables"]["deliverable"][
+        "review_request_ids"
+    ] == ["review"]
+
+    response = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={
+            "state": "waiting_for_review",
+            "expected_revision": 7,
+        },
+    )
+    assert response.status_code == 200
     state = response.json()
     assert state["revision"] == 8
-    assert state["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
+    assert state["tasks"]["task"]["state"] == "waiting_for_review"
     assert state["tasks"]["task"]["waiting_reason"] == "review"
     assert "runtime_operations" in state
     assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
@@ -4775,7 +6372,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     assert state["review_requests"]["review"]["findings"] == ["looks good"]
     assert state["review_requests"]["review"]["decision_at"] is not None
     assert state["deliverables"]["deliverable"]["state"] == "accepted"
-    assert state["tasks"]["task"]["state"] == "accepted"
+    assert state["tasks"]["task"]["state"] == "finished"
 
     repo = TeamStateRepository(tmp_path / "runtime")
 

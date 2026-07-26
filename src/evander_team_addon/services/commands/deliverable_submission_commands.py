@@ -42,7 +42,6 @@ from ...models import (
     TeamTaskState,
     _unique_text_list,
     deliverable_requires_formal_review,
-    task_payload_with_derived,
 )
 from ..domain.common import (
     _optional_text,
@@ -63,6 +62,12 @@ from ..domain.review import (
     _review_request_was_created,
 )
 from ..domain.review_handoff import queue_actionable_inbox_item
+from ..domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_deliverable_acceptance,
+    task_payload_with_assessment,
+)
+from ..domain.task_supervision import queue_parent_task_transition
 from ..domain.work_due import (
     _mark_agent_work_due,
 )
@@ -85,6 +90,8 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
         git_refs: Mapping[str, Any] | None = None,
         verification: Mapping[str, Any] | None = None,
         outcomes: Sequence[Mapping[str, Any]] | None = None,
+        source_deliverable_ids: Sequence[str] | None = None,
+        completion: Mapping[str, Any] | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -105,6 +112,8 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 "git_refs": dict(git_refs or {}),
                 "verification": dict(verification) if verification is not None else None,
                 "outcomes": [dict(item) for item in outcomes or []],
+                "source_deliverable_ids": list(source_deliverable_ids or []),
+                "completion": dict(completion) if completion is not None else None,
             },
             field_name="deliverable",
         )
@@ -184,7 +193,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     ],
                     "task_id": task.id,
                     "task_state": state.tasks[task.id].state.value,
-                    "waiting_reason": task_payload_with_derived(state, task)["waiting_reason"],
+                    "waiting_reason": task_payload_with_assessment(state, task)[
+                        "waiting_reason"
+                    ],
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "verification": normalized_deliverable.get("verification"),
@@ -323,7 +334,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                         "recommended_tool": "team_decide_review",
                     },
                 )
-            waiting_reason = task_payload_with_derived(state, task)["waiting_reason"]
+            waiting_reason = task_payload_with_assessment(state, task)["waiting_reason"]
             if (
                 deliverable.state != TeamRecordState.PENDING
                 or task.state != TeamTaskState.WAITING_FOR_REVIEW
@@ -347,6 +358,14 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             created_inbox_ids: list[str] = []
             side_effects: dict[str, Any] = {"created_inbox_item_ids": created_inbox_ids}
             if normalized_decision == "accepted":
+                try:
+                    require_deliverable_acceptance(state, deliverable.id)
+                except TaskAssessmentBoundaryError as exc:
+                    raise TeamCommandValidationError(
+                        code=exc.code,
+                        message=exc.message,
+                        correction_context=exc.correction_context,
+                    ) from None
                 active_blocker_ids = _active_deliverable_acceptance_blocker_ids(
                     state,
                     deliverable=deliverable,
@@ -365,6 +384,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     _validate_deliverable_outcomes_against_task_contract(
                         task,
                         deliverable.outcomes,
+                        completion=deliverable.completion,
                     )
                 except ValueError as exc:
                     raise TeamCommandValidationError(
@@ -403,6 +423,15 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     },
                     result=side_effects,
                     now=now,
+                )
+                queue_parent_task_transition(
+                    state,
+                    child_task_id=task.id,
+                    transition="rejection",
+                    sender_agent_id=agent.id,
+                    result=side_effects,
+                    now=now,
+                    references={"deliverable_id": deliverable.id},
                 )
                 resolve_active_blockers_for_source(
                     state,
@@ -556,6 +585,10 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 producer_agent_id=agent.id,
                 summary=normalized_deliverable["summary"],
                 outcomes=normalized_deliverable["outcomes"],
+                source_deliverable_ids=normalized_deliverable[
+                    "source_deliverable_ids"
+                ],
+                completion=normalized_deliverable.get("completion"),
                 supersedes_deliverable_id=normalized_deliverable.get(
                     "supersedes_deliverable_id"
                 ),
@@ -636,7 +669,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     ],
                     "task_id": task.id,
                     "task_state": state.tasks[task.id].state.value,
-                    "waiting_reason": task_payload_with_derived(state, task)["waiting_reason"],
+                    "waiting_reason": task_payload_with_assessment(state, task)[
+                        "waiting_reason"
+                    ],
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "verification": normalized_deliverable.get("verification"),

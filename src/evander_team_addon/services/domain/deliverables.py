@@ -31,6 +31,7 @@ from .common import (
     _string_list,
 )
 from .git_work_contexts import finalize_active_git_work_contexts_for_task
+from .task_supervision import queue_parent_resolution_transitions
 
 
 _DELIVERABLE_VERIFICATION_STATUSES = frozenset(
@@ -134,8 +135,28 @@ def _deliverable_submission_next_action_hints(
 def _validate_deliverable_outcomes_against_task_contract(
     task: AgentTask,
     outcomes: Sequence[DeliverableOutcome],
+    *,
+    completion: TaskCompletion | None = None,
 ) -> None:
     contract = task.outcome_contract
+    if completion is not None:
+        if task.task_kind != TeamTaskKind.OUTCOME or contract is None:
+            raise ValueError(
+                "evidenced-noop completion is only valid for an outcome task"
+            )
+        if completion.kind != TaskCompletionKind.EVIDENCED_NOOP:
+            raise ValueError(
+                "deliverable completion currently supports evidenced_noop only"
+            )
+        if not contract.allow_evidenced_noop:
+            raise ValueError(
+                f"outcome task {task.id} does not allow an evidenced no-op"
+            )
+        if outcomes:
+            raise ValueError(
+                "evidenced-noop deliverable cannot also declare delivered outcomes"
+            )
+        return
     if contract is None:
         return
 
@@ -264,24 +285,47 @@ def _accept_deliverable_and_maybe_task(
     ):
         return False
     if task.task_kind == TeamTaskKind.OUTCOME:
-        outcome_reference_ids = [
-            reference_id
+        noop_completions = [
+            item.completion
             for item in task_deliverables
-            for outcome in item.outcomes
-            for reference_id in outcome.reference_ids
+            if item.completion is not None
         ]
-        task.completion = TaskCompletion(
-            kind=TaskCompletionKind.DELIVERED,
-            summary="Accepted deliverables satisfied the task outcome contract.",
-            outcome_reference_ids=outcome_reference_ids,
-        )
-    _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
+        if noop_completions:
+            if len(noop_completions) != len(task_deliverables):
+                raise ValueError(
+                    "an outcome task cannot mix evidenced-noop and delivered "
+                    "products in one accepted lifecycle"
+                )
+            task.completion = noop_completions[0].model_copy(deep=True)
+        else:
+            outcome_reference_ids = [
+                reference_id
+                for item in task_deliverables
+                for outcome in item.outcomes
+                for reference_id in outcome.reference_ids
+            ]
+            task.completion = TaskCompletion(
+                kind=TaskCompletionKind.DELIVERED,
+                summary="Accepted deliverables satisfied the task outcome contract.",
+                outcome_reference_ids=outcome_reference_ids,
+            )
+        next_state = TeamTaskState.ACCEPTED
+    else:
+        next_state = TeamTaskState.FINISHED
+    _set_task_state(task, next_state, now=now)
     finalize_active_git_work_contexts_for_task(
         state,
         task_id=task.id,
         now=now,
     )
     task.updated_at = now
+    queue_parent_resolution_transitions(
+        state,
+        child_task_id=task.id,
+        sender_agent_id=deliverable.producer_agent_id,
+        now=now,
+        references={"deliverable_id": deliverable.id},
+    )
     return True
 
 

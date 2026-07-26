@@ -54,6 +54,15 @@ from .deliverables import (
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
+from .task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_deliverable_acceptance,
+)
+from .task_supervision import (
+    parent_task_for_child,
+    queue_parent_task_transition,
+    task_acceptance_recipient_agent_id,
+)
 from .work_due import _mark_agent_work_due
 
 
@@ -737,6 +746,7 @@ def _recalculate_deliverable_after_review_closure(
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         else:
+            require_deliverable_acceptance(state, deliverable.id)
             _accept_deliverable_and_maybe_task(
                 state,
                 deliverable=deliverable,
@@ -767,6 +777,7 @@ def _recalculate_deliverable_after_review_closure(
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         else:
+            require_deliverable_acceptance(state, deliverable.id)
             _accept_deliverable_and_maybe_task(
                 state,
                 deliverable=deliverable,
@@ -864,7 +875,12 @@ def _route_to_superior_acceptance(
         deliverable.producer_agent_id,
         "deliverable producer",
     )
-    recipient_id = producer.reports_to_agent_id
+    parent_task = parent_task_for_child(state, task)
+    recipient_id = task_acceptance_recipient_agent_id(
+        state,
+        task=task,
+        producer_agent_id=producer.id,
+    )
     deliverable.state = TeamRecordState.PENDING
     deliverable.acceptance_recipient_agent_id = recipient_id
     if recipient_id is None:
@@ -883,6 +899,7 @@ def _route_to_superior_acceptance(
         None,
     )
     if existing is not None:
+        _mark_agent_work_due(state, agent_id=recipient_id, now=now)
         return
     payload: dict[str, Any] = {
         "kind": "superior_acceptance_requested",
@@ -895,6 +912,14 @@ def _route_to_superior_acceptance(
         "available_decisions": ["accepted", "rejected"],
         "available_alternatives": ["request_review", "report_blocker"],
     }
+    if parent_task is not None:
+        payload.update(
+            {
+                "transition": "handoff",
+                "parent_task_id": parent_task.id,
+                "child_task_id": task.id,
+            }
+        )
     verification_payload = _deliverable_verification_payload(deliverable)
     if verification_payload is not None:
         payload["verification"] = verification_payload
@@ -914,6 +939,16 @@ def _route_to_superior_acceptance(
     if result is not None:
         result.setdefault("created_inbox_item_ids", []).append(item.id)
     _mark_agent_work_due(state, agent_id=recipient_id, now=now)
+    if parent_task is not None and recipient_id != parent_task.owner_agent_id:
+        queue_parent_task_transition(
+            state,
+            child_task_id=task.id,
+            transition="handoff",
+            sender_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+            references={"deliverable_id": deliverable.id},
+        )
 
 
 def _reopen_accepted_deliverable_for_pending_review(
@@ -927,7 +962,10 @@ def _reopen_accepted_deliverable_for_pending_review(
     if deliverable.state == TeamRecordState.ACCEPTED:
         deliverable.state = TeamRecordState.PENDING
         reopened = True
-    if task is not None and task.state == TeamTaskState.ACCEPTED:
+    if task is not None and task.state in {
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.FINISHED,
+    }:
         _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
         task.updated_at = now
         reopened = True
@@ -1075,6 +1113,20 @@ def _apply_review_decision(
     if decision_error is not None:
         result["errors"].append(decision_error)
         return None
+    if (
+        decision_state == TeamRecordState.ACCEPTED
+        and review.release_package_id is None
+        and review.deliverable_id is not None
+    ):
+        try:
+            require_deliverable_acceptance(state, review.deliverable_id)
+        except TaskAssessmentBoundaryError as exc:
+            result["errors"].append(exc.message)
+            result["task_assessment_error"] = {
+                "code": exc.code,
+                **exc.correction_context,
+            }
+            return None
     if criterion_results is not None:
         review.criteria = criterion_results
     review.block_kind = block_kind
@@ -1385,6 +1437,12 @@ def _cascade_review_decision(
     the ``review_decisions`` agent action and the Admin API decision endpoint.
     """
 
+    if (
+        decision_state == TeamRecordState.ACCEPTED
+        and review.release_package_id is None
+        and review.deliverable_id is not None
+    ):
+        require_deliverable_acceptance(state, review.deliverable_id)
     review.state = decision_state
     review.findings = findings
     review.decision_at = utc_now()
@@ -1454,6 +1512,18 @@ def _cascade_review_decision(
             },
             result=result,
             now=now,
+        )
+        queue_parent_task_transition(
+            state,
+            child_task_id=task.id,
+            transition="rejection",
+            sender_agent_id=review.reviewer_agent_id,
+            result=result,
+            now=now,
+            references={
+                "deliverable_id": deliverable.id,
+                "review_request_id": review.id,
+            },
         )
     else:  # blocked
         deliverable.state = TeamRecordState.BLOCKED
@@ -1550,30 +1620,13 @@ def _cascade_release_review_decision(
         projects_to_recalc.add(release.project_id)
         return
 
-    from .release_gates import (
-        _release_promotion,
-        approve_release_candidate,
-        current_release_gates_passed,
-    )
+    from .release_gates import advance_release_gates
 
-    if current_release_gates_passed(state, release):
-        promotion = _release_promotion(state, release)
-        if promotion is None:
-            release.state = TeamRecordState.REJECTED
-            release.error = "release promotion record is missing"
-            release.gate_failure = ReleaseGateFailure(
-                stage="configuration",
-                kind="configuration",
-                source_id=review.id,
-                message=release.error,
-            )
-        else:
-            approve_release_candidate(
-                state,
-                release=release,
-                release_promotion=promotion,
-                result=result if result is not None else {"events": []},
-            )
+    advance_release_gates(
+        state,
+        release=release,
+        result=result if result is not None else {"events": []},
+    )
     release.updated_at = utc_now()
     projects_to_recalc.add(release.project_id)
 

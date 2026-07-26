@@ -1,22 +1,24 @@
 from __future__ import annotations
 
+from typing import Any
+
 from ...models import (
     ProjectStatus,
+    TaskAssessmentReadiness,
+    TaskResolutionStatus,
+    TeamBlockerState,
     TeamRecordState,
     TeamState,
-    TeamTaskState,
 )
 
-from .common import (
-    _NON_TERMINAL_TASK_STATES,
-    utc_now,
-)
+from .common import utc_now
+from .task_assessment import TaskAssessmentService
 
 
 def project_blocking_sources(
     state: TeamState,
     project_id: str,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Return the exact current records that make a project blocked."""
 
     tasks = [task for task in state.tasks.values() if task.project_id == project_id]
@@ -28,17 +30,78 @@ def project_blocking_sources(
         and deliverable.superseded_by_deliverable_id is None
     ]
     deliverable_ids = {deliverable.id for deliverable in deliverables}
+    release_ids = {
+        release.id
+        for release in state.release_packages.values()
+        if release.project_id == project_id
+    }
     project = state.projects.get(project_id)
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
+    assessments = TaskAssessmentService(state).assess_all()
     rows.extend(
         {
             "kind": "task",
             "id": task.id,
-            "state": task.state.value,
+            "state": assessments[task.id].readiness.value,
             "summary": task.title,
+            "reason_code": (
+                ",".join(assessments[task.id].invalid_reason_codes)
+                or assessments[task.id].resolution_reason
+            ),
+            "source_kind": "task",
+            "source_id": task.id,
+            "affected_task_ids": [task.id],
+            "next_action": (
+                "repair invalid task state"
+                if assessments[task.id].resolution_status
+                == TaskResolutionStatus.INVALID
+                else "resolve the task blocker"
+            ),
         }
         for task in tasks
-        if task.state == TeamTaskState.BLOCKED
+        if assessments[task.id].readiness
+        in {TaskAssessmentReadiness.BLOCKED, TaskAssessmentReadiness.INVALID}
+    )
+    rows.extend(
+        {
+            "kind": "blocker",
+            "id": blocker.id,
+            "state": blocker.state.value,
+            "summary": blocker.summary,
+            "reason_code": blocker.reason_code,
+            "source_kind": blocker.source_kind.value,
+            "source_id": blocker.source_id,
+            "affected_task_ids": list(blocker.affected_task_ids),
+            "owner_agent_id": blocker.owner_agent_id,
+            "delegate_agent_id": blocker.delegate_agent_id,
+            "route": blocker.route.value,
+            "escalation_depth": blocker.escalation_depth,
+            "recovery_permission": (
+                "admin.owner"
+                if blocker.reason_code == "human_review_assignment_unavailable"
+                else None
+            ),
+            "recovery_directory_path": (
+                state.human_review_requests[
+                    blocker.source_id
+                ].requirement_snapshot.directory_path
+                if blocker.reason_code == "human_review_assignment_unavailable"
+                and blocker.source_id in state.human_review_requests
+                else None
+            ),
+            "next_action": (
+                "reassign the human reviewer in Admin"
+                if blocker.reason_code == "human_review_assignment_unavailable"
+                else "follow the blocker route and resolve its source condition"
+            ),
+        }
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and (
+            blocker.project_id == project_id
+            or blocker.task_id in task_ids
+            or bool(set(blocker.affected_task_ids).intersection(task_ids))
+        )
     )
     if project is not None:
         rows.extend(
@@ -72,7 +135,10 @@ def project_blocking_sources(
             ),
         }
         for review in state.review_requests.values()
-        if review.deliverable_id in deliverable_ids
+        if (
+            review.deliverable_id in deliverable_ids
+            or review.release_package_id in release_ids
+        )
         and review.superseded_by_review_request_id is None
         and review.retired_at is None
         and review.state == TeamRecordState.BLOCKED
@@ -87,6 +153,30 @@ def project_blocking_sources(
         for release in state.release_packages.values()
         if release.project_id == project_id
         and release.state == TeamRecordState.BLOCKED
+    )
+    rows.extend(
+        {
+            "kind": "human_review_request",
+            "id": request.id,
+            "state": request.state,
+            "summary": f"Human review for release {request.release_package_id}",
+            "reason_code": (
+                "human_review_blocked"
+                if request.state == "blocked"
+                else "human_review_pending"
+            ),
+            "source_kind": "human_review_request",
+            "source_id": request.id,
+            "affected_task_ids": [],
+            "next_action": (
+                "recover or reassign the same human review request"
+                if request.state == "blocked"
+                else "assigned reviewer must decide the pinned candidate"
+            ),
+        }
+        for request in state.human_review_requests.values()
+        if request.release_package_id in release_ids
+        and request.state in {"blocked"}
     )
     return sorted(rows, key=lambda row: (row["kind"], row["id"]))
 
@@ -118,10 +208,47 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
     project_releases = [
         release for release in state.release_packages.values() if release.project_id == project_id
     ]
+    project_release_ids = {release.id for release in project_releases}
+    project_human_requests = [
+        request
+        for request in state.human_review_requests.values()
+        if request.release_package_id in project_release_ids
+    ]
+    project_human_request_ids = {
+        request.id for request in project_human_requests
+    }
+    project_human_findings = [
+        finding
+        for finding in state.human_review_findings.values()
+        if finding.source_human_review_request_id in project_human_request_ids
+    ]
+    assessments = {
+        task.id: TaskAssessmentService(state).assess(task.id)
+        for task in project_tasks
+    }
+    project_blockers = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and (
+            blocker.project_id == project_id
+            or blocker.task_id in {task.id for task in project_tasks}
+            or bool(
+                set(blocker.affected_task_ids).intersection(
+                    {task.id for task in project_tasks}
+                )
+            )
+        )
+    ]
 
     pending_or_blocked = {TeamRecordState.PENDING, TeamRecordState.BLOCKED}
     blocked = (
-        any(task.state == TeamTaskState.BLOCKED for task in project_tasks)
+        any(
+            assessment.readiness
+            in {TaskAssessmentReadiness.BLOCKED, TaskAssessmentReadiness.INVALID}
+            for assessment in assessments.values()
+        )
+        or bool(project_blockers)
         or any(goal.state == TeamRecordState.BLOCKED for goal in project.goals)
         or any(
             deliverable.state == TeamRecordState.BLOCKED
@@ -129,15 +256,25 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         )
         or any(review.state == TeamRecordState.BLOCKED for review in project_reviews)
         or any(release.state == TeamRecordState.BLOCKED for release in project_releases)
+        or any(request.state == "blocked" for request in project_human_requests)
     )
     completed = (
         all(goal.state == TeamRecordState.ACCEPTED for goal in project.goals)
-        and not any(task.state in _NON_TERMINAL_TASK_STATES for task in project_tasks)
+        and all(
+            assessment.resolution_status == TaskResolutionStatus.RESOLVED
+            for assessment in assessments.values()
+        )
         and not any(
             deliverable.state in pending_or_blocked for deliverable in active_project_deliverables
         )
         and not any(review.state in pending_or_blocked for review in project_reviews)
         and not any(release.state in pending_or_blocked for release in project_releases)
+        and not any(
+            request.state in {"preparing", "pending", "blocked"}
+            for request in project_human_requests
+        )
+        and not any(finding.state == "open" for finding in project_human_findings)
+        and not project_blockers
     )
     if completed:
         new_status = ProjectStatus.COMPLETED

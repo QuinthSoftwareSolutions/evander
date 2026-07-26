@@ -45,6 +45,7 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     tasks = [
         task

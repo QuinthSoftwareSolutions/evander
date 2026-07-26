@@ -88,6 +88,7 @@ class TeamTaskState(str, Enum):
     FINISHED = "finished"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
+    CANCELLED = "cancelled"
 
 
 class TeamRecordState(str, Enum):
@@ -114,6 +115,23 @@ class TeamTaskKind(str, Enum):
 class TaskCompletionKind(str, Enum):
     DELIVERED = "delivered"
     EVIDENCED_NOOP = "evidenced_noop"
+
+
+class TaskResolutionStatus(str, Enum):
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+    INVALID = "invalid"
+
+
+class TaskAssessmentReadiness(str, Enum):
+    ACTIONABLE = "actionable"
+    WAITING_ON_CHILDREN = "waiting_on_children"
+    WAITING_ON_DEPENDENCIES = "waiting_on_dependencies"
+    WAITING_FOR_ACCEPTANCE = "waiting_for_acceptance"
+    WAITING_FOR_REVIEW = "waiting_for_review"
+    BLOCKED = "blocked"
+    RESOLVED = "resolved"
+    INVALID = "invalid"
 
 
 class TeamCaseStatus(str, Enum):
@@ -206,6 +224,8 @@ class TeamBlockerSourceKind(str, Enum):
     TASK = "task"
     DELIVERABLE = "deliverable"
     RELEASE_PACKAGE = "release_package"
+    HUMAN_REVIEW_REQUEST = "human_review_request"
+    AGENT_EXECUTION_STALL = "agent_execution_stall"
     EXPLICIT = "explicit"
 
 
@@ -620,11 +640,69 @@ class ReleaseReviewRequirement(TeamModel):
         return _required_text(value, info.field_name)
 
 
+class HumanReviewChecklistItem(TeamModel):
+    id: str
+    label: str
+    description: str | None = None
+    required: bool = True
+
+    @field_validator("id", "label", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class HumanReviewRequirement(TeamModel):
+    reviewer_group_ids: list[str]
+    checklist: list[HumanReviewChecklistItem] = Field(default_factory=list)
+    test_instructions: str = ""
+    preparation_mode: Literal["manual", "workflow"] = "manual"
+    # These two fields are resolved by the Admin boundary and then snapshotted
+    # into the release manifest. They are never trusted from a human decision.
+    directory_path: str | None = None
+    resolved_reviewer_user_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("reviewer_group_ids", mode="before")
+    @classmethod
+    def _reviewer_group_ids(cls, value: object) -> list[str]:
+        values = _unique_text_list(value, "reviewer_group_ids")
+        if not values:
+            raise ValueError("human review requires at least one reviewer group")
+        return values
+
+    @field_validator("resolved_reviewer_user_ids", mode="before")
+    @classmethod
+    def _resolved_reviewer_user_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "resolved_reviewer_user_ids")
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str | None:
+        text = _optional_text(value)
+        return DirectoryPath(segments=text).as_posix() if text is not None else None
+
+    @field_validator("test_instructions", mode="before")
+    @classmethod
+    def _test_instructions(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @model_validator(mode="after")
+    def _unique_checklist_ids(self) -> "HumanReviewRequirement":
+        _ensure_unique([item.id for item in self.checklist], "human review checklist items")
+        return self
+
+
 class ProjectReleasePolicy(TeamModel):
     verification_backend: Literal["container_worker_vm"] = "container_worker_vm"
     container_image: str | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
+    human_review_requirement: HumanReviewRequirement | None = None
     allow_ungated: bool = False
 
     @field_validator("container_image", mode="before")
@@ -634,10 +712,14 @@ class ProjectReleasePolicy(TeamModel):
 
     @model_validator(mode="after")
     def _require_gate(self) -> "ProjectReleasePolicy":
-        if not self.allow_ungated and not (self.verification_commands or self.review_requirements):
+        if not self.allow_ungated and not (
+            self.verification_commands
+            or self.review_requirements
+            or self.human_review_requirement is not None
+        ):
             raise ValueError(
-                "release policy requires verification_commands or review_requirements "
-                "unless allow_ungated is true"
+                "release policy requires verification_commands, review_requirements, "
+                "or human_review_requirement unless allow_ungated is true"
             )
         review_keys = [
             (requirement.reviewer_agent_id, requirement.review_profile_id)
@@ -955,16 +1037,12 @@ class TaskOutcomeContract(TeamModel):
     def _validate_contract(self) -> "TaskOutcomeContract":
         if not self.required_outcome_kinds and not self.allow_evidenced_noop:
             raise ValueError(
-                "outcome contract requires required_outcome_kinds or "
-                "allow_evidenced_noop"
+                "outcome contract requires required_outcome_kinds or allow_evidenced_noop"
             )
-        overlap = set(self.required_outcome_kinds).intersection(
-            self.forbidden_outcome_kinds
-        )
+        overlap = set(self.required_outcome_kinds).intersection(self.forbidden_outcome_kinds)
         if overlap:
             raise ValueError(
-                "outcome kinds cannot be both required and forbidden: "
-                + ", ".join(sorted(overlap))
+                "outcome kinds cannot be both required and forbidden: " + ", ".join(sorted(overlap))
             )
         return self
 
@@ -994,6 +1072,60 @@ class TaskCompletion(TeamModel):
         return self
 
 
+class TaskCancellation(TeamModel):
+    reason_code: str
+    reason: str
+    actor_kind: Literal["agent", "operator", "system"]
+    actor_id: str
+    successor_task_id: str | None = None
+    cancelled_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("reason_code", "reason", "actor_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("successor_task_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class TaskAssessment(TeamModel):
+    task_id: str
+    resolution_status: TaskResolutionStatus
+    resolution_reason: str
+    readiness: TaskAssessmentReadiness
+    direct_child_ids: list[str] = Field(default_factory=list)
+    unresolved_descendant_ids: list[str] = Field(default_factory=list)
+    unsatisfied_dependency_ids: list[str] = Field(default_factory=list)
+    active_acceptance_ids: list[str] = Field(default_factory=list)
+    active_review_request_ids: list[str] = Field(default_factory=list)
+    active_blocker_ids: list[str] = Field(default_factory=list)
+    integration_ready: bool = False
+    contribution_coverage: dict[str, Any] = Field(default_factory=dict)
+    invalid_reason_codes: list[str] = Field(default_factory=list)
+
+    @field_validator("task_id", "resolution_reason", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "direct_child_ids",
+        "unresolved_descendant_ids",
+        "unsatisfied_dependency_ids",
+        "active_acceptance_ids",
+        "active_review_request_ids",
+        "active_blocker_ids",
+        "invalid_reason_codes",
+        mode="before",
+    )
+    @classmethod
+    def _id_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+
 class AgentTask(TeamModel):
     id: str
     owner_agent_id: str
@@ -1010,6 +1142,8 @@ class AgentTask(TeamModel):
     created_by_agent_id: str | None = None
     created_by_actor: str | None = None
     parent_task_id: str | None = None
+    originating_task_id: str | None = None
+    cancellation: TaskCancellation | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
@@ -1040,6 +1174,7 @@ class AgentTask(TeamModel):
         "created_by_agent_id",
         "created_by_actor",
         "parent_task_id",
+        "originating_task_id",
         mode="before",
     )
     @classmethod
@@ -1062,6 +1197,8 @@ class AgentTask(TeamModel):
             raise ValueError("task creator is required")
         if self.parent_task_id == self.id:
             raise ValueError("task cannot be its own parent")
+        if self.originating_task_id == self.id:
+            raise ValueError("task cannot originate from itself")
         if self.id in self.dependency_task_ids:
             raise ValueError("task cannot depend on itself")
         if self.task_kind == TeamTaskKind.OUTCOME and self.outcome_contract is None:
@@ -1070,6 +1207,10 @@ class AgentTask(TeamModel):
             raise ValueError("support task cannot define outcome_contract")
         if self.task_kind == TeamTaskKind.SUPPORT and self.completion is not None:
             raise ValueError("support task cannot define structured completion")
+        if self.state == TeamTaskState.CANCELLED and self.cancellation is None:
+            raise ValueError("cancelled task requires a cancellation disposition")
+        if self.state != TeamTaskState.CANCELLED and self.cancellation is not None:
+            raise ValueError("task cancellation is only valid for cancelled tasks")
         return self
 
 
@@ -1212,9 +1353,7 @@ class DeliverableOutcome(TeamModel):
     @model_validator(mode="after")
     def _validate_evidence(self) -> "DeliverableOutcome":
         if not self.reference_ids and not self.evidence_refs:
-            raise ValueError(
-                "deliverable outcome requires reference_ids or evidence_refs"
-            )
+            raise ValueError("deliverable outcome requires reference_ids or evidence_refs")
         return self
 
 
@@ -1252,6 +1391,8 @@ class Deliverable(TeamModel):
     git_refs: DeliverableGitRefs = Field(default_factory=DeliverableGitRefs)
     verification: DeliverableVerification | None = None
     outcomes: list[DeliverableOutcome] = Field(default_factory=list)
+    source_deliverable_ids: list[str] = Field(default_factory=list)
+    completion: TaskCompletion | None = None
     carried_findings: list[ReviewFindingRecord] = Field(default_factory=list)
     review_manifest: DeliverableReviewManifest | None = None
     acceptance_recipient_agent_id: str | None = None
@@ -1280,7 +1421,12 @@ class Deliverable(TeamModel):
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
 
-    @field_validator("artifact_refs", "review_request_ids", mode="before")
+    @field_validator(
+        "artifact_refs",
+        "review_request_ids",
+        "source_deliverable_ids",
+        mode="before",
+    )
     @classmethod
     def _text_lists(cls, value: object, info) -> list[str]:
         return _unique_text_list(value, info.field_name)
@@ -1291,15 +1437,26 @@ class Deliverable(TeamModel):
         if decision is None:
             return self
         if self.acceptance_recipient_agent_id is None:
-            raise ValueError(
-                "deliverable acceptance decisions require an acceptance recipient"
-            )
+            raise ValueError("deliverable acceptance decisions require an acceptance recipient")
         if decision.decided_by_agent_id != self.acceptance_recipient_agent_id:
             raise ValueError(
                 "deliverable acceptance decision must be made by its acceptance recipient"
             )
         # The decision records the original direct handoff. Later formal review or
         # promotion processing may legitimately move the current deliverable state.
+        return self
+
+    @model_validator(mode="after")
+    def _validate_completion(self) -> "Deliverable":
+        if self.id in self.source_deliverable_ids:
+            raise ValueError("deliverable cannot name itself as a source")
+        if self.completion is not None:
+            if self.completion.kind != TaskCompletionKind.EVIDENCED_NOOP:
+                raise ValueError("deliverable completion currently supports evidenced_noop only")
+            if self.outcomes:
+                raise ValueError(
+                    "evidenced-noop deliverable cannot also declare delivered outcomes"
+                )
         return self
 
 
@@ -1409,9 +1566,7 @@ class ReviewRequest(TeamModel):
     findings: list[str] = Field(default_factory=list)
     review_profile_id: str | None = None
     criteria_snapshot: list[ReviewProfileCriterion] | None = None
-    required_outcome_kind_definitions: list[OutcomeKindSnapshot] = Field(
-        default_factory=list
-    )
+    required_outcome_kind_definitions: list[OutcomeKindSnapshot] = Field(default_factory=list)
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
@@ -1473,9 +1628,7 @@ class ReviewRequest(TeamModel):
         if self.supersedes_review_request_id is not None and (
             self.retry_reason is None or self.retry_requested_by is None
         ):
-            raise ValueError(
-                "superseding review requires retry_reason and retry_requested_by"
-            )
+            raise ValueError("superseding review requires retry_reason and retry_requested_by")
         if self.criteria_snapshot is not None:
             _ensure_unique(
                 [criterion.id for criterion in self.criteria_snapshot],
@@ -1528,9 +1681,12 @@ class TeamBlocker(TeamModel):
     task_id: str | None = None
     source_kind: TeamBlockerSourceKind
     source_id: str
+    reason_code: str = "unspecified"
     reporter_agent_id: str | None = None
+    reporter_actor: str | None = None
     owner_agent_id: str | None = None
     delegate_agent_id: str | None = None
+    affected_task_ids: list[str] = Field(default_factory=list)
     state: TeamBlockerState = TeamBlockerState.OPEN
     route: TeamBlockerRoute = TeamBlockerRoute.OWNED
     summary: str
@@ -1545,7 +1701,14 @@ class TeamBlocker(TeamModel):
     updated_at: datetime = Field(default_factory=utc_now)
     resolved_at: datetime | None = None
 
-    @field_validator("id", "team_id", "source_id", "summary", mode="before")
+    @field_validator(
+        "id",
+        "team_id",
+        "source_id",
+        "reason_code",
+        "summary",
+        mode="before",
+    )
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
@@ -1554,6 +1717,7 @@ class TeamBlocker(TeamModel):
         "project_id",
         "task_id",
         "reporter_agent_id",
+        "reporter_actor",
         "owner_agent_id",
         "delegate_agent_id",
         "active_dispatch_id",
@@ -1572,6 +1736,11 @@ class TeamBlocker(TeamModel):
     @classmethod
     def _terminal_reference_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value or [], "terminal_reference_ids")
+
+    @field_validator("affected_task_ids", mode="before")
+    @classmethod
+    def _affected_task_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "affected_task_ids")
 
     @model_validator(mode="after")
     def _validate_route(self) -> "TeamBlocker":
@@ -1732,6 +1901,145 @@ class TeamMemoryRecord(TeamModel):
         if self.scope == TeamMemoryScope.AGENT_PRIVATE and self.agent_id is None:
             raise ValueError("agent-private memory requires agent_id")
         return self
+
+
+class TeamDispatchStatus(str, Enum):
+    PREPARING = "preparing"
+    LEASED = "leased"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
+class WorktreeCleanupState(str, Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    RECOVERY_REQUIRED = "recovery_required"
+
+
+class TeamDispatch(TeamModel):
+    id: str
+    agent_id: str
+    session_id: str
+    cause_kind: str
+    cause_id: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
+    blocker_ids: list[str] = Field(default_factory=list)
+    review_request_ids: list[str] = Field(default_factory=list)
+    inbox_item_ids: list[str] = Field(default_factory=list)
+    project_ids: list[str] = Field(default_factory=list)
+    managed_repo_ids: list[str] = Field(default_factory=list)
+    status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
+    created_at: datetime = Field(default_factory=utc_now)
+    prepared_at: datetime | None = None
+    leased_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    completed_at: datetime | None = None
+    error: str | None = None
+
+    @field_validator("id", "agent_id", "session_id", "cause_kind", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("cause_id", "error", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator(
+        "task_ids",
+        "blocker_ids",
+        "review_request_ids",
+        "inbox_item_ids",
+        "project_ids",
+        "managed_repo_ids",
+        mode="before",
+    )
+    @classmethod
+    def _scope_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_lifecycle(self) -> "TeamDispatch":
+        if self.status == TeamDispatchStatus.LEASED:
+            if self.leased_at is None or self.lease_expires_at is None:
+                raise ValueError("leased dispatch requires leased_at and lease_expires_at")
+        if (
+            self.status
+            in {
+                TeamDispatchStatus.COMPLETED,
+                TeamDispatchStatus.EXPIRED,
+                TeamDispatchStatus.FAILED,
+            }
+            and self.completed_at is None
+        ):
+            raise ValueError("terminal dispatch requires completed_at")
+        if self.status == TeamDispatchStatus.FAILED and self.error is None:
+            raise ValueError("failed dispatch requires error")
+        return self
+
+
+class WorktreeCleanupCandidate(TeamModel):
+    id: str
+    agent_id: str
+    session_id: str
+    task_id: str
+    project_id: str
+    managed_repo_id: str
+    execution_backend: Literal["libvirt_vm", "container_worker_vm"]
+    worktree_path: str
+    branch: str
+    base_ref: str | None = None
+    expected_head: str | None = None
+    retained_commit_sha: str | None = None
+    state: WorktreeCleanupState = WorktreeCleanupState.PENDING
+    reason: str
+    eligible_at: datetime = Field(default_factory=utc_now)
+    attempt_count: int = Field(default=0, ge=0)
+    last_safety_check: str | None = None
+    last_error: str | None = None
+    ignored_file_inventory: list[str] = Field(default_factory=list)
+    ignored_bytes: int = Field(default=0, ge=0)
+    worktree_bytes: int = Field(default=0, ge=0)
+    reclaimed_bytes: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+
+    @field_validator(
+        "id",
+        "agent_id",
+        "session_id",
+        "task_id",
+        "project_id",
+        "managed_repo_id",
+        "worktree_path",
+        "branch",
+        "reason",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "base_ref",
+        "expected_head",
+        "retained_commit_sha",
+        "last_safety_check",
+        "last_error",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("ignored_file_inventory", mode="before")
+    @classmethod
+    def _ignored_file_inventory(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "ignored_file_inventory")
 
 
 class TeamDispatchActivityStatus(str, Enum):
@@ -2208,13 +2516,14 @@ class ReleaseVerificationRun(TeamModel):
 
 
 class ReleaseGateFailure(TeamModel):
-    stage: Literal["verification", "review", "configuration"]
+    stage: Literal["verification", "review", "human_review", "configuration"]
     kind: Literal[
         "candidate",
         "infrastructure",
         "timeout",
         "blocked",
         "rejected",
+        "changes_requested",
         "configuration",
     ]
     source_id: str | None = None
@@ -2276,8 +2585,261 @@ class ReleaseCandidateDeliverableEvidence(TeamModel):
         return _optional_text(value)
 
 
+class HumanReviewRequirementSnapshot(TeamModel):
+    directory_path: str
+    configured_group_ids: list[str]
+    initially_eligible_user_ids: list[str]
+    checklist: list[HumanReviewChecklistItem] = Field(default_factory=list)
+    test_instructions: str = ""
+    preparation_mode: Literal["manual", "workflow"] = "manual"
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=_required_text(value, "directory_path")).as_posix()
+
+    @field_validator(
+        "configured_group_ids",
+        "initially_eligible_user_ids",
+        mode="before",
+    )
+    @classmethod
+    def _id_lists(cls, value: object, info) -> list[str]:
+        values = _unique_text_list(value or [], info.field_name)
+        if info.field_name == "configured_group_ids" and not values:
+            raise ValueError("human review snapshot requires configured groups")
+        return values
+
+    @field_validator("test_instructions", mode="before")
+    @classmethod
+    def _test_instructions(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @model_validator(mode="after")
+    def _unique_checklist_ids(self) -> "HumanReviewRequirementSnapshot":
+        _ensure_unique([item.id for item in self.checklist], "human review checklist items")
+        return self
+
+
+class HumanReviewAssignment(TeamModel):
+    eligible_user_ids: list[str] = Field(default_factory=list)
+    explicitly_assigned_user_ids: list[str] = Field(default_factory=list)
+    assigned_by_user_id: str | None = None
+    assigned_at: datetime | None = None
+
+    @field_validator(
+        "eligible_user_ids",
+        "explicitly_assigned_user_ids",
+        mode="before",
+    )
+    @classmethod
+    def _id_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator("assigned_by_user_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class HumanReviewTestTarget(TeamModel):
+    url: str | None = None
+    alias: str | None = None
+    expires_at: datetime | None = None
+    instructions: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("url", "alias", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("instructions", mode="before")
+    @classmethod
+    def _instructions(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "evidence_refs")
+
+    @model_validator(mode="after")
+    def _require_safe_target(self) -> "HumanReviewTestTarget":
+        if self.url is None and self.alias is None:
+            raise ValueError("human review test target requires a URL or alias")
+        return self
+
+
+class HumanReviewFindingSnapshot(TeamModel):
+    finding_id: str
+    text: str
+    target_deliverable_ids: list[str] = Field(default_factory=list)
+    correction_task_id: str | None = None
+    proposed_resolution: str | None = None
+    resolution_evidence_refs: list[str] = Field(default_factory=list)
+    proposed_by_deliverable_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("finding_id", "text", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "target_deliverable_ids",
+        "resolution_evidence_refs",
+        "proposed_by_deliverable_ids",
+        mode="before",
+    )
+    @classmethod
+    def _id_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator("correction_task_id", "proposed_resolution", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class HumanReviewRequest(TeamModel):
+    id: str
+    release_package_id: str
+    candidate_commit_sha: str
+    candidate_tree_hash: str
+    requirement_snapshot: HumanReviewRequirementSnapshot
+    current_assignment: HumanReviewAssignment = Field(default_factory=HumanReviewAssignment)
+    assignment_generation: int = Field(default=1, ge=1)
+    state: Literal[
+        "preparing",
+        "pending",
+        "blocked",
+        "approved",
+        "changes_requested",
+    ] = "pending"
+    preparation_generation: int = Field(default=1, ge=1)
+    test_target: HumanReviewTestTarget | None = None
+    revision: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=utc_now)
+    ready_at: datetime | None = None
+    completed_at: datetime | None = None
+
+    @field_validator(
+        "id",
+        "release_package_id",
+        "candidate_commit_sha",
+        "candidate_tree_hash",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_lifecycle(self) -> "HumanReviewRequest":
+        terminal = self.state in {"approved", "changes_requested"}
+        if terminal and self.completed_at is None:
+            raise ValueError("terminal human review request requires completed_at")
+        if not terminal and self.completed_at is not None:
+            raise ValueError("nonterminal human review request cannot have completed_at")
+        if self.state == "pending" and self.ready_at is None:
+            raise ValueError("pending human review request requires ready_at")
+        return self
+
+
+class HumanReviewDecision(TeamModel):
+    id: str
+    human_review_request_id: str
+    reviewer_user_id: str
+    reviewer_display_name_snapshot: str
+    decision: Literal["approved", "changes_requested", "blocked"]
+    checklist_results: dict[str, Any] = Field(default_factory=dict)
+    confirmed_finding_ids: list[str] = Field(default_factory=list)
+    summary: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    request_id: str
+    decided_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "human_review_request_id",
+        "reviewer_user_id",
+        "reviewer_display_name_snapshot",
+        "request_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _summary(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("confirmed_finding_ids", "evidence_refs", mode="before")
+    @classmethod
+    def _id_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+
+class HumanReviewFinding(TeamModel):
+    id: str
+    source_human_review_request_id: str
+    text: str
+    target_deliverable_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    correction_task_id: str
+    state: Literal["open", "resolved"] = "open"
+    proposed_resolution: str | None = None
+    resolution_evidence_refs: list[str] = Field(default_factory=list)
+    proposed_by_deliverable_ids: list[str] = Field(default_factory=list)
+    resolved_by_human_review_request_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+    @field_validator(
+        "id",
+        "source_human_review_request_id",
+        "text",
+        "correction_task_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "target_deliverable_ids",
+        "evidence_refs",
+        "resolution_evidence_refs",
+        "proposed_by_deliverable_ids",
+        mode="before",
+    )
+    @classmethod
+    def _id_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator(
+        "proposed_resolution",
+        "resolved_by_human_review_request_id",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_resolution(self) -> "HumanReviewFinding":
+        if self.state == "resolved":
+            if self.resolved_at is None or self.resolved_by_human_review_request_id is None:
+                raise ValueError("resolved human finding requires resolving request and time")
+        elif self.resolved_at is not None or self.resolved_by_human_review_request_id is not None:
+            raise ValueError("open human finding cannot have resolution audit fields")
+        return self
+
+
 class ReleaseCandidateManifest(TeamModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     evidence_status: Literal["complete", "legacy_partial"] = "complete"
     project_id: str
     release_package_id: str
@@ -2289,6 +2851,11 @@ class ReleaseCandidateManifest(TeamModel):
     scope_validation: ReleaseScopeValidation | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
+    human_review_requirement: HumanReviewRequirementSnapshot | None = None
+    predecessor_release_package_id: str | None = None
+    correction_deliverable_ids: list[str] = Field(default_factory=list)
+    carried_human_findings: list[HumanReviewFindingSnapshot] = Field(default_factory=list)
+    contribution_graph: dict[str, list[str]] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator(
@@ -2302,15 +2869,26 @@ class ReleaseCandidateManifest(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("base_commit_sha", "candidate_tree_hash", mode="before")
+    @field_validator(
+        "base_commit_sha",
+        "candidate_tree_hash",
+        "predecessor_release_package_id",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("correction_deliverable_ids", mode="before")
+    @classmethod
+    def _correction_deliverable_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "correction_deliverable_ids")
 
 
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
+    supersedes_release_package_id: str | None = None
     deliverable_ids: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     feature_branches: list[str] = Field(default_factory=list)
@@ -2356,6 +2934,7 @@ class ReleasePackage(TeamModel):
     @field_validator(
         "release_branch",
         "canonical_branch",
+        "supersedes_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
         "candidate_commit_sha",
@@ -2554,9 +3133,7 @@ class TeamState(TeamModel):
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
-    outcome_kind_definitions: dict[str, OutcomeKindDefinition] = Field(
-        default_factory=dict
-    )
+    outcome_kind_definitions: dict[str, OutcomeKindDefinition] = Field(default_factory=dict)
     review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     blockers: dict[str, TeamBlocker] = Field(default_factory=dict)
@@ -2569,6 +3146,11 @@ class TeamState(TeamModel):
     chat_attachment_policies: dict[str, TeamChatAttachmentPolicy] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
     release_verification_runs: dict[str, ReleaseVerificationRun] = Field(default_factory=dict)
+    human_review_requests: dict[str, HumanReviewRequest] = Field(default_factory=dict)
+    human_review_decisions: dict[str, HumanReviewDecision] = Field(default_factory=dict)
+    human_review_findings: dict[str, HumanReviewFinding] = Field(default_factory=dict)
+    dispatches: dict[str, TeamDispatch] = Field(default_factory=dict)
+    worktree_cleanup_candidates: dict[str, WorktreeCleanupCandidate] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
     git_work_contexts: dict[str, GitWorkContext] = Field(default_factory=dict)
@@ -2760,6 +3342,9 @@ class TeamState(TeamModel):
         self._validate_memories(errors)
         self._validate_conversations(errors)
         self._validate_releases(errors)
+        self._validate_human_reviews(errors)
+        self._validate_dispatches(errors)
+        self._validate_worktree_cleanup_candidates(errors)
         self._validate_ephemeral_assignments(errors)
         self._validate_git_promotions(errors)
         self._validate_stand_downs(errors)
@@ -2800,8 +3385,15 @@ class TeamState(TeamModel):
             "chat_attachments",
             "chat_attachment_policies",
             "release_packages",
+            "release_verification_runs",
+            "human_review_requests",
+            "human_review_decisions",
+            "human_review_findings",
+            "dispatches",
+            "worktree_cleanup_candidates",
             "ephemeral_assignments",
             "git_promotions",
+            "git_work_contexts",
             "stand_downs",
         ):
             collection = getattr(self, collection_name)
@@ -3161,7 +3753,7 @@ class TeamState(TeamModel):
         terminal_task_states = {
             TeamTaskState.FINISHED,
             TeamTaskState.ACCEPTED,
-            TeamTaskState.REJECTED,
+            TeamTaskState.CANCELLED,
         }
         for task in self.tasks.values():
             task_is_terminal = task.state in terminal_task_states
@@ -3176,8 +3768,7 @@ class TeamState(TeamModel):
             if project is not None and task.outcome_contract is not None:
                 contract = task.outcome_contract
                 referenced_kinds = (
-                    contract.required_outcome_kinds
-                    + contract.forbidden_outcome_kinds
+                    contract.required_outcome_kinds + contract.forbidden_outcome_kinds
                 )
                 for kind in referenced_kinds:
                     if (
@@ -3190,12 +3781,9 @@ class TeamState(TeamModel):
                         )
                         is None
                     ):
-                        errors.append(
-                            f"task {task.id} references unknown outcome kind {kind}"
-                        )
+                        errors.append(f"task {task.id} references unknown outcome kind {kind}")
                 snapshot_kinds = {
-                    definition.kind
-                    for definition in contract.outcome_kind_definitions
+                    definition.kind for definition in contract.outcome_kind_definitions
                 }
                 missing_snapshots = sorted(set(referenced_kinds) - snapshot_kinds)
                 if missing_snapshots:
@@ -3232,27 +3820,11 @@ class TeamState(TeamModel):
                     )
 
     def _validate_task_graph(self, errors: list[str]) -> None:
-        for task in self.tasks.values():
-            if task.parent_task_id is not None:
-                parent = self.tasks.get(task.parent_task_id)
-                if parent is None:
-                    errors.append(f"task {task.id} references missing parent {task.parent_task_id}")
-                elif parent.project_id != task.project_id:
-                    errors.append(
-                        f"task {task.id} parent {parent.id} belongs to project {parent.project_id}"
-                    )
-            for dependency_id in task.dependency_task_ids:
-                dependency = self.tasks.get(dependency_id)
-                if dependency is None:
-                    errors.append(f"task {task.id} references missing dependency {dependency_id}")
-                elif dependency.project_id != task.project_id:
-                    errors.append(
-                        f"task {task.id} dependency {dependency_id} belongs to project "
-                        f"{dependency.project_id}"
-                    )
-        for task_id in self.tasks:
-            self._validate_no_parent_cycle(task_id, errors)
-        self._validate_no_dependency_cycle(errors)
+        # Historical graph contradictions are deliberately readable. Command
+        # boundaries prevent new invalid edges, while TaskAssessment reports
+        # missing/cross-project/cyclic parent and dependency relationships and
+        # blocks new completion or publication until an audited repair occurs.
+        return
 
     def _validate_no_parent_cycle(self, task_id: str, errors: list[str]) -> None:
         seen: set[str] = set()
@@ -3312,7 +3884,12 @@ class TeamState(TeamModel):
         ):
             return "blocked"
         if any(
-            state not in {TeamTaskState.ACCEPTED, TeamTaskState.FINISHED}
+            state
+            not in {
+                TeamTaskState.ACCEPTED,
+                TeamTaskState.FINISHED,
+                TeamTaskState.CANCELLED,
+            }
             for state in dependency_states
         ):
             return "waiting"
@@ -3327,7 +3904,11 @@ class TeamState(TeamModel):
             dependency = self.tasks.get(dependency_id)
             if dependency is None:
                 continue
-            if dependency.state not in {TeamTaskState.ACCEPTED, TeamTaskState.FINISHED}:
+            if dependency.state not in {
+                TeamTaskState.ACCEPTED,
+                TeamTaskState.FINISHED,
+                TeamTaskState.CANCELLED,
+            }:
                 blocked_by.append(dependency_id)
         return blocked_by
 
@@ -3338,7 +3919,7 @@ class TeamState(TeamModel):
             counts["total"] += 1
             if child.state == TeamTaskState.ACCEPTED:
                 counts["accepted"] += 1
-            elif child.state == TeamTaskState.FINISHED:
+            elif child.state in {TeamTaskState.FINISHED, TeamTaskState.CANCELLED}:
                 counts["finished"] += 1
             elif child.state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED}:
                 counts["blocked"] += 1
@@ -3492,8 +4073,7 @@ class TeamState(TeamModel):
         for definition in self.outcome_kind_definitions.values():
             if definition.team_id not in self.teams:
                 errors.append(
-                    f"outcome kind {definition.id} references missing team "
-                    f"{definition.team_id}"
+                    f"outcome kind {definition.id} references missing team {definition.team_id}"
                 )
             if definition.project_id is not None:
                 project = self.projects.get(definition.project_id)
@@ -3563,8 +4143,7 @@ class TeamState(TeamModel):
                     is None
                 ):
                     errors.append(
-                        f"review profile {profile.id} references unknown outcome kind "
-                        f"{kind}"
+                        f"review profile {profile.id} references unknown outcome kind {kind}"
                     )
 
     def _validate_reviews(self, errors: list[str]) -> None:
@@ -3715,8 +4294,10 @@ class TeamState(TeamModel):
                 TeamBlockerSourceKind.REVIEW_REQUEST: blocker.source_id in self.review_requests,
                 TeamBlockerSourceKind.TASK: blocker.source_id in self.tasks,
                 TeamBlockerSourceKind.DELIVERABLE: blocker.source_id in self.deliverables,
-                TeamBlockerSourceKind.RELEASE_PACKAGE: blocker.source_id
-                in self.release_packages,
+                TeamBlockerSourceKind.RELEASE_PACKAGE: blocker.source_id in self.release_packages,
+                TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: blocker.source_id
+                in self.human_review_requests,
+                TeamBlockerSourceKind.AGENT_EXECUTION_STALL: blocker.source_id in self.agents,
                 TeamBlockerSourceKind.EXPLICIT: True,
             }[blocker.source_kind]
             if not source_exists:
@@ -3876,6 +4457,20 @@ class TeamState(TeamModel):
                     f"release {release.id} references missing project {release.project_id}"
                 )
                 continue
+            if release.supersedes_release_package_id is not None:
+                predecessor = self.release_packages.get(release.supersedes_release_package_id)
+                if predecessor is None:
+                    errors.append(
+                        f"release {release.id} supersedes missing release "
+                        f"{release.supersedes_release_package_id}"
+                    )
+                elif predecessor.id == release.id:
+                    errors.append(f"release {release.id} cannot supersede itself")
+                elif predecessor.project_id != release.project_id:
+                    errors.append(
+                        f"release {release.id} supersedes release {predecessor.id} "
+                        "from another project"
+                    )
             for deliverable_id in release.deliverable_ids:
                 deliverable = self.deliverables.get(deliverable_id)
                 if deliverable is None:
@@ -4027,6 +4622,178 @@ class TeamState(TeamModel):
                             f"release {release.id} deliverable {evidence.deliverable_id} "
                             "manifest does not match accepted review evidence"
                         )
+
+    def _validate_human_reviews(self, errors: list[str]) -> None:
+        request_ids_by_release: dict[str, list[str]] = {}
+        for request in self.human_review_requests.values():
+            release = self.release_packages.get(request.release_package_id)
+            if release is None:
+                errors.append(
+                    f"human review {request.id} references missing release "
+                    f"{request.release_package_id}"
+                )
+                continue
+            request_ids_by_release.setdefault(release.id, []).append(request.id)
+            if release.candidate_commit_sha != request.candidate_commit_sha:
+                errors.append(
+                    f"human review {request.id} candidate does not match release {release.id}"
+                )
+            if release.candidate_tree_hash != request.candidate_tree_hash:
+                errors.append(f"human review {request.id} tree does not match release {release.id}")
+        for release_id, request_ids in request_ids_by_release.items():
+            current = [
+                request_id
+                for request_id in request_ids
+                if self.human_review_requests[request_id].state
+                in {"preparing", "pending", "blocked"}
+            ]
+            if len(current) > 1:
+                errors.append(f"release {release_id} has multiple current human review requests")
+
+        decision_keys: set[tuple[str, str]] = set()
+        for decision in self.human_review_decisions.values():
+            if decision.human_review_request_id not in self.human_review_requests:
+                errors.append(
+                    f"human decision {decision.id} references missing request "
+                    f"{decision.human_review_request_id}"
+                )
+            for finding_id in decision.confirmed_finding_ids:
+                if finding_id not in self.human_review_findings:
+                    errors.append(
+                        f"human decision {decision.id} confirms missing finding {finding_id}"
+                    )
+            key = (decision.human_review_request_id, decision.request_id)
+            if key in decision_keys:
+                errors.append(
+                    f"human review {decision.human_review_request_id} has duplicate "
+                    f"decision request id {decision.request_id}"
+                )
+            decision_keys.add(key)
+
+        for finding in self.human_review_findings.values():
+            source_request = self.human_review_requests.get(finding.source_human_review_request_id)
+            if source_request is None:
+                errors.append(
+                    f"human finding {finding.id} references missing source request "
+                    f"{finding.source_human_review_request_id}"
+                )
+            if finding.correction_task_id not in self.tasks:
+                errors.append(
+                    f"human finding {finding.id} references missing correction task "
+                    f"{finding.correction_task_id}"
+                )
+            for deliverable_id in finding.target_deliverable_ids:
+                if deliverable_id not in self.deliverables:
+                    errors.append(
+                        f"human finding {finding.id} references missing deliverable "
+                        f"{deliverable_id}"
+                    )
+            for deliverable_id in finding.proposed_by_deliverable_ids:
+                if deliverable_id not in self.deliverables:
+                    errors.append(
+                        f"human finding {finding.id} references missing proposed "
+                        f"deliverable {deliverable_id}"
+                    )
+            if (
+                finding.resolved_by_human_review_request_id is not None
+                and finding.resolved_by_human_review_request_id not in self.human_review_requests
+            ):
+                errors.append(
+                    f"human finding {finding.id} references missing resolving request "
+                    f"{finding.resolved_by_human_review_request_id}"
+                )
+            elif finding.resolved_by_human_review_request_id is not None:
+                resolving_request = self.human_review_requests[
+                    finding.resolved_by_human_review_request_id
+                ]
+                if resolving_request.id == finding.source_human_review_request_id:
+                    errors.append(
+                        f"human finding {finding.id} cannot be resolved by its source request"
+                    )
+                elif source_request is not None and not self._release_descends_from(
+                    resolving_request.release_package_id,
+                    source_request.release_package_id,
+                ):
+                    errors.append(
+                        f"human finding {finding.id} resolving request "
+                        f"{resolving_request.id} is not on a successor release"
+                    )
+
+    def _release_descends_from(
+        self,
+        release_package_id: str,
+        ancestor_release_package_id: str,
+    ) -> bool:
+        current_id = release_package_id
+        seen: set[str] = set()
+        while current_id not in seen:
+            seen.add(current_id)
+            current = self.release_packages.get(current_id)
+            if current is None or current.supersedes_release_package_id is None:
+                return False
+            current_id = current.supersedes_release_package_id
+            if current_id == ancestor_release_package_id:
+                return True
+        return False
+
+    def _validate_dispatches(self, errors: list[str]) -> None:
+        for dispatch in self.dispatches.values():
+            agent = self.agents.get(dispatch.agent_id)
+            if agent is None:
+                errors.append(
+                    f"dispatch {dispatch.id} references missing agent {dispatch.agent_id}"
+                )
+            elif agent.session_id != dispatch.session_id:
+                errors.append(f"dispatch {dispatch.id} session does not match agent {agent.id}")
+            for task_id in dispatch.task_ids:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    errors.append(f"dispatch {dispatch.id} references missing task {task_id}")
+            for blocker_id in dispatch.blocker_ids:
+                if blocker_id not in self.blockers:
+                    errors.append(f"dispatch {dispatch.id} references missing blocker {blocker_id}")
+            for review_id in dispatch.review_request_ids:
+                review = self.review_requests.get(review_id)
+                if review is None:
+                    errors.append(f"dispatch {dispatch.id} references missing review {review_id}")
+            for inbox_id in dispatch.inbox_item_ids:
+                item = self.inbox.get(inbox_id)
+                if item is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} references missing inbox item {inbox_id}"
+                    )
+            for project_id in dispatch.project_ids:
+                if project_id not in self.projects:
+                    errors.append(f"dispatch {dispatch.id} references missing project {project_id}")
+
+    def _validate_worktree_cleanup_candidates(self, errors: list[str]) -> None:
+        for candidate in self.worktree_cleanup_candidates.values():
+            if candidate.agent_id not in self.agents:
+                errors.append(
+                    f"worktree cleanup {candidate.id} references missing agent {candidate.agent_id}"
+                )
+            task = self.tasks.get(candidate.task_id)
+            if task is None:
+                errors.append(
+                    f"worktree cleanup {candidate.id} references missing task {candidate.task_id}"
+                )
+            elif task.project_id != candidate.project_id:
+                errors.append(
+                    f"worktree cleanup {candidate.id} task belongs to project {task.project_id}"
+                )
+            project = self.projects.get(candidate.project_id)
+            if project is None:
+                errors.append(
+                    f"worktree cleanup {candidate.id} references missing project "
+                    f"{candidate.project_id}"
+                )
+            elif (
+                project.git is not None and project.git.managed_repo_id != candidate.managed_repo_id
+            ):
+                errors.append(
+                    f"worktree cleanup {candidate.id} repository does not match "
+                    f"project {project.id}"
+                )
 
     def _validate_ephemeral_assignments(self, errors: list[str]) -> None:
         for assignment in self.ephemeral_assignments.values():
@@ -4260,8 +5027,7 @@ def _task_waiting_reason(state: TeamState, task: AgentTask) -> str | None:
         and state.deliverables[deliverable_id].state in active_deliverable_states
     ]
     if any(
-        deliverable_requires_formal_review(deliverable, state=state)
-        for deliverable in deliverables
+        deliverable_requires_formal_review(deliverable, state=state) for deliverable in deliverables
     ):
         return "review"
     if deliverables:
@@ -4873,6 +5639,13 @@ def team_state_payload(
     agent_execution_records: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    # Keep the model layer independent from domain services at import time while
+    # still routing every task read through the canonical recursive evaluator.
+    from .services.domain.task_assessment import (
+        assess_tasks,
+        task_payload_with_assessment,
+    )
+
     if include_agent_voice_profiles is None:
         include_agent_voice_profiles = include_agent_avatars
     payload = state.model_dump(mode="json")
@@ -4886,8 +5659,15 @@ def team_state_payload(
         )
         for agent_id, agent in state.agents.items()
     }
+    assessments = assess_tasks(state)
     payload["tasks"] = {
-        task_id: task_payload_with_derived(state, task) for task_id, task in state.tasks.items()
+        task_id: task_payload_with_assessment(
+            state,
+            task,
+            assessment=assessments[task_id],
+            assessments=assessments,
+        )
+        for task_id, task in state.tasks.items()
     }
     payload["release_packages"] = {
         release_id: release_package_payload_with_derived(state, release)
@@ -4909,7 +5689,9 @@ def team_state_payload(
         if collection_name is not None:
             source_payload = payload[collection_name].get(blocker.source_id)
             if isinstance(source_payload, dict):
-                source_payload.setdefault("active_blocker_ids", []).append(blocker.id)
+                source_payload.setdefault("active_blocker_ids", [])
+                if blocker.id not in source_payload["active_blocker_ids"]:
+                    source_payload["active_blocker_ids"].append(blocker.id)
         if blocker.task_id is not None:
             task_payload = payload["tasks"].get(blocker.task_id)
             if isinstance(task_payload, dict):
@@ -5444,8 +6226,7 @@ def _runtime_blockers_due_for_agent(
         if blocker.state != TeamBlockerState.OPEN:
             continue
         assigned = (
-            blocker.route == TeamBlockerRoute.DELEGATED
-            and blocker.delegate_agent_id == agent_id
+            blocker.route == TeamBlockerRoute.DELEGATED and blocker.delegate_agent_id == agent_id
         ) or (
             blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
             and blocker.owner_agent_id == agent_id
@@ -5458,9 +6239,7 @@ def _runtime_blockers_due_for_agent(
             and item.payload.get("blocker_id") == blocker.id
             for item in state.inbox.values()
         )
-        follow_up_due = (
-            blocker.follow_up_at is None or _ensure_utc(blocker.follow_up_at) <= now
-        )
+        follow_up_due = blocker.follow_up_at is None or _ensure_utc(blocker.follow_up_at) <= now
         if has_pending_inbox or follow_up_due:
             rows.append(blocker)
     return rows

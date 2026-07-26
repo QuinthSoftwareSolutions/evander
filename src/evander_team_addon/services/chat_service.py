@@ -13,6 +13,8 @@ from ..models import (
     AgentRuntime,
     AgentStatus,
     PersistentAgent,
+    TeamDispatch,
+    TeamDispatchStatus,
     TeamConversation,
     TeamConversationMessage,
     TeamChatAttachment,
@@ -263,8 +265,34 @@ class TeamChatService:
                     f"{runtime.active_dispatch_id}"
                 )
             now = utc_now()
+            lease_expires_at = now + timedelta(
+                seconds=max(1, int(lease_seconds))
+            )
+            existing_dispatch = state.dispatches.get(normalized_dispatch_id)
+            if existing_dispatch is None:
+                state.dispatches[normalized_dispatch_id] = TeamDispatch(
+                    id=normalized_dispatch_id,
+                    agent_id=agent.id,
+                    session_id=agent.session_id,
+                    cause_kind="team_chat",
+                    cause_id=message.id,
+                    status=TeamDispatchStatus.LEASED,
+                    created_at=now,
+                    prepared_at=now,
+                    leased_at=now,
+                    lease_expires_at=lease_expires_at,
+                )
+            elif (
+                existing_dispatch.agent_id != agent.id
+                or existing_dispatch.session_id != agent.session_id
+                or existing_dispatch.status != TeamDispatchStatus.LEASED
+            ):
+                raise ValueError(
+                    f"chat dispatch {normalized_dispatch_id} is not a current "
+                    f"lease for agent {agent.id}"
+                )
             runtime.active_dispatch_id = normalized_dispatch_id
-            runtime.wake_leased_until = now + timedelta(seconds=max(1, int(lease_seconds)))
+            runtime.wake_leased_until = lease_expires_at
             runtime.wake_reason = "team_chat"
             runtime.last_wake_at = now
             runtime.next_wake_at = None
@@ -399,10 +427,31 @@ class TeamChatService:
                 ):
                     continue
                 dispatch_id = message.dispatch_id or f"team-chat:{message.id}"
-                runtime.active_dispatch_id = dispatch_id
-                runtime.wake_leased_until = effective_now + timedelta(
+                lease_expires_at = effective_now + timedelta(
                     seconds=max(1, int(lease_seconds))
                 )
+                existing_dispatch = state.dispatches.get(dispatch_id)
+                if existing_dispatch is None:
+                    state.dispatches[dispatch_id] = TeamDispatch(
+                        id=dispatch_id,
+                        agent_id=agent.id,
+                        session_id=agent.session_id,
+                        cause_kind="team_chat",
+                        cause_id=message.id,
+                        status=TeamDispatchStatus.LEASED,
+                        created_at=effective_now,
+                        prepared_at=effective_now,
+                        leased_at=effective_now,
+                        lease_expires_at=lease_expires_at,
+                    )
+                elif (
+                    existing_dispatch.status != TeamDispatchStatus.LEASED
+                    or existing_dispatch.agent_id != agent.id
+                    or existing_dispatch.session_id != agent.session_id
+                ):
+                    continue
+                runtime.active_dispatch_id = dispatch_id
+                runtime.wake_leased_until = lease_expires_at
                 runtime.wake_reason = "team_chat"
                 runtime.last_wake_at = effective_now
                 runtime.next_wake_at = None
@@ -459,6 +508,19 @@ class TeamChatService:
                 runtime.wake_reason = None
                 runtime.updated_at = utc_now()
             now = utc_now()
+            if message.dispatch_id is not None:
+                dispatch = state.dispatches.get(message.dispatch_id)
+                if (
+                    dispatch is not None
+                    and dispatch.status
+                    in {
+                        TeamDispatchStatus.PREPARING,
+                        TeamDispatchStatus.LEASED,
+                    }
+                ):
+                    dispatch.status = TeamDispatchStatus.FAILED
+                    dispatch.completed_at = now
+                    dispatch.error = normalized_error
             message.status = "failed"
             message.error = normalized_error
             message.updated_at = now

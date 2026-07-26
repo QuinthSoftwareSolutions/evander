@@ -4,7 +4,12 @@ from collections.abc import MutableMapping
 from datetime import datetime
 from typing import Any
 
-from ...models import GitWorkContextState, TeamState, TeamTaskState
+from ...models import (
+    GitWorkContextState,
+    TeamState,
+    TeamTaskState,
+    WorktreeCleanupState,
+)
 from .common import _ensure_utc, _optional_mapping, _optional_text
 
 
@@ -167,12 +172,30 @@ def reconcile_git_work_context_lifecycle(
 
     pruned = 0
     if prune_before is not None:
+        physically_cleaned_paths = {
+            (
+                candidate.task_id,
+                candidate.agent_id,
+                candidate.worktree_path,
+            )
+            for candidate in state.worktree_cleanup_candidates.values()
+            if candidate.state == WorktreeCleanupState.SUCCEEDED
+        }
         prunable_ids = [
             context.id
             for context in state.git_work_contexts.values()
             if context.state == GitWorkContextState.ABANDONED
             and context.id not in referenced_context_ids
             and context.updated_at <= prune_before
+            and (
+                context.worktree_path is None
+                or (
+                    context.task_id,
+                    context.agent_id,
+                    context.worktree_path,
+                )
+                in physically_cleaned_paths
+            )
         ]
         for context_id in prunable_ids:
             del state.git_work_contexts[context_id]

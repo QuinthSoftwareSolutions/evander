@@ -293,6 +293,8 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         deliverable_ids: Sequence[str],
         request_id: str,
         id: str | None = None,
+        supersedes_release_package_id: str | None = None,
+        post_release_feedback_case_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
@@ -305,6 +307,12 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_project_id = _required_text(project_id, "project_id")
         normalized_release_id = _optional_text(id)
+        normalized_predecessor_id = _optional_text(
+            supersedes_release_package_id
+        )
+        normalized_post_release_case_id = _optional_text(
+            post_release_feedback_case_id
+        )
         normalized_deliverable_ids = _string_list(
             deliverable_ids,
             "deliverable_ids",
@@ -327,6 +335,8 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         )
         normalized_payload = _team_request_release_normalized_payload(
             release_id=normalized_release_id,
+            supersedes_release_package_id=normalized_predecessor_id,
+            post_release_feedback_case_id=normalized_post_release_case_id,
             project_id=normalized_project_id,
             deliverable_ids=normalized_deliverable_ids,
             release_branch=normalized_release_branch,
@@ -377,6 +387,10 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                 actor=agent,
                 request={
                     "id": normalized_release_id,
+                    "supersedes_release_package_id": normalized_predecessor_id,
+                    "post_release_feedback_case_id": (
+                        normalized_post_release_case_id
+                    ),
                     "project_id": normalized_project_id,
                     "deliverable_ids": list(normalized_deliverable_ids),
                     "release_branch": normalized_release_branch,

@@ -51,12 +51,30 @@ class _TaskCreationPlan:
     case_id: str | None
     task_state: TeamTaskState
     parent_task_id: str | None
+    originating_task_id: str | None
     dependency_task_ids: list[str]
     priority: int
     title: str
     description: str
     task_kind: TeamTaskKind
     outcome_contract: TaskOutcomeContract | None
+
+
+def _validate_case_status_transition(
+    *,
+    source: str | None,
+    current_status: TeamCaseStatus | None,
+    next_status: TeamCaseStatus,
+) -> None:
+    if (
+        source == "post_release_feedback"
+        and next_status in {TeamCaseStatus.RESOLVED, TeamCaseStatus.CLOSED}
+        and current_status not in {TeamCaseStatus.RESOLVED, TeamCaseStatus.CLOSED}
+    ):
+        raise ValueError(
+            "post-release feedback cases require the evidence-backed "
+            "post-release close operation"
+        )
 
 
 def _validate_case_scope(
@@ -173,10 +191,13 @@ def _apply_case_update(
             raise ValueError(error)
         next_project_id = case.project_id
         next_owner_agent_id = case.owner_agent_id
+        next_source = case.source
         if "project_id" in update:
             next_project_id = _optional_text(update.get("project_id"))
         if "owner_agent_id" in update:
             next_owner_agent_id = _optional_text(update.get("owner_agent_id"))
+        if "source" in update:
+            next_source = _optional_text(update.get("source"))
         _validate_case_scope(
             state,
             team_id=case.team_id,
@@ -191,7 +212,15 @@ def _apply_case_update(
             case.project_id = next_project_id
         if "status" in update:
             previous_status = case.status
-            case.status = TeamCaseStatus(_required_text(update.get("status"), "status"))
+            next_status = TeamCaseStatus(
+                _required_text(update.get("status"), "status")
+            )
+            _validate_case_status_transition(
+                source=next_source,
+                current_status=previous_status,
+                next_status=next_status,
+            )
+            case.status = next_status
             if case.status == TeamCaseStatus.CLOSED and previous_status != TeamCaseStatus.CLOSED:
                 case.closed_at = now
             elif case.status != TeamCaseStatus.CLOSED:
@@ -201,7 +230,7 @@ def _apply_case_update(
         if "owner_agent_id" in update:
             case.owner_agent_id = next_owner_agent_id
         if "source" in update:
-            case.source = _optional_text(update.get("source"))
+            case.source = next_source
         if "source_ref" in update:
             case.source_ref = _optional_text(update.get("source_ref"))
         if "tags" in update:
@@ -248,6 +277,12 @@ def _apply_case_update(
     )
     _require_absent(state.cases, case_id, "case")
     status = TeamCaseStatus(_optional_text(update.get("status")) or TeamCaseStatus.OPEN.value)
+    source = _optional_text(update.get("source"))
+    _validate_case_status_transition(
+        source=source,
+        current_status=None,
+        next_status=status,
+    )
     case = TeamCase(
         id=case_id,
         team_id=team_id,
@@ -259,7 +294,7 @@ def _apply_case_update(
             _optional_text(update.get("priority")) or TeamInboxPriority.NORMAL.value
         ),
         owner_agent_id=owner_agent_id,
-        source=_optional_text(update.get("source")),
+        source=source,
         source_ref=_optional_text(update.get("source_ref")),
         tags=_unique_text_list(update.get("tags") or [], "tags"),
         metadata=_mapping(update.get("metadata") or {}, "metadata"),
@@ -424,6 +459,41 @@ def _plan_task_creation(
         result["errors"].append(f"task {task_id} already exists")
         return None
     parent_task_id = _optional_text(creation.get("parent_task_id"))
+    originating_task_id = _optional_text(creation.get("originating_task_id"))
+    if originating_task_id is not None:
+        origin = state.tasks.get(originating_task_id)
+        if origin is None:
+            result["errors"].append(
+                f"task creation references missing originating task {originating_task_id}"
+            )
+            return None
+        origin_project = state.projects.get(origin.project_id)
+        if (
+            origin.project_id != project_id
+            or origin_project is None
+            or origin_project.team_id != project.team_id
+        ):
+            result["errors"].append(
+                f"originating task {originating_task_id} must belong to project "
+                f"{project_id} and team {project.team_id}"
+            )
+            return None
+        origin_owner = state.agents.get(origin.owner_agent_id)
+        origin_creator = state.agents.get(origin.created_by_agent_id or "")
+        origin_visible = (
+            agent_has_project_assignment(state, actor.id, project_id)
+            or _is_project_lead_for(state, actor.id, project_id)
+            or _is_team_manager(state, actor)
+            or origin.owner_agent_id == actor.id
+            or origin.created_by_agent_id == actor.id
+            or (origin_owner is not None and origin_owner.team_id == actor.team_id)
+            or (origin_creator is not None and origin_creator.team_id == actor.team_id)
+        )
+        if not origin_visible:
+            result["errors"].append(
+                f"originating task {originating_task_id} is not visible to agent {actor.id}"
+            )
+            return None
     case_id = _optional_text(creation.get("case_id"))
     if case_id is not None:
         case = state.cases.get(case_id)
@@ -471,6 +541,7 @@ def _plan_task_creation(
         case_id=case_id,
         task_state=task_state,
         parent_task_id=parent_task_id,
+        originating_task_id=originating_task_id,
         dependency_task_ids=dependency_task_ids,
         priority=int(priority) if priority is not None else 0,
         title=_required_text(creation.get("title"), "title"),
@@ -500,6 +571,7 @@ def _apply_task_creation_plan(
         description=plan.description,
         created_by_agent_id=actor.id,
         parent_task_id=plan.parent_task_id,
+        originating_task_id=plan.originating_task_id,
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,
         updated_at=now,
@@ -804,6 +876,21 @@ def _task_graph_edit_error(
         dependency_map[task_id] = list(dependency_task_ids)
         if _has_dependency_cycle(dependency_map):
             return f"task dependency cycle includes {task_id}"
+        wait_map = {
+            existing_id: list(dependencies)
+            for existing_id, dependencies in dependency_map.items()
+        }
+        for existing_id, existing_task in state.tasks.items():
+            effective_parent_id = (
+                parent_task_id if existing_id == task_id else existing_task.parent_task_id
+            )
+            if effective_parent_id is not None:
+                wait_map.setdefault(effective_parent_id, []).append(existing_id)
+        if task_id not in state.tasks and parent_task_id is not None:
+            wait_map.setdefault(parent_task_id, []).append(task_id)
+            wait_map.setdefault(task_id, list(dependency_task_ids))
+        if _has_dependency_cycle(wait_map):
+            return f"task hierarchy/dependency cycle includes {task_id}"
     return None
 
 

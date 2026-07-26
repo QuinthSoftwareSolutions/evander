@@ -952,12 +952,16 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_archive_memory`
 - `team_create_case`
 - `team_update_case`
+- `team_propose_human_finding_resolution`
+- `team_create_human_finding_correction_root`
+- `team_close_post_release_case`
 - `team_create_task`
 - `team_create_tasks`
 - `team_create_outcome_kind`
 - `team_update_outcome_kind`
 - `team_archive_outcome_kind`
 - `team_update_task`
+- `team_cancel_task`
 - `team_report_blocker`
 - `team_update_blocker`
 - `team_update_goal`
@@ -1183,26 +1187,70 @@ and the same cascade backs both the `team_decide_review` MCP tool and the
 
 Every decision stamps `decision_at` and triggers
 `_recalculate_project_status`, which also runs after goal updates, task state
-changes, and release changes. A project is `completed` when all goals are
-accepted and no active task, deliverable, review, or release package is pending
-or blocked; `blocked` if any of those is blocked; otherwise `active`.
+changes, blocker transitions, and release/human-review changes. A project is
+`completed` only when goals are accepted, every task is validly resolved, and
+no active deliverable acceptance, agent review, release attempt, human request,
+human finding, or project-affecting canonical blocker remains. Blocked or
+invalid work and open project blockers produce `blocked`; actionable or waiting
+work, correction work, pending human review, open findings, and successor
+preparation remain `active`.
 
 ### Task Graphs And Review Profiles
 
 Team tasks can be split into tracked child tasks with `parent_task_id` and can
-declare ordering constraints with `dependency_task_ids`. The add-on stores those
-edges in canonical Team state, validates missing tasks, cross-project edges, and
-cycles, and exposes derived task fields in API/query payloads:
+declare ordering constraints with `dependency_task_ids`.
+`originating_task_id` is a different, immutable provenance-only link: it records
+that one task caused independent work to be created, but grants no authority
+and gates neither task. `case_id` groups intake or correction work without
+becoming a hidden parent.
 
-- `child_task_ids`
-- `dependency_status` (`satisfied`, `waiting`, or `blocked`)
-- `blocked_by_task_ids`
-- `subtask_counts`
+The add-on stores those relationships in canonical Team state, validates
+missing tasks, visibility, cross-project edges, and cycles, and exposes one
+derived recursive `TaskAssessment` in Admin, MCP, wake, dispatch, release, and
+command paths. It contains:
 
-The runtime wake loop uses this derived graph state: persistent agents are not
-prompted to start tasks whose dependencies are still waiting or blocked, while
-agents with open child tasks can still be woken to supervise or consolidate that
-work.
+- resolution status and exact reason;
+- readiness (`actionable`, child/dependency/acceptance/review waiting, blocked,
+  resolved, or invalid);
+- direct child and unresolved descendant IDs;
+- unsatisfied dependency, active acceptance/review, and canonical blocker IDs;
+- integration readiness and direct-child contribution coverage; and
+- invalid legacy reason codes.
+
+Every task read also includes a non-persisted `inherited_blockers` projection
+for blockers reached through unresolved descendants or unsatisfied
+dependencies. Each row identifies the upstream task and canonical blocker,
+reason code and explanation, source, accountable owner/delegate, route, and
+escalation context. The projection deduplicates shared blockers and scoped
+agent reads omit rows whose upstream task or blocker is not visible.
+
+Support tasks resolve as `finished`. Outcome tasks resolve only as `accepted`
+through a current contract-compatible delivered result or accepted
+`evidenced_noop`. Either kind may resolve as `cancelled` through an authorized,
+reason-coded disposition that records actor, time, and optional same-project
+successor. `blocked` and `rejected` do not resolve ancestors. A parent cannot
+submit its final deliverable, finish, become accepted, or enter release while
+any descendant is unresolved.
+
+Agents enter and leave intrinsic blocked work through `team_report_blocker` and
+source-aware blocker resolution. Generic Admin task `PATCH` rejects transitions
+into or out of `blocked`. Repairing a legacy contradiction uses
+`POST /api/addons/team-addon/tasks/{id}/repair-state` with a required reason;
+the linked blocker and its event history retain the Admin actor and references.
+
+Only agents with project-scoped `create_root_task` may create ordinary roots;
+provenance never supplies that permission. The authenticated human
+changes-requested transition has one narrow system-authorized exception to
+create same-project correction or triage roots atomically.
+
+An aggregate parent deliverable names the exact accepted current direct-child
+outputs in `source_deliverable_ids`. It omits children resolved by accepted
+evidenced no-op or authorized cancellation and does not invent a deliverable for
+finished support work. A nested child's accepted aggregate deliverable carries
+the next layer; recursive lineage is derived. The runtime does not periodically
+wake a parent merely because children remain open. It notifies the parent owner
+on blockers, handoffs, rejection, child resolution, and the transition to
+integration-ready.
 
 Review profiles are reusable, team-owned review rubrics. A profile may be scoped
 to one project, constrained to specific reviewer roles with `applicable_role_ids`,
@@ -1272,10 +1320,12 @@ remains.
 
 Every outcome submitted for an outcome task must carry durable `reference_ids`;
 evidence-only completion belongs on the explicit `evidenced_noop` task
-completion path and is accepted only when the contract allows it. Finishing an
-outcome task with `delivered` completion must point to outcomes on accepted,
-current deliverables that satisfy the contract. A task cannot be finished while
-an active deliverable, review, or blocker is blocked.
+completion attached to a submitted deliverable. It is valid only when the
+contract allows it and carries evidence refs, and it resolves the task only
+after direct acceptance or formal review copies the accepted completion to the
+task. Agents cannot directly finish an outcome task. Normal delivered
+completion is derived from outcomes on accepted, current deliverables that
+satisfy the contract. A report or review is evidence, not an outcome by itself.
 
 Review decisions are immutable attempts. A blocked non-release review records a
 `block_kind` and can be retried with `team_retry_review`; the successor is linked
@@ -1297,6 +1347,33 @@ inbox item arrived after the agent woke. The agent must read the item and includ
 its ID in `handled_inbox_item_ids` in the same command. Re-sending already handled
 IDs and resolving an already-resolved blocker with compatible evidence are
 successful no-ops, with `applied: false` and no Team-state revision bump.
+
+#### Durable Dispatch Scope And Execution Stalls
+
+An ordinary persistent wake first stores one immutable `TeamDispatch` in
+`preparing`. Its `task_ids`, `blocker_ids`, `review_request_ids`, and
+`inbox_item_ids` contain only records actually selected and assigned to that
+agent; related project and managed-repository lists contain only the resources
+required by those delivered records. Relationship alone never adds a record to
+the wrong scope list, and work created mid-dispatch waits for a later wake.
+Commands require a `leased` dispatch and revalidate membership plus current
+assignment/actionability in the corresponding list.
+
+Before leasing, Team prepares every required repository and task worktree and
+persists a fresh dispatch-bound Git context. A durable task/repository identity
+keeps one deterministic physical worktree path across dispatches, while context
+IDs remain fresh authorization boundaries. Prompt/UI projections show task,
+project, managed repository, worktree, branch, and context, and label the base
+checkout as a control checkout. If any preparation fails, the complete dispatch
+fails, created contexts are finalized, and the runtime reservation is released;
+Team never silently drops one scoped task.
+
+No-progress accounting remains agent-wide. At the configured limit, Team opens
+or reuses one blocker with `source_kind: agent_execution_stall` and the agent ID
+as source, appends the exhausted dispatch and affected tasks, routes it through
+the reporting/escalation chain, and suppresses ordinary task dispatch for the
+still-owned affected tasks. Task states remain unchanged. Only source-aware
+blocker resolution resets that allowance.
 
 ### Deterministic Git Branch Naming
 
@@ -1334,6 +1411,28 @@ deliverable do not need Git contexts. Once a deliverable includes Git metadata,
 `team_submit_deliverable` and `team_submit_deliverable_for_review` require a
 matching `branch_context_id` and reject missing, wrong-task, wrong-agent,
 wrong-dispatch, inactive, or mismatched branch contexts.
+
+Resolved tasks and task reassignment create durable, checkout-specific
+`WorktreeCleanupCandidate` records. The periodic Team wake reconciler starts in
+dry-run mode by default and exposes configurable cleanup limit, grace, retry,
+and interrupted-processing recovery intervals. Before invoking either the
+libvirt or container-worker backend it rereads Team state twice and refuses or
+defers cleanup while the task is still actionable for the checkout owner, a
+preparing/leased dispatch references the task, an active Git context references
+the path, the project repository changed, or the expected retained commit is
+not durably evidenced.
+
+Both execution backends serialize task-worktree preparation and cleanup for the
+session repository. A host coordinator lock is shared by Team preparation and
+reconciliation, so both durable Team-state reads happen while new preparation
+is excluded; the selected backend then acquires its repository-local lock. It
+validates the deterministic path, exact branch and commit, Git registration,
+tracked changes, and non-ignored untracked files, then repeats the physical
+inspection immediately before removal. Ignored caches are inventoried with byte
+counts and may be reclaimed only after those checks pass. Refusals remain
+`recovery_required` with the exact path, branch, failed check, timestamp,
+inventory, and size evidence; successful cleanup is audited before obsolete
+unreferenced Git-context metadata is pruned.
 
 - `review` — `team_publish_review_branch` can promote an ephemeral assignment
   branch after the assignment is completed or accepted with an `agent_branch`, or
@@ -1404,6 +1503,69 @@ policy blocks a new Git release rather than silently publishing it. Admin Web
 project create/edit forms expose the policy as JSON and release rows show the
 pinned candidate, verification state, release-review state, approved SHA, and a
 retry action only for an eligible typed gate failure.
+
+#### Human Release Review, Corrections, And Feedback
+
+`Project.release_policy.human_review_requirement` can add Admin reviewer-group
+IDs, a checklist, test instructions, and `manual` or `workflow` preparation.
+The frozen candidate manifest snapshots the directory, configured groups,
+initially eligible users, checklist, instructions, and preparation mode. The
+single gate sequencer advances candidate/hierarchy validation, verification,
+agent release reviews, target preparation, human review, and final publication
+in order; it creates only the next missing stage. At request creation it
+resolves the frozen group/directory requirement against current Admin
+membership, active users, and directory-scoped
+`team.human_reviews.decide` permission rather than trusting the policy-time
+eligibility list.
+
+A human request is pinned to candidate SHA and tree. Manual requests become
+`pending`; workflow requests become `preparing` and emit
+`team.release.human_review_preparation_requested`. If no eligible user exists,
+the same request becomes `blocked` with a canonical assignment-unavailable
+blocker routed to directory-scoped `admin.owner` recovery while the project
+lead retains visibility. Audited reassignment increments
+`assignment_generation`; preview retry increments `preparation_generation`.
+Preparation results can persist only safe URL/alias, expiry, instructions, and
+evidence metadata. Secrets remain in host-owned workflow/provider state; URL
+userinfo and secret-bearing query or fragment parameters are rejected.
+
+Decisions are Admin-only. The server derives the actor from a real authenticated
+session, rejects client actor/user fields, requires directory-scoped
+`team.human_reviews.decide`, current group or audited explicit assignment,
+privileged confirmation, optimistic request revision, idempotency key, and
+candidate match. There is no MCP human-decision tool. Admin routes are:
+
+- `GET /api/addons/team-addon/human-review-requests?assigned_to=me`
+- `GET /api/addons/team-addon/human-review-requests/{id}`
+- `POST /api/addons/team-addon/human-review-requests/{id}/decisions`
+- `POST /api/addons/team-addon/human-review-requests/{id}/reassign`
+- `POST /api/addons/team-addon/human-review-requests/{id}/resume`
+- internal authenticated `POST .../{id}/preparation-result`
+
+`blocked` preserves the same request and candidate for source-aware recovery.
+`changes_requested` atomically records the decision and findings, ends the
+immutable attempt without publication, creates or reuses one correction
+`TeamCase`, creates independent correction or project-lead triage roots, links
+findings, and queues deduplicated inbox/wake consequences. Accepted historical
+tasks, deliverables, reviews, and candidates are never reopened.
+
+A correction successor names `supersedes_release_package_id`, uses the
+predecessor candidate as baseline, preserves original scope, adds accepted
+correction deliverables, carries recursive contribution lineage plus every open
+finding and proposed resolution, requires a changed tree, and reruns all gates.
+Human approval must explicitly confirm every carried finding before it resolves
+and publication can proceed. Publication additionally requires candidate,
+approved, and published SHA equality plus one linked succeeded canonical-push
+promotion.
+
+`POST /api/addons/team-addon/release-packages/{id}/report-issue` handles
+post-release regression or adjustment intake. It preserves the published
+release, creates or reuses a deterministic case and project-lead triage root,
+and leaves rollback or a later successor to separate controlled decisions.
+Creating that successor is a separate release request: it must name both the
+published `supersedes_release_package_id` and the still-open linked
+`post_release_feedback_case_id`, and its correction deliverables must be
+current accepted contributions from resolved tasks in that case.
 
 Five add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the

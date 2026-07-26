@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ADMIN_NAVIGATION_GROUPS,
   TABS,
+  addonIframeHashQuery,
   addonTabsFromPayload,
   adminHash,
   currentTab,
@@ -83,6 +84,34 @@ test("admin hashes carry non-empty query parameters", () => {
   assert.equal(adminHash("sessions", { session_id: "session 1" }), "#sessions?session_id=session+1");
   assert.equal(hashQueryParam("#workflow?trace_id=trace-1", "trace_id"), "trace-1");
   assert.equal(hashQueryParam("#workflow", "trace_id"), null);
+});
+
+test("add-on iframe hash query forwards only bounded deep-link fields", () => {
+  const forwarded = new URLSearchParams(
+    addonIframeHashQuery(
+      "#addon:team-addon?view=my-human-reviews&human_review_request_id=review%201&directory_path=other&privileged_unlocked=true&unsafe=drop-me",
+      "addon:team-addon",
+    ),
+  );
+
+  assert.deepEqual(Object.fromEntries(forwarded), {
+    view: "my-human-reviews",
+    human_review_request_id: "review 1",
+  });
+  assert.equal(
+    addonIframeHashQuery(
+      "#addon:other?view=my-human-reviews&human_review_request_id=review-1",
+      "addon:team-addon",
+    ),
+    "",
+  );
+  assert.equal(
+    addonIframeHashQuery(
+      "#workflow?view=my-human-reviews&human_review_request_id=review-1",
+      "workflow",
+    ),
+    "",
+  );
 });
 
 test("dashboard is the first visible tab and vms stay backend-gated", () => {

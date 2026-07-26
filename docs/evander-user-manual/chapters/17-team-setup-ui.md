@@ -60,9 +60,9 @@ After restart, verify all four planes:
 
 A <code>404</code> from all Team routes usually indicates loading or restart state. An empty Team view with working routes usually indicates valid but empty Team state. Those are different failures.
 
-## The fourteen operator views
+## The fifteen operator views
 
-An operator does not need to learn all fourteen views at once. **Workspace** is the broad starting point; **Operations** answers “why is an agent waiting?”; **Delivery** follows evidence, reviews, and releases; and **Teams**, **Projects**, **Task board**, and **Cases** hold the main organizational and work records. The remaining views support communication, memory, governance, planning, history, and reporting structure.
+An operator does not need to learn all fifteen views at once. **Workspace** is the broad starting point; **Operations** answers “why is an agent waiting?”; **Delivery** follows evidence, reviews, and releases; and **Teams**, **Projects**, **Task board**, and **Cases** hold the main organizational and work records. The remaining views support communication, dispatch activity, memory, governance, planning, history, and reporting structure.
 
 The add-on UI currently has these top-level views:
 
@@ -78,12 +78,29 @@ The add-on UI currently has these top-level views:
 | **Teams** | Team setup, persistent agents, roles, assignments, and stand-down controls. |
 | **Chat** | Human-operator conversations with one persistent agent. |
 | **Mail** | Sent and received projections over one durable Team inbox collection. |
+| **Activity** | Redacted dispatch/tool success and failure history, filterable by Team, agent, dispatch, status, and tool. |
 | **Governance** | Cross-Team groups, agendas, cost warnings, and directives. |
 | **Planning** | Planning-oriented summaries of goals and work. |
 | **Timeline** | A derived chronological rendering of current Team records. |
 | **Org chart** | Reporting hierarchy and operational details per agent. |
 
 There is no top-level **Roles** view. Roles are maintained inside **Teams** and setup/edit forms. Reviews and releases similarly live inside **Delivery**, not separate top-level tabs.
+
+When a project policy enables the human release gate, **Delivery** also exposes
+**My Human Reviews** and the human-review detail on the release. The filter is
+assignment-aware: it shows requests the signed-in Admin user may currently
+decide, not every release the user can read. The detail keeps the immutable
+candidate SHA and tree beside automated verification, agent review decisions,
+test instructions or prepared preview target, checklist, carried findings,
+release-attempt lineage, and publication state.
+
+The initial human actions are **Approve**, **Request changes**, and **Blocked**.
+They are release decisions, not ordinary Team-agent commands. A decision
+requires the current request revision, an idempotency key, privileged-operation
+confirmation, the directory-scoped
+<code>team.human_reviews.decide</code> permission, and current assignment
+eligibility. There is deliberately no MCP tool that can decide on behalf of a
+person.
 
 The Org chart is diagnostic as well as visual. Agent nodes expose session, project, reporting, task, inbox, wake, and ephemeral-capacity information when available. It renders unreachable or malformed references for inspection; rendering never repairs persisted state.
 
@@ -148,7 +165,9 @@ Never solve a conflict by directly replacing a live pack file or Team database.
 
 ## UI identity, privilege, and special media
 
-Administrative mutations are protected by Admin authentication and the add-on's privileged-mutation guard. Chat creation and message submission follow the signed-in human conversation contract rather than pretending to be an agent command; users inspecting another operator's Chat through <code>team_chats.read_all</code> receive read-only behavior.
+Administrative mutations are protected by Admin authentication and the add-on's privileged-mutation guard. Human release decisions additionally require a real session principal; client-supplied user or actor fields are rejected rather than falling back to a generic administrator identity. Assignment is reconciled against current group membership and permission before notification, reassignment, resume, or decision. If no eligible reviewer remains, the same request and candidate become blocked until an audited reassignment or directory repair restores eligibility.
+
+Chat creation and message submission follow the signed-in human conversation contract rather than pretending to be an agent command; users inspecting another operator's Chat through <code>team_chats.read_all</code> receive read-only behavior.
 
 Optional avatars are UI metadata. Uploaded PNG, JPEG, or WebP images are normalized to square WebP under the Team add-on runtime directory. An OpenAI-generated preview becomes durable only after explicit acceptance. Avatars are not injected into prompts or used as core session identity.
 
@@ -166,6 +185,8 @@ Use the symptom to distinguish registration from empty state and foreground UI f
 | Template materialization rejects agent references | Core sessions or chosen Team agent IDs do not match the template inputs. | Correct the mapping; do not invent placeholder sessions for production use. |
 | Repeated <code>409</code> writes | Another operator or runtime command is advancing Team state. | Reload narrowly, merge intentionally, and retry once with the new revision. |
 | An enabled add-on has no runtime behavior | The registered pack is disabled, invalid, or its orchestrators are stopped. | Inspect the live workflow document, validation report, run history, and service state. |
+| Human review is visible but actions are disabled | The signed-in user is not a current eligible assignee, lacks the directory permission, or privileged operations are locked. | Inspect assignment, group membership, scoped RBAC, and the privilege banner; do not supply another user's ID. |
+| Human review says assignment unavailable | No current assignee satisfies the snapshotted reviewer groups or an audited explicit assignment. | Repair directory membership or use the authorized reassignment action; resume the same request rather than creating a replacement release. |
 
 ## Operator checklist
 
@@ -201,7 +222,7 @@ After enablement, an operator can confirm that **Workspace** loads, create or pr
 
 ## Source trail
 
-- <code>src/evander_team_addon/__init__.py</code>, <code>addon.json</code>, and <code>ui_static/</code> — registration, mounts, and the current fourteen-view UI.
+- <code>src/evander_team_addon/__init__.py</code>, <code>addon.json</code>, and <code>ui_static/</code> — registration, mounts, and the current fifteen-view UI.
 - <code>src/evander/admin/web/addons.py</code> and the add-on loader services — revision-checked enablement, runtime-pack materialization, and restart reporting.
 - <code>src/evander_team_addon/api.py</code> — bootstrap, scoped views, state stream, optimistic writes, templates, avatars, Chat, and voice routes.
 - <code>src/evander_team_addon/templates.py</code> — built-in catalog, preview, input binding, and materialization.

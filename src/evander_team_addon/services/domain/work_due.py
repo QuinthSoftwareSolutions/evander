@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from ...models import (
     AgentRuntime,
+    TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamState,
 )
 
@@ -17,10 +19,24 @@ def _mark_agent_work_due(
 ) -> None:
     runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
     _clear_completed_chat_dispatch_lease(state, runtime, now=now)
-    runtime.no_progress_count = 0
+    if not _agent_has_open_execution_stall(state, agent_id=agent_id):
+        runtime.no_progress_count = 0
     runtime.next_wake_at = None
     _clear_low_priority_batch(runtime)
     runtime.updated_at = now
+
+
+def _agent_has_open_execution_stall(
+    state: TeamState,
+    *,
+    agent_id: str,
+) -> bool:
+    return any(
+        blocker.state == TeamBlockerState.OPEN
+        and blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
+        and blocker.source_id == agent_id
+        for blocker in state.blockers.values()
+    )
 
 
 def _clear_low_priority_batch(runtime: AgentRuntime) -> None:
@@ -47,4 +63,5 @@ __all__ = [
     "_mark_agent_work_due",
     "_clear_low_priority_batch",
     "_advance_low_priority_batch",
+    "_agent_has_open_execution_stall",
 ]

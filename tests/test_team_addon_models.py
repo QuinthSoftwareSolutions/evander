@@ -55,6 +55,10 @@ from evander_team_addon.models import (
     project_lead_agent_id,
     team_state_payload,
 )
+from evander_team_addon.services.domain.task_assessment import (
+    TaskAssessmentService,
+    assess_task,
+)
 
 
 def _valid_state() -> TeamState:
@@ -763,6 +767,23 @@ def _state_with_task_graph() -> dict:
     return state
 
 
+def _add_other_project(state: dict) -> None:
+    """Add a second valid project without triggering unrelated assignment errors."""
+    state["roles"]["other__project-lead"] = {
+        "id": "other__project-lead",
+        "team_id": "team",
+        "project_id": "other",
+        "name": "Other Project Lead",
+    }
+    state["projects"]["other"] = {
+        "id": "other",
+        "team_id": "team",
+        "name": "Other",
+        "lead_agent_id": "lead",
+    }
+    state["teams"]["team"]["project_ids"] = ["project", "other"]
+
+
 def test_task_graph_loads_with_parent_and_dependencies() -> None:
     validated = TeamState.model_validate(_state_with_task_graph())
 
@@ -823,71 +844,100 @@ def test_case_link_rejects_missing_task_backlink() -> None:
         TeamState.model_validate(state)
 
 
-def test_task_graph_rejects_missing_parent() -> None:
+def test_task_graph_reports_missing_parent_without_rejecting_legacy_state() -> None:
     state = _valid_state().model_dump(mode="python")
     state["tasks"]["task"]["parent_task_id"] = "ghost"
 
-    with pytest.raises(ValidationError, match="missing parent ghost"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].parent_task_id == "ghost"
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.readiness.value == "invalid"
+    assert assessment.invalid_reason_codes == ["parent_task_missing"]
+    assert assessment.direct_child_ids == []
+    assert assessment.unsatisfied_dependency_ids == []
 
 
-def test_task_graph_rejects_missing_dependency() -> None:
+def test_task_graph_reports_missing_dependency_without_rejecting_legacy_state() -> None:
     state = _valid_state().model_dump(mode="python")
     state["tasks"]["task"]["dependency_task_ids"] = ["ghost"]
 
-    with pytest.raises(ValidationError, match="missing dependency ghost"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].dependency_task_ids == ["ghost"]
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.readiness.value == "invalid"
+    assert assessment.invalid_reason_codes == ["dependency_task_missing"]
+    assert assessment.unsatisfied_dependency_ids == ["ghost"]
 
 
-def test_task_graph_rejects_cross_project_parent() -> None:
+def test_task_graph_reports_cross_project_parent_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     state["tasks"]["parent"]["project_id"] = "other"
     # Decouple "task" from the (now cross-project) dependency tasks to isolate parent.
     state["tasks"]["task"]["dependency_task_ids"] = []
-    state["projects"]["other"] = {
-        "id": "other",
-        "team_id": "team",
-        "name": "Other",
-        "lead_agent_id": "lead",
-    }
-    state["teams"]["team"]["project_ids"] = ["project", "other"]
+    _add_other_project(state)
 
-    with pytest.raises(ValidationError, match="parent parent belongs to project other"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].parent_task_id == "parent"
+    assert validated.child_task_ids("parent") == ["task"]
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.invalid_reason_codes == ["parent_task_outside_project"]
+    assert assessment.unsatisfied_dependency_ids == []
 
 
-def test_task_graph_rejects_cross_project_dependency() -> None:
+def test_task_graph_reports_cross_project_dependency_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     state["tasks"]["task"]["parent_task_id"] = None
     state["tasks"]["dep-a"]["project_id"] = "other"
-    state["projects"]["other"] = {
-        "id": "other",
-        "team_id": "team",
-        "name": "Other",
-        "lead_agent_id": "lead",
-    }
-    state["teams"]["team"]["project_ids"] = ["project", "other"]
+    _add_other_project(state)
 
-    with pytest.raises(ValidationError, match="dependency dep-a belongs to project other"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].dependency_task_ids == ["dep-a", "dep-b"]
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.invalid_reason_codes == ["dependency_task_outside_project"]
+    assert assessment.unsatisfied_dependency_ids == ["dep-a", "dep-b"]
 
 
-def test_task_graph_rejects_parent_cycle() -> None:
+def test_task_graph_reports_parent_cycle_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     # parent <- task already; close the loop so parent points back to task.
     state["tasks"]["parent"]["parent_task_id"] = "task"
 
-    with pytest.raises(ValidationError, match="parent cycle"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessments = TaskAssessmentService(validated).assess_all()
+
+    assert validated.child_task_ids("parent") == ["task"]
+    assert validated.child_task_ids("task") == ["parent"]
+    assert assessments["parent"].invalid_reason_codes == ["parent_cycle"]
+    assert assessments["parent"].direct_child_ids == ["task"]
+    assert assessments["parent"].unresolved_descendant_ids == ["task"]
+    assert assessments["task"].invalid_reason_codes == ["parent_cycle"]
+    assert assessments["task"].direct_child_ids == ["parent"]
+    assert assessments["task"].unresolved_descendant_ids == ["parent"]
 
 
-def test_task_graph_rejects_dependency_cycle() -> None:
+def test_task_graph_reports_dependency_cycle_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     # task -> dep-a, dep-b; add dep-a -> task to create a cycle.
     state["tasks"]["dep-a"]["dependency_task_ids"] = ["task"]
 
-    with pytest.raises(ValidationError, match="dependency cycle"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessments = TaskAssessmentService(validated).assess_all()
+
+    assert validated.tasks["task"].dependency_task_ids == ["dep-a", "dep-b"]
+    assert validated.tasks["dep-a"].dependency_task_ids == ["task"]
+    assert assessments["task"].invalid_reason_codes == ["dependency_cycle"]
+    assert assessments["task"].unsatisfied_dependency_ids == ["dep-a", "dep-b"]
+    assert assessments["dep-a"].invalid_reason_codes == ["dependency_cycle"]
+    assert assessments["dep-a"].unsatisfied_dependency_ids == ["task"]
+    assert assessments["dep-b"].invalid_reason_codes == []
 
 
 def test_task_rejects_self_parent() -> None:

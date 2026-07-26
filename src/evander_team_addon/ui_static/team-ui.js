@@ -11,6 +11,7 @@ const taskStates = [
   "finished",
   "accepted",
   "rejected",
+  "cancelled",
 ];
 const caseStatuses = [
   "open",
@@ -24,7 +25,7 @@ const taskBoardLanes = [
   { id: "planned", label: "Planned", states: ["pending"] },
   { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
   { id: "reviewing", label: "Acceptance / Review", states: ["waiting_for_review"] },
-  { id: "done", label: "Done", states: ["finished", "accepted"] },
+  { id: "done", label: "Done", states: ["finished", "accepted", "rejected", "cancelled"] },
 ];
 const taskBoardStateToLane = new Map(
   taskBoardLanes.flatMap((lane) => lane.states.map((state) => [state, lane.id])),
@@ -72,7 +73,7 @@ const gitProviders = [
   ["github", "GitHub"],
   ["azure_devops", "Azure DevOps"],
 ];
-const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
+const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 const defaultPlanningTaskStates = new Set([
   "pending",
@@ -125,6 +126,9 @@ const teamStateCollectionKeys = [
   "blocker_events",
   "action_records",
   "release_packages",
+  "dispatches",
+  "worktree_cleanup_candidates",
+  "git_work_contexts",
   "ephemeral_assignments",
   "git_promotions",
   "stand_downs",
@@ -167,7 +171,10 @@ let costBackfillRequestId = 0;
 let costBackfillLoading = false;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
-let activeTeamView = readStoredTeamView();
+const initialHumanReviewDeepLink = readHumanReviewDeepLink();
+let activeTeamView = initialHumanReviewDeepLink.enabled
+  ? "delivery"
+  : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
@@ -320,6 +327,17 @@ const deliveryStatusLabels = {
 };
 
 let selectedDeliveryFilter = "all";
+let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
+let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
+let humanReviewQueue = {
+  loaded: false,
+  loading: false,
+  error: null,
+  requests: [],
+};
+const releaseDetailCache = new Map();
+const expandedReleaseDetailIds = new Set();
+const postReleaseReportResults = new Map();
 let tooltipCounter = 0;
 
 const rolePermissionTooltips = {
@@ -457,6 +475,11 @@ const fieldTooltips = {
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
   "edit:project:goals": "Replace project goals using id | description | state rows.",
+  "edit:project:human_review_enabled": "Require an authenticated, assigned Admin Web reviewer to decide the pinned release candidate.",
+  "edit:project:human_reviewer_group_ids": "Directory-scoped Admin Web groups whose current eligible users may receive this review.",
+  "edit:project:human_review_checklist": "One row per acceptance check: id | label | description | required or optional.",
+  "edit:project:human_review_test_instructions": "Stable manual test instructions snapshotted onto each release request.",
+  "edit:project:human_review_preparation_mode": "Manual uses these instructions directly; workflow requires a prepared preview target before review.",
   "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
   "edit:agent:role_id": "First-class role assigned to this persistent agent.",
   "edit:agent:session_id": "Session ID used when this agent is woken or resumed.",
@@ -557,6 +580,9 @@ function emptyState() {
     blocker_events: {},
     action_records: {},
     release_packages: {},
+    dispatches: {},
+    worktree_cleanup_candidates: {},
+    git_work_contexts: {},
     ephemeral_assignments: {},
     git_promotions: {},
     stand_downs: {},
@@ -708,6 +734,27 @@ function readStoredTeamView() {
   } catch {
     return defaultTeamView;
   }
+}
+
+function readHumanReviewDeepLink() {
+  const params = new URLSearchParams(window.location.search);
+  const hash = String(window.location.hash || "");
+  const hashQueryIndex = hash.indexOf("?");
+  if (hashQueryIndex >= 0) {
+    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1));
+    hashParams.forEach((value, key) => {
+      if (!params.has(key)) {
+        params.set(key, value);
+      }
+    });
+  }
+  const enabled = params.get("view") === "my-human-reviews";
+  return {
+    enabled,
+    requestId: enabled
+      ? String(params.get("human_review_request_id") || "").trim()
+      : "",
+  };
 }
 
 function storeTeamView(view) {
@@ -2247,6 +2294,10 @@ const lockedMutationControlSelectors = [
   ["[data-stand-down-revoke-agent-id]", "revoke stand-downs"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
+  ["[data-release-gate-retry]", "retry release gates"],
+  ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
+  ["[data-human-review-resume-id]", "resume human reviews"],
+  ["[data-human-review-reassign-id]", "reassign human reviews"],
   ["[data-governance-agenda-handle-id]", "mark governance agenda handled"],
   ["[data-avatar-generate-agent-id]", "generate avatar previews"],
   ["[data-avatar-accept-agent-id]", "accept avatar previews"],
@@ -2263,6 +2314,7 @@ const lockedMutationControlSelectors = [
   ["form[data-delegated-create-form] button[type='submit']", "save changes"],
   ["form[data-org-action-form] button[type='submit']", "save changes"],
   ["form[data-review-decision-form] button[type='submit']", "record review decisions"],
+  ["form[data-human-review-decision-form] button[type='submit']", "record human review decisions"],
   ["#update-task-form button[type='submit']", "update tasks"],
   ["#decide-review-form button[type='submit']", "record review decisions"],
   ["#edit-record-form button[type='submit']", "save changes"],
@@ -2592,10 +2644,81 @@ function bindWorkspaceReviewDecisionForms() {
 
 function bindDeliveryFilters() {
   document.querySelectorAll(".delivery-filter").forEach((button) => {
+    if (button.matches("[data-my-human-reviews]")) {
+      return;
+    }
     button.addEventListener("click", () => {
       const filter = button.dataset.filter || "all";
       setDeliveryFilter(filter);
     });
+  });
+  document.querySelector("[data-my-human-reviews]")?.addEventListener("click", () => {
+    myHumanReviewsOnly = !myHumanReviewsOnly;
+    if (!myHumanReviewsOnly) {
+      focusedHumanReviewRequestId = "";
+    }
+    updateMyHumanReviewsFilterButton();
+    if (myHumanReviewsOnly) {
+      void loadMyHumanReviews();
+      return;
+    }
+    renderReleases();
+  });
+  document.addEventListener("click", (event) => {
+    const retryButton = event.target?.closest?.("[data-my-human-reviews-retry]");
+    if (retryButton) {
+      event.preventDefault();
+      void loadMyHumanReviews();
+      return;
+    }
+    const detailButton = event.target?.closest?.("[data-release-detail-id]");
+    if (detailButton) {
+      event.preventDefault();
+      void toggleReleaseDetail(text(detailButton.dataset.releaseDetailId));
+      return;
+    }
+    const resumeButton = event.target?.closest?.("[data-human-review-resume-id]");
+    if (resumeButton) {
+      event.preventDefault();
+      if (guardTeamMutation("resume human reviews")) {
+        void resumeHumanReview(resumeButton, text(resumeButton.dataset.humanReviewResumeId));
+      }
+      return;
+    }
+    const reassignButton = event.target?.closest?.("[data-human-review-reassign-id]");
+    if (!reassignButton) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("reassign human reviews")) {
+      return;
+    }
+    const userIds = window.prompt(
+      "Assign this human review to Admin Web user IDs (comma or newline separated).",
+      "",
+    );
+    if (userIds === null) {
+      return;
+    }
+    void reassignHumanReview(
+      reassignButton,
+      text(reassignButton.dataset.humanReviewReassignId),
+      splitList(userIds),
+    );
+  });
+  document.addEventListener("submit", (event) => {
+    const postReleaseReportForm = event.target?.closest?.("[data-post-release-report-form]");
+    if (postReleaseReportForm) {
+      event.preventDefault();
+      void submitPostReleaseReport(postReleaseReportForm, event.submitter);
+      return;
+    }
+    const humanReviewForm = event.target?.closest?.("[data-human-review-decision-form]");
+    if (!humanReviewForm) {
+      return;
+    }
+    event.preventDefault();
+    void submitHumanReviewDecision(humanReviewForm, event.submitter);
   });
 }
 
@@ -2838,6 +2961,19 @@ async function bootTeamAddon() {
     const reason = rejection.reason;
     setStatus(reason instanceof Error ? reason.message : "Team view failed to load.", "error");
     return;
+  }
+  if (initialHumanReviewDeepLink.enabled) {
+    const focused = await openHumanReviewDeepLink(
+      initialHumanReviewDeepLink.requestId,
+    );
+    if (!focused && initialHumanReviewDeepLink.requestId) {
+      setStatus(
+        `Human review ${initialHumanReviewDeepLink.requestId} is not assigned or visible; showing your assigned reviews instead.`,
+        "warning",
+      );
+      scheduleIdleViewPrefetch();
+      return;
+    }
   }
   setStatus("", "");
   scheduleIdleViewPrefetch();
@@ -4042,10 +4178,26 @@ function setDeliveryFilter(filter) {
 
 function updateDeliveryFilterButtons() {
   document.querySelectorAll(".delivery-filter").forEach((button) => {
+    if (button.matches("[data-my-human-reviews]")) {
+      return;
+    }
     const active = (button.dataset.filter || "all") === selectedDeliveryFilter;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
+  updateMyHumanReviewsFilterButton();
+}
+
+function updateMyHumanReviewsFilterButton() {
+  const button = document.querySelector("[data-my-human-reviews]");
+  if (!button) {
+    return;
+  }
+  button.classList.toggle("is-active", myHumanReviewsOnly);
+  button.setAttribute("aria-pressed", myHumanReviewsOnly ? "true" : "false");
+  const count = humanReviewQueue.loaded ? humanReviewQueue.requests.length : null;
+  button.textContent =
+    count === null ? "My Human Reviews" : `My Human Reviews (${count})`;
 }
 
 function renderReviewDeliveryWorkspace() {
@@ -6580,7 +6732,8 @@ function renderTeamInlineProjectForm(teamId) {
       </details>
       <details class="team-inline-create-advanced">
         <summary>Release gates</summary>
-        <label>Release policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
+        <label>Automated and agent-review policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
+        ${renderHumanReviewPolicyEditor()}
         <p class="field-help">Git releases fail closed until this policy defines disposable verification commands and/or release reviewers.</p>
       </details>
       ${renderTeamInlineCreateActions(teamId, "project", "Create project")}
@@ -10301,18 +10454,44 @@ function renderTaskBoardCard(task) {
   const blocked = isTaskBoardBlocked(task);
   const stateLabel = blocked ? "Blocked" : taskStateLabel(task);
   const laneEntered = taskBoardLaneEnteredText(task);
+  const depth = taskHierarchyDepth(task);
+  const assessment = task.assessment || {};
+  const unresolvedIds = assessment.unresolved_descendant_ids || [];
+  const worktreeContexts = taskGitWorkContexts(task);
   return `
-    <li class="task-board-card${blocked ? " task-board-card-blocked" : ""}">
+    <li class="task-board-card${blocked ? " task-board-card-blocked" : ""}" style="--task-depth: ${depth}">
       <div class="task-board-card-title-row">
-        <strong>${escapeHtml(task.title)}</strong>
+        <strong>${depth ? `${"↳ ".repeat(Math.min(depth, 4))}` : ""}${escapeHtml(task.title)}</strong>
         <span class="state-pill ${blocked ? "blocked" : escapeAttr(task.state)}">${escapeHtml(stateLabel)}</span>
       </div>
       <div class="task-board-card-meta">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)}</div>
+      ${task.parent_task_id ? `<div class="task-board-card-meta">Parent: ${escapeHtml(task.parent_task_id)} - depth ${depth}</div>` : ""}
+      ${task.originating_task_id ? `<div class="task-board-card-meta">Provenance: ${escapeHtml(task.originating_task_id)}</div>` : ""}
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
+      <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
+      ${unresolvedIds.length ? `<div class="task-board-card-meta">Unresolved descendants (${unresolvedIds.length}): ${escapeHtml(unresolvedIds.join(", "))}</div>` : ""}
+      ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => `${row.worktree_path || "control"} (${row.id || row.branch_context_id})`).join(", "))}</div>` : ""}
+      ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
       ${renderTaskBoardBlockerLine(task)}
     </li>
   `;
+}
+
+function taskHierarchyDepth(task) {
+  let depth = 0;
+  let current = task;
+  const seen = new Set([text(task?.id)]);
+  while (current?.parent_task_id && depth < 32) {
+    const parentId = text(current.parent_task_id);
+    if (!parentId || seen.has(parentId) || !state.tasks[parentId]) {
+      break;
+    }
+    seen.add(parentId);
+    depth += 1;
+    current = state.tasks[parentId];
+  }
+  return depth;
 }
 
 function taskBoardLaneForTask(task) {
@@ -10353,6 +10532,8 @@ function taskBoardLaneEnteredText(task) {
 function isTaskBoardBlocked(task) {
   return (
     task.state === "blocked" ||
+    task.readiness === "blocked" ||
+    task.readiness === "invalid" ||
     task.dependency_status === "blocked" ||
     Boolean((task.blocked_by_task_ids || []).length)
   );
@@ -10368,10 +10549,28 @@ function renderTaskBoardBlockerLine(task) {
   }
   const routedBlockers = activeBlockersForRecord("task", task.id, task.id);
   routedBlockers.forEach((blocker) => blockers.push(blockerRoutingLabel(blocker)));
+  inheritedTaskBlockers(task).forEach((blocker) => {
+    blockers.push(inheritedTaskBlockerLabel(blocker));
+  });
   if (!blockers.length) {
     return "";
   }
   return `<div class="task-board-card-blockers">${escapeHtml(blockers.join(" - "))}</div>`;
+}
+
+function inheritedTaskBlockers(task) {
+  return Array.isArray(task?.inherited_blockers)
+    ? task.inherited_blockers.filter((blocker) => blocker && blocker.blocker_id)
+    : [];
+}
+
+function inheritedTaskBlockerLabel(blocker) {
+  const relationship = text(blocker.relationship) || "upstream";
+  const upstreamTaskId = text(blocker.upstream_task_id) || "unknown task";
+  const blockerId = text(blocker.blocker_id) || "unknown blocker";
+  const reasonCode = text(blocker.reason_code) || "unspecified";
+  const reason = text(blocker.reason || blocker.summary) || "No reason supplied";
+  return `${relationship} ${upstreamTaskId}: blocker ${blockerId} [${reasonCode}] ${reason}`;
 }
 
 function activeBlockersForRecord(sourceKind, sourceId, taskId = null) {
@@ -10561,7 +10760,11 @@ function renderProjectReleasePolicy(policy) {
   }
   const commands = (policy.verification_commands || []).map((command) => command.name);
   const reviewers = (policy.review_requirements || []).map((requirement) => requirement.reviewer_agent_id);
-  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
+  const human = policy.human_review_requirement;
+  const humanLabel = human
+    ? `human review via ${(human.reviewer_group_ids || []).join(", ")} (${human.preparation_mode || "manual"})`
+    : "no human review";
+  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")} - ${escapeHtml(humanLabel)}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
 }
 
 function renderGoals(goals, { compact = false } = {}) {
@@ -10618,62 +10821,108 @@ function renderTasks(tasks, { compact = false } = {}) {
   if (!tasks.length) {
     return `<p class="empty-state">No tasks.</p>`;
   }
-  if (compact) {
-    return `
-      <ul class="task-list compact-record-list">
-        ${tasks
-          .map((task) => {
-            return `
-              <li class="task-item compact-record-card">
-                <details>
-                  <summary class="compact-record-summary">
-                    <span class="compact-record-main">
-                      <strong>${escapeHtml(task.title)}</strong>
-                      <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - priority ${task.priority}</span>
-                    </span>
-                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
-                  </summary>
-                  <div class="compact-record-body">
-                    <div class="record-actions">
-                      ${editButton("task", task.id)}
-                    </div>
-                    <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
-                    ${renderTaskGraph(task)}
-                    <div class="meta-line">${escapeHtml(task.description)}</div>
-                  </div>
-                </details>
-              </li>
-            `;
-          })
-          .join("")}
-      </ul>
-    `;
-  }
+  const rows = taskHierarchyRows(tasks);
   return `
-    <ul class="task-list">
-      ${tasks
-        .map((task) => {
-          return `
-              <li class="task-item">
-                <div class="task-line">
-                  <strong>${escapeHtml(task.title)}</strong>
-                  <div class="record-actions">
-                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
-                    ${editButton("task", task.id)}
-                  </div>
-                </div>
-              <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
-              ${renderTaskGraph(task)}
-              <div class="meta-line">${escapeHtml(task.description)}</div>
-            </li>
-          `;
-        })
-        .join("")}
+    <ul class="task-list${compact ? " compact-record-list" : ""}">
+      ${rows.map((row) => renderTaskHierarchyRow(row, { compact })).join("")}
     </ul>
   `;
 }
 
+function taskHierarchyRows(tasks) {
+  const byTaskId = new Map(tasks.map((task) => [text(task.id), task]));
+  const children = new Map();
+  tasks.forEach((task) => {
+    const parentId = text(task.parent_task_id);
+    if (!parentId || !byTaskId.has(parentId) || parentId === text(task.id)) {
+      return;
+    }
+    const rows = children.get(parentId) || [];
+    rows.push(task);
+    children.set(parentId, rows);
+  });
+  children.forEach((rows) => rows.sort(byPriority));
+  const roots = tasks
+    .filter((task) => {
+      const parentId = text(task.parent_task_id);
+      return !parentId || !byTaskId.has(parentId) || parentId === text(task.id);
+    })
+    .sort(byPriority);
+  const rows = [];
+  const visited = new Set();
+  const visit = (task, depth, path) => {
+    const taskId = text(task.id);
+    if (visited.has(taskId)) {
+      return;
+    }
+    visited.add(taskId);
+    const cycle = path.has(taskId);
+    rows.push({ task, depth, hierarchyWarning: cycle ? "cycle" : "" });
+    if (cycle) {
+      return;
+    }
+    const nextPath = new Set(path);
+    nextPath.add(taskId);
+    (children.get(taskId) || []).forEach((child) => visit(child, depth + 1, nextPath));
+  };
+  roots.forEach((task) => visit(task, 0, new Set()));
+  tasks
+    .filter((task) => !visited.has(text(task.id)))
+    .sort(byPriority)
+    .forEach((task) => visit(task, 0, new Set([text(task.id)])));
+  return rows;
+}
+
+function renderTaskHierarchyRow({ task, depth, hierarchyWarning }, { compact }) {
+  const invalid = Boolean(hierarchyWarning || (task.invalid_reason_codes || []).length);
+  const classes = [
+    "task-item",
+    compact ? "compact-record-card" : "",
+    depth ? "task-hierarchy-child" : "task-hierarchy-root",
+    invalid ? "task-hierarchy-invalid" : "",
+  ].filter(Boolean).join(" ");
+  const body = `
+    <div class="record-actions">
+      ${editButton("task", task.id)}
+    </div>
+    <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
+    ${renderTaskGraph(task)}
+    <div class="meta-line">${escapeHtml(task.description)}</div>
+  `;
+  if (compact) {
+    return `
+      <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}">
+        <details>
+          <summary class="compact-record-summary">
+            <span class="compact-record-main">
+              <strong>${escapeHtml(task.title)}</strong>
+              <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - depth ${depth}</span>
+            </span>
+            <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
+          </summary>
+          <div class="compact-record-body">${body}</div>
+        </details>
+      </li>
+    `;
+  }
+  return `
+    <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}">
+      <div class="task-line">
+        <strong>${escapeHtml(task.title)}</strong>
+        <div class="record-actions">
+          <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
+          ${editButton("task", task.id)}
+        </div>
+      </div>
+      <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
+      ${renderTaskGraph(task)}
+      <div class="meta-line">${escapeHtml(task.description)}</div>
+    </li>
+  `;
+}
+
 function renderTaskGraph(task) {
+  const assessment = task.assessment || {};
   const lines = [];
   if (task.case_id) {
     const item = state.cases[task.case_id];
@@ -10681,6 +10930,9 @@ function renderTaskGraph(task) {
   }
   if (task.parent_task_id) {
     lines.push(`parent ${task.parent_task_id}`);
+  }
+  if (task.originating_task_id) {
+    lines.push(`originating task ${task.originating_task_id}`);
   }
   if ((task.dependency_task_ids || []).length) {
     lines.push(`depends on ${task.dependency_task_ids.join(", ")}`);
@@ -10691,8 +10943,13 @@ function renderTaskGraph(task) {
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) => {
     lines.push(blockerRoutingLabel(blocker));
   });
-  if ((task.child_task_ids || []).length) {
-    lines.push(`children ${task.child_task_ids.join(", ")}`);
+  const childIds = task.child_task_ids || assessment.direct_child_ids || [];
+  if (childIds.length) {
+    lines.push(`children ${childIds.join(", ")}`);
+  }
+  const unresolvedIds = assessment.unresolved_descendant_ids || [];
+  if (unresolvedIds.length) {
+    lines.push(`unresolved descendants ${unresolvedIds.join(", ")}`);
   }
   const counts = task.subtask_counts || {};
   const subtaskLine = counts.total
@@ -10702,12 +10959,222 @@ function renderTaskGraph(task) {
     ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>`
     : "";
   const countLine = subtaskLine ? `<div class="meta-line">${escapeHtml(subtaskLine)}</div>` : "";
+  const readiness = text(task.readiness || assessment.readiness || "unknown");
+  const resolution = text(task.resolution_status || assessment.resolution_status || "unknown");
+  const integrationReady = Boolean(task.integration_ready ?? assessment.integration_ready);
+  const acceptanceIds = assessment.active_acceptance_ids || [];
+  const reviewIds = assessment.active_review_request_ids || [];
+  const contribution = assessment.contribution_coverage || {};
+  const coverageBits = [
+    text(contribution.status) ? `coverage ${text(contribution.status)}` : "",
+    (contribution.missing_source_deliverable_ids || []).length
+      ? `missing ${contribution.missing_source_deliverable_ids.join(", ")}`
+      : "",
+    (contribution.unexpected_source_deliverable_ids || []).length
+      ? `unexpected ${contribution.unexpected_source_deliverable_ids.join(", ")}`
+      : "",
+  ].filter(Boolean);
+  const invalidCodes = task.invalid_reason_codes || assessment.invalid_reason_codes || [];
+  const cancellation = task.cancellation || null;
   return `
-    <div class="meta-line">
-      Dependency status <span class="state-pill ${escapeHtml(task.dependency_status || "satisfied")}">${escapeHtml(task.dependency_status || "satisfied")}</span>
+    <div class="task-lifecycle-summary">
+      <span>Readiness <span class="state-pill ${escapeAttr(taskReadinessPill(readiness))}">${escapeHtml(readiness)}</span></span>
+      <span>Resolution <span class="state-pill ${escapeAttr(taskResolutionPill(resolution))}">${escapeHtml(resolution)}</span></span>
+      <span>Integration <span class="state-pill ${integrationReady ? "accepted" : "neutral"}">${integrationReady ? "ready" : "not ready"}</span></span>
+      <span>Dependencies <span class="state-pill ${escapeHtml(task.dependency_status || "satisfied")}">${escapeHtml(task.dependency_status || "satisfied")}</span></span>
     </div>
+    ${assessment.resolution_reason ? `<div class="meta-line">Lifecycle reason: ${escapeHtml(assessment.resolution_reason)}</div>` : ""}
     ${graphLines}${countLine}
+    ${acceptanceIds.length ? `<div class="meta-line">Direct acceptance: ${escapeHtml(acceptanceIds.join(", "))}</div>` : ""}
+    ${reviewIds.length ? `<div class="meta-line">Formal review: ${escapeHtml(reviewIds.join(", "))}</div>` : ""}
+    ${coverageBits.length ? `<div class="meta-line">Contribution composition: ${escapeHtml(coverageBits.join(" - "))}</div>` : ""}
+    ${cancellation ? renderTaskCancellation(cancellation) : ""}
+    ${renderTaskBlockerDetails(task)}
+    ${renderTaskWorktreeMapping(task)}
+    ${
+      invalidCodes.length
+        ? `<div class="task-invalid-warning"><strong>Legacy lifecycle repair required:</strong> ${escapeHtml(invalidCodes.join(", "))} ${editButton("task", task.id, "Repair task")}</div>`
+        : ""
+    }
   `;
+}
+
+function taskReadinessPill(readiness) {
+  if (readiness === "actionable") return "accepted";
+  if (readiness === "blocked" || readiness === "invalid") return "blocked";
+  if (readiness === "resolved") return "neutral";
+  return "info";
+}
+
+function taskResolutionPill(resolution) {
+  if (resolution === "resolved") return "accepted";
+  if (resolution === "invalid") return "blocked";
+  return "info";
+}
+
+function renderTaskCancellation(cancellation) {
+  const parts = [
+    cancellation.reason_code ? `reason ${cancellation.reason_code}` : "",
+    cancellation.reason,
+    cancellation.actor_kind && cancellation.actor_id
+      ? `by ${cancellation.actor_kind} ${cancellation.actor_id}`
+      : "",
+    cancellation.successor_task_id ? `successor ${cancellation.successor_task_id}` : "",
+    cancellation.cancelled_at ? `at ${cancellation.cancelled_at}` : "",
+  ].filter(Boolean);
+  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(parts.join(" - "))}</div>`;
+}
+
+function renderTaskBlockerDetails(task) {
+  const blockers = activeBlockersForRecord("task", task.id, task.id);
+  const inheritedBlockers = inheritedTaskBlockers(task);
+  if (!blockers.length && !inheritedBlockers.length) {
+    return "";
+  }
+  return `
+    <div class="task-blocker-details">
+      ${blockers.map((blocker) => renderTaskBlockerDetail(blocker)).join("")}
+      ${inheritedBlockers.map((blocker) => renderInheritedTaskBlockerDetail(blocker)).join("")}
+    </div>
+  `;
+}
+
+function renderInheritedTaskBlockerDetail(blocker) {
+  const route = [
+    blocker.owner_agent_id ? `owner ${blocker.owner_agent_id}` : "no visible agent owner",
+    blocker.delegate_agent_id ? `delegate ${blocker.delegate_agent_id}` : "",
+    blocker.route ? `route ${blocker.route}` : "",
+    `escalation level ${Number(blocker.escalation_depth || 0)}`,
+  ].filter(Boolean).join(" - ");
+  const timing = [
+    blocker.created_at ? `blocked since ${blocker.created_at}` : "",
+    blocker.follow_up_at ? `follow up ${blocker.follow_up_at}` : "",
+    blocker.last_progress_at ? `last progress ${blocker.last_progress_at}` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <section class="task-blocker-card task-inherited-blocker-card">
+      <div><strong>Upstream ${escapeHtml(blocker.relationship || "task")} ${escapeHtml(blocker.upstream_task_id || "unknown")}</strong></div>
+      <div><strong>Blocker ${escapeHtml(blocker.blocker_id)}</strong> <span class="state-pill blocked">${escapeHtml(blocker.reason_code || "unspecified")}</span></div>
+      <div>${escapeHtml(blocker.reason || blocker.summary || "No reason supplied")}</div>
+      ${blocker.details ? `<div>${escapeHtml(blocker.details)}</div>` : ""}
+      <div class="meta-line">Source ${escapeHtml(`${blocker.source_kind || "unknown"} ${blocker.source_id || ""}`.trim())} - ${escapeHtml(route)}</div>
+      ${timing ? `<div class="meta-line">${escapeHtml(timing)}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderTaskBlockerDetail(blocker) {
+  const latestEvent = latestBlockerEvent(blocker.id);
+  const source = `${text(blocker.source_kind) || "unknown"} ${text(blocker.source_id) || ""}`.trim();
+  const accountable = [
+    blocker.owner_agent_id ? `owner ${blocker.owner_agent_id}` : "no agent owner",
+    blocker.delegate_agent_id ? `delegate ${blocker.delegate_agent_id}` : "",
+  ].filter(Boolean).join(" - ");
+  const timing = [
+    blocker.created_at ? `blocked since ${blocker.created_at}` : "",
+    blocker.follow_up_at ? `follow up ${blocker.follow_up_at}` : "",
+    blocker.last_progress_at ? `last progress ${blocker.last_progress_at}` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <section class="task-blocker-card">
+      <div><strong>Blocker ${escapeHtml(blocker.id)}</strong> <span class="state-pill blocked">${escapeHtml(blocker.reason_code || "unspecified")}</span></div>
+      <div>${escapeHtml(blocker.summary || "No summary")}</div>
+      ${blocker.details ? `<div>${escapeHtml(blocker.details)}</div>` : ""}
+      <div class="meta-line">Source ${escapeHtml(source)} - ${escapeHtml(accountable)} - route ${escapeHtml(blocker.route || "unknown")} - escalation level ${Number(blocker.escalation_depth || 0)}</div>
+      ${timing ? `<div class="meta-line">${escapeHtml(timing)}</div>` : ""}
+      ${
+        latestEvent
+          ? `<div class="meta-line">Latest event ${escapeHtml(latestEvent.event_type)}${latestEvent.note ? `: ${escapeHtml(latestEvent.note)}` : ""}</div>`
+          : ""
+      }
+      <div class="meta-line">Next action: ${escapeHtml(blockerNextAction(blocker))}</div>
+      ${renderTerminalBlockerResolveAction(blocker)}
+    </section>
+  `;
+}
+
+function latestBlockerEvent(blockerId) {
+  return values(state.blocker_events)
+    .filter((event) => text(event.blocker_id) === text(blockerId))
+    .sort((left, right) =>
+      String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+      String(right.id || "").localeCompare(String(left.id || "")),
+    )[0] || null;
+}
+
+function blockerNextAction(blocker) {
+  if (blocker.delegate_agent_id) {
+    return `delegate ${blocker.delegate_agent_id} reports progress; owner ${blocker.owner_agent_id || "unassigned"} remains accountable`;
+  }
+  if (blocker.follow_up_at) {
+    return `owner ${blocker.owner_agent_id || blocker.route || "operator"} follows up at ${blocker.follow_up_at}`;
+  }
+  if (["governance", "operator"].includes(text(blocker.route))) {
+    return `${humanizeToken(blocker.route)} verifies the blocking condition and resolves or escalates it`;
+  }
+  return `owner ${blocker.owner_agent_id || "unassigned"} records progress, delegates, resolves, or escalates`;
+}
+
+function taskGitWorkContexts(task) {
+  const rows = [
+    ...(task.git_work_contexts || []),
+    ...values(state.git_work_contexts).filter((context) => text(context.task_id) === text(task.id)),
+  ];
+  const unique = new Map();
+  rows.forEach((row) => {
+    const id = text(row.id || row.branch_context_id);
+    if (id) unique.set(id, row);
+  });
+  return [...unique.values()].sort(byId);
+}
+
+function renderTaskWorktreeMapping(task) {
+  const contexts = taskGitWorkContexts(task);
+  const cleanupRows = values(state.worktree_cleanup_candidates)
+    .filter((candidate) => text(candidate.task_id) === text(task.id))
+    .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")));
+  if (!contexts.length && !cleanupRows.length) {
+    return "";
+  }
+  const project = state.projects[task.project_id] || {};
+  const repository = project.git?.managed_repo_id || "not configured";
+  const rows = contexts.map((context) => {
+    const dispatch = state.dispatches?.[context.dispatch_id] || null;
+    return `
+      <tr>
+        <td>${escapeHtml(task.id)}</td>
+        <td>${escapeHtml(task.project_id)}</td>
+        <td>${escapeHtml(repository)}</td>
+        <td><code>${escapeHtml(context.worktree_path || "control checkout")}</code></td>
+        <td><code>${escapeHtml(context.agent_branch || context.branch || project.git?.base_branch || "")}</code></td>
+        <td>${escapeHtml(context.id || context.branch_context_id || "")}${dispatch ? ` - ${escapeHtml(dispatch.status)}` : ""}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="task-worktree-mapping">
+      <div class="meta-line">Repository base ${escapeHtml(project.git?.base_branch || "unknown")} is the control checkout; edit only in the task worktree below.</div>
+      ${
+        rows
+          ? `<div class="task-worktree-scroll"><table><thead><tr><th>Task</th><th>Project</th><th>Repository</th><th>Worktree</th><th>Branch</th><th>Context / dispatch</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : ""
+      }
+      ${cleanupRows.map(renderTaskCleanupCandidate).join("")}
+    </div>
+  `;
+}
+
+function renderTaskCleanupCandidate(candidate) {
+  const recovery = text(candidate.state) === "recovery_required";
+  const details = [
+    `cleanup ${candidate.state}`,
+    candidate.last_safety_check ? `check ${candidate.last_safety_check}` : "",
+    candidate.last_error,
+    candidate.worktree_path,
+    candidate.branch,
+    Number(candidate.reclaimed_bytes || 0) ? `reclaimed ${candidate.reclaimed_bytes} bytes` : "",
+  ].filter(Boolean).join(" - ");
+  return `<div class="${recovery ? "task-cleanup-recovery" : "meta-line"}">${escapeHtml(details)}</div>`;
 }
 
 function renderDeliverables(deliverables, { compact = false } = {}) {
@@ -11198,9 +11665,41 @@ function renderReleases() {
   if (!document.querySelector("[data-releases-view]")) {
     return;
   }
-  const releases = values(state.release_packages).sort(byId);
+  updateMyHumanReviewsFilterButton();
+  const allReleases = values(state.release_packages).sort(byId);
+  const focusedRequest = focusedHumanReviewRequestId
+    ? humanReviewQueue.requests.find(
+        (request) => text(request.id) === focusedHumanReviewRequestId,
+      )
+    : null;
+  const assignedReleaseIds = new Set(
+    (focusedRequest ? [focusedRequest] : humanReviewQueue.requests)
+      .map((request) => text(request.release_package_id))
+      .filter(Boolean),
+  );
+  const releases = myHumanReviewsOnly
+    ? allReleases.filter((release) => assignedReleaseIds.has(text(release.id)))
+    : allReleases;
+  if (
+    myHumanReviewsOnly &&
+    (humanReviewQueue.loading ||
+      (!humanReviewQueue.loaded && !humanReviewQueue.error))
+  ) {
+    renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">Loading your human reviews.</p>`);
+    return;
+  }
+  if (myHumanReviewsOnly && humanReviewQueue.error) {
+    renderIntoActiveTargets(
+      "[data-releases-view]",
+      `<div class="task-invalid-warning">${escapeHtml(humanReviewQueue.error)} <button type="button" class="record-action" data-my-human-reviews-retry>Retry</button></div>`,
+    );
+    return;
+  }
   if (!releases.length) {
-    renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">No release packages.</p>`);
+    renderIntoActiveTargets(
+      "[data-releases-view]",
+      `<p class="empty-state">${myHumanReviewsOnly ? "No human reviews are assigned to you." : "No release packages."}</p>`,
+    );
     return;
   }
   if (activeTeamView === "delivery") {
@@ -11230,9 +11729,13 @@ function renderReleases() {
               ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
               ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
               ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+              ${renderReleaseHumanSummary(release)}
               ${renderRecordBlockers("release_package", release.id)}
               ${renderReleasePolicyDetails(release)}
               ${renderReleaseGateAction(release)}
+              ${renderPostReleaseReportControl(release)}
+              ${renderReleaseDetailControl(release)}
+              ${renderCachedReleaseDetail(release.id)}
             </li>
           `;
         })
@@ -11249,7 +11752,7 @@ function renderCompactRelease(release) {
   if (release.published_commit_sha) lines.push(`commit ${release.published_commit_sha}`);
   return `
     <li class="record-item compact-record-card">
-      <details>
+      <details${expandedReleaseDetailIds.has(text(release.id)) || postReleaseReportResults.has(text(release.id)) ? " open" : ""}>
         <summary class="compact-record-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(release.id)}</strong>
@@ -11262,13 +11765,789 @@ function renderCompactRelease(release) {
           ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
           ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
           ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+          ${renderReleaseHumanSummary(release)}
           ${renderRecordBlockers("release_package", release.id)}
           ${renderReleasePolicyDetails(release)}
           ${renderReleaseGateAction(release)}
+          ${renderPostReleaseReportControl(release)}
+          ${renderReleaseDetailControl(release)}
+          ${renderCachedReleaseDetail(release.id)}
         </div>
       </details>
     </li>
   `;
+}
+
+function renderReleaseHumanSummary(release) {
+  const summary = release.human_review;
+  if (!summary) {
+    return `<div class="meta-line">Human release review: not required</div>`;
+  }
+  const bits = [
+    `state ${summary.state || "required"}`,
+    summary.request_id ? `request ${summary.request_id}` : "",
+    Number(summary.request_count || 0) ? `${summary.request_count} attempt${Number(summary.request_count) === 1 ? "" : "s"}` : "",
+    (summary.open_finding_ids || []).length ? `open findings ${summary.open_finding_ids.join(", ")}` : "",
+    summary.next_action ? `next ${humanizeToken(summary.next_action)}` : "",
+  ].filter(Boolean);
+  return `<div class="release-human-summary"><strong>Human review:</strong> ${escapeHtml(bits.join(" - "))}</div>`;
+}
+
+function renderPostReleaseReportControl(release) {
+  if (
+    text(release.state) !== "accepted" ||
+    (!text(release.published_at) || !text(release.published_commit_sha))
+  ) {
+    return "";
+  }
+  const priorResult = postReleaseReportResults.get(text(release.id));
+  const caseRecord = priorResult?.case || null;
+  const triageTaskId = text(priorResult?.triageTaskId);
+  const triageTask = triageTaskId ? state.tasks?.[triageTaskId] : null;
+  const resultMarkup = caseRecord
+    ? `
+      <div class="post-release-report-result" role="status">
+        <strong>Follow-up recorded.</strong>
+        <div>Case <code>${escapeHtml(caseRecord.id)}</code>${caseRecord.title ? ` - ${escapeHtml(caseRecord.title)}` : ""}${caseRecord.status ? ` - ${escapeHtml(caseRecord.status)}` : ""}</div>
+        ${
+          triageTaskId
+            ? `<div>Triage task <code>${escapeHtml(triageTaskId)}</code>${triageTask?.title ? ` - ${escapeHtml(triageTask.title)}` : ""}${triageTask?.state ? ` - ${escapeHtml(triageTask.state)}` : ""}</div>`
+            : ""
+        }
+      </div>
+    `
+    : "";
+  return `
+    <div class="post-release-report-control">
+      ${resultMarkup}
+      <details>
+        <summary>Report regression or adjustment</summary>
+        <form
+          class="post-release-report-form"
+          data-post-release-report-form
+          data-release-id="${escapeAttr(release.id)}"
+        >
+          <p class="post-release-report-boundary">
+            Reporting creates a follow-up case and triage task. It does not roll back this published release and does not automatically create or authorize a successor.
+          </p>
+          <label>
+            Reason or adjustment needed
+            <textarea
+              name="report"
+              rows="3"
+              required
+              aria-required="true"
+              placeholder="Describe the regression, operational issue, or adjustment that needs triage"
+            ></textarea>
+          </label>
+          <label>
+            Evidence references
+            <textarea
+              name="evidence_refs"
+              rows="2"
+              required
+              aria-required="true"
+              placeholder="artifact-space:..., one per line"
+            ></textarea>
+          </label>
+          <div class="record-actions">
+            <button type="submit" class="record-action">Create follow-up case and triage task</button>
+          </div>
+        </form>
+      </details>
+    </div>
+  `;
+}
+
+function renderReleaseDetailControl(release) {
+  const expanded = expandedReleaseDetailIds.has(text(release.id));
+  return `
+    <div class="record-actions release-detail-actions">
+      <button
+        type="button"
+        class="record-action"
+        data-release-detail-id="${escapeAttr(release.id)}"
+        aria-expanded="${expanded ? "true" : "false"}"
+      >${expanded ? "Close release detail" : "Open release detail"}</button>
+    </div>
+  `;
+}
+
+function renderCachedReleaseDetail(releaseId) {
+  if (!expandedReleaseDetailIds.has(text(releaseId))) {
+    return "";
+  }
+  const cached = releaseDetailCache.get(text(releaseId));
+  if (!cached || cached.loading) {
+    return `<div class="release-review-detail"><p class="empty-state">Loading release detail.</p></div>`;
+  }
+  if (cached.error) {
+    return `<div class="release-review-detail task-invalid-warning">${escapeHtml(cached.error)}</div>`;
+  }
+  return renderReleaseDetail(cached.release);
+}
+
+async function toggleReleaseDetail(releaseId) {
+  if (!releaseId) {
+    return;
+  }
+  if (expandedReleaseDetailIds.has(releaseId)) {
+    expandedReleaseDetailIds.delete(releaseId);
+    renderReleases();
+    return;
+  }
+  expandedReleaseDetailIds.add(releaseId);
+  renderReleases();
+  const cached = releaseDetailCache.get(releaseId);
+  if (!cached?.release) {
+    await loadReleaseDetail(releaseId);
+  }
+}
+
+async function loadReleaseDetail(releaseId) {
+  releaseDetailCache.set(releaseId, { loading: true, error: null, release: null });
+  renderReleases();
+  try {
+    const response = await teamFetch(`${API_BASE}/release-packages/${encodeURIComponent(releaseId)}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const release = await response.json();
+    releaseDetailCache.set(releaseId, { loading: false, error: null, release });
+  } catch (error) {
+    releaseDetailCache.set(releaseId, {
+      loading: false,
+      error: error instanceof Error ? error.message : "Release detail could not be loaded.",
+      release: null,
+    });
+  }
+  renderReleases();
+}
+
+async function loadMyHumanReviews() {
+  if (humanReviewQueue.loading) {
+    return;
+  }
+  humanReviewQueue = { ...humanReviewQueue, loading: true, error: null };
+  renderReleases();
+  try {
+    const query = new URLSearchParams({ assigned_to: "me" });
+    const response = await teamFetch(`${API_BASE}/human-review-requests?${query.toString()}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    humanReviewQueue = {
+      loaded: true,
+      loading: false,
+      error: null,
+      requests: payload.human_review_requests || [],
+    };
+    state.revision = payload.revision ?? state.revision;
+  } catch (error) {
+    humanReviewQueue = {
+      ...humanReviewQueue,
+      loaded: false,
+      loading: false,
+      error: error instanceof Error ? error.message : "Human reviews could not be loaded.",
+    };
+  }
+  renderShell();
+  renderReleases();
+}
+
+async function openHumanReviewDeepLink(requestId) {
+  myHumanReviewsOnly = true;
+  focusedHumanReviewRequestId = text(requestId);
+  await loadMyHumanReviews();
+  if (!focusedHumanReviewRequestId) {
+    return true;
+  }
+  const request = humanReviewQueue.requests.find(
+    (item) => text(item.id) === focusedHumanReviewRequestId,
+  );
+  const releaseId = text(request?.release_package_id);
+  if (!request || !releaseId || !state.release_packages?.[releaseId]) {
+    focusedHumanReviewRequestId = "";
+    renderReleases();
+    return false;
+  }
+  expandedReleaseDetailIds.add(releaseId);
+  renderReleases();
+  await loadReleaseDetail(releaseId);
+  focusHumanReviewRequestElement(focusedHumanReviewRequestId);
+  return true;
+}
+
+function focusHumanReviewRequestElement(requestId) {
+  const element = document.getElementById(`human-review-${text(requestId)}`);
+  if (!element) {
+    return;
+  }
+  element.focus({ preventScroll: true });
+  element.scrollIntoView({ block: "center", behavior: "auto" });
+}
+
+function renderReleaseDetail(release) {
+  if (!release) {
+    return "";
+  }
+  const manifest = release.manifest || {};
+  const project = state.projects[release.project_id] || {};
+  const lineage = [
+    release.supersedes_release_package_id ? `supersedes ${release.supersedes_release_package_id}` : "",
+    manifest.predecessor_release_package_id ? `predecessor ${manifest.predecessor_release_package_id}` : "",
+    release.policy_version ? `policy version ${release.policy_version}` : "",
+  ].filter(Boolean);
+  const candidate = [
+    release.base_commit_sha ? `base ${release.base_commit_sha}` : "",
+    release.candidate_commit_sha || manifest.candidate_commit_sha
+      ? `candidate ${release.candidate_commit_sha || manifest.candidate_commit_sha}`
+      : "",
+    release.candidate_tree_hash || manifest.candidate_tree_hash
+      ? `tree ${release.candidate_tree_hash || manifest.candidate_tree_hash}`
+      : "",
+    release.approved_commit_sha ? `approved ${release.approved_commit_sha}` : "",
+  ].filter(Boolean);
+  const contributionGraph = manifest.contribution_graph || {};
+  const deliverableRows = manifest.deliverables || [];
+  const verificationRuns = release.verification_runs || [];
+  const releaseReviews = release.release_reviews || [];
+  const humanRequests = release.human_review?.requests || [];
+  return `
+    <section class="release-review-detail" id="release-detail-${escapeAttr(release.id)}">
+      <div class="release-review-heading">
+        <div>
+          <p class="section-label">Release attempt</p>
+          <h3>${escapeHtml(release.id)}</h3>
+        </div>
+        <span class="state-pill ${escapeAttr(release.state)}">${escapeHtml(release.state)}</span>
+      </div>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Project</div><div class="delivery-detail-value">${escapeHtml(project.name || release.project_id)} (${escapeHtml(release.project_id)})</div></div>
+        <div><div class="delivery-detail-label">Lineage</div><div class="delivery-detail-value">${escapeHtml(lineage.join(" - ") || "Initial release attempt")}</div></div>
+        <div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value"><code>${escapeHtml(candidate.join(" - ") || "Not prepared")}</code></div></div>
+        <div><div class="delivery-detail-label">Branches</div><div class="delivery-detail-value"><code>${escapeHtml([release.release_branch, release.canonical_branch].filter(Boolean).join(" → ") || "Not prepared")}</code></div></div>
+        <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${escapeHtml(release.published_at ? `Published ${release.published_at} at ${release.published_commit_sha || "unknown commit"}` : release.next_action_hint || release.next_action || "Not published")}</div></div>
+        <div><div class="delivery-detail-label">Top-level deliverables</div><div class="delivery-detail-value">${escapeHtml((release.deliverable_ids || []).join(", ") || "None")}</div></div>
+      </div>
+      ${renderReleaseDeliverableEvidence(deliverableRows, release)}
+      ${renderReleaseContributionGraph(contributionGraph)}
+      ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [])}
+      ${renderReleaseAgentReviews(releaseReviews)}
+      ${renderReleaseHumanRequests(humanRequests, manifest)}
+      ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
+    </section>
+  `;
+}
+
+function renderReleaseDeliverableEvidence(rows, release) {
+  if (!rows.length) {
+    const deliverableIds = release.deliverable_ids || [];
+    return deliverableIds.length
+      ? `<div class="release-detail-section"><h4>Release notes and included work</h4><ul class="delivery-detail-list">${deliverableIds.map((id) => {
+          const deliverable = state.deliverables[id] || {};
+          return `<li><strong>${escapeHtml(id)}</strong>${deliverable.summary ? ` - ${escapeHtml(deliverable.summary)}` : ""}</li>`;
+        }).join("")}</ul></div>`
+      : "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Release notes and included work</h4>
+      <ul class="delivery-detail-list">
+        ${rows.map((row) => {
+          const deliverable = state.deliverables[row.deliverable_id] || {};
+          const reviews = row.accepted_reviews || [];
+          const verification = row.verification || {};
+          return `<li>
+            <strong>${escapeHtml(row.deliverable_id)}</strong>${deliverable.summary ? ` - ${escapeHtml(deliverable.summary)}` : ""}
+            <div class="meta-line">Feature ${escapeHtml([row.feature_branch, row.feature_commit_sha].filter(Boolean).join(" @ ") || "not applicable")} - verification ${escapeHtml(verification.status || "not recorded")}</div>
+            ${reviews.length ? `<div class="meta-line">Accepted agent reviews: ${escapeHtml(reviews.map((review) => `${review.review_request_id} by ${review.reviewer_agent_id}`).join(", "))}</div>` : ""}
+          </li>`;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderReleaseContributionGraph(graph) {
+  const rows = Object.entries(graph || {});
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Recursive contribution graph</h4>
+      <ul class="delivery-detail-list">
+        ${rows.map(([deliverableId, sourceIds]) => `<li><strong>${escapeHtml(deliverableId)}</strong> ← ${escapeHtml((sourceIds || []).join(", ") || "direct contribution")}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderReleaseVerificationRuns(runs, commands) {
+  if (!runs.length && !commands.length) {
+    return "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Automated verification</h4>
+      ${
+        runs.length
+          ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
+              <strong>${escapeHtml(run.id)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(run.state)}</span>
+              <div class="meta-line">Attempt ${Number(run.attempt_number || 1)} - candidate ${escapeHtml(run.candidate_commit_sha || "")}${run.failure_kind ? ` - ${escapeHtml(run.failure_kind)}` : ""}</div>
+              ${(run.command_results || []).length ? `<ul class="inline-list">${run.command_results.map((result) => `<li>${escapeHtml(result.name)}: ${escapeHtml(result.state)}${result.log_excerpt ? ` - ${escapeHtml(result.log_excerpt)}` : ""}</li>`).join("")}</ul>` : ""}
+            </li>`).join("")}</ul>`
+          : `<div class="meta-line">Configured commands: ${escapeHtml(commands.map((command) => command.name).join(", "))}</div>`
+      }
+    </div>
+  `;
+}
+
+function renderReleaseAgentReviews(reviews) {
+  if (!reviews.length) {
+    return "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Agent review decisions</h4>
+      <ul class="delivery-detail-list">
+        ${reviews.map((review) => `<li>
+          <strong>${escapeHtml(review.id)}</strong> - ${escapeHtml(review.reviewer_agent_id)} <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(review.state)}</span>
+          ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
+          ${renderReleaseReviewCriteria(review)}
+          ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
+        </li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderReleaseReviewCriteria(review) {
+  const snapshots = review.criteria_snapshot || [];
+  const results = review.criteria || [];
+  const resultsById = new Map(
+    results.map((result) => [text(result.criterion_id || result.id), result]),
+  );
+  const rows = snapshots.length
+    ? snapshots.map((criterion) => {
+        const result = resultsById.get(text(criterion.id || criterion.criterion_id));
+        return {
+          label: criterion.label || criterion.criterion_id || criterion.id,
+          state:
+            result?.state ||
+            criterion.state ||
+            (criterion.required === false ? "optional" : "required"),
+          finding: result?.finding || criterion.finding || "",
+        };
+      })
+    : results.map((result) => ({
+        label: result.label || result.criterion_id || result.id,
+        state: result.state || "not recorded",
+        finding: result.finding || "",
+      }));
+  if (!rows.length) {
+    return "";
+  }
+  return `<ul class="inline-list">${rows.map((row) => `<li>${escapeHtml(row.label)}: ${escapeHtml(row.state)}${row.finding ? ` - ${escapeHtml(row.finding)}` : ""}</li>`).join("")}</ul>`;
+}
+
+function renderReleaseHumanRequests(requests, manifest) {
+  const carriedFindings = manifest.carried_human_findings || [];
+  if (!requests.length) {
+    return manifest.human_review_requirement
+      ? `<div class="release-detail-section"><h4>Human acceptance</h4><p class="empty-state">Human review is required, but detailed requests are unavailable to this user or have not been created yet.</p></div>`
+      : "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Human request and decision history</h4>
+      ${carriedFindings.length ? `<div class="release-carried-findings"><strong>Carried findings requiring explicit confirmation:</strong> ${escapeHtml(carriedFindings.map((finding) => finding.finding_id || finding.id).join(", "))}</div>` : ""}
+      <div class="human-review-request-list">
+        ${requests.map((request) => renderHumanReviewRequest(request, carriedFindings)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderHumanReviewRequest(request, carriedFindings) {
+  const assignment = request.current_assignment || {};
+  const target = request.test_target || null;
+  const checklist = request.requirement_snapshot?.checklist || [];
+  const decisions = request.decisions || [];
+  const findings = request.findings || [];
+  return `
+    <article class="human-review-request${text(request.id) === focusedHumanReviewRequestId ? " human-review-request-focused" : ""}" id="human-review-${escapeAttr(request.id)}" tabindex="-1">
+      <div class="record-line">
+        <strong>${escapeHtml(request.id)}</strong>
+        <span class="state-pill ${escapeAttr(request.state)}">${escapeHtml(request.state)}</span>
+      </div>
+      <div class="meta-line">Pinned candidate <code>${escapeHtml(request.candidate_commit_sha)}</code> - tree <code>${escapeHtml(request.candidate_tree_hash)}</code> - request revision ${Number(request.revision || 0)}</div>
+      <div class="meta-line">Assigned users: ${escapeHtml([...(assignment.explicitly_assigned_user_ids || []), ...(assignment.eligible_user_ids || [])].filter((value, index, values_) => values_.indexOf(value) === index).join(", ") || "none")} - generation ${Number(request.assignment_generation || 1)}</div>
+      <div class="meta-line">Mode ${escapeHtml(request.requirement_snapshot?.preparation_mode || "manual")} - ready ${escapeHtml(request.ready_at || "not ready")}</div>
+      ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${escapeHtml(request.requirement_snapshot.test_instructions)}</div>` : ""}
+      ${renderHumanReviewTarget(target)}
+      ${renderHumanChecklistHistory(checklist)}
+      ${renderHumanDecisionHistory(decisions)}
+      ${renderHumanFindingHistory(findings, request.correction_tasks || [])}
+      ${request.state === "pending" ? renderHumanReviewDecisionForm(request, checklist, carriedFindings) : ""}
+      ${renderHumanReviewOwnerActions(request)}
+    </article>
+  `;
+}
+
+function renderHumanReviewTarget(target) {
+  if (!target) {
+    return `<div class="meta-line">Preview/test target: manual instructions only or preparation still pending.</div>`;
+  }
+  const targetName = target.url || target.alias || "prepared target";
+  return `
+    <div class="human-review-target">
+      <strong>Prepared test target:</strong> <code>${escapeHtml(targetName)}</code>
+      ${target.expires_at ? `<div class="meta-line">Expires ${escapeHtml(target.expires_at)}</div>` : ""}
+      ${target.instructions ? `<div>${escapeHtml(target.instructions)}</div>` : ""}
+      ${(target.evidence_refs || []).length ? `<div class="meta-line">Target evidence: ${escapeHtml(target.evidence_refs.join(", "))}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderHumanChecklistHistory(checklist) {
+  if (!checklist.length) {
+    return `<div class="meta-line">Human checklist: no configured items.</div>`;
+  }
+  return `<ul class="human-review-checklist">${checklist.map((item) => `<li><strong>${escapeHtml(item.label)}</strong> (${item.required === false ? "optional" : "required"})${item.description ? ` - ${escapeHtml(item.description)}` : ""}</li>`).join("")}</ul>`;
+}
+
+function renderHumanDecisionHistory(decisions) {
+  if (!decisions.length) {
+    return "";
+  }
+  return `<ul class="delivery-detail-list">${decisions.map((decision) => `<li>
+    <strong>${escapeHtml(decision.decision)}</strong> by ${escapeHtml(decision.reviewer_display_name_snapshot || decision.reviewer_user_id)} at ${escapeHtml(decision.decided_at || "")}
+    ${decision.summary ? `<div>${escapeHtml(decision.summary)}</div>` : ""}
+    ${(decision.evidence_refs || []).length ? `<div class="meta-line">Evidence: ${escapeHtml(decision.evidence_refs.join(", "))}</div>` : ""}
+  </li>`).join("")}</ul>`;
+}
+
+function renderHumanFindingHistory(findings, correctionTasks) {
+  if (!findings.length && !correctionTasks.length) {
+    return "";
+  }
+  return `
+    <div class="human-finding-history">
+      <strong>Findings and correction work</strong>
+      <ul class="delivery-detail-list">
+        ${findings.map((finding) => `<li>
+          <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
+          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` - targets ${escapeHtml(finding.target_deliverable_ids.join(", "))}` : ""}</div>
+          ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
+          ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
+        </li>`).join("")}
+        ${correctionTasks.map((task) => `<li><strong>${escapeHtml(task.id)}</strong> - ${escapeHtml(task.title)} <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(task.state)}</span>${task.originating_task_id ? ` - origin ${escapeHtml(task.originating_task_id)}` : ""}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
+  return `
+    <form class="human-review-decision-form" data-human-review-decision-form data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
+      <fieldset>
+        <legend>Human acceptance checklist</legend>
+        ${checklist.map((item) => `<label class="checkbox-label"><input type="checkbox" data-human-checklist-id="${escapeAttr(item.id)}"${item.required === false ? "" : " required"} /> ${escapeHtml(item.label)}${item.required === false ? " (optional)" : ""}</label>`).join("") || `<p class="empty-state">No checklist items.</p>`}
+      </fieldset>
+      ${
+        carriedFindings.length
+          ? `<fieldset><legend>Confirm carried findings</legend>${carriedFindings.map((finding) => `<label class="checkbox-label"><input type="checkbox" data-confirm-finding-id="${escapeAttr(finding.finding_id || finding.id)}" /> ${escapeHtml(finding.finding_id || finding.id)} - ${escapeHtml(finding.text || "")}</label>`).join("")}</fieldset>`
+          : ""
+      }
+      <label>Decision summary<textarea name="summary" rows="3" placeholder="What was tested and why this decision is appropriate"></textarea></label>
+      <label>Evidence references<textarea name="evidence_refs" rows="2" placeholder="artifact-space:..., one per line"></textarea></label>
+      <details>
+        <summary>Changes requested fields</summary>
+        <label>Actionable findings<textarea name="findings" rows="4" placeholder="One actionable finding per line"></textarea></label>
+        <label>Target deliverable IDs<textarea name="target_deliverable_ids" rows="2" placeholder="One per line"></textarea></label>
+      </details>
+      <div class="record-actions">
+        <button type="submit" class="record-action human-review-approve" data-human-review-decision="approved">Approve</button>
+        <button type="submit" class="record-action" data-human-review-decision="changes_requested">Request changes</button>
+        <button type="submit" class="record-action" data-human-review-decision="blocked">Blocked</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderHumanReviewOwnerActions(request) {
+  if (["approved", "changes_requested"].includes(text(request.state))) {
+    return "";
+  }
+  return `
+    <div class="record-actions human-review-owner-actions">
+      ${request.state === "blocked" ? `<button type="button" class="record-action" data-human-review-resume-id="${escapeAttr(request.id)}">Resume unchanged candidate</button>` : ""}
+      <button type="button" class="record-action" data-human-review-reassign-id="${escapeAttr(request.id)}">Reassign</button>
+    </div>
+  `;
+}
+
+function renderReleaseEvidence(release, deliverableRows, humanRequests) {
+  const refs = new Set(release.artifact_refs || []);
+  deliverableRows.forEach((row) => (row.artifact_refs || []).forEach((ref) => refs.add(ref)));
+  humanRequests.forEach((request) => {
+    (request.test_target?.evidence_refs || []).forEach((ref) => refs.add(ref));
+    (request.decisions || []).forEach((decision) =>
+      (decision.evidence_refs || []).forEach((ref) => refs.add(ref)),
+    );
+    (request.findings || []).forEach((finding) => {
+      (finding.evidence_refs || []).forEach((ref) => refs.add(ref));
+      (finding.resolution_evidence_refs || []).forEach((ref) => refs.add(ref));
+    });
+  });
+  if (!refs.size) {
+    return "";
+  }
+  return `<div class="release-detail-section"><h4>Evidence and attachments</h4><ul class="delivery-detail-list">${[...refs].sort().map((ref) => `<li><code>${escapeHtml(ref)}</code></li>`).join("")}</ul></div>`;
+}
+
+function humanReviewRequestById(requestId) {
+  const queued = humanReviewQueue.requests.find((request) => text(request.id) === text(requestId));
+  if (queued) {
+    return queued;
+  }
+  for (const cached of releaseDetailCache.values()) {
+    const request = cached.release?.human_review?.requests?.find(
+      (item) => text(item.id) === text(requestId),
+    );
+    if (request) {
+      return request;
+    }
+  }
+  return null;
+}
+
+async function submitPostReleaseReport(form, submitter) {
+  if (!guardTeamMutation("report post-release issues")) {
+    return;
+  }
+  const releaseId = text(form.dataset.releaseId);
+  const release = state.release_packages?.[releaseId];
+  if (
+    !releaseId ||
+    text(release?.state) !== "accepted" ||
+    (!text(release?.published_at) || !text(release?.published_commit_sha))
+  ) {
+    setStatus("Post-release reporting is only available for a published release.", "error");
+    return;
+  }
+  const data = formData(form);
+  const report = text(data.report);
+  const evidenceRefs = splitList(data.evidence_refs);
+  if (!report) {
+    setStatus("A reason for the regression or adjustment is required.", "error");
+    form.elements.report?.focus();
+    return;
+  }
+  if (!evidenceRefs.length) {
+    setStatus("At least one evidence reference is required.", "error");
+    form.elements.evidence_refs?.focus();
+    return;
+  }
+  if (submitter) {
+    submitter.disabled = true;
+  }
+  setStatus(`Reporting follow-up for published release ${releaseId}.`, "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/report-issue`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          report,
+          evidence_refs: evidenceRefs,
+          request_id: teamUiMutationRequestId(releaseId, "report-issue"),
+          expected_revision: Number(state.revision || 0),
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    state.revision = payload.revision ?? state.revision;
+    postReleaseReportResults.set(releaseId, {
+      case: payload.case || null,
+      triageTaskId: text(payload.result?.triage_task_id),
+    });
+    releaseDetailCache.delete(releaseId);
+    await loadView("delivery", { force: true, preserveForms: false });
+    if (expandedReleaseDetailIds.has(releaseId)) {
+      await loadReleaseDetail(releaseId);
+    }
+    renderReleases();
+    setStatus(
+      "Post-release follow-up recorded. The published release remains unchanged pending triage.",
+      "success",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Post-release follow-up could not be recorded.",
+      "error",
+    );
+  } finally {
+    if (submitter) {
+      submitter.disabled = false;
+    }
+  }
+}
+
+async function submitHumanReviewDecision(form, submitter) {
+  if (!guardTeamMutation("record human review decisions")) {
+    return;
+  }
+  const requestId = text(form.dataset.humanReviewRequestId);
+  const releaseId = text(form.dataset.releaseId);
+  const decision = text(submitter?.dataset?.humanReviewDecision);
+  if (!requestId || !decision) {
+    setStatus("Human review decision context is incomplete.", "error");
+    return;
+  }
+  const checklistResults = {};
+  form.querySelectorAll("[data-human-checklist-id]").forEach((input) => {
+    checklistResults[text(input.dataset.humanChecklistId)] = Boolean(input.checked);
+  });
+  const confirmedFindingIds = [...form.querySelectorAll("[data-confirm-finding-id]:checked")]
+    .map((input) => text(input.dataset.confirmFindingId))
+    .filter(Boolean);
+  const data = formData(form);
+  const findings = splitList(data.findings).map((findingText) => ({
+    text: findingText,
+    target_deliverable_ids: splitList(data.target_deliverable_ids),
+    evidence_refs: splitList(data.evidence_refs),
+  }));
+  if (decision === "changes_requested" && !findings.length) {
+    setStatus("Request changes requires at least one actionable finding.", "error");
+    return;
+  }
+  const payload = {
+    decision,
+    request_id: humanReviewMutationRequestId(requestId, decision),
+    expected_revision: Number(form.dataset.requestRevision || 0),
+    checklist_results: checklistResults,
+    confirmed_finding_ids: confirmedFindingIds,
+    summary: text(data.summary),
+    evidence_refs: splitList(data.evidence_refs),
+    findings,
+  };
+  await mutateHumanReview(
+    submitter,
+    `/human-review-requests/${encodeURIComponent(requestId)}/decisions`,
+    payload,
+    { requestId, releaseId, successMessage: `Human review ${decision.replaceAll("_", " ")} recorded.` },
+  );
+}
+
+async function resumeHumanReview(button, requestId) {
+  const request = humanReviewRequestById(requestId);
+  if (!request) {
+    setStatus("Human review request is no longer available.", "error");
+    return;
+  }
+  await mutateHumanReview(
+    button,
+    `/human-review-requests/${encodeURIComponent(requestId)}/resume`,
+    {
+      request_id: humanReviewMutationRequestId(requestId, "resume"),
+      expected_revision: Number(request.revision || 0),
+    },
+    {
+      requestId,
+      releaseId: request.release_package_id,
+      successMessage: "Human review resumed against the unchanged candidate.",
+    },
+  );
+}
+
+async function reassignHumanReview(button, requestId, userIds) {
+  const request = humanReviewRequestById(requestId);
+  if (!request) {
+    setStatus("Human review request is no longer available.", "error");
+    return;
+  }
+  if (!userIds.length) {
+    setStatus("Reassignment requires at least one Admin Web user ID.", "error");
+    return;
+  }
+  await mutateHumanReview(
+    button,
+    `/human-review-requests/${encodeURIComponent(requestId)}/reassign`,
+    {
+      request_id: humanReviewMutationRequestId(requestId, "reassign"),
+      expected_revision: Number(request.revision || 0),
+      user_ids: userIds,
+    },
+    {
+      requestId,
+      releaseId: request.release_package_id,
+      successMessage: "Human review reassigned.",
+    },
+  );
+}
+
+async function mutateHumanReview(control, endpoint, payload, { requestId, releaseId, successMessage }) {
+  if (control) {
+    control.disabled = true;
+  }
+  setStatus("Saving human review action.", "loading");
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const result = await response.json();
+    state.revision = result.revision ?? state.revision;
+    const updatedRequest = result.human_review_request;
+    if (updatedRequest) {
+      humanReviewQueue.requests = humanReviewQueue.requests.map((request) =>
+        text(request.id) === text(requestId) ? updatedRequest : request,
+      );
+    }
+    releaseDetailCache.delete(text(releaseId));
+    await Promise.all([
+      loadView("delivery", { force: true, preserveForms: false }),
+      loadMyHumanReviews(),
+    ]);
+    if (expandedReleaseDetailIds.has(text(releaseId))) {
+      await loadReleaseDetail(text(releaseId));
+    }
+    setStatus(successMessage, "success");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Human review action failed.", "error");
+  } finally {
+    if (control) {
+      control.disabled = false;
+    }
+  }
+}
+
+function teamUiMutationRequestId(scopeId, action) {
+  const randomPart =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `team-ui:${scopeId}:${action}:${randomPart}`;
+}
+
+function humanReviewMutationRequestId(requestId, action) {
+  return teamUiMutationRequestId(requestId, action);
 }
 
 function renderReleasePolicyDetails(release) {
@@ -11282,7 +12561,11 @@ function renderReleasePolicyDetails(release) {
   const scopeMarkup = scope
     ? `<div class="meta-line">Scope validation: ${escapeHtml(scope.state)}${(scope.unexpected_commit_shas || []).length ? ` - unexpected commits ${escapeHtml(scope.unexpected_commit_shas.join(", "))}` : ""}${(scope.unexpected_paths || []).length ? ` - unexpected paths ${escapeHtml(scope.unexpected_paths.join(", "))}` : ""}</div>`
     : "";
-  return `${waiverMarkup}${scopeMarkup}`;
+  const humanRequirement = release.manifest?.human_review_requirement;
+  const humanMarkup = humanRequirement
+    ? `<div class="meta-line">Human gate: ${escapeHtml(humanRequirement.preparation_mode || "manual")} - groups ${escapeHtml((humanRequirement.configured_group_ids || []).join(", ") || "redacted")} - ${(humanRequirement.checklist || []).length} checklist item${(humanRequirement.checklist || []).length === 1 ? "" : "s"}</div>`
+    : "";
+  return `${waiverMarkup}${scopeMarkup}${humanMarkup}`;
 }
 
 function renderReleaseGateAction(release) {
@@ -14470,7 +15753,7 @@ function payloadForForm(form, data = formData(form)) {
     if (git) {
       payload.git = git;
     }
-    const releasePolicy = releasePolicyForForm(data);
+    const releasePolicy = releasePolicyForForm(data, form);
     if (releasePolicy) {
       payload.release_policy = releasePolicy;
     }
@@ -14641,16 +15924,104 @@ function gitConfigForForm(data) {
   return git;
 }
 
-function releasePolicyForForm(data) {
+function releasePolicyForForm(data, form = null) {
   const raw = text(data.release_policy_json);
-  if (!raw) {
+  if (!raw && !form?.elements?.human_review_enabled?.checked) {
     return null;
   }
-  const policy = JSON.parse(raw);
+  const policy = raw ? JSON.parse(raw) : {};
   if (!policy || Array.isArray(policy) || typeof policy !== "object") {
     throw new Error("Release policy must be a JSON object.");
   }
+  if (form?.elements?.human_review_enabled) {
+    delete policy.human_review_requirement;
+    if (form.elements.human_review_enabled.checked) {
+      const reviewerGroupIds = splitList(data.human_reviewer_group_ids);
+      if (!reviewerGroupIds.length) {
+        throw new Error("Human review requires at least one reviewer group ID.");
+      }
+      policy.human_review_requirement = {
+        reviewer_group_ids: reviewerGroupIds,
+        checklist: parseHumanReviewChecklist(data.human_review_checklist),
+        test_instructions: text(data.human_review_test_instructions),
+        preparation_mode: text(data.human_review_preparation_mode) || "manual",
+      };
+    }
+  }
+  if (!Object.keys(policy).length) {
+    return null;
+  }
   return policy;
+}
+
+function releasePolicyWithoutHumanJson(policy) {
+  if (!policy) {
+    return "";
+  }
+  const bounded = { ...policy };
+  delete bounded.human_review_requirement;
+  return JSON.stringify(bounded, null, 2);
+}
+
+function renderHumanReviewPolicyEditor(requirement = null) {
+  const checklist = (requirement?.checklist || [])
+    .map((item) =>
+      [
+        item.id,
+        item.label,
+        item.description || "",
+        item.required === false ? "optional" : "required",
+      ].join(" | "),
+    )
+    .join("\n");
+  return `
+    <fieldset class="human-review-policy-editor">
+      <legend>Human release review</legend>
+      ${checkboxField("Require authenticated human approval", "human_review_enabled", Boolean(requirement))}
+      ${textareaField("Reviewer group IDs", "human_reviewer_group_ids", (requirement?.reviewer_group_ids || []).join("\n"), {
+        rows: 3,
+        placeholder: "release-approvers",
+      })}
+      ${textareaField("Acceptance checklist", "human_review_checklist", checklist, {
+        rows: 5,
+        placeholder: "smoke-test | Smoke test passed | Verify the primary flow | required",
+      })}
+      ${textareaField("Test instructions", "human_review_test_instructions", requirement?.test_instructions || "", {
+        rows: 4,
+        placeholder: "Open the preview, execute the release scenario, and attach evidence.",
+      })}
+      <label>Preparation mode
+        <select name="human_review_preparation_mode">
+          <option value="manual"${requirement?.preparation_mode !== "workflow" ? " selected" : ""}>Manual</option>
+          <option value="workflow"${requirement?.preparation_mode === "workflow" ? " selected" : ""}>Workflow-prepared preview</option>
+        </select>
+      </label>
+      <p class="field-help">Reviewer identity and eligible users are resolved by the Admin Web directory. This editor cannot set users, identity snapshots, quorums, or bypasses.</p>
+    </fieldset>
+  `;
+}
+
+function parseHumanReviewChecklist(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map(text)
+    .filter(Boolean)
+    .map((line, index) => {
+      const [rawId, rawLabel, rawDescription = "", rawRequired = "required"] = line
+        .split("|")
+        .map(text);
+      const id = rawId || `item-${index + 1}`;
+      const label = rawLabel || rawId;
+      if (!label) {
+        throw new Error(`Human checklist row ${index + 1} requires a label.`);
+      }
+      return {
+        id,
+        label,
+        description: rawDescription || null,
+        required: !["optional", "false", "no"].includes(rawRequired.toLowerCase()),
+      };
+    });
 }
 
 async function submitReviewDecision(form) {
@@ -14855,10 +16226,12 @@ function renderEditFields(type, record) {
       ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
       <p class="subheading">Release gates</p>
-      ${textareaField("Release policy JSON", "release_policy_json", record.release_policy ? JSON.stringify(record.release_policy, null, 2) : "", {
+      ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
         rows: 12,
-        placeholder: '{"verification_commands": [...], "review_requirements": [...]}',
+        placeholder: '{"verification_commands": [...], "review_requirements": [...], "allow_ungated": false}',
       })}
+      <p class="field-help">Human review fields are intentionally excluded from the JSON editor and configured only through the bounded controls below.</p>
+      ${renderHumanReviewPolicyEditor(record.release_policy?.human_review_requirement)}
     `;
   }
   if (type === "agent") {
@@ -15028,7 +16401,7 @@ function editPayloadForForm(type, form) {
       status: text(data.status),
       goals: parseGoals(data.goals),
       git: gitConfigForForm(data),
-      release_policy: releasePolicyForForm(data),
+      release_policy: releasePolicyForForm(data, form),
     };
   }
   if (type === "agent") {

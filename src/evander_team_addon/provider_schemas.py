@@ -31,6 +31,11 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     max_no_progress_count: ConfigValue | None = None
     low_priority_wake_after_cycles: ConfigValue | None = None
     respect_wake_interval: ConfigValue | None = None
+    worktree_cleanup_limit: ConfigValue | None = None
+    worktree_cleanup_grace_seconds: ConfigValue | None = None
+    worktree_cleanup_retry_seconds: ConfigValue | None = None
+    worktree_cleanup_recovery_seconds: ConfigValue | None = None
+    worktree_cleanup_dry_run: ConfigValue | None = None
     resume_mode: ConfigValue | None = None
 
 
@@ -256,6 +261,28 @@ class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:record-git-promotion result_outputs must be a JSON object")
 
 
+class TeamRecordHumanReviewPreparationResultEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:record-human-review-preparation-result"]
+    human_review_request_id: ConfigValue
+    candidate_commit_sha: ConfigValue
+    candidate_tree_hash: ConfigValue
+    preparation_generation: ConfigValue
+    target: ConfigValue | None = None
+    error: ConfigValue | None = None
+    request_id: ConfigValue | None = None
+    recorded_by: ConfigValue | None = None
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError(
+            "effect:team:record-human-review-preparation-result target "
+            "must be a JSON object"
+        )
+
+
 class TeamVerifyReleaseCandidateEffectDefinition(EffectDefinition):
     type: Literal["effect:team:verify-release-candidate"]
     release_package_id: ConfigValue
@@ -297,6 +324,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     source_branches: ConfigValue
     target_branch: ConfigValue
     base_branch: ConfigValue | None = None
+    base_commit_sha: ConfigValue | None = None
     expected_source_commits: ConfigValue
     allowed_changed_paths: ConfigValue | None = None
 
@@ -425,6 +453,8 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "retry_scheduled_count": {"type": "integer"},
         "cost_guard_blocked_team_ids": {"type": "array"},
         "cost_guard_blocked_teams": {"type": "array"},
+        "worktree_cleanup": {"type": "object"},
+        "worktree_cleanup_error": {"type": ["string", "null"]},
         "errors": {"type": "array"},
     },
     "effect:team:wake-governance-managers": {
@@ -557,6 +587,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "release_package_id": {"type": ["string", "null"]},
         "created_deliverable_ids": {"type": "array"},
         "created_inbox_item_ids": {"type": "array"},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:record-human-review-preparation-result": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "human_review_request_id": {"type": "string"},
+        "outbox_record_ids": {"type": "array"},
+        "idempotent_replay": {"type": "boolean"},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:verify-release-candidate": {

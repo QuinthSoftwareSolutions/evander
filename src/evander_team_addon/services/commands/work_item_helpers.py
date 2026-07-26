@@ -122,6 +122,7 @@ def _normalize_task_creation_command_payload(
     description: str,
     state: TeamTaskState | str,
     parent_task_id: str | None,
+    originating_task_id: str | None,
     dependency_task_ids: Sequence[str] | None,
     task_kind: str = "support",
     outcome_contract: Mapping[str, Any] | None = None,
@@ -137,6 +138,7 @@ def _normalize_task_creation_command_payload(
             "description": description,
             "state": state.value if isinstance(state, TeamTaskState) else state,
             "parent_task_id": parent_task_id,
+            "originating_task_id": originating_task_id,
             "dependency_task_ids": list(dependency_task_ids or []),
             "task_kind": task_kind,
             "outcome_contract": (
@@ -164,6 +166,7 @@ def _normalize_task_creation_mapping(
         "description": _optional_text(item.get("description")),
         "state": _optional_text(item.get("state")) or TeamTaskState.PENDING.value,
         "parent_task_id": _optional_text(item.get("parent_task_id")),
+        "originating_task_id": _optional_text(item.get("originating_task_id")),
         "dependency_task_ids": _unique_text_list(
             item.get("dependency_task_ids") or [],
             "dependency_task_ids",
@@ -294,6 +297,7 @@ def _task_graph_correction_context_for_plans(
                 "project_id": plan.project_id,
                 "owner_agent_id": plan.owner_id,
                 "parent_task_id": plan.parent_task_id,
+                "originating_task_id": plan.originating_task_id,
                 "dependency_task_ids": list(plan.dependency_task_ids),
                 "state": plan.task_state.value,
             }

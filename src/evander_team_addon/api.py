@@ -15,7 +15,13 @@ from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from evander.addons import AddonContext
-from evander.admin.web.rbac import TEAM_CHATS_READ_ALL_PERMISSION
+from evander.admin.web.rbac import (
+    ADMIN_OWNER_PERMISSION,
+    TEAM_CHATS_READ_ALL_PERMISSION,
+    TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+    normalize_admin_web_group_id,
+    scope_matches,
+)
 from evander.admin.web.shared import request_has_privileged_operations
 from evander.admin.web.user_store import normalize_admin_web_login
 from evander.events.internal import (
@@ -80,20 +86,30 @@ from .models import (
     current_failed_action_records,
     project_assignments_for_agent,
     effective_role_permissions,
-    release_package_payload_with_derived,
     runtime_operations_payload,
-    task_payload_with_derived,
     team_state_payload,
+)
+from .human_review_projection import (
+    HUMAN_REVIEW_COLLECTION_KEYS,
+    apply_compact_human_review_projection,
+    human_review_request_detail_payload,
+    release_package_api_payload,
 )
 from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
+from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.domain.task_assessment import task_payload_with_assessment
 from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
+from .services.human_review_assignment_service import (
+    human_review_eligibility_resolver,
+    reconcile_current_human_review_assignments,
+)
 from .services.memory_service import list_memory_records, memory_record_payload
 from .services.runtime_service import TeamRuntimeService
 from .providers import _session_records_by_id
@@ -146,6 +162,9 @@ TEAM_STATE_COLLECTION_KEYS = (
     "action_records",
     "memories",
     "release_packages",
+    *HUMAN_REVIEW_COLLECTION_KEYS,
+    "dispatches",
+    "worktree_cleanup_candidates",
     "ephemeral_assignments",
     "git_promotions",
     "git_work_contexts",
@@ -165,6 +184,9 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "blockers",
         "blocker_events",
         "action_records",
+        "dispatches",
+        "worktree_cleanup_candidates",
+        "git_work_contexts",
     },
     "delivery": {
         "teams",
@@ -179,7 +201,10 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "blockers",
         "blocker_events",
         "release_packages",
+        "dispatches",
+        "worktree_cleanup_candidates",
         "git_promotions",
+        "git_work_contexts",
     },
     "projects": {
         "teams",
@@ -194,6 +219,9 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "blockers",
         "blocker_events",
         "cases",
+        "dispatches",
+        "worktree_cleanup_candidates",
+        "git_work_contexts",
     },
     "task-board": {
         "teams",
@@ -203,6 +231,9 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "cases",
         "blockers",
         "blocker_events",
+        "dispatches",
+        "worktree_cleanup_candidates",
+        "git_work_contexts",
     },
     "cases": {"teams", "projects", "agents", "cases", "tasks"},
     "people": {
@@ -214,6 +245,9 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "stand_downs",
         "tasks",
         "inbox",
+        "dispatches",
+        "worktree_cleanup_candidates",
+        "git_work_contexts",
     },
     "governance": {
         "teams",
@@ -225,7 +259,16 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "blockers",
         "blocker_events",
     },
-    "planning": {"teams", "projects", "agents", "tasks", "deliverables"},
+    "planning": {
+        "teams",
+        "projects",
+        "agents",
+        "tasks",
+        "deliverables",
+        "dispatches",
+        "worktree_cleanup_candidates",
+        "git_work_contexts",
+    },
     "timeline": {
         "teams",
         "projects",
@@ -274,6 +317,9 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "release_packages",
     "blockers",
     "blocker_events",
+    "dispatches",
+    "worktree_cleanup_candidates",
+    "git_work_contexts",
     "git_promotions",
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
@@ -331,6 +377,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     admin_service = TeamAdminService(
         repository,
         managed_git_admin=getattr(context.service, "managed_git_admin", None),
+        human_review_eligibility_resolver=human_review_eligibility_resolver(
+            getattr(context.auth, "user_store", None)
+        ),
     )
     chat_service = TeamChatService(repository)
     runtime_service = TeamRuntimeService(repository)
@@ -764,6 +813,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         goals = list(_optional_list(payload, "goals"))
+        git_config = _optional_git_config(payload)
+        release_policy = _resolved_release_policy_for_admin(
+            context.auth,
+            payload,
+            directory_path=(
+                git_config.directory_path if git_config is not None else "root"
+            ),
+        )
         lead_agent_id = _optional(payload, "lead_agent_id")
         lead_session_id = _optional(payload, "lead_session_id")
         if lead_session_id is None:
@@ -781,8 +838,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 lead_role_id=_optional(payload, "lead_role_id"),
                 lead_role_name=_optional(payload, "lead_role_name"),
                 goals=goals,
-                git=_optional_git_config(payload),
-                release_policy=_optional_release_policy(payload),
+                git=git_config,
+                release_policy=release_policy,
                 expected_revision=expected_revision,
             ),
             create_collection="projects",
@@ -799,6 +856,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         has_git = "git" in payload
         has_release_policy = "release_policy" in payload
+        git_config = _optional_git_config(payload)
         has_goals = "goals" in payload
         goals = (
             [ProjectGoal.model_validate(item) for item in _optional_list(payload, "goals")]
@@ -807,14 +865,27 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         raw_status = _optional(payload, "status")
         project_id = request.path_params["project_id"]
+        current_project = repository.read().projects.get(project_id)
+        effective_git = (
+            git_config
+            if has_git
+            else (current_project.git if current_project is not None else None)
+        )
+        release_policy = _resolved_release_policy_for_admin(
+            context.auth,
+            payload,
+            directory_path=(
+                effective_git.directory_path if effective_git is not None else "root"
+            ),
+        )
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.update_project(
                 project_id=project_id,
                 name=_optional(payload, "name"),
-                git=_optional_git_config(payload),
+                git=git_config,
                 set_git=has_git,
-                release_policy=_optional_release_policy(payload),
+                release_policy=release_policy,
                 set_release_policy=has_release_policy,
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
@@ -2017,6 +2088,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 ),
                 state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
                 parent_task_id=_optional(payload, "parent_task_id"),
+                originating_task_id=_optional(payload, "originating_task_id"),
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
                 task_kind=_optional(payload, "task_kind"),
@@ -2058,6 +2130,50 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
+    async def cancel_task(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        task_id = request.path_params["task_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.cancel_task(
+                task_id=task_id,
+                reason_code=_required(payload, "reason_code"),
+                reason=_required(payload, "reason"),
+                actor_id=_operator_actor_from_request(context.auth, request),
+                successor_task_id=_optional(payload, "successor_task_id"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="tasks",
+            target_id=task_id,
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+        )
+
+    async def repair_task_state(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        task_id = request.path_params["task_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.repair_task_state(
+                task_id=task_id,
+                state=TeamTaskState(_required(payload, "state")),
+                reason=_required(payload, "reason"),
+                actor=_operator_actor_from_request(context.auth, request),
+                reference_ids=_optional_string_list(payload, "reference_ids"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="tasks",
+            target_id=task_id,
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+        )
+
     async def record_deliverable(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
@@ -2071,7 +2187,17 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 summary=_required(payload, "summary"),
                 artifact_refs=_optional_string_list(payload, "artifact_refs"),
                 outcomes=_optional_list(payload, "outcomes"),
+                source_deliverable_ids=_optional_string_list(
+                    payload,
+                    "source_deliverable_ids",
+                ),
+                completion=_optional_object(payload, "completion"),
                 state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
+                supersedes_deliverable_id=_optional(
+                    payload,
+                    "supersedes_deliverable_id",
+                ),
+                enforce_task_assessment=True,
                 expected_revision=expected_revision,
             ),
             create_collection="deliverables",
@@ -2437,12 +2563,436 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse({"error": "review profile not found"}, status_code=404)
         return JSONResponse(profile.model_dump(mode="json"))
 
+    async def list_human_review_requests(request: Request) -> JSONResponse:
+        identity = _strict_human_identity_from_request(context.auth, request)
+        assigned_to = _query_text(request, "assigned_to")
+        if assigned_to not in {None, "me"}:
+            raise ValueError("assigned_to must be me")
+        states = set(_query_values(request, "state") or ())
+        allowed_states = {
+            "preparing",
+            "pending",
+            "blocked",
+            "approved",
+            "changes_requested",
+        }
+        unknown_states = states - allowed_states
+        if unknown_states:
+            raise ValueError(
+                f"unknown human review state: {', '.join(sorted(unknown_states))}"
+            )
+        state = repository.read()
+        rows = []
+        for human_request in sorted(
+            state.human_review_requests.values(),
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        ):
+            if states and human_request.state not in states:
+                continue
+            if assigned_to == "me":
+                if not _human_review_is_assigned_to(
+                    human_request,
+                    identity["user_id"],
+                ):
+                    continue
+            elif not _can_read_human_review_request(
+                context.auth,
+                request,
+                human_request,
+                identity=identity,
+            ):
+                continue
+            rows.append(
+                human_review_request_detail_payload(state, human_request)
+            )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "human_review_requests": rows,
+            }
+        )
+
+    async def get_human_review_request(request: Request) -> JSONResponse:
+        identity = _strict_human_identity_from_request(context.auth, request)
+        state = repository.read()
+        human_request = state.human_review_requests.get(
+            request.path_params["human_review_request_id"]
+        )
+        if human_request is None:
+            return JSONResponse(
+                {"error": "human review request not found"},
+                status_code=404,
+            )
+        if not _can_read_human_review_request(
+            context.auth,
+            request,
+            human_request,
+            identity=identity,
+        ):
+            raise PermissionError("Human review request is not assigned to this user")
+        return JSONResponse(
+            human_review_request_detail_payload(state, human_request)
+        )
+
+    async def decide_human_review(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reconcile_human_review_request_assignment(
+            context.auth,
+            repository,
+            request.path_params["human_review_request_id"],
+        )
+        state = repository.read()
+        human_request = state.human_review_requests.get(
+            request.path_params["human_review_request_id"]
+        )
+        if human_request is None:
+            return JSONResponse(
+                {"error": "human review request not found"},
+                status_code=404,
+            )
+        identity = _require_human_review_decision_identity(
+            context.auth,
+            request,
+            human_request,
+            payload=payload,
+        )
+        state, result = admin_service.record_human_review_decision_with_result(
+            human_review_request_id=human_request.id,
+            reviewer_user_id=identity["user_id"],
+            reviewer_display_name=identity["display_name"],
+            decision=_required(payload, "decision"),
+            request_id=_mutation_request_id(request, payload),
+            expected_request_revision=_expected_revision(payload),
+            checklist_results=_optional_object(payload, "checklist_results"),
+            confirmed_finding_ids=(
+                _optional_string_list(payload, "confirmed_finding_ids") or []
+            ),
+            summary=_optional(payload, "summary") or "",
+            evidence_refs=_optional_string_list(payload, "evidence_refs") or [],
+            findings=_optional_mapping_list(payload, "findings"),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "human_review_request": human_review_request_detail_payload(
+                    state,
+                    state.human_review_requests[human_request.id],
+                ),
+            }
+        )
+
+    async def reassign_human_review_request(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reconcile_human_review_request_assignment(
+            context.auth,
+            repository,
+            request.path_params["human_review_request_id"],
+        )
+        state = repository.read()
+        human_request = state.human_review_requests.get(
+            request.path_params["human_review_request_id"]
+        )
+        if human_request is None:
+            return JSONResponse(
+                {"error": "human review request not found"},
+                status_code=404,
+            )
+        identity = _require_human_review_owner_identity(
+            context.auth,
+            request,
+            human_request,
+            payload=payload,
+        )
+        user_ids = _validate_human_review_reassignment_targets(
+            context.auth,
+            human_request,
+            user_ids=_optional_string_list(payload, "user_ids") or [],
+        )
+        state, result = admin_service.reassign_human_review_with_result(
+            human_review_request_id=human_request.id,
+            user_ids=user_ids,
+            assigned_by_user_id=identity["user_id"],
+            request_id=_mutation_request_id(request, payload),
+            expected_request_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "human_review_request": human_review_request_detail_payload(
+                    state,
+                    state.human_review_requests[human_request.id],
+                ),
+            }
+        )
+
+    async def resume_human_review_request(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reconcile_human_review_request_assignment(
+            context.auth,
+            repository,
+            request.path_params["human_review_request_id"],
+        )
+        state = repository.read()
+        human_request = state.human_review_requests.get(
+            request.path_params["human_review_request_id"]
+        )
+        if human_request is None:
+            return JSONResponse(
+                {"error": "human review request not found"},
+                status_code=404,
+            )
+        identity = _require_human_review_owner_identity(
+            context.auth,
+            request,
+            human_request,
+            payload=payload,
+        )
+        if not _current_human_review_decision_eligible_user_ids(
+            context.auth,
+            human_request,
+        ):
+            raise ValueError(
+                "human review assignment is unavailable; audited reassignment is required"
+            )
+        state, result = admin_service.resume_human_review_with_result(
+            human_review_request_id=human_request.id,
+            resumed_by_user_id=identity["user_id"],
+            request_id=_mutation_request_id(request, payload),
+            expected_request_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "human_review_request": human_review_request_detail_payload(
+                    state,
+                    state.human_review_requests[human_request.id],
+                ),
+            }
+        )
+
+    async def record_human_review_preparation(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reconcile_human_review_request_assignment(
+            context.auth,
+            repository,
+            request.path_params["human_review_request_id"],
+        )
+        state = repository.read()
+        human_request = state.human_review_requests.get(
+            request.path_params["human_review_request_id"]
+        )
+        if human_request is None:
+            return JSONResponse(
+                {"error": "human review request not found"},
+                status_code=404,
+            )
+        identity = _require_human_review_owner_identity(
+            context.auth,
+            request,
+            human_request,
+            payload=payload,
+        )
+        target = _optional_object(payload, "target")
+        error = _optional(payload, "error")
+        if (target is None) == (error is None):
+            raise ValueError("exactly one of target or error is required")
+        if error is None and not _current_human_review_decision_eligible_user_ids(
+            context.auth,
+            human_request,
+        ):
+            raise ValueError(
+                "human review assignment is unavailable; audited reassignment is required"
+            )
+        state, result = (
+            admin_service.record_human_review_preparation_result_with_result(
+                human_review_request_id=human_request.id,
+                recorded_by_user_id=identity["user_id"],
+                request_id=_mutation_request_id(request, payload),
+                expected_request_revision=_expected_revision(payload),
+                candidate_commit_sha=_required(payload, "candidate_commit_sha"),
+                candidate_tree_hash=_required(payload, "candidate_tree_hash"),
+                preparation_generation=_required_int(
+                    payload,
+                    "preparation_generation",
+                ),
+                target=target,
+                error=error,
+            )
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "human_review_request": human_review_request_detail_payload(
+                    state,
+                    state.human_review_requests[human_request.id],
+                ),
+            }
+        )
+
+    async def report_release_issue(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reject_client_human_identity_fields(payload)
+        identity = _strict_human_identity_from_request(context.auth, request)
+        release_package_id = request.path_params["release_package_id"]
+        state, result = admin_service.report_post_release_feedback_with_result(
+            release_package_id=release_package_id,
+            reporter_user_id=identity["user_id"],
+            reporter_display_name=identity["display_name"],
+            report=_required(payload, "report"),
+            evidence_refs=_optional_string_list(payload, "evidence_refs") or [],
+            request_id=_mutation_request_id(request, payload),
+            expected_state_revision=_expected_revision(payload),
+        )
+        case_id = str(result["case_id"])
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "case": state.cases[case_id].model_dump(mode="json"),
+            }
+        )
+
+    async def propose_human_finding_resolution(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reject_client_human_identity_fields(payload)
+        finding_id = request.path_params["human_review_finding_id"]
+        state = repository.read()
+        if finding_id not in state.human_review_findings:
+            return JSONResponse(
+                {"error": "human review finding not found"},
+                status_code=404,
+            )
+        state, result = (
+            admin_service.record_human_finding_resolution_proposal_with_result(
+                finding_id=finding_id,
+                proposed_resolution=_required(payload, "proposed_resolution"),
+                evidence_refs=(
+                    _optional_string_list(payload, "evidence_refs") or []
+                ),
+                proposed_by_deliverable_ids=(
+                    _optional_string_list(
+                        payload,
+                        "proposed_by_deliverable_ids",
+                    )
+                    or []
+                ),
+                proposed_by_user_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                request_id=_mutation_request_id(request, payload),
+                expected_state_revision=_expected_revision(payload),
+            )
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "human_review_finding": state.human_review_findings[
+                    finding_id
+                ].model_dump(mode="json"),
+            }
+        )
+
+    async def create_human_finding_correction_root(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reject_client_human_identity_fields(payload)
+        finding_id = request.path_params["human_review_finding_id"]
+        state = repository.read()
+        if finding_id not in state.human_review_findings:
+            return JSONResponse(
+                {"error": "human review finding not found"},
+                status_code=404,
+            )
+        state, result = (
+            admin_service.create_human_finding_correction_root_with_result(
+                finding_id=finding_id,
+                owner_agent_id=_required(payload, "owner_agent_id"),
+                title=_required(payload, "title"),
+                description=_required(payload, "description"),
+                task_id=_optional(payload, "task_id"),
+                originating_task_id=_optional(payload, "originating_task_id"),
+                created_by_user_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                request_id=_mutation_request_id(request, payload),
+                expected_state_revision=_expected_revision(payload),
+            )
+        )
+        correction_task_id = str(result["correction_task_id"])
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "human_review_finding": state.human_review_findings[
+                    finding_id
+                ].model_dump(mode="json"),
+                "correction_task": task_payload_with_assessment(
+                    state,
+                    state.tasks[correction_task_id],
+                ),
+            },
+            status_code=201,
+        )
+
+    async def close_post_release_feedback_case(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        _reject_client_human_identity_fields(payload)
+        case_id = request.path_params["case_id"]
+        state = repository.read()
+        if case_id not in state.cases:
+            return JSONResponse({"error": "case not found"}, status_code=404)
+        state, result = (
+            admin_service.close_post_release_feedback_case_with_result(
+                case_id=case_id,
+                reason=_required(payload, "reason"),
+                evidence_refs=(
+                    _optional_string_list(payload, "evidence_refs") or []
+                ),
+                closed_by_user_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                request_id=_mutation_request_id(request, payload),
+                expected_state_revision=_expected_revision(payload),
+            )
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "result": result,
+                "case": state.cases[case_id].model_dump(mode="json"),
+            }
+        )
+
     async def create_release_package(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         state, result = admin_service.create_release_package_with_result(
             project_id=_required(payload, "project_id"),
             deliverable_ids=_optional_string_list(payload, "deliverable_ids") or [],
             release_id=_optional(payload, "id") or _optional(payload, "release_package_id"),
+            supersedes_release_package_id=_optional(
+                payload,
+                "supersedes_release_package_id",
+            ),
+            post_release_feedback_case_id=_optional(
+                payload,
+                "post_release_feedback_case_id",
+            ),
             release_branch=_optional(payload, "release_branch"),
             canonical_branch=_optional(payload, "canonical_branch"),
             verification_waivers=(
@@ -2472,7 +3022,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             {
                 "revision": state.revision,
                 "release_packages": [
-                    release_package_payload_with_derived(state, release)
+                    release_package_api_payload(
+                        state,
+                        release,
+                        include_human_details=False,
+                    )
                     for release in state.release_packages.values()
                 ],
             }
@@ -2512,7 +3066,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         release = state.release_packages.get(request.path_params["release_package_id"])
         if release is None:
             return JSONResponse({"error": "release package not found"}, status_code=404)
-        return JSONResponse(release_package_payload_with_derived(state, release))
+        return JSONResponse(
+            release_package_api_payload(
+                state,
+                release,
+                include_human_details=_can_read_release_human_review(
+                    context.auth,
+                    request,
+                    state,
+                    release.id,
+                ),
+            )
+        )
 
     async def list_git_promotions(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -2862,6 +3427,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/cases/{case_id}", patch_case, methods=["PATCH"]),
         route("/tasks", create_task, methods=["POST"]),
         route("/tasks/{task_id}", patch_task, methods=["PATCH"]),
+        route(
+            "/tasks/{task_id}/repair-state",
+            repair_task_state,
+            methods=["POST"],
+        ),
+        route("/tasks/{task_id}/cancel", cancel_task, methods=["POST"]),
         route("/deliverables", record_deliverable, methods=["POST"]),
         route("/review-requests", record_review_request, methods=["POST"]),
         route(
@@ -2934,6 +3505,56 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/release-packages", create_release_package, methods=["POST"]),
         route("/release-packages", list_release_packages, methods=["GET"]),
         route(
+            "/human-review-requests",
+            list_human_review_requests,
+            methods=["GET"],
+        ),
+        route(
+            "/human-review-requests/{human_review_request_id}",
+            get_human_review_request,
+            methods=["GET"],
+        ),
+        route(
+            "/human-review-requests/{human_review_request_id}/decisions",
+            decide_human_review,
+            methods=["POST"],
+        ),
+        route(
+            "/human-review-requests/{human_review_request_id}/reassign",
+            reassign_human_review_request,
+            methods=["POST"],
+        ),
+        route(
+            "/human-review-requests/{human_review_request_id}/resume",
+            resume_human_review_request,
+            methods=["POST"],
+        ),
+        route(
+            "/human-review-requests/{human_review_request_id}/preparation-result",
+            record_human_review_preparation,
+            methods=["POST"],
+        ),
+        route(
+            "/human-review-findings/{human_review_finding_id}/resolution-proposal",
+            propose_human_finding_resolution,
+            methods=["POST"],
+        ),
+        route(
+            "/human-review-findings/{human_review_finding_id}/correction-root",
+            create_human_finding_correction_root,
+            methods=["POST"],
+        ),
+        route(
+            "/cases/{case_id}/close-post-release",
+            close_post_release_feedback_case,
+            methods=["POST"],
+        ),
+        route(
+            "/release-packages/{release_package_id}/report-issue",
+            report_release_issue,
+            methods=["POST"],
+        ),
+        route(
             "/release-packages/{release_package_id}/retry-gate",
             retry_release_gate,
             methods=["POST"],
@@ -2962,6 +3583,16 @@ def _with_errors(handler):
                     "error": str(exc),
                     "expected_revision": exc.expected_revision,
                     "current_revision": exc.current_revision,
+                },
+                status_code=409,
+            )
+        except TeamIdempotencyConflictError as exc:
+            return JSONResponse(
+                {
+                    "error": str(exc),
+                    "request_id": exc.request_id,
+                    "existing_digest": exc.existing_digest,
+                    "attempted_digest": exc.attempted_digest,
                 },
                 status_code=409,
             )
@@ -3116,6 +3747,7 @@ def _team_state_payload_for_request(
                 state,
                 project_id,
             )
+    apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)
     if not _can_view_all_team_chats(auth, request):
         identity = _operator_identity_from_request(auth, request)
@@ -3608,6 +4240,8 @@ def _state_collection_slice_payload(
     *,
     allowed_ids: set[str] | None = None,
 ) -> dict[str, Any]:
+    if collection in HUMAN_REVIEW_COLLECTION_KEYS:
+        return {}
     value = getattr(state, collection, {})
     if not isinstance(value, Mapping):
         return {}
@@ -3618,9 +4252,13 @@ def _state_collection_slice_payload(
         if collection == "agents":
             rows[item_id] = _agent_payload_with_role(state, item)
         elif collection == "tasks":
-            rows[item_id] = task_payload_with_derived(state, item)
+            rows[item_id] = task_payload_with_assessment(state, item)
         elif collection == "release_packages":
-            rows[item_id] = release_package_payload_with_derived(state, item)
+            rows[item_id] = release_package_api_payload(
+                state,
+                item,
+                include_human_details=False,
+            )
         elif collection == "memories":
             rows[item_id] = memory_record_payload(item, include_body=False)
         elif hasattr(item, "model_dump"):
@@ -4139,6 +4777,416 @@ def _operator_identity_from_request(auth: Any | None, request: Request) -> dict[
         "display_name": display_name,
         "actor": f"operator:{user_id}",
     }
+
+
+def _strict_human_identity_from_request(
+    auth: Any | None,
+    request: Request,
+) -> dict[str, str]:
+    config = getattr(auth, "config", None)
+    auth_mode = str(getattr(config, "auth_mode", "") or "").strip().casefold()
+    if not auth_mode or auth_mode == "none":
+        raise PermissionError("A real authenticated Admin Web session is required")
+    read_session = getattr(auth, "read_session", None)
+    if not callable(read_session):
+        raise PermissionError("A real authenticated Admin Web session is required")
+    session = read_session(request)
+    if not isinstance(session, Mapping):
+        raise PermissionError("A real authenticated Admin Web session is required")
+    session_kind = str(session.get("kind") or "session").strip().casefold()
+    if session_kind != "session":
+        raise PermissionError("A real authenticated Admin Web session is required")
+    session_id = str(session.get("sid") or "").strip()
+    user_id = normalize_admin_web_login(session.get("login"))
+    if user_id is None or not session_id or session_id == "local-dev":
+        raise PermissionError("A real authenticated Admin Web session is required")
+    display_name = str(session.get("name") or user_id).strip() or user_id
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "session_id": session_id,
+    }
+
+
+def _require_human_review_decision_identity(
+    auth: Any | None,
+    request: Request,
+    human_request: Any,
+    *,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    if payload is not None:
+        _reject_client_human_identity_fields(payload)
+    identity = _strict_human_identity_from_request(auth, request)
+    user_id = identity["user_id"]
+    if not _human_review_is_assigned_to(human_request, user_id):
+        raise PermissionError("Human review request is not assigned to this user")
+
+    directory_path = str(
+        getattr(
+            getattr(human_request, "requirement_snapshot", None),
+            "directory_path",
+            "root",
+        )
+        or "root"
+    )
+    assignment = getattr(human_request, "current_assignment", None)
+    explicitly_assigned = {
+        str(value).strip().casefold()
+        for value in (
+            getattr(assignment, "explicitly_assigned_user_ids", None) or ()
+        )
+        if str(value).strip()
+    }
+    if user_id not in explicitly_assigned and not _is_current_configured_human_reviewer(
+        auth,
+        human_request,
+        user_id=user_id,
+        directory_path=directory_path,
+    ):
+        raise PermissionError(
+            "Human reviewer is no longer a member of an assigned reviewer group"
+        )
+
+    require_permission = getattr(auth, "require_permission", None)
+    if not callable(require_permission):
+        raise PermissionError(
+            f"Permission required: {TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION}"
+        )
+    require_permission(
+        request,
+        TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+        directory_path=directory_path,
+    )
+    return identity
+
+
+def _require_human_review_owner_identity(
+    auth: Any | None,
+    request: Request,
+    human_request: Any,
+    *,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    if payload is not None:
+        _reject_client_human_identity_fields(payload)
+    identity = _strict_human_identity_from_request(auth, request)
+    directory_path = str(
+        getattr(
+            getattr(human_request, "requirement_snapshot", None),
+            "directory_path",
+            "root",
+        )
+        or "root"
+    )
+    require_permission = getattr(auth, "require_permission", None)
+    if not callable(require_permission):
+        raise PermissionError(f"Permission required: {ADMIN_OWNER_PERMISSION}")
+    require_permission(
+        request,
+        ADMIN_OWNER_PERMISSION,
+        directory_path=directory_path,
+    )
+    return identity
+
+
+def _reject_client_human_identity_fields(payload: Mapping[str, Any]) -> None:
+    forbidden_actor_fields = {
+        "actor",
+        "actor_id",
+        "actor_user_id",
+        "assigned_by_user_id",
+        "display_name",
+        "recorded_by_user_id",
+        "reporter_display_name",
+        "reporter_user_id",
+        "resumed_by_user_id",
+        "reviewer_display_name_snapshot",
+        "reviewer_user_id",
+        "user_id",
+    }.intersection(payload)
+    if forbidden_actor_fields:
+        raise ValueError(
+            "Human actor identity is derived from the authenticated session; "
+            f"remove: {', '.join(sorted(forbidden_actor_fields))}"
+        )
+
+
+def _validate_human_review_reassignment_targets(
+    auth: Any | None,
+    human_request: Any,
+    *,
+    user_ids: Sequence[str],
+) -> list[str]:
+    normalized_user_ids = sorted(
+        {
+            normalized
+            for value in user_ids
+            if (normalized := normalize_admin_web_login(value)) is not None
+        }
+    )
+    if len(normalized_user_ids) != len(set(user_ids)):
+        raise ValueError("user_ids must contain valid unique Admin Web logins")
+    if not normalized_user_ids:
+        raise ValueError("human review reassignment requires at least one user_id")
+    user_store = getattr(auth, "user_store", None)
+    get_user = getattr(user_store, "get_user", None)
+    can = getattr(user_store, "can", None)
+    if not callable(get_user) or not callable(can):
+        raise PermissionError("Admin Web user directory is unavailable")
+    directory_path = str(
+        getattr(
+            getattr(human_request, "requirement_snapshot", None),
+            "directory_path",
+            "root",
+        )
+        or "root"
+    )
+    for user_id in normalized_user_ids:
+        try:
+            user = get_user(user_id)
+            has_permission = can(
+                user_id,
+                TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+                directory_path=directory_path,
+            )
+        except Exception as exc:
+            raise PermissionError("Admin Web user directory is unavailable") from exc
+        if user is None:
+            raise ValueError(f"Admin Web user {user_id} does not exist")
+        if not has_permission:
+            raise ValueError(
+                f"Admin Web user {user_id} lacks "
+                f"{TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION} in {directory_path}"
+            )
+    return normalized_user_ids
+
+
+def _current_human_review_decision_eligible_user_ids(
+    auth: Any | None,
+    human_request: Any,
+) -> list[str]:
+    assignment = getattr(human_request, "current_assignment", None)
+    assigned_user_ids = {
+        normalized
+        for value in (
+            getattr(assignment, "eligible_user_ids", None) or ()
+        )
+        if (normalized := normalize_admin_web_login(value)) is not None
+    }
+    explicit_user_ids = {
+        normalized
+        for value in (
+            getattr(assignment, "explicitly_assigned_user_ids", None) or ()
+        )
+        if (normalized := normalize_admin_web_login(value)) is not None
+    }
+    user_store = getattr(auth, "user_store", None)
+    get_user = getattr(user_store, "get_user", None)
+    can = getattr(user_store, "can", None)
+    if not callable(get_user) or not callable(can):
+        return []
+    directory_path = str(
+        getattr(
+            getattr(human_request, "requirement_snapshot", None),
+            "directory_path",
+            "root",
+        )
+        or "root"
+    )
+    eligible: list[str] = []
+    for user_id in sorted(assigned_user_ids):
+        try:
+            user = get_user(user_id)
+            has_permission = can(
+                user_id,
+                TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+                directory_path=directory_path,
+            )
+        except Exception:
+            continue
+        if (
+            user is not None
+            and has_permission
+            and (
+                user_id in explicit_user_ids
+                or _is_current_configured_human_reviewer(
+                    auth,
+                    human_request,
+                    user_id=user_id,
+                    directory_path=directory_path,
+                )
+            )
+        ):
+            eligible.append(user_id)
+    return eligible
+
+
+def _reconcile_human_review_request_assignment(
+    auth: Any | None,
+    repository: TeamStateRepository,
+    human_review_request_id: str,
+) -> dict[str, Any]:
+    user_store = getattr(auth, "user_store", None)
+    required_methods = (
+        "list_user_group_assignments",
+        "get_user",
+        "can",
+    )
+    if user_store is None or any(
+        not callable(getattr(user_store, method_name, None))
+        for method_name in required_methods
+    ):
+        raise PermissionError("Admin Web user directory is unavailable")
+    return reconcile_current_human_review_assignments(
+        repository=repository,
+        user_store=user_store,
+        request_ids=[human_review_request_id],
+    )
+
+
+def _can_read_human_review_request(
+    auth: Any | None,
+    request: Request,
+    human_request: Any,
+    *,
+    identity: Mapping[str, str],
+) -> bool:
+    if _human_review_is_assigned_to(human_request, identity["user_id"]):
+        return True
+    directory_path = str(
+        getattr(
+            getattr(human_request, "requirement_snapshot", None),
+            "directory_path",
+            "root",
+        )
+        or "root"
+    )
+    return _auth_can(
+        auth,
+        request,
+        ADMIN_OWNER_PERMISSION,
+        directory_path=directory_path,
+    )
+
+
+def _can_read_release_human_review(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+    release_package_id: str,
+) -> bool:
+    try:
+        identity = _strict_human_identity_from_request(auth, request)
+    except PermissionError:
+        return False
+    human_requests = [
+        human_request
+        for human_request in state.human_review_requests.values()
+        if human_request.release_package_id == release_package_id
+    ]
+    if any(
+        _can_read_human_review_request(
+            auth,
+            request,
+            human_request,
+            identity=identity,
+        )
+        for human_request in human_requests
+    ):
+        return True
+    release = state.release_packages.get(release_package_id)
+    directory_path = _release_human_review_directory(state, release)
+    return _auth_can(
+        auth,
+        request,
+        ADMIN_OWNER_PERMISSION,
+        directory_path=directory_path,
+    )
+
+
+def _human_review_is_assigned_to(human_request: Any, user_id: str) -> bool:
+    assignment = getattr(human_request, "current_assignment", None)
+    assigned_ids = {
+        str(value).strip().casefold()
+        for field_name in (
+            "eligible_user_ids",
+            "explicitly_assigned_user_ids",
+        )
+        for value in (getattr(assignment, field_name, None) or ())
+        if str(value).strip()
+    }
+    return user_id.casefold() in assigned_ids
+
+
+def _is_current_configured_human_reviewer(
+    auth: Any | None,
+    human_request: Any,
+    *,
+    user_id: str,
+    directory_path: str,
+) -> bool:
+    configured_group_ids = {
+        str(value).strip().casefold()
+        for value in (
+            getattr(
+                getattr(human_request, "requirement_snapshot", None),
+                "configured_group_ids",
+                None,
+            )
+            or ()
+        )
+        if str(value).strip()
+    }
+    if not configured_group_ids:
+        return False
+    user_store = getattr(auth, "user_store", None)
+    list_assignments = getattr(user_store, "list_user_group_assignments", None)
+    if not callable(list_assignments):
+        return False
+    try:
+        assignments = list_assignments(user_id)
+    except Exception:
+        return False
+    return any(
+        str(getattr(assignment, "group_id", "") or "").strip().casefold()
+        in configured_group_ids
+        and scope_matches(
+            getattr(assignment, "directory_path", None),
+            directory_path,
+        )
+        for assignment in assignments
+    )
+
+
+def _release_human_review_directory(
+    state: TeamState,
+    release: Any | None,
+) -> str:
+    manifest = getattr(release, "manifest", None)
+    requirement = getattr(manifest, "human_review_requirement", None)
+    directory_path = str(getattr(requirement, "directory_path", "") or "").strip()
+    if directory_path:
+        return directory_path
+    project = state.projects.get(getattr(release, "project_id", "") or "")
+    git = getattr(project, "git", None)
+    return str(getattr(git, "directory_path", "") or "root").strip() or "root"
+
+
+def _auth_can(
+    auth: Any | None,
+    request: Request,
+    permission: str,
+    *,
+    directory_path: str,
+) -> bool:
+    can = getattr(auth, "can", None)
+    if not callable(can):
+        return False
+    try:
+        return bool(can(request, permission, directory_path=directory_path))
+    except Exception:
+        return False
 
 
 def _session_from_request(auth: Any | None, request: Request) -> Mapping[str, Any] | None:
@@ -4997,6 +6045,25 @@ def _required(payload: Mapping[str, Any], *field_names: str) -> str:
     raise ValueError(f"{joined} is required")
 
 
+def _mutation_request_id(
+    request: Request,
+    payload: Mapping[str, Any],
+) -> str:
+    header_value = str(request.headers.get("Idempotency-Key") or "").strip()
+    body_values = {
+        str(payload[field_name]).strip()
+        for field_name in ("request_id", "idempotency_key")
+        if payload.get(field_name) is not None
+        and str(payload[field_name]).strip()
+    }
+    values = body_values | ({header_value} if header_value else set())
+    if not values:
+        raise ValueError("request_id or Idempotency-Key is required")
+    if len(values) != 1:
+        raise ValueError("request_id and Idempotency-Key must match")
+    return next(iter(values))
+
+
 def _optional_bool(payload: Mapping[str, Any], field_name: str) -> bool | None:
     if field_name not in payload:
         return None
@@ -5134,6 +6201,85 @@ def _optional_release_policy(
     return ProjectReleasePolicy.model_validate(dict(raw))
 
 
+def _resolved_release_policy_for_admin(
+    auth: Any | None,
+    payload: Mapping[str, Any],
+    *,
+    directory_path: str,
+) -> ProjectReleasePolicy | None:
+    policy = _optional_release_policy(payload)
+    if policy is None or policy.human_review_requirement is None:
+        return policy
+    requirement = policy.human_review_requirement
+    normalized_directory = normalize_directory_path(directory_path)
+    group_ids: list[str] = []
+    for raw_group_id in requirement.reviewer_group_ids:
+        group_id = normalize_admin_web_group_id(raw_group_id)
+        if group_id is None:
+            raise ValueError(f"invalid human reviewer group {raw_group_id!r}")
+        if group_id not in group_ids:
+            group_ids.append(group_id)
+
+    user_store = getattr(auth, "user_store", None)
+    get_group = getattr(user_store, "get_group", None)
+    list_assignments = getattr(user_store, "list_user_group_assignments", None)
+    get_user = getattr(user_store, "get_user", None)
+    can = getattr(user_store, "can", None)
+    if not all(
+        callable(method)
+        for method in (get_group, list_assignments, get_user, can)
+    ):
+        raise ValueError(
+            "Admin Web user directory is unavailable; human review policy "
+            "cannot be configured"
+        )
+    missing_group_ids = [
+        group_id for group_id in group_ids if get_group(group_id) is None
+    ]
+    if missing_group_ids:
+        raise ValueError(
+            "human review policy references missing Admin groups: "
+            + ", ".join(missing_group_ids)
+        )
+    try:
+        assignments = list_assignments()
+    except Exception as exc:
+        raise ValueError("Admin Web user directory is unavailable") from exc
+    eligible_user_ids: list[str] = []
+    for assignment in assignments:
+        assignment_group_id = normalize_admin_web_group_id(
+            getattr(assignment, "group_id", None)
+        )
+        if assignment_group_id not in group_ids or not scope_matches(
+            getattr(assignment, "directory_path", None),
+            normalized_directory,
+        ):
+            continue
+        user_id = normalize_admin_web_login(getattr(assignment, "login", None))
+        if user_id is None or user_id in eligible_user_ids:
+            continue
+        try:
+            user = get_user(user_id)
+            has_permission = can(
+                user_id,
+                TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+                directory_path=normalized_directory,
+            )
+        except Exception as exc:
+            raise ValueError("Admin Web user directory is unavailable") from exc
+        if user is not None and has_permission:
+            eligible_user_ids.append(user_id)
+    if not eligible_user_ids:
+        raise ValueError(
+            "human review policy has no active reviewer with "
+            f"{TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION} in {normalized_directory}"
+        )
+    requirement.reviewer_group_ids = group_ids
+    requirement.directory_path = normalized_directory
+    requirement.resolved_reviewer_user_ids = sorted(eligible_user_ids)
+    return policy
+
+
 def _current_agent_avatar_asset_id(state: Any, agent_id: str) -> str | None:
     agent = state.agents.get(agent_id)
     if agent is None:
@@ -5196,6 +6342,19 @@ def _optional_string_list(payload: Mapping[str, Any], field_name: str) -> list[s
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be a list of strings")
     normalized = [str(item).strip() for item in value if str(item).strip()]
+    return normalized
+
+
+def _optional_mapping_list(
+    payload: Mapping[str, Any],
+    field_name: str,
+) -> list[dict[str, Any]]:
+    values = _optional_list(payload, field_name)
+    normalized: list[dict[str, Any]] = []
+    for index, value in enumerate(values):
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{field_name}[{index}] must be a JSON object")
+        normalized.append(dict(value))
     return normalized
 
 

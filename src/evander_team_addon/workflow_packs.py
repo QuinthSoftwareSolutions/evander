@@ -420,6 +420,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
                 "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+                "base_commit_sha": (
+                    "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
+                ),
                 "expected_source_commits": (
                     "${{team-git-promotion-requested.payload.expected_source_commits}}"
                 ),
@@ -470,6 +473,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
                 "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+                "base_commit_sha": (
+                    "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
+                ),
                 "expected_source_commits": (
                     "${{team-git-promotion-requested.payload.expected_source_commits}}"
                 ),

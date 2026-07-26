@@ -59,6 +59,8 @@ from evander_team_addon.models import (
     TeamCaseStatus,
     TeamConversation,
     TeamConversationMessage,
+    TeamDispatch,
+    TeamDispatchStatus,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
     TeamInboxItemState,
@@ -742,6 +744,7 @@ def _seed_manager_review_stall(
     *,
     deliverable_id: str = "deliverable-stalled",
     review_id: str = "review-manager",
+    make_review_non_actionable: bool = False,
 ) -> None:
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
@@ -776,6 +779,22 @@ def _seed_manager_review_stall(
         return state
 
     repo.update(_handle_all_inbox)
+    if make_review_non_actionable:
+        _block_review_for_manager_fallback(repo, review_id=review_id)
+
+
+def _block_review_for_manager_fallback(
+    repo: TeamStateRepository,
+    *,
+    review_id: str = "review-manager",
+) -> None:
+    def _block_review(state: TeamState) -> TeamState:
+        review = state.review_requests[review_id]
+        review.state = TeamRecordState.BLOCKED
+        review.findings = ["The original review route is no longer actionable."]
+        return state
+
+    repo.update(_block_review)
 
 
 def _lease_manager_fallback(
@@ -793,6 +812,26 @@ def _set_manager_fallback_runtime(repo: TeamStateRepository) -> str:
     dispatch_id = "team-dispatch-manager-fallback"
 
     def _mark_manager_fallback(state: TeamState) -> TeamState:
+        leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+        review_request_ids = sorted(
+            review.id
+            for review in state.review_requests.values()
+            if review.reviewer_agent_id == "manager"
+            and review.state == TeamRecordState.PENDING
+        )
+        state.dispatches[dispatch_id] = TeamDispatch(
+            id=dispatch_id,
+            agent_id="manager",
+            session_id="session-manager",
+            cause_kind="manager_fallback",
+            review_request_ids=review_request_ids,
+            project_ids=["project"],
+            status=TeamDispatchStatus.LEASED,
+            created_at=leased_at,
+            prepared_at=leased_at,
+            leased_at=leased_at,
+            lease_expires_at=leased_at + timedelta(minutes=15),
+        )
         state.agent_runtimes["manager"] = AgentRuntime(
             agent_id="manager",
             active_dispatch_id=dispatch_id,
@@ -1042,7 +1081,7 @@ def test_dependency_waiting_owner_leased_with_pending_inbox(tmp_path: Path) -> N
 
 def test_owner_leaseable_after_dependencies_complete(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
-    _add_task(repo, task_id="dep", owner_agent_id="lead", state=TeamTaskState.ACCEPTED)
+    _add_task(repo, task_id="dep", owner_agent_id="lead", state=TeamTaskState.FINISHED)
     _set_task_graph(repo, task_id="task", dependency_task_ids=["dep"])
 
     _state, leases = _team_runtime_service(repo).lease_due_agents(
@@ -1052,7 +1091,7 @@ def test_owner_leaseable_after_dependencies_complete(tmp_path: Path) -> None:
     assert "backend" in _leased_agent_ids(leases)
 
 
-def test_parent_owner_with_open_child_remains_leaseable_while_waiting(
+def test_parent_owner_with_open_child_waits_for_supervision_transition(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -1069,7 +1108,36 @@ def test_parent_owner_with_open_child_remains_leaseable_while_waiting(
 
     assert state.dependency_status("task") == "waiting"
     assert state.subtask_counts("task")["open"] == 1
-    assert "backend" in _leased_agent_ids(leases)
+    assert "backend" not in _leased_agent_ids(leases)
+
+    def _queue_supervision_transition(current: TeamState) -> TeamState:
+        current.inbox["parent-supervision-transition"] = AgentInboxItem(
+            id="parent-supervision-transition",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={
+                "kind": "parent_task_transition",
+                "transition": "blocker",
+                "parent_task_id": "task",
+                "child_task_ids": ["child"],
+            },
+            state=TeamInboxItemState.PENDING,
+        )
+        return current
+
+    repo.update(_queue_supervision_transition)
+    _state, transition_leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        agent_id="backend",
+    )
+    assert len(transition_leases) == 1
+    assert transition_leases[0]["reason"] == "inbox"
+    assert transition_leases[0]["tasks"] == []
+    assert transition_leases[0]["inbox"][0]["id"] == (
+        "parent-supervision-transition"
+    )
 
 
 def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> None:
@@ -2907,6 +2975,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         return state
 
     repo.update(_handle_all_inbox)
+    _block_review_for_manager_fallback(repo)
     _state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -2948,7 +3017,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     }
     reviews = {item["id"]: item for item in fallback_summary["review_requests"]}
     assert reviews["review-manager"]["reviewer_id"] == "manager"
-    assert reviews["review-manager"]["state"] == "pending"
+    assert reviews["review-manager"]["state"] == "blocked"
     agents = {item["id"]: item for item in fallback_summary["agents"]}
     assert agents["luke"]["display_name"] == "Luke"
     assert agents["luke"]["active_task_count"] == 0
@@ -3114,6 +3183,7 @@ def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
         return state
 
     repo.update(_handle_all_inbox)
+    _block_review_for_manager_fallback(repo)
     if blocker == "paused":
         _team_admin_service(repo).update_agent(
             agent_id="luke",
@@ -3145,7 +3215,7 @@ def test_manager_fallback_not_leased_while_reviewer_is_awake(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
-    _seed_manager_review_stall(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
 
     def _lease_luke(state: TeamState) -> TeamState:
         state.agent_runtimes["luke"] = AgentRuntime(
@@ -3169,7 +3239,7 @@ def test_manager_fallback_requires_review_profile_for_reviewer_candidate(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo, with_review_profile=False)
-    _seed_manager_review_stall(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
 
     lease = _lease_manager_fallback(repo)
     prompt = _build_prompt(lease)
@@ -3194,7 +3264,7 @@ def test_manager_fallback_blank_review_profile_filter_allows_reviewer_candidate(
         applicable_role_ids=[],
         expected_revision=repo.read().revision,
     )
-    _seed_manager_review_stall(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
 
     lease = _lease_manager_fallback(repo)
     prompt = _build_prompt(lease)
@@ -3210,7 +3280,7 @@ def test_manager_fallback_blank_review_profile_filter_allows_reviewer_candidate(
     )
 
 
-def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
+def test_direct_review_dispatch_allows_assigned_manager_decision(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -3218,6 +3288,8 @@ def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
     _seed_manager_review_stall(repo)
 
     lease = _lease_manager_fallback(repo)
+    assert lease["reason"] == "review"
+    assert lease["dispatch"]["review_request_ids"] == ["review-manager"]
     _state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
@@ -3231,11 +3303,10 @@ def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
         },
     )
 
-    assert result["success"] is False
-    assert result["applied"] is False
-    assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
+    assert result["success"] is True
+    assert result["applied"] is True
     reread = repo.read()
-    assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
 
 
 def test_manager_fallback_blocks_self_review_for_terminal_task_deliverable(
@@ -3373,11 +3444,11 @@ def test_manager_fallback_allows_self_review_with_override_reason(
     _add_luke_reviewer(repo)
     _seed_manager_review_stall(repo)
 
-    lease = _lease_manager_fallback(repo)
+    dispatch_id = _set_manager_fallback_runtime(repo)
     _state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
-            "dispatch_id": lease["dispatch_id"],
+            "dispatch_id": dispatch_id,
             "review_decisions": [
                 {
                     "review_request_id": "review-manager",
@@ -3398,7 +3469,7 @@ def test_manager_fallback_creates_fresh_review_for_idle_profile_reviewer(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
-    _seed_manager_review_stall(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
 
     lease = _lease_manager_fallback(repo)
     _state, result = _team_agent_action_service(repo).apply_agent_action(
@@ -3431,7 +3502,7 @@ def test_review_handoff_duplicate_id_feedback_is_included_in_corrective_wake_pro
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
-    _seed_manager_review_stall(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
 
     lease = _lease_manager_fallback(repo)
     _state, result = _team_agent_action_service(repo).apply_agent_action(
@@ -3524,6 +3595,7 @@ def test_manager_fallback_prompt_caps_large_history(
         return state
 
     repo.update(_add_large_history)
+    _block_review_for_manager_fallback(repo)
     _state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -3813,7 +3885,7 @@ def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.FINISHED)
     _team_runtime_service(repo).request_agent_context_rotation(
         agent_id="backend",
         requested_by="operator:test",
@@ -3854,7 +3926,7 @@ def test_status_report_only_idle_rotation_does_not_rearm_auto_context_clearing(
         auto_context_clearing_enabled=True,
         set_auto_context_clearing_enabled=True,
     )
-    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.FINISHED)
     runtime = repo.read().agent_runtimes["backend"]
     assert runtime.context_rotation_pending is True
     assert runtime.context_rotation_reason == "idle"
@@ -3904,7 +3976,7 @@ def test_substantive_idle_rotation_action_can_rearm_auto_context_clearing(
         auto_context_clearing_enabled=True,
         set_auto_context_clearing_enabled=True,
     )
-    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.FINISHED)
 
     _state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC)
@@ -3948,7 +4020,7 @@ def test_disabling_auto_context_clearing_clears_pending_idle_rotation(
         auto_context_clearing_enabled=True,
         set_auto_context_clearing_enabled=True,
     )
-    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.FINISHED)
     assert repo.read().agent_runtimes["backend"].context_rotation_pending is True
 
     state = _team_admin_service(repo).update_agent(
@@ -4210,13 +4282,181 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert "The project host checkout is not mounted in the guest" in prompt
     assert "project_repo.git_work_contexts" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
-    assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert any(
+        call["metadata"]["team_addon"].get("agent_id") == "backend"
+        for call in session_store.calls
+    )
     reread = TeamStateRepository(tmp_path).read()
     assert set(reread.git_work_contexts) == {project_repo["branch_context_id"]}
     assert (
         reread.git_work_contexts[project_repo["branch_context_id"]].dispatch_id
         == (result["dispatches"][0]["dispatch_id"])
     )
+
+
+def test_successive_dispatches_reuse_task_worktree_with_fresh_context_id(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=FakeRepoCloner(),
+            vm_executor=FakeVmExecutor(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    first = provider.execute()
+    first_dispatch = first["dispatches"][0]
+    first_context = first_dispatch["project_repo"]["git_work_contexts"][0]
+    finalized_state, finalized = _team_runtime_service(
+        repo
+    ).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=first_dispatch["dispatch_id"],
+    )
+    assert finalized["success"] is True
+    assert (
+        finalized_state.git_work_contexts[first_context["id"]].state.value
+        == "abandoned"
+    )
+
+    def _make_due(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"].next_wake_at = None
+        return state
+
+    repo.update(_make_due)
+    second = provider.execute()
+    second_dispatch = second["dispatches"][0]
+    second_context = second_dispatch["project_repo"]["git_work_contexts"][0]
+
+    assert second_dispatch["dispatch_id"] != first_dispatch["dispatch_id"]
+    assert second_context["id"] != first_context["id"]
+    assert second_context["dispatch_id"] == second_dispatch["dispatch_id"]
+    assert second_context["worktree_path"] == first_context["worktree_path"]
+    assert second_context["agent_branch"] == first_context["agent_branch"]
+    reread = repo.read()
+    assert reread.git_work_contexts[first_context["id"]].state.value == "abandoned"
+    assert reread.git_work_contexts[second_context["id"]].state.value == "active"
+
+
+def test_wake_due_agents_prepares_every_scoped_repo_before_leasing_and_resume(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    first_repo_id = "mr_11111111111111111111"
+    second_repo_id = "mr_22222222222222222222"
+
+    def _set_first_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id=first_repo_id,
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_first_git)
+    admin = _team_admin_service(repo)
+    admin.create_project(
+        project_id="project-two",
+        team_id="team",
+        name="Project Two",
+        lead_agent_id="backend",
+        lead_session_id=None,
+        git=ProjectGitConfig(
+            managed_repo_id=second_repo_id,
+            base_branch="main",
+        ),
+        goals=[ProjectGoal(id="goal-two", description="Ship second work")],
+        expected_revision=repo.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="task-two",
+        owner_agent_id="backend",
+        project_id="project-two",
+        priority=1,
+        title="Build second backend",
+        description="Implement the second project work.",
+        created_by_agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+
+    events: list[str] = []
+
+    def _on_resume(_kwargs: dict[str, object]) -> None:
+        events.append("resume")
+        dispatches = list(repo.read().dispatches.values())
+        assert len(dispatches) == 1
+        assert dispatches[0].status == TeamDispatchStatus.LEASED
+
+    repo_cloner = FakeRepoCloner(on_clone=lambda: events.append("clone"))
+    resumer = FakeResumer(on_resume=_on_resume)
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert events == ["clone", "clone", "resume"]
+    assert [
+        call["managed_repo_id"] for call in repo_cloner.calls
+    ] == [first_repo_id, second_repo_id]
+    dispatch = result["dispatches"][0]
+    assert "project_repo" not in dispatch
+    assert {
+        row["project_id"]: row["managed_repo_id"]
+        for row in dispatch["project_repos"]
+    } == {
+        "project": first_repo_id,
+        "project-two": second_repo_id,
+    }
+    assert {
+        context["task_id"]: project_repo["project_id"]
+        for project_repo in dispatch["project_repos"]
+        for context in project_repo["git_work_contexts"]
+    } == {
+        "task": "project",
+        "task-two": "project-two",
+    }
+    durable = repo.read().dispatches[dispatch["dispatch_id"]]
+    assert durable.status == TeamDispatchStatus.LEASED
+    assert durable.project_ids == ["project", "project-two"]
+    assert durable.managed_repo_ids == [first_repo_id, second_repo_id]
 
 
 def test_wake_due_agents_refreshes_state_after_repo_clone_revision_change(
@@ -4801,7 +5041,12 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
     runtime = reread.agent_runtimes["backend"]
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
-    assert [record.error for record in reread.action_records.values()] == ["repo missing"]
+    assert reread.action_records == {}
+    durable_dispatch = reread.dispatches[
+        str(failed_repo_preparation["dispatch_id"])
+    ]
+    assert durable_dispatch.status == TeamDispatchStatus.FAILED
+    assert durable_dispatch.error == "repo missing"
 
 
 def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_chat_retry(
@@ -5073,6 +5318,12 @@ def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
 
 def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+    _add_task(
+        repo,
+        task_id="workflow-dependency",
+        owner_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
     _team_admin_service(repo).create_case(
         case_id="case",
         team_id="team",
@@ -5096,7 +5347,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             case_id="case",
             state="pending",
             parent_task_id="task",
-            dependency_task_ids=["task"],
+            dependency_task_ids=["workflow-dependency"],
             created_by="workflow:intake",
             expected_revision=repo.read().revision,
         ),
@@ -5112,11 +5363,13 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     assert result["project_id"] == "project"
     assert result["owner_agent_id"] == "backend"
     assert result["task"]["created_by_actor"] == "workflow:intake"
+    assert result["task"]["assessment"]["task_id"] == "workflow-task"
+    assert result["task"]["readiness"] == "actionable"
     reread = TeamStateRepository(tmp_path).read()
     task = reread.tasks["workflow-task"]
     assert task.case_id == "case"
     assert task.parent_task_id == "task"
-    assert task.dependency_task_ids == ["task"]
+    assert task.dependency_task_ids == ["workflow-dependency"]
     assert reread.cases["case"].task_ids == ["workflow-task"]
 
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from evander_team_addon.chat_attachments import (
@@ -9,7 +7,6 @@ from evander_team_addon.chat_attachments import (
     TeamChatAttachmentStorage,
 )
 from evander_team_addon.mcp import _delete_uncommitted_team_chat_attachments
-from evander_team_addon.models import AgentRuntime
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
@@ -38,18 +35,11 @@ def _repo_with_chat(tmp_path):
         expected_revision=state.revision,
     )
 
-    def lease(current):
-        current.agent_runtimes["manager"] = AgentRuntime(
-            agent_id="manager",
-            active_dispatch_id=f"team-chat:{message.id}",
-            wake_leased_until=datetime(2099, 1, 1, tzinfo=UTC),
-            wake_reason="team_chat",
-        )
-        current.conversation_messages[message.id].status = "running"
-        current.conversation_messages[message.id].dispatch_id = f"team-chat:{message.id}"
-        return current
-
-    repo.update(lease)
+    TeamChatService(repo).begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+        lease_seconds=60,
+    )
     return repo, conversation, message
 
 

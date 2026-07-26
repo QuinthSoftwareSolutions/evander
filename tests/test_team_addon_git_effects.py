@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +34,7 @@ from evander_team_addon.models import (
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
+    TeamTaskState,
 )
 from evander_team_addon.provider_schemas import (
     TeamConsolidateGitBranchesEffectDefinition,
@@ -50,6 +52,9 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.git_release_service import (
+    _human_review_publication_validation_error,
+)
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 from evander_team_addon.services.release_verification_effects import (
     EffectReleaseVerificationExecutor,
@@ -394,6 +399,7 @@ def _seed_release(repo: TeamStateRepository) -> None:
             git_refs=DeliverableGitRefs(feature_branch="team/team/features/task-backend"),
         )
         state.tasks["task"].deliverable_ids = ["deliverable-1"]
+        state.tasks["task"].state = TeamTaskState.FINISHED
         state.release_packages["release-1"] = ReleasePackage(
             id="release-1",
             project_id="project",
@@ -404,6 +410,37 @@ def _seed_release(repo: TeamStateRepository) -> None:
             policy_version=2,
             scope_validation=ReleaseScopeValidation(state="pending"),
             state=TeamRecordState.PENDING,
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def _seed_publishable_release(repo: TeamStateRepository) -> None:
+    _seed_release(repo)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.candidate_commit_sha = "cafef00d"
+        release.approved_commit_sha = "cafef00d"
+        release.scope_validation.state = "passed"
+        release.git_promotion_record_ids = ["canonical-promotion"]
+        state.git_promotions["canonical-promotion"] = GitPromotionRecord(
+            id="canonical-promotion",
+            project_id="project",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch=release.release_branch,
+            sources=[
+                {
+                    "source_branch": release.release_branch,
+                    "expected_commit_sha": "cafef00d",
+                }
+            ],
+            target_branch=release.canonical_branch,
+            promotion_kind="canonical_push",
+            state="succeeded",
+            commit_sha="cafef00d",
         )
         return state
 
@@ -682,7 +719,7 @@ def _mark_release_provider(tmp_path: Path, **config: object) -> dict[str, object
 
 def test_mark_release_published_success(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
-    _seed_release(repo)
+    _seed_publishable_release(repo)
 
     result = _mark_release_provider(
         tmp_path,
@@ -703,11 +740,74 @@ def test_mark_release_published_success(tmp_path: Path) -> None:
     assert release.published_at is not None
 
 
+def test_mark_release_published_revalidates_current_hierarchy_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_publishable_release(repo)
+
+    def _reopen_release_task(state):
+        state.tasks["task"].state = TeamTaskState.IN_PROGRESS
+        return state
+
+    repo.update(_reopen_release_task)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["state"] == TeamRecordState.BLOCKED.value
+    assert "release publication scope is no longer valid" in result["error"]
+    assert "release task not resolved" in result["error"]
+    release = repo.read().release_packages["release-1"]
+    assert release.published_commit_sha is None
+    assert release.published_at is None
+
+
+def test_mark_release_published_ignores_conflicting_late_result_for_accepted_release(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_publishable_release(repo)
+    first_result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+    published_at = repo.read().release_packages["release-1"].published_at
+
+    late_result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=False,
+        canonical_branch="releases/project/other",
+        published_commit_sha="different-candidate",
+        error="late failure",
+    )
+
+    assert first_result["state"] == TeamRecordState.ACCEPTED.value
+    assert late_result["success"] is True
+    assert late_result["ignored_terminal_state"] is True
+    assert "is immutable" in late_result["error"]
+    release = repo.read().release_packages["release-1"]
+    assert release.state == TeamRecordState.ACCEPTED
+    assert release.published_commit_sha == "cafef00d"
+    assert release.canonical_branch == "releases/project/release-1"
+    assert release.published_at == published_at
+
+
 def test_mark_release_published_supersedes_older_blocked_duplicate(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    _seed_release(repo)
+    _seed_publishable_release(repo)
 
     def _add_duplicate(state):
         current = state.release_packages["release-1"]
@@ -783,7 +883,7 @@ def test_mark_release_published_leaves_legacy_duplicate_rejected_by_migration(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    _seed_release(repo)
+    _seed_publishable_release(repo)
 
     def _add_pending_duplicate(state):
         current = state.release_packages["release-1"]
@@ -813,6 +913,159 @@ def test_mark_release_published_leaves_legacy_duplicate_rejected_by_migration(
     assert legacy_release.state == TeamRecordState.REJECTED
     assert legacy_release.error is not None
     assert legacy_release.error.startswith("legacy_unpinned_release:")
+
+
+@pytest.mark.parametrize(
+    ("approved_commit_sha", "error_snippet"),
+    [
+        (None, "requires approved_commit_sha"),
+        ("different-candidate", "does not match release candidate"),
+    ],
+)
+def test_mark_release_published_rejects_missing_or_mismatched_approval(
+    tmp_path: Path,
+    approved_commit_sha: str | None,
+    error_snippet: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_publishable_release(repo)
+
+    def _mutate(state):
+        state.release_packages["release-1"].approved_commit_sha = approved_commit_sha
+        return state
+
+    repo.update(_mutate)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["state"] == TeamRecordState.BLOCKED.value
+    assert error_snippet in result["error"]
+    release = repo.read().release_packages["release-1"]
+    assert release.published_commit_sha is None
+    assert release.published_at is None
+
+
+def test_mark_release_published_rejects_published_sha_mismatch(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_publishable_release(repo)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="different-candidate",
+    )
+
+    assert result["success"] is True
+    assert result["state"] == TeamRecordState.BLOCKED.value
+    assert "does not match approved candidate" in result["error"]
+    release = repo.read().release_packages["release-1"]
+    assert release.published_commit_sha is None
+    assert release.published_at is None
+
+
+def test_mark_release_published_requires_succeeded_matching_canonical_promotion(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_publishable_release(repo)
+
+    def _mutate(state):
+        state.git_promotions["canonical-promotion"].state = "pending"
+        return state
+
+    repo.update(_mutate)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["state"] == TeamRecordState.BLOCKED.value
+    assert "requires a linked succeeded canonical promotion" in result["error"]
+    release = repo.read().release_packages["release-1"]
+    assert release.published_commit_sha is None
+    assert release.published_at is None
+
+
+def test_human_review_publication_guard_requires_one_approved_pinned_request() -> None:
+    release = SimpleNamespace(
+        id="release-1",
+        candidate_tree_hash="tree-1",
+        manifest=SimpleNamespace(
+            human_review_requirement=object(),
+            carried_human_findings=[],
+            candidate_commit_sha="cafef00d",
+            candidate_tree_hash="tree-1",
+        ),
+    )
+    state = SimpleNamespace(
+        human_review_requests={},
+        human_review_decisions={},
+    )
+
+    assert "requires exactly one human review request" in (
+        _human_review_publication_validation_error(
+            state,
+            release=release,
+            candidate_commit_sha="cafef00d",
+        )
+        or ""
+    )
+
+    request = SimpleNamespace(
+        id="human-review-1",
+        release_package_id="release-1",
+        state="pending",
+        candidate_commit_sha="cafef00d",
+        candidate_tree_hash="tree-1",
+    )
+    state.human_review_requests = {"human-review-1": request}
+    assert "is not approved" in (
+        _human_review_publication_validation_error(
+            state,
+            release=release,
+            candidate_commit_sha="cafef00d",
+        )
+        or ""
+    )
+
+    request.state = "approved"
+    assert "requires exactly one durable approval decision" in (
+        _human_review_publication_validation_error(
+            state,
+            release=release,
+            candidate_commit_sha="cafef00d",
+        )
+        or ""
+    )
+    state.human_review_decisions = {
+        "decision-1": SimpleNamespace(
+            human_review_request_id="human-review-1",
+            decision="approved",
+            confirmed_finding_ids=[],
+        )
+    }
+    assert (
+        _human_review_publication_validation_error(
+            state,
+            release=release,
+            candidate_commit_sha="cafef00d",
+        )
+        is None
+    )
 
 
 def test_mark_release_published_ignores_late_success_for_rejected_release(
@@ -1025,9 +1278,10 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
             "managed_repo_id": "mr_0123456789abcdefabcd",
             "directory_path": "root/team-a",
             "source_branches": ["team/team/features/task-backend"],
-            "target_branch": "team/team/releases/release-1",
-            "base_branch": "main",
-            "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
+                "target_branch": "team/team/releases/release-1",
+                "base_branch": "main",
+                "base_commit_sha": None,
+                "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
             "allowed_changed_paths": ["src/backend.py"],
         }
     ]

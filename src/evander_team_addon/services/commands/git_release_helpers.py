@@ -69,6 +69,8 @@ def _team_update_feature_branch_normalized_payload(
 def _team_request_release_normalized_payload(
     *,
     release_id: str | None,
+    supersedes_release_package_id: str | None,
+    post_release_feedback_case_id: str | None,
     project_id: str,
     deliverable_ids: Sequence[str],
     release_branch: str | None,
@@ -81,6 +83,12 @@ def _team_request_release_normalized_payload(
 ) -> dict[str, Any]:
     return {
         "id": _optional_text(release_id),
+        "supersedes_release_package_id": _optional_text(
+            supersedes_release_package_id
+        ),
+        "post_release_feedback_case_id": _optional_text(
+            post_release_feedback_case_id
+        ),
         "project_id": _required_text(project_id, "project_id"),
         "deliverable_ids": _string_list(deliverable_ids, "deliverable_ids"),
         "release_branch": _optional_text(release_branch),

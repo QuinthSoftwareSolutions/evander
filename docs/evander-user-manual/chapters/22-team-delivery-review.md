@@ -62,9 +62,40 @@ explicitly permit an evidence-backed no-op.
 Deliverables for outcome tasks include typed outcomes. Each submitted outcome must carry durable
 <code>reference_ids</code>; evidence refs can support that result but cannot replace its identity.
 A review profile can require outcome kinds before the review is requested or accepted. When no new
-external effect is correct, use an <code>evidenced_noop</code> task completion with evidence refs,
-and only when the contract allows it. A prose report or evidence-only deliverable does not satisfy
-an outcome contract.
+external effect is correct, submit an <code>evidenced_noop</code> deliverable completion with
+evidence refs, and only when the contract allows it. That submission still follows direct
+acceptance or formal review; only acceptance copies the completion to the task. A prose report,
+review, or evidence-only deliverable does not satisfy an outcome contract by itself.
+
+## Composing an aggregate result
+
+A parent task represents a combined outcome, not a label placed over unrelated
+work. Before its final deliverable can be submitted, every descendant must be
+validly resolved. The parent deliverable then names the exact accepted,
+current, non-superseded deliverables incorporated from its direct children in
+<code>source_deliverable_ids</code>.
+
+Contribution coverage follows these rules:
+
+- every resolved direct outcome child contributes its accepted deliverable,
+  unless it resolved through an accepted evidenced no-op or authorized
+  cancellation;
+- a support child contributes an accepted assessable deliverable when it has
+  one, but a support task that finished without output needs no artificial
+  deliverable;
+- every named source must belong to a direct child and be current and accepted;
+- missing or unexpected direct-child sources make the parent not
+  integration-ready; and
+- if a child is itself aggregate, its accepted deliverable carries the next
+  layer. Recursive lineage is derived rather than copying every leaf into the
+  root.
+
+The resulting parent Git commit or artifact bundle is the submitted object.
+Source IDs prove which accepted components were integrated; they do not copy
+child state or make a branch tip trustworthy. A release selects the accepted
+top-level aggregate deliverable instead of releasing it alongside the sources
+already contained within it. Independent root deliverables may still coexist
+in one release.
 
 ## Artifact publication boundary
 
@@ -97,11 +128,14 @@ The branch remains internal evidence at this stage. Review does not publish it t
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Persistent work-context checks**
 >
-> When a project uses managed Git, a persistent Team wake creates or reuses one task-specific work context and worktree. The context binds:
+> When a project uses managed Git, a persistent Team wake reuses the stable
+> physical task/repository worktree path but creates a fresh dispatch-bound work
+> context. The context binds:
 >
 > - agent, task, project, session, and dispatch;
 > - deterministic agent branch;
 > - prepared checkout/worktree;
+> - base branch, base commit, and current verified commit;
 > - status and timestamps.
 >
 > A Git deliverable must submit its <code>branch_context_id</code>. The server verifies the caller, task, dispatch, and context and derives the accepted agent branch. An agent cannot substitute an arbitrary branch string. Artifact-only deliverables remain valid without Git.
@@ -172,7 +206,10 @@ A deliverable becomes accepted only when:
 - all current, non-retired attached reviews are accepted; and
 - no carried review finding remains open.
 
-When every current required deliverable for the task is accepted, the task can become accepted. Project status and goals then recalculate under their own rules.
+When every current required deliverable for the task is accepted, every
+descendant is resolved, and aggregate contribution coverage is complete, the
+task can become accepted. Project status and goals then recalculate under their
+own rules.
 
 ### Rejected
 
@@ -272,6 +309,8 @@ The distinction operators should remember is that **seeing a review is not the s
 | Task stays waiting after one acceptance | Another active review or open carried finding remains. | Inspect the complete current deliverable review set. |
 | Rejected task has no useful next step | Findings were vague. | Preserve evidence and create concrete, testable findings in the review decision. |
 | Outcome deliverable rejected before review | Its outcome kind is missing, forbidden, or lacks a durable reference ID. | Match the task contract and identify the actual external record; do not substitute prose or evidence-only output. |
+| Evidenced no-op does not resolve the task | The contract disallows it, evidence refs are absent, or the submitted completion has not been accepted. | Correct the contract-compatible evidence and follow the normal acceptance/review path; do not mark the outcome task finished. |
+| Aggregate deliverable reports missing or unexpected sources | Named <code>source_deliverable_ids</code> do not exactly cover current accepted direct-child contributions. | Read contribution coverage, resolve descendants, and integrate only the listed current child outputs. |
 | Blocked review remains current after recovery | Immutable history needs an explicit successor. | Use <code>team_retry_review</code> with a recovery reason. |
 | Retirement does not accept the deliverable | Another current review or carried finding still blocks acceptance. | Inspect the current review set and resolve findings through their owning profile. |
 | Plain submission has no recipient | The producer has no direct superior for superior acceptance. | Use formal review, or finish support work directly when no deliverable is required. |

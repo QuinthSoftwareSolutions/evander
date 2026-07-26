@@ -24,12 +24,14 @@ from ...models import (
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
+    TeamRecordState,
     TeamState,
 )
 from .common import _ensure_utc, _optional_text, _required_text
 from .governance import _governance_groups_for_team
 from .operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
 from .stand_down import _active_stand_downs_for_agent
+from .task_supervision import parent_task_for_child
 from .wake import _append_agent_wake_requested_event_for_inbox_item
 from .work_due import _mark_agent_work_due
 
@@ -53,12 +55,15 @@ def open_or_get_blocker(
     source_id: str,
     summary: str,
     details: str = "",
+    reason_code: str = "unspecified",
     priority: TeamInboxPriority | str = TeamInboxPriority.NORMAL,
     reporter_agent_id: str | None = None,
+    reporter_actor: str | None = None,
     initial_owner_agent_id: str | None = None,
     team_id: str | None = None,
     project_id: str | None = None,
     task_id: str | None = None,
+    affected_task_ids: Sequence[str] | None = None,
     result: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> tuple[TeamBlocker, bool]:
@@ -94,10 +99,21 @@ def open_or_get_blocker(
 
     owner: PersistentAgent | None
     skipped_agent_ids: list[str]
+    task = state.tasks.get(_optional_text(task_id) or "")
+    parent_task = parent_task_for_child(state, task) if task is not None else None
+    parent_owner_id = parent_task.owner_agent_id if parent_task is not None else None
     if initial_owner_agent_id is not None:
         owner, skipped_agent_ids = nearest_available_agent(
             state,
             start_agent_id=initial_owner_agent_id,
+            team_id=team.id,
+        )
+    elif parent_owner_id is not None and (
+        reporter is None or parent_owner_id != reporter.id
+    ):
+        owner, skipped_agent_ids = nearest_available_agent(
+            state,
+            start_agent_id=parent_owner_id,
             team_id=team.id,
         )
     elif reporter is not None:
@@ -118,8 +134,11 @@ def open_or_get_blocker(
         task_id=_optional_text(task_id),
         source_kind=normalized_kind,
         source_id=normalized_source_id,
+        reason_code=_required_text(reason_code, "reason_code"),
         reporter_agent_id=reporter.id if reporter is not None else None,
+        reporter_actor=_optional_text(reporter_actor),
         owner_agent_id=anchor_owner.id if anchor_owner is not None else None,
+        affected_task_ids=list(affected_task_ids or []),
         state=TeamBlockerState.OPEN,
         route=route,
         summary=_required_text(summary, "summary"),
@@ -140,7 +159,14 @@ def open_or_get_blocker(
         actor_agent_id=reporter.id if reporter is not None else None,
         to_agent_id=owner.id if owner is not None else None,
         note=blocker.details or blocker.summary,
-        metadata={"skipped_agent_ids": skipped_agent_ids},
+        metadata={
+            "skipped_agent_ids": skipped_agent_ids,
+            **(
+                {"reporter_actor": blocker.reporter_actor}
+                if blocker.reporter_actor is not None
+                else {}
+            ),
+        },
         now=effective_now,
     )
     if result is not None:
@@ -168,6 +194,158 @@ def open_or_get_blocker(
             now=effective_now,
         )
     return blocker, True
+
+
+def open_or_update_agent_execution_stall(
+    state: TeamState,
+    *,
+    agent_id: str,
+    affected_task_ids: Sequence[str],
+    exhausted_dispatch_id: str | None,
+    exhausted_dispatch_task_ids: Sequence[str],
+    no_progress_count: int,
+    max_no_progress_count: int,
+    result: dict[str, Any],
+    now: datetime | None = None,
+) -> TeamBlocker:
+    """Materialize one durable, routed incident for an agent-wide execution stall."""
+
+    effective_now = _ensure_utc(now or utc_now())
+    agent = state.agents.get(_required_text(agent_id, "agent_id"))
+    if agent is None or agent.team_id is None:
+        raise ValueError(f"agent {agent_id} is not assigned to a Team")
+    current_task_ids = sorted(
+        {
+            task_id
+            for raw_task_id in affected_task_ids
+            if (task_id := _optional_text(raw_task_id)) is not None
+            and (task := state.tasks.get(task_id)) is not None
+            and task.owner_agent_id == agent.id
+        }
+    )
+    blocker, _created = open_or_get_blocker(
+        state,
+        source_kind=TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+        source_id=agent.id,
+        reason_code="agent_no_progress_exhausted",
+        summary=f"Agent {agent.id} exhausted its no-progress allowance",
+        details=(
+            f"The agent reached {no_progress_count} consecutive no-progress "
+            f"dispatches (configured limit {max_no_progress_count})."
+        ),
+        priority=TeamInboxPriority.HIGH,
+        reporter_agent_id=agent.id,
+        team_id=agent.team_id,
+        affected_task_ids=current_task_ids,
+        result=result,
+        now=effective_now,
+    )
+    if (
+        blocker.state == TeamBlockerState.OPEN
+        and blocker.owner_agent_id == agent.id
+        and blocker.route
+        in {TeamBlockerRoute.OWNED, TeamBlockerRoute.DELEGATED}
+    ):
+        route_blocker_terminal(
+            state,
+            blocker=blocker,
+            actor_agent_id=agent.id,
+            dispatch_id=_optional_text(exhausted_dispatch_id),
+            reason=(
+                "The stalled agent has no available local superior; route the "
+                "execution stall to the configured terminal authority."
+            ),
+            result=result,
+            now=effective_now,
+        )
+    merged_task_ids = sorted(set(blocker.affected_task_ids).union(current_task_ids))
+    if merged_task_ids != blocker.affected_task_ids:
+        blocker.affected_task_ids = merged_task_ids
+        blocker.updated_at = effective_now
+
+    normalized_dispatch_id = _optional_text(exhausted_dispatch_id)
+    scoped_task_ids = sorted(
+        {
+            task_id
+            for raw_task_id in exhausted_dispatch_task_ids
+            if (task_id := _optional_text(raw_task_id)) is not None
+        }
+    )
+    evidence_exists = any(
+        event.blocker_id == blocker.id
+        and event.event_type == TeamBlockerEventType.PROGRESS
+        and event.dispatch_id == normalized_dispatch_id
+        and event.metadata.get("kind") == "execution_stall_exhausted"
+        and event.metadata.get("no_progress_count") == no_progress_count
+        for event in state.blocker_events.values()
+    )
+    if not evidence_exists:
+        evidence_event = append_blocker_event(
+            state,
+            blocker=blocker,
+            event_type=TeamBlockerEventType.PROGRESS,
+            actor_agent_id=agent.id,
+            dispatch_id=normalized_dispatch_id,
+            note=(
+                f"Dispatch {normalized_dispatch_id or 'unknown'} exhausted the "
+                "agent-wide no-progress allowance."
+            ),
+            reference_ids=scoped_task_ids,
+            metadata={
+                "kind": "execution_stall_exhausted",
+                "exhausted_at": effective_now.isoformat(),
+                "no_progress_count": no_progress_count,
+                "max_no_progress_count": max_no_progress_count,
+                "scoped_task_ids": scoped_task_ids,
+                "affected_task_ids": merged_task_ids,
+            },
+            now=effective_now,
+        )
+        result.setdefault("blocker_event_ids", []).append(evidence_event.id)
+
+    accountable_parents_by_owner: dict[str, set[str]] = {}
+    affected_children_by_owner: dict[str, set[str]] = {}
+    for task_id in merged_task_ids:
+        task = state.tasks.get(task_id)
+        parent = parent_task_for_child(state, task) if task is not None else None
+        if (
+            parent is None
+            or parent.owner_agent_id == agent.id
+            or parent.owner_agent_id == blocker.owner_agent_id
+        ):
+            continue
+        accountable_parents_by_owner.setdefault(
+            parent.owner_agent_id,
+            set(),
+        ).add(parent.id)
+        affected_children_by_owner.setdefault(
+            parent.owner_agent_id,
+            set(),
+        ).add(task_id)
+    for owner_id, parent_task_ids in sorted(accountable_parents_by_owner.items()):
+        notice = create_blocker_inbox(
+            state,
+            blocker=blocker,
+            recipient_agent_id=owner_id,
+            sender_agent_id=agent.id,
+            kind="agent_execution_stall_parent_notice",
+            result=result,
+            now=effective_now,
+        )
+        notice.payload["accountable_parent_task_ids"] = sorted(parent_task_ids)
+        notice.payload["affected_child_task_ids"] = sorted(
+            affected_children_by_owner[owner_id]
+        )
+        exhausted_ids = {
+            str(value)
+            for value in notice.payload.get("exhausted_dispatch_ids") or []
+            if str(value).strip()
+        }
+        if normalized_dispatch_id is not None:
+            exhausted_ids.add(normalized_dispatch_id)
+        notice.payload["exhausted_dispatch_ids"] = sorted(exhausted_ids)
+        notice.updated_at = effective_now
+    return blocker
 
 
 def nearest_available_superior(
@@ -437,12 +615,27 @@ def create_blocker_inbox(
             "blocker_id": blocker.id,
             "source_kind": blocker.source_kind.value,
             "source_id": blocker.source_id,
+            "reason_code": blocker.reason_code,
+            "affected_task_ids": list(blocker.affected_task_ids),
             "summary": blocker.summary,
             "details": blocker.details,
             "owner_agent_id": blocker.owner_agent_id,
             "delegate_agent_id": blocker.delegate_agent_id,
             "route": blocker.route.value,
             "escalation_depth": blocker.escalation_depth,
+            **(
+                {
+                    "transition": "blocker",
+                    "parent_task_id": parent_task_id,
+                    "child_task_id": blocker.task_id,
+                }
+                if (
+                    blocker.task_id is not None
+                    and (child_task := state.tasks.get(blocker.task_id)) is not None
+                    and (parent_task_id := child_task.parent_task_id) is not None
+                )
+                else {}
+            ),
         },
         created_at=effective_now,
         updated_at=effective_now,
@@ -945,6 +1138,11 @@ def resolve_blocker(
         blocker.owner_agent_id,
         blocker.delegate_agent_id,
         actor_agent_id,
+        *(
+            item.recipient_agent_id
+            for item in state.inbox.values()
+            if item.payload.get("blocker_id") == blocker.id
+        ),
     }
     terminal_reference_ids = list(blocker.terminal_reference_ids)
     for reference_id in reference_ids or []:
@@ -958,6 +1156,11 @@ def resolve_blocker(
     blocker.follow_up_at = None
     blocker.resolved_at = effective_now
     blocker.updated_at = effective_now
+    if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
+        runtime = state.agent_runtimes.get(blocker.source_id)
+        if runtime is not None:
+            runtime.no_progress_count = 0
+            runtime.updated_at = effective_now
     for reference_id in terminal_reference_ids:
         agenda = state.governance_agenda.get(reference_id)
         if agenda is not None and agenda.state == GovernanceAgendaItemState.PENDING:
@@ -1015,6 +1218,401 @@ def resolve_active_blockers_for_source(
     if result is not None and resolved_ids:
         result.setdefault("resolved_blocker_ids", []).extend(resolved_ids)
     return resolved_ids
+
+
+def reconcile_task_blockers_after_cancellation(
+    state: TeamState,
+    *,
+    task_id: str,
+    actor_agent_id: str | None,
+    dispatch_id: str | None,
+    result: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> list[str]:
+    """Close local blockers and remove a cancelled task from shared incidents."""
+
+    effective_now = _ensure_utc(now or utc_now())
+    resolved_ids: list[str] = []
+    for blocker in sorted(state.blockers.values(), key=lambda item: item.id):
+        if blocker.state != TeamBlockerState.OPEN:
+            continue
+        local_link = task_id in _blocker_local_task_ids(state, blocker)
+        shared_link = task_id in blocker.affected_task_ids
+        if not local_link and not shared_link:
+            continue
+
+        if shared_link:
+            blocker.affected_task_ids = [
+                affected_id
+                for affected_id in blocker.affected_task_ids
+                if affected_id != task_id
+            ]
+            blocker.updated_at = effective_now
+            _refresh_pending_blocker_inbox_payloads(
+                state,
+                blocker=blocker,
+                now=effective_now,
+            )
+
+        # A local source with no remaining shared scope, or a shared incident
+        # whose final affected task was cancelled, no longer has an active task
+        # to block. A deliberately multi-task blocker remains open for the other
+        # affected tasks.
+        if blocker.affected_task_ids:
+            continue
+        if not local_link and blocker.source_kind not in {
+            TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+            TeamBlockerSourceKind.EXPLICIT,
+        }:
+            # Release and human-review blockers describe a gate that persists
+            # independently of task membership. Removing their last shared task
+            # must not bypass the source-specific recovery lifecycle.
+            continue
+        if local_link:
+            _retire_cancelled_task_blocker_source(
+                state,
+                blocker=blocker,
+                task_id=task_id,
+                actor_agent_id=actor_agent_id,
+                now=effective_now,
+            )
+        event = resolve_blocker(
+            state,
+            blocker=blocker,
+            actor_agent_id=actor_agent_id,
+            dispatch_id=dispatch_id,
+            note=(
+                f"Task {task_id} was cancelled by an authorized disposition; "
+                "the blocker no longer applies to any affected task."
+            ),
+            reference_ids=[task_id],
+            metadata={
+                "kind": "task_cancellation_reconciliation",
+                "task_id": task_id,
+                "source_linked": local_link,
+                "shared_membership_removed": shared_link,
+            },
+            now=effective_now,
+        )
+        resolved_ids.append(blocker.id)
+        _record_reconciled_blocker(
+            result,
+            blocker_id=blocker.id,
+            event_id=event.id,
+        )
+    return resolved_ids
+
+
+def reconcile_task_blockers_after_reassignment(
+    state: TeamState,
+    *,
+    task_id: str,
+    old_owner_agent_id: str,
+    new_owner_agent_id: str,
+    actor_agent_id: str | None,
+    dispatch_id: str | None,
+    result: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Retarget every local blocker and recompute shared stall membership."""
+
+    effective_now = _ensure_utc(now or utc_now())
+    task = state.tasks.get(task_id)
+    new_owner = state.agents.get(new_owner_agent_id)
+    if task is None or new_owner is None:
+        return
+    for blocker in sorted(state.blockers.values(), key=lambda item: item.id):
+        if blocker.state != TeamBlockerState.OPEN:
+            continue
+
+        if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
+            membership_changed = False
+            removed_from_old_stall = (
+                blocker.source_id == old_owner_agent_id
+                and task_id in blocker.affected_task_ids
+            )
+            added_to_new_stall = (
+                blocker.source_id == new_owner_agent_id
+                and task_id not in blocker.affected_task_ids
+            )
+            if removed_from_old_stall:
+                blocker.affected_task_ids = [
+                    affected_id
+                    for affected_id in blocker.affected_task_ids
+                    if affected_id != task_id
+                ]
+                membership_changed = True
+            if added_to_new_stall:
+                blocker.affected_task_ids = sorted(
+                    {*blocker.affected_task_ids, task_id}
+                )
+                membership_changed = True
+            if membership_changed:
+                blocker.updated_at = effective_now
+                _refresh_pending_blocker_inbox_payloads(
+                    state,
+                    blocker=blocker,
+                    now=effective_now,
+                )
+            if removed_from_old_stall and not blocker.affected_task_ids:
+                event = resolve_blocker(
+                    state,
+                    blocker=blocker,
+                    actor_agent_id=actor_agent_id,
+                    dispatch_id=dispatch_id,
+                    note="The stalled agent no longer owns any affected task.",
+                    reference_ids=[task_id],
+                    metadata={
+                        "kind": "task_reassignment_reconciliation",
+                        "old_owner_agent_id": old_owner_agent_id,
+                        "new_owner_agent_id": new_owner_agent_id,
+                    },
+                    now=effective_now,
+                )
+                _record_reconciled_blocker(
+                    result,
+                    blocker_id=blocker.id,
+                    event_id=event.id,
+                )
+            elif membership_changed:
+                event = append_blocker_event(
+                    state,
+                    blocker=blocker,
+                    event_type=TeamBlockerEventType.PROGRESS,
+                    actor_agent_id=actor_agent_id,
+                    dispatch_id=dispatch_id,
+                    note=(
+                        f"Task {task_id} execution-stall membership was recomputed "
+                        "after reassignment."
+                    ),
+                    reference_ids=[task_id],
+                    metadata={
+                        "kind": "affected_task_membership_changed",
+                        "old_owner_agent_id": old_owner_agent_id,
+                        "new_owner_agent_id": new_owner_agent_id,
+                        "affected_task_ids": list(blocker.affected_task_ids),
+                    },
+                    now=effective_now,
+                )
+                _record_reconciled_event(result, event.id)
+            continue
+
+        if task_id not in _blocker_local_task_ids(state, blocker):
+            continue
+
+        previous_owner_id = blocker.owner_agent_id
+        pending_recipient_ids = {
+            item.recipient_agent_id
+            for item in state.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.payload.get("blocker_id") == blocker.id
+        }
+        for assigned_id in pending_recipient_ids:
+            handle_blocker_inbox_for_agent(
+                state,
+                blocker_id=blocker.id,
+                agent_id=assigned_id,
+                now=effective_now,
+            )
+        for reference_id in blocker.terminal_reference_ids:
+            agenda = state.governance_agenda.get(reference_id)
+            if agenda is not None and agenda.state == GovernanceAgendaItemState.PENDING:
+                agenda.state = GovernanceAgendaItemState.HANDLED
+                agenda.updated_at = effective_now
+
+        blocker.delegate_agent_id = None
+        blocker.active_dispatch_id = None
+        blocker.follow_up_at = None
+        blocker.terminal_reference_ids = []
+        blocker.escalation_depth = 0
+        parent_task = parent_task_for_child(state, task)
+        if (
+            parent_task is not None
+            and parent_task.owner_agent_id != new_owner.id
+            and parent_task.owner_agent_id != blocker.reporter_agent_id
+        ):
+            next_owner, skipped = nearest_available_agent(
+                state,
+                start_agent_id=parent_task.owner_agent_id,
+                team_id=blocker.team_id,
+            )
+        else:
+            next_owner, skipped = nearest_available_superior(state, new_owner)
+        blocker.owner_agent_id = next_owner.id if next_owner is not None else None
+        blocker.route = (
+            TeamBlockerRoute.OWNED
+            if next_owner is not None
+            else TeamBlockerRoute.ROUTING_FAILED
+        )
+        blocker.updated_at = effective_now
+        event = append_blocker_event(
+            state,
+            blocker=blocker,
+            event_type=TeamBlockerEventType.OWNER_TRANSFERRED,
+            actor_agent_id=actor_agent_id,
+            from_agent_id=previous_owner_id,
+            to_agent_id=next_owner.id if next_owner is not None else None,
+            dispatch_id=dispatch_id,
+            note=(
+                f"Task {task_id} was reassigned from {old_owner_agent_id} "
+                f"to {new_owner_agent_id}; its blocker route was recomputed."
+            ),
+            metadata={
+                "skipped_agent_ids": skipped,
+                "old_task_owner_agent_id": old_owner_agent_id,
+                "new_task_owner_agent_id": new_owner_agent_id,
+            },
+            now=effective_now,
+        )
+        _record_reconciled_event(result, event.id)
+        if next_owner is not None:
+            create_blocker_inbox(
+                state,
+                blocker=blocker,
+                recipient_agent_id=next_owner.id,
+                sender_agent_id=actor_agent_id,
+                kind="blocker_owner_transferred",
+                result=result,
+                now=effective_now,
+            )
+
+
+def _blocker_local_task_ids(
+    state: TeamState,
+    blocker: TeamBlocker,
+) -> set[str]:
+    task_ids: set[str] = set()
+    if blocker.source_kind == TeamBlockerSourceKind.TASK:
+        task_ids.add(blocker.source_id)
+        if blocker.task_id is not None:
+            task_ids.add(blocker.task_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+        deliverable = state.deliverables.get(blocker.source_id)
+        if deliverable is not None:
+            task_ids.add(deliverable.task_id)
+            if blocker.task_id is not None:
+                task_ids.add(blocker.task_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+        review = state.review_requests.get(blocker.source_id)
+        deliverable = (
+            state.deliverables.get(review.deliverable_id or "")
+            if review is not None
+            else None
+        )
+        if deliverable is not None:
+            task_ids.add(deliverable.task_id)
+            if blocker.task_id is not None:
+                task_ids.add(blocker.task_id)
+    elif (
+        blocker.source_kind == TeamBlockerSourceKind.EXPLICIT
+        and blocker.task_id is not None
+    ):
+        task_ids.add(blocker.task_id)
+    return task_ids
+
+
+def _retire_cancelled_task_blocker_source(
+    state: TeamState,
+    *,
+    blocker: TeamBlocker,
+    task_id: str,
+    actor_agent_id: str | None,
+    now: datetime,
+) -> None:
+    if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+        deliverable = state.deliverables.get(blocker.source_id)
+        if deliverable is not None and deliverable.state in {
+            TeamRecordState.PENDING,
+            TeamRecordState.IN_PROGRESS,
+            TeamRecordState.BLOCKED,
+        }:
+            deliverable.state = TeamRecordState.REJECTED
+        return
+    if blocker.source_kind != TeamBlockerSourceKind.REVIEW_REQUEST:
+        return
+    review = state.review_requests.get(blocker.source_id)
+    if review is None or review.deliverable_id is None:
+        return
+    if review.retired_at is None and review.superseded_by_review_request_id is None:
+        cancellation = state.tasks.get(task_id)
+        cancellation_actor = (
+            cancellation.cancellation
+            if cancellation is not None
+            else None
+        )
+        review.retired_at = now
+        review.retired_by = (
+            f"agent:{actor_agent_id}"
+            if actor_agent_id is not None
+            else (
+                f"{cancellation_actor.actor_kind}:{cancellation_actor.actor_id}"
+                if cancellation_actor is not None
+                else "operator:task-cancellation"
+            )
+        )
+        review.retirement_reason = (
+            f"Task {task_id} was cancelled by an "
+            "authorized disposition."
+        )
+        for item in state.inbox.values():
+            if (
+                item.state == TeamInboxItemState.PENDING
+                and item.payload.get("review_request_id") == review.id
+            ):
+                item.state = TeamInboxItemState.HANDLED
+                item.updated_at = now
+    deliverable = state.deliverables.get(review.deliverable_id)
+    if deliverable is not None and deliverable.state in {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+    }:
+        deliverable.state = TeamRecordState.REJECTED
+
+
+def _refresh_pending_blocker_inbox_payloads(
+    state: TeamState,
+    *,
+    blocker: TeamBlocker,
+    now: datetime,
+) -> None:
+    for item in state.inbox.values():
+        if (
+            item.state != TeamInboxItemState.PENDING
+            or item.payload.get("blocker_id") != blocker.id
+        ):
+            continue
+        item.payload["affected_task_ids"] = list(blocker.affected_task_ids)
+        item.payload["owner_agent_id"] = blocker.owner_agent_id
+        item.payload["delegate_agent_id"] = blocker.delegate_agent_id
+        item.payload["route"] = blocker.route.value
+        item.payload["escalation_depth"] = blocker.escalation_depth
+        item.updated_at = now
+
+
+def _record_reconciled_blocker(
+    result: dict[str, Any] | None,
+    *,
+    blocker_id: str,
+    event_id: str,
+) -> None:
+    if result is None:
+        return
+    resolved_ids = result.setdefault("resolved_blocker_ids", [])
+    if blocker_id not in resolved_ids:
+        resolved_ids.append(blocker_id)
+    _record_reconciled_event(result, event_id)
+
+
+def _record_reconciled_event(
+    result: dict[str, Any] | None,
+    event_id: str,
+) -> None:
+    if result is None:
+        return
+    event_ids = result.setdefault("blocker_event_ids", [])
+    if event_id not in event_ids:
+        event_ids.append(event_id)
 
 
 def active_blockers_for_source(
@@ -1117,9 +1715,12 @@ __all__ = [
     "handle_blocker_inbox_for_agent",
     "nearest_available_agent",
     "nearest_available_superior",
+    "open_or_update_agent_execution_stall",
     "open_or_get_blocker",
     "open_deliverable_blocker",
     "open_release_blocker",
+    "reconcile_task_blockers_after_cancellation",
+    "reconcile_task_blockers_after_reassignment",
     "resolve_blocker",
     "route_blocker_terminal",
     "transfer_blocker_up",

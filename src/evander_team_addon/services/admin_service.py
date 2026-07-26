@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
@@ -11,8 +11,10 @@ from uuid import uuid4
 from ..git_naming import validate_branch_name
 from .domain import common as _team_common
 from ..repository import (
+    TeamStateConflictError,
     TeamStateRepository,
 )
+from ..sqlite_store import TeamIdempotencyConflictError
 from ..models import (
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -45,6 +47,8 @@ from ..models import (
     ReviewRequest,
     RolePermission,
     Team,
+    TeamBlocker,
+    TeamBlockerEventType,
     TeamBlockerRoute,
     TeamBlockerSourceKind,
     TeamBlockerState,
@@ -52,6 +56,7 @@ from ..models import (
     TeamCaseStatus,
     TeamInboxItemType,
     TeamInboxPriority,
+    TeamIdempotencyRecord,
     TeamMemoryKind,
     TeamMemoryRecord,
     TeamMemoryScope,
@@ -59,6 +64,8 @@ from ..models import (
     TeamRecordState,
     TeamRole,
     TeamState,
+    TaskCancellation,
+    TaskCompletion,
     TaskOutcomeContract,
     TeamTaskKind,
     TeamTaskState,
@@ -83,8 +90,10 @@ from .domain.case_task import (
     _case_can_link_task,
     _link_task_to_case,
     _sync_case_task_link,
+    _task_graph_edit_error,
     _unlink_task_from_case,
     _validate_case_scope,
+    _validate_case_status_transition,
 )
 from .domain.outcome_catalog import (
     active_outcome_kind_references,
@@ -94,7 +103,9 @@ from .domain.outcome_catalog import (
 )
 from .domain.blockers import (
     active_blockers_for_source,
+    append_blocker_event,
     open_or_get_blocker,
+    reconcile_task_blockers_after_cancellation,
     resolve_blocker,
 )
 from .domain.common import (
@@ -134,6 +145,18 @@ from .domain.governance import (
     _record_governance_membership_change_agenda,
 )
 from .domain.project_status import _recalculate_project_status
+from .domain.human_reviews import (
+    HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+    HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
+    close_post_release_feedback_case,
+    create_human_finding_correction_root,
+    reassign_human_review,
+    record_human_finding_resolution_proposal,
+    record_human_review_decision,
+    record_human_review_preparation_result,
+    report_post_release_feedback,
+    resume_human_review,
+)
 from .domain.release_packages import _build_release_package
 from .domain.release_gates import retry_release_gate
 from .domain.review import (
@@ -147,7 +170,15 @@ from .domain.review import (
     retire_terminal_review,
     withdraw_pending_review,
 )
+from .domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    assess_task,
+    require_deliverable_submission,
+    require_task_can_finish,
+)
+from .domain.task_supervision import queue_parent_resolution_transitions
 from .domain.work_due import _mark_agent_work_due
+from .commands.blocker_commands import _prepare_blocker_source_for_resolution
 from .commands.outbox import _team_event_outbox_records
 
 
@@ -161,6 +192,26 @@ def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
     if project_id is not None:
         return TeamMemoryScope.PROJECT.value
     return TeamMemoryScope.TEAM_GLOBAL.value
+
+
+def _validate_resolved_human_release_policy(
+    release_policy: ProjectReleasePolicy | None,
+) -> None:
+    requirement = (
+        release_policy.human_review_requirement
+        if release_policy is not None
+        else None
+    )
+    if requirement is None:
+        return
+    if requirement.directory_path is None:
+        raise ValueError(
+            "human review policy must be resolved to an Admin directory"
+        )
+    if not requirement.resolved_reviewer_user_ids:
+        raise ValueError(
+            "human review policy must resolve at least one decision-eligible reviewer"
+        )
 
 
 def _validate_admin_memory_scope(
@@ -185,6 +236,76 @@ def _validate_admin_memory_scope(
         raise ValueError("agent-private memory requires agent_id")
 
 
+def _human_command_created_domain_ids(result: Mapping[str, Any]) -> list[str]:
+    created_ids: list[str] = []
+    for field_name, raw_value in result.items():
+        if field_name.startswith("created_") and field_name.endswith("_ids"):
+            values: Sequence[Any] = (
+                raw_value
+                if isinstance(raw_value, Sequence)
+                and not isinstance(raw_value, (str, bytes, bytearray))
+                else ()
+            )
+        elif field_name in {
+            "case_id",
+            "correction_task_id",
+            "human_review_decision_id",
+            "triage_task_id",
+        }:
+            values = (raw_value,)
+        else:
+            continue
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in created_ids:
+                created_ids.append(text)
+    return created_ids
+
+
+def _legacy_operator_repair_blocker(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    actor: str | None,
+    reason: str | None,
+    now: datetime,
+) -> TeamBlocker:
+    """Create an audit-only blocker when legacy blocked state lacked one."""
+
+    project = _require_present(state.projects, task.project_id, "project")
+    blocker = TeamBlocker(
+        id=f"blocker-{uuid4().hex}",
+        team_id=project.team_id,
+        project_id=project.id,
+        task_id=task.id,
+        source_kind=TeamBlockerSourceKind.TASK,
+        source_id=task.id,
+        reason_code="operator_repair",
+        reporter_actor=actor,
+        owner_agent_id=task.owner_agent_id,
+        affected_task_ids=[task.id],
+        summary=f"Legacy blocked-state repair: {task.title}",
+        details=reason or "Operator repaired a legacy blocked-state contradiction.",
+        created_at=now,
+        updated_at=now,
+    )
+    state.blockers[blocker.id] = blocker
+    append_blocker_event(
+        state,
+        blocker=blocker,
+        event_type=TeamBlockerEventType.REPORTED,
+        to_agent_id=task.owner_agent_id,
+        note=blocker.details,
+        metadata={
+            "operator_actor": actor,
+            "operator_repair": True,
+            "legacy_missing_blocker": True,
+        },
+        now=now,
+    )
+    return blocker
+
+
 class TeamAdminService:
     _PROJECT_REPOSITORY_BINDING_KIND = "team_projects"
 
@@ -193,13 +314,123 @@ class TeamAdminService:
         repository: TeamStateRepository,
         *,
         managed_git_admin: Any | None = None,
+        human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
     ) -> None:
         self._repository = repository
         self._managed_git_admin = managed_git_admin
+        self._human_review_eligibility_resolver = (
+            human_review_eligibility_resolver
+        )
 
     @property
     def repository(self) -> TeamStateRepository:
         return self._repository
+
+    def _run_idempotent_human_command(
+        self,
+        *,
+        operation: str,
+        caller_user_id: str,
+        scope_kind: str,
+        scope_id: str,
+        request_id: str,
+        normalized_payload: Mapping[str, Any],
+        apply_command: Callable[[TeamState, dict[str, Any]], None],
+        expected_state_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Apply one human-facing transition with state, outbox, and replay audit atomically."""
+
+        normalized_operation = _required_text(operation, "operation")
+        normalized_caller = _required_text(caller_user_id, "caller_user_id")
+        normalized_scope_kind = _required_text(scope_kind, "scope_kind")
+        normalized_scope_id = _required_text(scope_id, "scope_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        payload_digest = self._repository.normalized_payload_digest(
+            dict(normalized_payload)
+        )
+
+        def _transaction(raw_state: dict[str, Any], tx: Any):
+            state = TeamState.model_validate(raw_state)
+            replay = tx.get_idempotency_record(
+                tool_name=normalized_operation,
+                caller_identity=normalized_caller,
+                scope_kind=normalized_scope_kind,
+                scope_id=normalized_scope_id,
+                request_id=normalized_request_id,
+            )
+            if replay is not None:
+                if replay.normalized_payload_digest != payload_digest:
+                    raise TeamIdempotencyConflictError(
+                        tool_name=normalized_operation,
+                        caller_identity=normalized_caller,
+                        scope_kind=normalized_scope_kind,
+                        scope_id=normalized_scope_id,
+                        request_id=normalized_request_id,
+                        existing_digest=replay.normalized_payload_digest,
+                        attempted_digest=payload_digest,
+                    )
+                response = dict(replay.response_payload)
+                response["idempotent_replay"] = True
+                return state, response
+            if (
+                expected_state_revision is not None
+                and state.revision != expected_state_revision
+            ):
+                raise TeamStateConflictError(
+                    expected_revision=expected_state_revision,
+                    current_revision=state.revision,
+                )
+
+            result: dict[str, Any] = {
+                "success": False,
+                "events": [],
+                "idempotent_replay": False,
+            }
+            apply_command(state, result)
+            now = utc_now()
+            next_state = state.model_copy(
+                update={"revision": state.revision + 1, "updated_at": now},
+                deep=True,
+            )
+            validated = TeamState.model_validate(
+                next_state.model_dump(mode="json")
+            )
+            raw_state.clear()
+            raw_state.update(validated.model_dump(mode="json"))
+
+            outbox_records = [
+                tx.enqueue_outbox_record(record)
+                for record in _team_event_outbox_records(
+                    result.get("events") or []
+                )
+            ]
+            result["success"] = True
+            result["revision"] = validated.revision
+            result["outbox_record_ids"] = [
+                record.id for record in outbox_records
+            ]
+            created_domain_ids = _human_command_created_domain_ids(result)
+            for record in outbox_records:
+                if record.id not in created_domain_ids:
+                    created_domain_ids.append(record.id)
+            tx.store_idempotency_record(
+                TeamIdempotencyRecord(
+                    id=f"idempotency-{uuid4().hex}",
+                    tool_name=normalized_operation,
+                    caller_identity=normalized_caller,
+                    scope_kind=normalized_scope_kind,
+                    scope_id=normalized_scope_id,
+                    request_id=normalized_request_id,
+                    normalized_payload_digest=payload_digest,
+                    response_payload=result,
+                    created_domain_ids=created_domain_ids,
+                )
+            )
+            return validated, result
+
+        return self._repository.store.update_object_with_command_transaction(
+            _transaction
+        )
 
     def _project_repository_binding_exists(
         self,
@@ -411,6 +642,22 @@ class TeamAdminService:
                     f"blocker {blocker.id} is routed to {blocker.route.value}; "
                     "operator resolution requires governance or operator routing"
                 )
+            if blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
+                recovery_action = (
+                    "reassign"
+                    if blocker.reason_code == HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE
+                    else "resume"
+                )
+                raise ValueError(
+                    f"blocker {blocker.id} belongs to human review request "
+                    f"{blocker.source_id}; recover it with POST "
+                    f"/human-review-requests/{blocker.source_id}/{recovery_action}; "
+                    "generic blocker resolution cannot bypass the human-review lifecycle"
+                )
+            _prepare_blocker_source_for_resolution(
+                state,
+                blocker=blocker,
+            )
             route_before_resolution = blocker.route.value
             event = resolve_blocker(
                 state,
@@ -1077,6 +1324,7 @@ class TeamAdminService:
         lead_role_name: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        _validate_resolved_human_release_policy(release_policy)
         normalized_project_id = _optional_text(project_id)
         normalized_team_id = _required_text(team_id, "team_id")
         normalized_name = _required_text(name, "name")
@@ -1212,6 +1460,8 @@ class TeamAdminService:
         status: ProjectStatus | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        if set_release_policy:
+            _validate_resolved_human_release_policy(release_policy)
         next_managed_repo_id = git.managed_repo_id if set_git and git is not None else None
 
         def _mutate(state: TeamState) -> TeamState:
@@ -1838,6 +2088,11 @@ class TeamAdminService:
         normalized_tags = _unique_text_list(tags or [], "tags")
         normalized_metadata = _mapping(metadata or {}, "metadata")
         normalized_task_ids = _unique_text_list(task_ids or [], "task_ids")
+        _validate_case_status_transition(
+            source=normalized_source,
+            current_status=None,
+            next_status=normalized_status,
+        )
         created_case_id: str | None = None
 
         def _mutate(state: TeamState) -> TeamState:
@@ -1934,10 +2189,13 @@ class TeamAdminService:
             case = _require_present(state.cases, normalized_case_id, "case")
             next_project_id = case.project_id
             next_owner_agent_id = case.owner_agent_id
+            next_source = case.source
             if set_project_id or project_id is not None:
                 next_project_id = normalized_project_id
             if set_owner_agent_id or owner_agent_id is not None:
                 next_owner_agent_id = normalized_owner_agent_id
+            if set_source or source is not None:
+                next_source = normalized_source
             _validate_case_scope(
                 state,
                 team_id=case.team_id,
@@ -1953,6 +2211,11 @@ class TeamAdminService:
                 case.project_id = next_project_id
             if normalized_status is not None:
                 previous_status = case.status
+                _validate_case_status_transition(
+                    source=next_source,
+                    current_status=previous_status,
+                    next_status=normalized_status,
+                )
                 case.status = normalized_status
                 if (
                     case.status == TeamCaseStatus.CLOSED
@@ -1966,7 +2229,7 @@ class TeamAdminService:
             if set_owner_agent_id or owner_agent_id is not None:
                 case.owner_agent_id = next_owner_agent_id
             if set_source or source is not None:
-                case.source = normalized_source
+                case.source = next_source
             if set_source_ref or source_ref is not None:
                 case.source_ref = normalized_source_ref
             if normalized_tags is not None:
@@ -2003,6 +2266,7 @@ class TeamAdminService:
         created_by_actor: str | None = None,
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
+        originating_task_id: str | None = None,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
@@ -2023,6 +2287,7 @@ class TeamAdminService:
             created_by_actor=created_by_actor,
             state=state,
             parent_task_id=parent_task_id,
+            originating_task_id=originating_task_id,
             set_parent_task_id=set_parent_task_id,
             set_case_id=set_case_id,
             dependency_task_ids=dependency_task_ids,
@@ -2047,6 +2312,7 @@ class TeamAdminService:
         created_by_actor: str | None = None,
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
+        originating_task_id: str | None = None,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
@@ -2061,12 +2327,33 @@ class TeamAdminService:
         normalized_description = _required_text(description, "description")
         normalized_owner_agent_id = _required_text(owner_agent_id, "owner_agent_id")
         normalized_project_id = _required_text(project_id, "project_id")
+        normalized_parent_task_id = _optional_text(parent_task_id)
+        normalized_originating_task_id = _optional_text(originating_task_id)
+        normalized_dependency_task_ids = (
+            _unique_text_list(dependency_task_ids, "dependency_task_ids")
+            if dependency_task_ids is not None
+            else None
+        )
         normalized_task_kind = TeamTaskKind(task_kind) if task_kind is not None else None
         normalized_outcome_contract = (
             TaskOutcomeContract.model_validate(outcome_contract)
             if outcome_contract is not None
             else None
         )
+        effective_requested_kind = normalized_task_kind or TeamTaskKind.SUPPORT
+        if state in {TeamTaskState.ACCEPTED, TeamTaskState.CANCELLED}:
+            raise ValueError(
+                f"Admin task state {state.value} requires its dedicated "
+                "acceptance or cancellation lifecycle"
+            )
+        if (
+            state == TeamTaskState.FINISHED
+            and effective_requested_kind == TeamTaskKind.OUTCOME
+        ):
+            raise ValueError(
+                "outcome tasks must resolve through an accepted deliverable, "
+                "not direct finish"
+            )
         effective_task_id: str | None = None
         created = False
         blocker_result: dict[str, Any] = {"events": []}
@@ -2085,13 +2372,44 @@ class TeamAdminService:
             )
             if normalized_task_id is not None and normalized_task_id in state_model.tasks:
                 task = state_model.tasks[normalized_task_id]
+                if task.project_id != normalized_project_id:
+                    raise ValueError(
+                        f"task {task.id} belongs to project {task.project_id}, "
+                        f"not {normalized_project_id}"
+                    )
+                if (
+                    normalized_originating_task_id is not None
+                    and normalized_originating_task_id != task.originating_task_id
+                ):
+                    raise ValueError(
+                        f"task {task.id} originating_task_id is immutable after creation"
+                    )
+                proposed_parent_task_id = (
+                    normalized_parent_task_id
+                    if set_parent_task_id or parent_task_id is not None
+                    else task.parent_task_id
+                )
+                proposed_dependency_task_ids = (
+                    normalized_dependency_task_ids
+                    if normalized_dependency_task_ids is not None
+                    else list(task.dependency_task_ids)
+                )
+                graph_error = _task_graph_edit_error(
+                    state_model,
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    parent_task_id=proposed_parent_task_id,
+                    dependency_task_ids=proposed_dependency_task_ids,
+                )
+                if graph_error is not None:
+                    raise ValueError(graph_error)
                 effective_task_id = task.id
                 created = False
                 task.priority = priority
                 task.title = normalized_title
                 task.description = normalized_description
                 if set_parent_task_id or parent_task_id is not None:
-                    task.parent_task_id = parent_task_id
+                    task.parent_task_id = normalized_parent_task_id
                 if set_case_id or case_id is not None:
                     old_case_id = task.case_id
                     task.case_id = normalized_case_id
@@ -2102,8 +2420,8 @@ class TeamAdminService:
                         new_case_id=normalized_case_id,
                         now=now,
                     )
-                if dependency_task_ids is not None:
-                    task.dependency_task_ids = dependency_task_ids
+                if normalized_dependency_task_ids is not None:
+                    task.dependency_task_ids = normalized_dependency_task_ids
                 if normalized_task_kind is not None:
                     task.task_kind = normalized_task_kind
                 if set_outcome_contract or outcome_contract is not None:
@@ -2129,6 +2447,39 @@ class TeamAdminService:
             )
             created = True
             _require_absent(state_model.tasks, effective_task_id, "task")
+            if normalized_originating_task_id is not None:
+                origin = _require_present(
+                    state_model.tasks,
+                    normalized_originating_task_id,
+                    "originating task",
+                )
+                origin_project = _require_present(
+                    state_model.projects,
+                    origin.project_id,
+                    "originating task project",
+                )
+                project = _require_present(
+                    state_model.projects,
+                    normalized_project_id,
+                    "project",
+                )
+                if (
+                    origin.project_id != normalized_project_id
+                    or origin_project.team_id != project.team_id
+                ):
+                    raise ValueError(
+                        f"originating task {origin.id} must belong to project "
+                        f"{normalized_project_id} and team {project.team_id}"
+                    )
+            graph_error = _task_graph_edit_error(
+                state_model,
+                task_id=effective_task_id,
+                project_id=normalized_project_id,
+                parent_task_id=normalized_parent_task_id,
+                dependency_task_ids=normalized_dependency_task_ids or [],
+            )
+            if graph_error is not None:
+                raise ValueError(graph_error)
             state_model.tasks[effective_task_id] = AgentTask(
                 id=effective_task_id,
                 owner_agent_id=normalized_owner_agent_id,
@@ -2141,8 +2492,9 @@ class TeamAdminService:
                 description=normalized_description,
                 created_by_agent_id=created_by_agent_id,
                 created_by_actor=created_by_actor,
-                parent_task_id=parent_task_id,
-                dependency_task_ids=dependency_task_ids or [],
+                parent_task_id=normalized_parent_task_id,
+                originating_task_id=normalized_originating_task_id,
+                dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
                 outcome_contract=effective_outcome_contract,
                 created_at=now,
@@ -2208,15 +2560,86 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
         dependency_task_ids: list[str] | None = None,
+        operator_repair_reason: str | None = None,
+        operator_repair_actor: str | None = None,
+        operator_repair_reference_ids: Sequence[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_task_id = _required_text(task_id, "task_id")
         normalized_case_id = _optional_text(case_id)
+        normalized_parent_task_id = _optional_text(parent_task_id)
+        normalized_dependency_task_ids = (
+            _unique_text_list(dependency_task_ids, "dependency_task_ids")
+            if dependency_task_ids is not None
+            else None
+        )
+        normalized_repair_reason = _optional_text(operator_repair_reason)
+        normalized_repair_actor = _optional_text(operator_repair_actor)
+        normalized_repair_reference_ids = _unique_text_list(
+            operator_repair_reference_ids or [],
+            "operator_repair_reference_ids",
+        )
         blocker_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
-            task = _require_present(state_model.tasks, task_id, "task")
+            task = _require_present(state_model.tasks, normalized_task_id, "task")
             now = utc_now()
             previous_state = task.state
+            crosses_blocked_boundary = (
+                state is not None
+                and state != previous_state
+                and (
+                    state == TeamTaskState.BLOCKED
+                    or previous_state == TeamTaskState.BLOCKED
+                )
+            )
+            if crosses_blocked_boundary and (
+                normalized_repair_reason is None
+                or normalized_repair_actor is None
+            ):
+                raise ValueError(
+                    "direct task state edits into or out of blocked are disabled; "
+                    "use the reason-required operator repair endpoint"
+                )
+            if (
+                normalized_repair_reason is not None
+                or normalized_repair_actor is not None
+                or normalized_repair_reference_ids
+            ) and not crosses_blocked_boundary:
+                raise ValueError(
+                    "operator task-state repair requires a transition into or out of blocked"
+                )
+            if set_parent_task_id or normalized_dependency_task_ids is not None:
+                graph_error = _task_graph_edit_error(
+                    state_model,
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    parent_task_id=(
+                        normalized_parent_task_id
+                        if set_parent_task_id
+                        else task.parent_task_id
+                    ),
+                    dependency_task_ids=(
+                        normalized_dependency_task_ids
+                        if normalized_dependency_task_ids is not None
+                        else list(task.dependency_task_ids)
+                    ),
+                )
+                if graph_error is not None:
+                    raise ValueError(graph_error)
+            if state == TeamTaskState.FINISHED:
+                try:
+                    require_task_can_finish(state_model, task.id)
+                except TaskAssessmentBoundaryError as exc:
+                    raise ValueError(exc.message) from None
+            elif state in {
+                TeamTaskState.ACCEPTED,
+                TeamTaskState.CANCELLED,
+            }:
+                raise ValueError(
+                    f"Admin task state {state.value} requires its dedicated "
+                    "acceptance or cancellation lifecycle"
+                )
             if priority is not None:
                 task.priority = priority
             if state is not None:
@@ -2242,38 +2665,79 @@ class TeamAdminService:
                     now=now,
                 )
             if set_parent_task_id:
-                task.parent_task_id = parent_task_id
-            if dependency_task_ids is not None:
-                task.dependency_task_ids = dependency_task_ids
+                task.parent_task_id = normalized_parent_task_id
+            if normalized_dependency_task_ids is not None:
+                task.dependency_task_ids = normalized_dependency_task_ids
             task.updated_at = now
             if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
                 project = _require_present(state_model.projects, task.project_id, "project")
-                open_or_get_blocker(
+                blocker, created = open_or_get_blocker(
                     state_model,
                     source_kind=TeamBlockerSourceKind.TASK,
                     source_id=task.id,
                     summary=f"Task blocked: {task.title}",
-                    details=task.description,
+                    details=normalized_repair_reason or task.description,
+                    reason_code=(
+                        "operator_repair"
+                        if normalized_repair_reason is not None
+                        else "unspecified"
+                    ),
                     reporter_agent_id=task.owner_agent_id,
+                    reporter_actor=normalized_repair_actor,
                     team_id=project.team_id,
                     project_id=project.id,
                     task_id=task.id,
+                    affected_task_ids=[task.id],
                     result=blocker_result,
                     now=now,
                 )
+                if not created:
+                    append_blocker_event(
+                        state_model,
+                        blocker=blocker,
+                        event_type=TeamBlockerEventType.PROGRESS,
+                        note=normalized_repair_reason or task.description,
+                        reference_ids=normalized_repair_reference_ids,
+                        metadata={
+                            "operator_actor": normalized_repair_actor,
+                            "operator_repair": True,
+                        },
+                        now=now,
+                    )
             elif previous_state == TeamTaskState.BLOCKED and task.state != TeamTaskState.BLOCKED:
-                for blocker in active_blockers_for_source(
+                active_blockers = active_blockers_for_source(
                     state_model,
                     source_kind=TeamBlockerSourceKind.TASK,
                     source_id=task.id,
-                ):
+                )
+                if not active_blockers:
+                    active_blockers = [
+                        _legacy_operator_repair_blocker(
+                            state_model,
+                            task=task,
+                            actor=normalized_repair_actor,
+                            reason=normalized_repair_reason,
+                            now=now,
+                        )
+                    ]
+                for blocker in active_blockers:
                     resolve_blocker(
                         state_model,
                         blocker=blocker,
                         actor_agent_id=None,
                         dispatch_id=None,
-                        note=f"Task moved to {task.state.value}.",
-                        reference_ids=[task.id],
+                        note=(
+                            normalized_repair_reason
+                            or f"Task moved to {task.state.value}."
+                        ),
+                        reference_ids=[
+                            task.id,
+                            *normalized_repair_reference_ids,
+                        ],
+                        metadata={
+                            "operator_actor": normalized_repair_actor,
+                            "operator_repair": normalized_repair_reason is not None,
+                        },
                         now=now,
                     )
             if task.state in _NON_TERMINAL_TASK_STATES:
@@ -2288,6 +2752,21 @@ class TeamAdminService:
                     agent_id=task.owner_agent_id,
                     now=task.updated_at,
                 )
+            if (
+                previous_state != task.state
+                and task.state
+                in {
+                    TeamTaskState.ACCEPTED,
+                    TeamTaskState.CANCELLED,
+                    TeamTaskState.FINISHED,
+                }
+            ):
+                queue_parent_resolution_transitions(
+                    state_model,
+                    child_task_id=task.id,
+                    sender_agent_id=task.owner_agent_id,
+                    now=now,
+                )
             return state_model
 
         return self._repository.update_with_outbox(
@@ -2295,6 +2774,107 @@ class TeamAdminService:
             outbox_records=lambda: _team_event_outbox_records(
                 blocker_result.get("events") or []
             ),
+            expected_revision=expected_revision,
+        )
+
+    def repair_task_state(
+        self,
+        *,
+        task_id: str,
+        state: TeamTaskState,
+        reason: str,
+        actor: str,
+        reference_ids: Sequence[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        return self.update_task(
+            task_id=task_id,
+            state=state,
+            operator_repair_reason=_required_text(reason, "reason"),
+            operator_repair_actor=_required_text(actor, "actor"),
+            operator_repair_reference_ids=reference_ids,
+            expected_revision=expected_revision,
+        )
+
+    def cancel_task(
+        self,
+        *,
+        task_id: str,
+        reason_code: str,
+        reason: str,
+        actor_id: str,
+        successor_task_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_task_id = _required_text(task_id, "task_id")
+        normalized_reason_code = _required_text(reason_code, "reason_code")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_actor_id = _required_text(actor_id, "actor_id")
+        normalized_successor_id = _optional_text(successor_task_id)
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            task = _require_present(state_model.tasks, normalized_task_id, "task")
+            if task.state not in {
+                *_NON_TERMINAL_TASK_STATES,
+                TeamTaskState.REJECTED,
+            }:
+                raise ValueError(f"task {task.id} is already {task.state.value}")
+            assessment = assess_task(state_model, task.id)
+            if assessment.unresolved_descendant_ids:
+                raise ValueError(
+                    f"task {task.id} cannot be cancelled while descendants remain "
+                    f"unresolved: {', '.join(assessment.unresolved_descendant_ids)}"
+                )
+            if normalized_successor_id is not None:
+                successor = _require_present(
+                    state_model.tasks,
+                    normalized_successor_id,
+                    "successor task",
+                )
+                if successor.id == task.id or successor.project_id != task.project_id:
+                    raise ValueError(
+                        "a cancellation successor must be a different task in "
+                        f"project {task.project_id}"
+                    )
+            now = utc_now()
+            task.cancellation = TaskCancellation(
+                reason_code=normalized_reason_code,
+                reason=normalized_reason,
+                actor_kind="operator",
+                actor_id=normalized_actor_id,
+                successor_task_id=normalized_successor_id,
+                cancelled_at=now,
+            )
+            _set_task_state(task, TeamTaskState.CANCELLED, now=now)
+            task.updated_at = now
+            finalize_active_git_work_contexts_for_task(
+                state_model,
+                task_id=task.id,
+                now=now,
+            )
+            reconcile_task_blockers_after_cancellation(
+                state_model,
+                task_id=task.id,
+                actor_agent_id=None,
+                dispatch_id=None,
+                now=now,
+            )
+            queue_parent_resolution_transitions(
+                state_model,
+                child_task_id=task.id,
+                sender_agent_id=task.owner_agent_id,
+                now=now,
+            )
+            _maybe_mark_idle_context_rotation_due(
+                state_model,
+                agent_id=task.owner_agent_id,
+                now=now,
+            )
+            _recalculate_project_status(state_model, task.project_id)
+            return state_model
+
+        return self._repository.update(
+            _mutate,
             expected_revision=expected_revision,
         )
 
@@ -2427,8 +3007,11 @@ class TeamAdminService:
         summary: str,
         artifact_refs: list[str] | None = None,
         outcomes: list[dict[str, Any]] | None = None,
+        source_deliverable_ids: list[str] | None = None,
+        completion: Mapping[str, Any] | None = None,
         state: TeamRecordState = TeamRecordState.PENDING,
         supersedes_deliverable_id: str | None = None,
+        enforce_task_assessment: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_deliverable_id = _optional_text(deliverable_id)
@@ -2437,9 +3020,27 @@ class TeamAdminService:
         normalized_summary = _required_text(summary, "summary")
         normalized_supersedes_deliverable_id = _optional_text(supersedes_deliverable_id)
         normalized_outcomes = [DeliverableOutcome.model_validate(item) for item in outcomes or []]
+        normalized_source_deliverable_ids = _unique_text_list(
+            source_deliverable_ids or [],
+            "source_deliverable_ids",
+        )
+        normalized_completion = (
+            TaskCompletion.model_validate(completion)
+            if completion is not None
+            else None
+        )
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
+            if enforce_task_assessment:
+                try:
+                    require_deliverable_submission(
+                        state_model,
+                        task_id=task.id,
+                        source_deliverable_ids=normalized_source_deliverable_ids,
+                    )
+                except TaskAssessmentBoundaryError as exc:
+                    raise ValueError(exc.message) from None
             snapshotted_outcomes = snapshot_deliverable_outcomes(
                 state_model,
                 project_id=task.project_id,
@@ -2454,6 +3055,7 @@ class TeamAdminService:
             _validate_deliverable_outcomes_against_task_contract(
                 task,
                 snapshotted_outcomes,
+                completion=normalized_completion,
             )
             effective_deliverable_id = normalized_deliverable_id or _generated_id(
                 prefix="deliverable",
@@ -2468,6 +3070,8 @@ class TeamAdminService:
                 summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
                 outcomes=snapshotted_outcomes,
+                source_deliverable_ids=normalized_source_deliverable_ids,
+                completion=normalized_completion,
                 state=state,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
                 carried_findings=(
@@ -3263,6 +3867,10 @@ class TeamAdminService:
         )
         normalized_finding_resolutions = [dict(item) for item in (finding_resolutions or [])]
         blocker_result: dict[str, Any] = {"events": [], "created_inbox_item_ids": []}
+        if self._human_review_eligibility_resolver is not None:
+            blocker_result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                self._human_review_eligibility_resolver
+            )
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
@@ -3320,13 +3928,15 @@ class TeamAdminService:
             )
             return state_model
 
-        return self._repository.update_with_outbox(
+        updated_state = self._repository.update_with_outbox(
             _mutate,
             outbox_records=lambda: _team_event_outbox_records(
                 blocker_result.get("events") or []
             ),
             expected_revision=expected_revision,
         )
+        blocker_result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
+        return updated_state
 
     def withdraw_review_request(
         self,
@@ -3426,12 +4036,501 @@ class TeamAdminService:
             expected_revision=expected_revision,
         )
 
+    def record_human_review_decision_with_result(
+        self,
+        *,
+        human_review_request_id: str,
+        reviewer_user_id: str,
+        reviewer_display_name: str,
+        decision: str,
+        request_id: str,
+        expected_request_revision: int,
+        checklist_results: Mapping[str, Any] | None = None,
+        confirmed_finding_ids: Sequence[str] = (),
+        summary: str = "",
+        evidence_refs: Sequence[str] = (),
+        findings: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_human_request_id = _required_text(
+            human_review_request_id,
+            "human_review_request_id",
+        )
+        normalized_reviewer_user_id = _required_text(
+            reviewer_user_id,
+            "reviewer_user_id",
+        )
+        normalized_decision = _required_text(decision, "decision")
+        normalized_checklist = dict(checklist_results or {})
+        normalized_confirmed_ids = list(confirmed_finding_ids)
+        normalized_evidence_refs = list(evidence_refs)
+        normalized_findings = [dict(item) for item in findings]
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            record_human_review_decision(
+                state,
+                human_review_request_id=normalized_human_request_id,
+                reviewer_user_id=normalized_reviewer_user_id,
+                reviewer_display_name=reviewer_display_name,
+                decision=normalized_decision,
+                request_id=request_id,
+                expected_revision=expected_request_revision,
+                checklist_results=normalized_checklist,
+                confirmed_finding_ids=normalized_confirmed_ids,
+                summary=summary,
+                evidence_refs=normalized_evidence_refs,
+                findings=normalized_findings,
+                result=result,
+            )
+
+        return self._run_idempotent_human_command(
+            operation="team.human_review.decision",
+            caller_user_id=normalized_reviewer_user_id,
+            scope_kind="human_review_request",
+            scope_id=normalized_human_request_id,
+            request_id=request_id,
+            normalized_payload={
+                "decision": normalized_decision,
+                "expected_request_revision": expected_request_revision,
+                "checklist_results": normalized_checklist,
+                "confirmed_finding_ids": normalized_confirmed_ids,
+                "summary": str(summary or "").strip(),
+                "evidence_refs": normalized_evidence_refs,
+                "findings": normalized_findings,
+            },
+            apply_command=_apply,
+        )
+
+    def reassign_human_review_with_result(
+        self,
+        *,
+        human_review_request_id: str,
+        user_ids: Sequence[str],
+        assigned_by_user_id: str,
+        request_id: str,
+        expected_request_revision: int,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_human_request_id = _required_text(
+            human_review_request_id,
+            "human_review_request_id",
+        )
+        normalized_actor = _required_text(
+            assigned_by_user_id,
+            "assigned_by_user_id",
+        )
+        normalized_user_ids = sorted(
+            {
+                _required_text(user_id, "user_ids")
+                for user_id in user_ids
+            }
+        )
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            human_request = _require_present(
+                state.human_review_requests,
+                normalized_human_request_id,
+                "human review request",
+            )
+            if human_request.revision != expected_request_revision:
+                raise ValueError(
+                    "stale human review revision: "
+                    f"expected {expected_request_revision}, "
+                    f"current {human_request.revision}"
+                )
+            reassigned = reassign_human_review(
+                state,
+                human_review_request_id=normalized_human_request_id,
+                user_ids=normalized_user_ids,
+                assigned_by_user_id=normalized_actor,
+                result=result,
+            )
+            result["human_review_request_id"] = reassigned.id
+            result["assignment_generation"] = reassigned.assignment_generation
+
+        return self._run_idempotent_human_command(
+            operation="team.human_review.reassign",
+            caller_user_id=normalized_actor,
+            scope_kind="human_review_request",
+            scope_id=normalized_human_request_id,
+            request_id=request_id,
+            normalized_payload={
+                "user_ids": normalized_user_ids,
+                "expected_request_revision": expected_request_revision,
+            },
+            apply_command=_apply,
+        )
+
+    def resume_human_review_with_result(
+        self,
+        *,
+        human_review_request_id: str,
+        resumed_by_user_id: str,
+        request_id: str,
+        expected_request_revision: int,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_human_request_id = _required_text(
+            human_review_request_id,
+            "human_review_request_id",
+        )
+        normalized_actor = _required_text(
+            resumed_by_user_id,
+            "resumed_by_user_id",
+        )
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            human_request = _require_present(
+                state.human_review_requests,
+                normalized_human_request_id,
+                "human review request",
+            )
+            if human_request.revision != expected_request_revision:
+                raise ValueError(
+                    "stale human review revision: "
+                    f"expected {expected_request_revision}, "
+                    f"current {human_request.revision}"
+                )
+            resumed = resume_human_review(
+                state,
+                human_review_request_id=normalized_human_request_id,
+                result=result,
+            )
+            result["human_review_request_id"] = resumed.id
+
+        return self._run_idempotent_human_command(
+            operation="team.human_review.resume",
+            caller_user_id=normalized_actor,
+            scope_kind="human_review_request",
+            scope_id=normalized_human_request_id,
+            request_id=request_id,
+            normalized_payload={
+                "expected_request_revision": expected_request_revision,
+            },
+            apply_command=_apply,
+        )
+
+    def record_human_review_preparation_result_with_result(
+        self,
+        *,
+        human_review_request_id: str,
+        recorded_by_user_id: str,
+        request_id: str,
+        expected_request_revision: int | None,
+        candidate_commit_sha: str,
+        candidate_tree_hash: str,
+        preparation_generation: int,
+        target: Mapping[str, Any] | None,
+        error: str | None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_human_request_id = _required_text(
+            human_review_request_id,
+            "human_review_request_id",
+        )
+        normalized_actor = _required_text(
+            recorded_by_user_id,
+            "recorded_by_user_id",
+        )
+        normalized_candidate_commit_sha = _required_text(
+            candidate_commit_sha,
+            "candidate_commit_sha",
+        )
+        normalized_candidate_tree_hash = _required_text(
+            candidate_tree_hash,
+            "candidate_tree_hash",
+        )
+        normalized_preparation_generation = int(preparation_generation)
+        if normalized_preparation_generation < 1:
+            raise ValueError("preparation_generation must be greater than zero")
+        normalized_target = dict(target) if target is not None else None
+        normalized_error = _optional_text(error)
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            human_request = _require_present(
+                state.human_review_requests,
+                normalized_human_request_id,
+                "human review request",
+            )
+            if (
+                expected_request_revision is not None
+                and human_request.revision != expected_request_revision
+            ):
+                raise ValueError(
+                    "stale human review revision: "
+                    f"expected {expected_request_revision}, "
+                    f"current {human_request.revision}"
+                )
+            prepared = record_human_review_preparation_result(
+                state,
+                human_review_request_id=normalized_human_request_id,
+                candidate_commit_sha=normalized_candidate_commit_sha,
+                candidate_tree_hash=normalized_candidate_tree_hash,
+                preparation_generation=normalized_preparation_generation,
+                target=normalized_target,
+                error=normalized_error,
+                result=result,
+            )
+            result["human_review_request_id"] = prepared.id
+
+        return self._run_idempotent_human_command(
+            operation="team.human_review.preparation_result",
+            caller_user_id=normalized_actor,
+            scope_kind="human_review_request",
+            scope_id=normalized_human_request_id,
+            request_id=request_id,
+            normalized_payload={
+                "expected_request_revision": expected_request_revision,
+                "candidate_commit_sha": normalized_candidate_commit_sha,
+                "candidate_tree_hash": normalized_candidate_tree_hash,
+                "preparation_generation": normalized_preparation_generation,
+                "target": normalized_target,
+                "error": normalized_error,
+            },
+            apply_command=_apply,
+        )
+
+    def record_human_finding_resolution_proposal_with_result(
+        self,
+        *,
+        finding_id: str,
+        proposed_resolution: str,
+        evidence_refs: Sequence[str],
+        proposed_by_deliverable_ids: Sequence[str],
+        proposed_by_user_id: str,
+        request_id: str,
+        expected_state_revision: int,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_finding_id = _required_text(finding_id, "finding_id")
+        normalized_resolution = _required_text(
+            proposed_resolution,
+            "proposed_resolution",
+        )
+        normalized_evidence_refs = sorted(
+            _unique_text_list(evidence_refs, "evidence_refs")
+        )
+        normalized_deliverable_ids = sorted(
+            _unique_text_list(
+                proposed_by_deliverable_ids,
+                "proposed_by_deliverable_ids",
+            )
+        )
+        normalized_actor = _required_text(
+            proposed_by_user_id,
+            "proposed_by_user_id",
+        )
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            finding = record_human_finding_resolution_proposal(
+                state,
+                finding_id=normalized_finding_id,
+                proposed_resolution=normalized_resolution,
+                evidence_refs=normalized_evidence_refs,
+                proposed_by_deliverable_ids=normalized_deliverable_ids,
+            )
+            result["human_review_finding_id"] = finding.id
+            result["correction_task_id"] = finding.correction_task_id
+
+        return self._run_idempotent_human_command(
+            operation="team.human_finding.propose_resolution",
+            caller_user_id=normalized_actor,
+            scope_kind="human_review_finding",
+            scope_id=normalized_finding_id,
+            request_id=request_id,
+            normalized_payload={
+                "proposed_resolution": normalized_resolution,
+                "evidence_refs": normalized_evidence_refs,
+                "proposed_by_deliverable_ids": normalized_deliverable_ids,
+                "expected_state_revision": expected_state_revision,
+            },
+            apply_command=_apply,
+            expected_state_revision=expected_state_revision,
+        )
+
+    def create_human_finding_correction_root_with_result(
+        self,
+        *,
+        finding_id: str,
+        owner_agent_id: str,
+        title: str,
+        description: str,
+        created_by_user_id: str,
+        request_id: str,
+        expected_state_revision: int,
+        task_id: str | None = None,
+        originating_task_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_finding_id = _required_text(finding_id, "finding_id")
+        normalized_owner_id = _required_text(owner_agent_id, "owner_agent_id")
+        normalized_title = _required_text(title, "title")
+        normalized_description = _required_text(description, "description")
+        normalized_actor = _required_text(
+            created_by_user_id,
+            "created_by_user_id",
+        )
+        normalized_task_id = _optional_text(task_id)
+        normalized_origin_id = _optional_text(originating_task_id)
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            correction_task = create_human_finding_correction_root(
+                state,
+                finding_id=normalized_finding_id,
+                owner_agent_id=normalized_owner_id,
+                title=normalized_title,
+                description=normalized_description,
+                request_id=request_id,
+                result=result,
+                task_id=normalized_task_id,
+                originating_task_id=normalized_origin_id,
+                created_by_actor=normalized_actor,
+            )
+            result["human_review_finding_id"] = normalized_finding_id
+            result["correction_task_id"] = correction_task.id
+
+        return self._run_idempotent_human_command(
+            operation="team.human_finding.create_correction_root",
+            caller_user_id=normalized_actor,
+            scope_kind="human_review_finding",
+            scope_id=normalized_finding_id,
+            request_id=request_id,
+            normalized_payload={
+                "owner_agent_id": normalized_owner_id,
+                "title": normalized_title,
+                "description": normalized_description,
+                "task_id": normalized_task_id,
+                "originating_task_id": normalized_origin_id,
+                "expected_state_revision": expected_state_revision,
+            },
+            apply_command=_apply,
+            expected_state_revision=expected_state_revision,
+        )
+
+    def close_post_release_feedback_case_with_result(
+        self,
+        *,
+        case_id: str,
+        reason: str,
+        evidence_refs: Sequence[str],
+        closed_by_user_id: str,
+        request_id: str,
+        expected_state_revision: int,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_case_id = _required_text(case_id, "case_id")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_evidence_refs = sorted(
+            _unique_text_list(evidence_refs, "evidence_refs")
+        )
+        normalized_actor = _required_text(
+            closed_by_user_id,
+            "closed_by_user_id",
+        )
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            case = close_post_release_feedback_case(
+                state,
+                case_id=normalized_case_id,
+                reason=normalized_reason,
+                evidence_refs=normalized_evidence_refs,
+                actor_kind="operator",
+                actor_id=normalized_actor,
+                result=result,
+            )
+            result["case_id"] = case.id
+            result["case"] = case.model_dump(mode="json")
+
+        return self._run_idempotent_human_command(
+            operation="team.release.close_feedback_case",
+            caller_user_id=normalized_actor,
+            scope_kind="case",
+            scope_id=normalized_case_id,
+            request_id=request_id,
+            normalized_payload={
+                "reason": normalized_reason,
+                "evidence_refs": normalized_evidence_refs,
+                "expected_state_revision": expected_state_revision,
+            },
+            apply_command=_apply,
+            expected_state_revision=expected_state_revision,
+        )
+
+    def report_post_release_feedback_with_result(
+        self,
+        *,
+        release_package_id: str,
+        reporter_user_id: str,
+        reporter_display_name: str,
+        report: str,
+        evidence_refs: Sequence[str],
+        request_id: str,
+        expected_state_revision: int,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_release_id = _required_text(
+            release_package_id,
+            "release_package_id",
+        )
+        normalized_reporter = _required_text(
+            reporter_user_id,
+            "reporter_user_id",
+        )
+        normalized_report = _required_text(report, "report")
+        normalized_evidence_refs = sorted(
+            _unique_text_list(evidence_refs, "evidence_refs")
+        )
+        if not normalized_evidence_refs:
+            raise ValueError("evidence_refs must contain at least one reference")
+
+        def _apply(state: TeamState, result: dict[str, Any]) -> None:
+            source_ref = f"{normalized_release_id}:{str(request_id).strip()}"
+            existing = next(
+                (
+                    case
+                    for case in state.cases.values()
+                    if case.source == "post_release_feedback"
+                    and case.source_ref == source_ref
+                ),
+                None,
+            )
+            if existing is not None and (
+                existing.description != normalized_report
+                or existing.metadata.get("reporter_user_id")
+                != normalized_reporter
+                or list(existing.metadata.get("evidence_refs") or [])
+                != normalized_evidence_refs
+            ):
+                raise ValueError(
+                    "post-release report request_id was reused with different inputs"
+                )
+            case = report_post_release_feedback(
+                state,
+                release_package_id=normalized_release_id,
+                reporter_user_id=normalized_reporter,
+                reporter_display_name=reporter_display_name,
+                report=normalized_report,
+                evidence_refs=normalized_evidence_refs,
+                request_id=request_id,
+                result=result,
+            )
+            result["case_id"] = case.id
+
+        return self._run_idempotent_human_command(
+            operation="team.release.report_issue",
+            caller_user_id=normalized_reporter,
+            scope_kind="release_package",
+            scope_id=normalized_release_id,
+            request_id=request_id,
+            normalized_payload={
+                "report": normalized_report,
+                "evidence_refs": normalized_evidence_refs,
+                "expected_state_revision": expected_state_revision,
+            },
+            apply_command=_apply,
+            expected_state_revision=expected_state_revision,
+        )
+
     def create_release_package(
         self,
         *,
         project_id: str,
         deliverable_ids: list[str],
         release_id: str | None = None,
+        supersedes_release_package_id: str | None = None,
+        post_release_feedback_case_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         verification_waivers: list[Mapping[str, Any]] | None = None,
@@ -3442,6 +4541,8 @@ class TeamAdminService:
             project_id=project_id,
             deliverable_ids=deliverable_ids,
             release_id=release_id,
+            supersedes_release_package_id=supersedes_release_package_id,
+            post_release_feedback_case_id=post_release_feedback_case_id,
             release_branch=release_branch,
             canonical_branch=canonical_branch,
             verification_waivers=verification_waivers,
@@ -3456,6 +4557,8 @@ class TeamAdminService:
         project_id: str,
         deliverable_ids: list[str],
         release_id: str | None = None,
+        supersedes_release_package_id: str | None = None,
+        post_release_feedback_case_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         verification_waivers: list[Mapping[str, Any]] | None = None,
@@ -3465,6 +4568,12 @@ class TeamAdminService:
         normalized_project_id = _required_text(project_id, "project_id")
         request = {
             "id": _optional_text(release_id),
+            "supersedes_release_package_id": _optional_text(
+                supersedes_release_package_id
+            ),
+            "post_release_feedback_case_id": _optional_text(
+                post_release_feedback_case_id
+            ),
             "project_id": normalized_project_id,
             "deliverable_ids": list(deliverable_ids),
             "release_branch": _optional_text(release_branch),

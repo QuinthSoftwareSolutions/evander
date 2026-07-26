@@ -239,6 +239,10 @@ function emptyState() {
     inbox: {},
     action_records: {},
     release_packages: {},
+    human_review_requests: {},
+    dispatches: {},
+    worktree_cleanup_candidates: {},
+    git_work_contexts: {},
     ephemeral_assignments: {},
     git_promotions: {},
     stand_downs: {},
@@ -1464,6 +1468,10 @@ async function createTeamAddonServer(
         await serveStatic(response, "team-mail.js", "application/javascript; charset=utf-8");
         return;
       }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-activity.js") {
+        await serveStatic(response, "team-activity.js", "application/javascript; charset=utf-8");
+        return;
+      }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-ui.css") {
         await serveStatic(response, "team-ui.css", "text/css; charset=utf-8");
         return;
@@ -1509,6 +1517,31 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/bootstrap") {
         jsonResponse(response, bootstrapPayload(state));
+        return;
+      }
+      if (
+        request.method === "GET" &&
+        pathname === "/api/addons/team-addon/human-review-requests"
+      ) {
+        requests.push({ method: request.method, pathname, search: url.search });
+        jsonResponse(response, {
+          revision: state.revision,
+          human_review_requests: Object.values(state.human_review_requests || {}),
+        });
+        return;
+      }
+      const releaseDetailMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/release-packages\/([^/]+)$/,
+      );
+      if (request.method === "GET" && releaseDetailMatch) {
+        requests.push({ method: request.method, pathname, search: url.search });
+        const releaseId = decodeURIComponent(releaseDetailMatch[1]);
+        const release = state.release_packages?.[releaseId];
+        if (!release) {
+          jsonResponse(response, { error: "release package not found" }, 404);
+          return;
+        }
+        jsonResponse(response, release.detail || release);
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/inbox") {
@@ -1885,6 +1918,117 @@ async function createTeamAddonServer(
 
       const payload = await requestJson(request);
       requests.push({ method: request.method, pathname, payload });
+
+      const humanDecisionMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/human-review-requests\/([^/]+)\/decisions$/,
+      );
+      if (request.method === "POST" && humanDecisionMatch) {
+        const humanRequestId = decodeURIComponent(humanDecisionMatch[1]);
+        const humanRequest = state.human_review_requests?.[humanRequestId];
+        if (!humanRequest) {
+          jsonResponse(response, { error: "human review request not found" }, 404);
+          return;
+        }
+        state.revision += 1;
+        humanRequest.state = payload.decision;
+        humanRequest.revision = Number(humanRequest.revision || 0) + 1;
+        humanRequest.decisions = [
+          ...(humanRequest.decisions || []),
+          {
+            id: `human-decision-${state.revision}`,
+            human_review_request_id: humanRequestId,
+            decision: payload.decision,
+            reviewer_user_id: "admin",
+            reviewer_display_name_snapshot: "Admin",
+            summary: payload.summary || "",
+            evidence_refs: payload.evidence_refs || [],
+            checklist_results: payload.checklist_results || {},
+            decided_at: "2026-06-09T16:10:00Z",
+          },
+        ];
+        const release = state.release_packages?.[humanRequest.release_package_id];
+        if (release?.human_review) {
+          release.human_review.state = payload.decision;
+          release.human_review.next_action = null;
+        }
+        if (release?.detail?.human_review) {
+          release.detail.human_review.state = payload.decision;
+          release.detail.human_review.next_action = null;
+          const detailedRequest = release.detail.human_review.requests?.find(
+            (item) => item.id === humanRequestId,
+          );
+          if (detailedRequest && detailedRequest !== humanRequest) {
+            Object.assign(detailedRequest, humanRequest);
+          }
+        }
+        jsonResponse(response, {
+          revision: state.revision,
+          result: { decision_id: `human-decision-${state.revision}` },
+          human_review_request: humanRequest,
+        });
+        return;
+      }
+
+      const postReleaseReportMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/release-packages\/([^/]+)\/report-issue$/,
+      );
+      if (request.method === "POST" && postReleaseReportMatch) {
+        const releaseId = decodeURIComponent(postReleaseReportMatch[1]);
+        const release = state.release_packages?.[releaseId];
+        if (!release || release.state !== "accepted") {
+          jsonResponse(response, { error: "post-release feedback requires a published release" }, 400);
+          return;
+        }
+        state.revision += 1;
+        const caseId = `post-release-case-${state.revision}`;
+        const triageTaskId = `post-release-triage-${state.revision}`;
+        const caseRecord = {
+          id: caseId,
+          team_id: state.projects?.[release.project_id]?.team_id || "team-alpha",
+          project_id: release.project_id,
+          title: `Post-release feedback for ${releaseId}`,
+          description: payload.report,
+          status: "triage",
+          priority: "high",
+          owner_agent_id: state.projects?.[release.project_id]?.lead_agent_id || "alpha-lead",
+          source: "post_release_feedback",
+          source_ref: `${releaseId}:${payload.request_id}`,
+          metadata: {
+            reporter_user_id: "admin",
+            reporter_display_name: "Admin",
+            release_package_id: releaseId,
+            evidence_refs: payload.evidence_refs || [],
+          },
+          created_at: "2026-06-09T16:20:00Z",
+          updated_at: "2026-06-09T16:20:00Z",
+        };
+        const triageTask = {
+          id: triageTaskId,
+          owner_agent_id: caseRecord.owner_agent_id,
+          project_id: release.project_id,
+          priority: 0,
+          state: "pending",
+          title: `Triage post-release feedback for ${releaseId}`,
+          description: payload.report,
+          created_by_agent_id: caseRecord.owner_agent_id,
+          case_id: caseId,
+          created_at: "2026-06-09T16:20:00Z",
+          updated_at: "2026-06-09T16:20:00Z",
+        };
+        state.cases ||= {};
+        state.tasks ||= {};
+        state.cases[caseId] = caseRecord;
+        state.tasks[triageTaskId] = triageTask;
+        jsonResponse(response, {
+          revision: state.revision,
+          result: {
+            case_id: caseId,
+            triage_task_id: triageTaskId,
+          },
+          case: caseRecord,
+        });
+        return;
+      }
 
       if (
         conflictOnFirstTeamCreate &&
@@ -6880,7 +7024,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await pendingRow.getByText("deliverable-pending", { exact: true }).first().waitFor({
     state: "visible",
   });
-  await pendingRow.getByText("task-pending - Draft pending delivery - in_progress").waitFor({
+  await pendingRow.getByText("task-pending - Draft pending delivery - In Progress").waitFor({
     state: "visible",
   });
   await pendingRow.getByText("Artifacts: artifacts/pending.tar.gz").waitFor({
@@ -7130,4 +7274,861 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
     .locator("#team-timeline-page .timeline-summary-text")
     .allTextContents();
   assert.deepEqual(summaries.slice(0, 2), ["Aware UTC event", "Naive UTC event"]);
+});
+
+test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and worktree identity", async (t) => {
+  const initialState = seededGitState();
+  const parent = initialState.tasks["task-planned"];
+  const child = initialState.tasks["task-pending"];
+  Object.assign(parent, {
+    child_task_ids: [child.id],
+    readiness: "blocked",
+    resolution_status: "unresolved",
+    integration_ready: false,
+    assessment: {
+      readiness: "blocked",
+      resolution_status: "unresolved",
+      integration_ready: false,
+      direct_child_ids: [child.id],
+      unresolved_descendant_ids: [child.id],
+      resolution_reason: "A direct child still requires acceptance.",
+    },
+  });
+  Object.assign(child, {
+    parent_task_id: parent.id,
+    originating_task_id: "task-waiting",
+    dependency_task_ids: ["task-waiting"],
+    dependency_status: "blocked",
+    blocked_by_task_ids: ["task-waiting"],
+    readiness: "blocked",
+    resolution_status: "unresolved",
+    integration_ready: false,
+    invalid_reason_codes: ["legacy_missing_parent_acceptance"],
+    inherited_blockers: [
+      {
+        upstream_task_id: "task-waiting",
+        relationship: "dependency",
+        blocker_id: "blocker-upstream-contract",
+        reason_code: "upstream_contract_unsigned",
+        reason: "The upstream runtime contract is not signed.",
+        summary: "The upstream runtime contract is not signed.",
+        details: "The waiting task owner needs the signed contract before proceeding.",
+        source_kind: "task",
+        source_id: "task-waiting",
+        blocker_task_id: "task-waiting",
+        owner_agent_id: "alpha-manager",
+        delegate_agent_id: null,
+        route: "owned",
+        escalation_depth: 0,
+        priority: "high",
+        created_at: "2026-06-09T07:30:00Z",
+        follow_up_at: "2026-06-10T07:30:00Z",
+        last_progress_at: null,
+      },
+    ],
+    assessment: {
+      readiness: "blocked",
+      resolution_status: "unresolved",
+      integration_ready: false,
+      direct_child_ids: [],
+      unresolved_descendant_ids: ["task-waiting"],
+      resolution_reason: "The prerequisite task has not resolved.",
+      active_acceptance_ids: ["acceptance-child"],
+      active_review_request_ids: ["review-waiting"],
+      contribution_coverage: {
+        status: "incomplete",
+        missing_source_deliverable_ids: ["deliverable-child"],
+        unexpected_source_deliverable_ids: [],
+      },
+    },
+  });
+  initialState.blockers = {
+    "blocker-task-pending": {
+      id: "blocker-task-pending",
+      state: "open",
+      source_kind: "task",
+      source_id: child.id,
+      task_id: child.id,
+      reason_code: "external_dependency",
+      summary: "Waiting for the signed runtime contract.",
+      details: "The owner cannot complete integration until the contract is available.",
+      owner_agent_id: "alpha-lead",
+      delegate_agent_id: "alpha-manager",
+      route: "manager",
+      escalation_depth: 1,
+      created_at: "2026-06-09T08:00:00Z",
+      follow_up_at: "2026-06-10T08:00:00Z",
+      last_progress_at: "2026-06-09T09:00:00Z",
+    },
+  };
+  initialState.blocker_events = {
+    "blocker-event-task-pending": {
+      id: "blocker-event-task-pending",
+      blocker_id: "blocker-task-pending",
+      event_type: "progress",
+      note: "Owner contacted the contract approver.",
+      created_at: "2026-06-09T09:00:00Z",
+    },
+  };
+  initialState.git_work_contexts = {
+    "ctx-task-pending": {
+      id: "ctx-task-pending",
+      branch_context_id: "ctx-task-pending",
+      task_id: child.id,
+      project_id: child.project_id,
+      worktree_path: "/home/agent/worktrees/task-pending",
+      agent_branch: "agents/session-alpha-lead/task-pending",
+      dispatch_id: "dispatch-task-pending",
+      state: "active",
+    },
+  };
+  initialState.dispatches = {
+    "dispatch-task-pending": {
+      id: "dispatch-task-pending",
+      task_id: child.id,
+      status: "leased",
+    },
+  };
+  initialState.worktree_cleanup_candidates = {
+    "cleanup-task-pending": {
+      id: "cleanup-task-pending",
+      task_id: child.id,
+      state: "recovery_required",
+      worktree_path: "/home/agent/worktrees/task-pending",
+      branch: "agents/session-alpha-lead/task-pending",
+      last_safety_check: "tracked_changes",
+      last_error: "Tracked changes still exist.",
+      updated_at: "2026-06-09T10:00:00Z",
+    },
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Teams" }).click();
+  const alphaGroup = page.locator(
+    '#team-people-page [data-team-record-group-id="team-alpha"]',
+  );
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator('[data-team-record-tab="project"]').click();
+  await alphaGroup
+    .locator('[data-project-id="alpha-project"]')
+    .getByRole("button")
+    .click();
+  const taskItems = page.locator("#people-agent-detail-view .task-item");
+  await taskItems.first().waitFor({ state: "visible" });
+  const orderedTaskTitles = await taskItems
+    .locator("summary .compact-record-main strong")
+    .allTextContents();
+  assert.equal(
+    orderedTaskTitles.indexOf("Draft pending delivery"),
+    orderedTaskTitles.indexOf("Plan alpha delivery") + 1,
+  );
+
+  const childItem = taskItems.filter({ hasText: "Draft pending delivery" });
+  await childItem.locator("summary").click();
+  await childItem.getByText(/parent task-planned/).waitFor({ state: "visible" });
+  await childItem.getByText(/originating task task-waiting/).waitFor({ state: "visible" });
+  await childItem.getByText("Direct acceptance: acceptance-child").waitFor({
+    state: "visible",
+  });
+  await childItem.getByText("Formal review: review-waiting").waitFor({ state: "visible" });
+  await childItem
+    .getByText("Contribution composition: coverage incomplete - missing deliverable-child")
+    .waitFor({ state: "visible" });
+  await childItem
+    .getByText("Blocker blocker-task-pending", { exact: true })
+    .waitFor({ state: "visible" });
+  await childItem
+    .getByText("Upstream dependency task-waiting", { exact: true })
+    .waitFor({ state: "visible" });
+  await childItem
+    .getByText("Blocker blocker-upstream-contract", { exact: true })
+    .waitFor({ state: "visible" });
+  await childItem
+    .getByText("The upstream runtime contract is not signed.", { exact: true })
+    .waitFor({ state: "visible" });
+  await childItem
+    .getByText("Latest event progress: Owner contacted the contract approver.")
+    .waitFor({ state: "visible" });
+  await childItem
+    .getByText(
+      "Next action: delegate alpha-manager reports progress; owner alpha-lead remains accountable",
+    )
+    .waitFor({ state: "visible" });
+  await childItem.getByText("Legacy lifecycle repair required:").waitFor({ state: "visible" });
+  assert.deepEqual(await childItem.locator("table th").allTextContents(), [
+    "Task",
+    "Project",
+    "Repository",
+    "Worktree",
+    "Branch",
+    "Context / dispatch",
+  ]);
+  await childItem.getByText("/home/agent/worktrees/task-pending", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  await childItem.getByText(/ctx-task-pending - leased/).waitFor({ state: "visible" });
+  await childItem
+    .getByText(/cleanup recovery_required - check tracked_changes - Tracked changes still exist\./)
+    .waitFor({ state: "visible" });
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  const childCard = page.locator(".task-board-card", { hasText: "Draft pending delivery" });
+  await childCard.getByText("Parent: task-planned - depth 1").waitFor({ state: "visible" });
+  await childCard
+    .getByText("Readiness: blocked - resolution: unresolved - integration not ready")
+    .waitFor({ state: "visible" });
+  await childCard
+    .getByText("Unresolved descendants (1): task-waiting")
+    .waitFor({ state: "visible" });
+  await childCard
+    .getByText("Worktree: /home/agent/worktrees/task-pending (ctx-task-pending)")
+    .waitFor({ state: "visible" });
+  await childCard
+    .getByText(
+      /dependency task-waiting: blocker blocker-upstream-contract \[upstream_contract_unsigned\] The upstream runtime contract is not signed\./,
+    )
+    .waitFor({ state: "visible" });
+  assert.equal(await childCard.evaluate((element) => element.classList.contains("task-board-card-blocked")), true);
+});
+
+test("team add-on My Human Reviews renders pinned release evidence and submits identity-free decisions", async (t) => {
+  const initialState = seededGitState();
+  const requirement = {
+    reviewer_group_ids: ["release-approvers"],
+    checklist: [
+      {
+        id: "smoke-release",
+        label: "Smoke release",
+        description: "Exercise the prepared release path.",
+        required: true,
+      },
+    ],
+    test_instructions: "Open the preview and complete the release smoke test.",
+    preparation_mode: "workflow",
+  };
+  const humanRequest = {
+    id: "human-review-release-human",
+    release_package_id: "release-human",
+    state: "pending",
+    revision: 3,
+    candidate_commit_sha: "candidate111",
+    candidate_tree_hash: "tree222",
+    requirement_snapshot: requirement,
+    current_assignment: {
+      explicitly_assigned_user_ids: ["admin"],
+      eligible_user_ids: ["admin"],
+    },
+    assignment_generation: 1,
+    ready_at: "2026-06-09T16:00:00Z",
+    test_target: {
+      alias: "release-preview",
+      url: "https://preview.example/releases/release-human",
+      instructions: "Sign in with the release test account.",
+      evidence_refs: ["artifact-space:preview-manifest"],
+      expires_at: "2026-06-10T16:00:00Z",
+    },
+    decisions: [
+      {
+        id: "human-decision-prior-block",
+        decision: "blocked",
+        reviewer_user_id: "reviewer@example.com",
+        reviewer_display_name_snapshot: "Release Reviewer",
+        summary: "Preview credentials were unavailable on the first attempt.",
+        evidence_refs: ["artifact-space:prior-decision-log"],
+        decided_at: "2026-06-09T15:58:00Z",
+      },
+    ],
+    findings: [
+      {
+        id: "human-finding-preview-copy",
+        state: "open",
+        text: "The preview footer must show the pinned candidate SHA.",
+        correction_task_id: "task-human-preview-copy",
+        target_deliverable_ids: ["deliverable-accepted"],
+        evidence_refs: ["artifact-space:finding-screenshot"],
+        proposed_resolution: "Render the pinned candidate SHA in the footer.",
+        resolution_evidence_refs: ["artifact-space:resolution-preview"],
+      },
+    ],
+    correction_tasks: [
+      {
+        id: "task-human-preview-copy",
+        title: "Correct preview candidate footer",
+        state: "in_progress",
+        originating_task_id: "task-accepted",
+      },
+    ],
+    created_at: "2026-06-09T15:55:00Z",
+  };
+  const releaseDetail = {
+    id: "release-human",
+    project_id: "alpha-project",
+    deliverable_ids: ["deliverable-accepted"],
+    artifact_refs: ["artifact-space:release-bundle"],
+    state: "pending",
+    policy_version: 2,
+    base_commit_sha: "base000",
+    candidate_commit_sha: "candidate111",
+    candidate_tree_hash: "tree222",
+    approved_commit_sha: null,
+    release_branch: "team/alpha/releases/human",
+    canonical_branch: "releases/alpha/human",
+    published_commit_sha: null,
+    published_at: null,
+    manifest: {
+      candidate_commit_sha: "candidate111",
+      candidate_tree_hash: "tree222",
+      contribution_graph: {
+        "deliverable-accepted": ["deliverable-child-a", "deliverable-child-b"],
+      },
+      deliverables: [
+        {
+          deliverable_id: "deliverable-accepted",
+          feature_branch: "team/alpha/features/accepted",
+          feature_commit_sha: "ccc333",
+          artifact_refs: ["artifact-space:deliverable-test-notes"],
+          verification: { status: "passed" },
+          accepted_reviews: [
+            {
+              review_request_id: "review-accepted",
+              reviewer_agent_id: "alpha-manager",
+            },
+          ],
+        },
+      ],
+      verification_commands: [{ name: "release-smoke" }],
+      human_review_requirement: requirement,
+      carried_human_findings: [
+        {
+          finding_id: "human-finding-carried-accessibility",
+          text: "Confirm the corrected keyboard focus order.",
+          target_deliverable_ids: ["deliverable-accepted"],
+          correction_task_id: "task-accessibility-correction",
+          proposed_resolution: "Use the corrected focus sequence.",
+          resolution_evidence_refs: ["artifact-space:carried-finding-fix"],
+          proposed_by_deliverable_ids: ["deliverable-accepted"],
+        },
+      ],
+    },
+    verification_runs: [
+      {
+        id: "verification-release-human-1",
+        state: "passed",
+        attempt_number: 1,
+        candidate_commit_sha: "candidate111",
+        command_results: [
+          {
+            name: "release-smoke",
+            state: "passed",
+            log_excerpt: "All release checks passed.",
+          },
+        ],
+      },
+    ],
+    release_reviews: [
+      {
+        id: "agent-release-review-1",
+        reviewer_agent_id: "alpha-manager",
+        state: "accepted",
+        instructions: "Review the release manifest.",
+        criteria_snapshot: [
+          {
+            id: "release-scope",
+            label: "Release scope",
+            required: true,
+          },
+        ],
+        criteria: [
+          {
+            criterion_id: "release-scope",
+            state: "passed",
+            finding: "Scope matches the candidate.",
+          },
+        ],
+        findings: [],
+      },
+    ],
+    human_review: {
+      required: true,
+      state: "pending",
+      request_id: humanRequest.id,
+      request_count: 1,
+      carried_finding_ids: [],
+      open_finding_ids: [],
+      next_action: "human_decision",
+      requests: [humanRequest],
+    },
+  };
+  initialState.human_review_requests = {
+    [humanRequest.id]: humanRequest,
+  };
+  initialState.release_packages = {
+    "release-human": {
+      id: "release-human",
+      project_id: "alpha-project",
+      deliverable_ids: ["deliverable-accepted"],
+      state: "pending",
+      candidate_commit_sha: "candidate111",
+      candidate_tree_hash: "tree222",
+      human_review: {
+        required: true,
+        state: "pending",
+        request_id: humanRequest.id,
+        request_count: 1,
+        open_finding_ids: [],
+        next_action: "human_decision",
+      },
+      detail: releaseDetail,
+    },
+    "release-not-assigned": {
+      id: "release-not-assigned",
+      project_id: "beta-project",
+      deliverable_ids: [],
+      state: "pending",
+    },
+  };
+
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(
+    t,
+    port,
+    {},
+    "/addons/team-addon/?privileged_unlocked=true&view=my-human-reviews&human_review_request_id=human-review-release-human",
+  );
+
+  await waitForRevision(page, 4);
+  await page.locator("#team-delivery-page").waitFor({ state: "visible" });
+  await page.locator('[data-my-human-reviews][aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page
+    .locator("#team-delivery-page [data-releases-view]")
+    .getByText("release-human", { exact: true })
+    .first()
+    .waitFor({ state: "visible" });
+  assert.equal(
+    await page
+      .locator("#team-delivery-page [data-releases-view]")
+      .getByText("release-not-assigned", { exact: true })
+      .count(),
+    0,
+  );
+  const queueRequest = requests.find(
+    (request) =>
+      request.method === "GET" &&
+      request.pathname === "/api/addons/team-addon/human-review-requests",
+  );
+  assert.equal(new URLSearchParams(queueRequest?.search || "").get("assigned_to"), "me");
+
+  const detail = page.locator("#release-detail-release-human");
+  await detail.waitFor({ state: "visible" });
+  const focusedRequest = detail.locator("#human-review-human-review-release-human");
+  await focusedRequest.waitFor({ state: "visible" });
+  assert.equal(
+    await focusedRequest.evaluate((element) =>
+      element.classList.contains("human-review-request-focused"),
+    ),
+    true,
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.id),
+    "human-review-human-review-release-human",
+  );
+  await detail.getByText(/base base000 - candidate candidate111 - tree tree222/).waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Alpha Project (alpha-project)", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await detail.getByRole("heading", { name: "release-human" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByRole("heading", { name: "Release notes and included work" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText(/deliverable-accepted - Accepted delivery\./).waitFor({
+    state: "visible",
+  });
+  await detail
+    .getByText(/Feature team\/alpha\/features\/accepted @ ccc333 - verification passed/)
+    .waitFor({ state: "visible" });
+  await detail
+    .getByText("Accepted agent reviews: review-accepted by alpha-manager")
+    .waitFor({ state: "visible" });
+  await detail.getByRole("heading", { name: "Recursive contribution graph" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText(/deliverable-accepted ← deliverable-child-a, deliverable-child-b/).waitFor({
+    state: "visible",
+  });
+  await detail.getByRole("heading", { name: "Automated verification" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText(/release-smoke: passed - All release checks passed\./).waitFor({
+    state: "visible",
+  });
+  await detail.getByRole("heading", { name: "Agent review decisions" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Release scope: passed - Scope matches the candidate.").waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Review the release manifest.", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await detail.getByRole("heading", { name: "Human request and decision history" }).waitFor({
+    state: "visible",
+  });
+  await detail
+    .getByText(
+      "Carried findings requiring explicit confirmation: human-finding-carried-accessibility",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  await detail.getByText("https://preview.example/releases/release-human", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Open the preview and complete the release smoke test.").waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Sign in with the release test account.", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Target evidence: artifact-space:preview-manifest").waitFor({
+    state: "visible",
+  });
+  await detail
+    .getByText("Smoke release (required) - Exercise the prepared release path.")
+    .waitFor({ state: "visible" });
+  await detail.getByText("blocked by Release Reviewer at 2026-06-09T15:58:00Z").waitFor({
+    state: "visible",
+  });
+  await detail
+    .getByText("Preview credentials were unavailable on the first attempt.")
+    .waitFor({ state: "visible" });
+  await detail.getByText("Evidence: artifact-space:prior-decision-log").waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Findings and correction work", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText(/human-finding-preview-copy open - The preview footer must show/).waitFor({
+    state: "visible",
+  });
+  await detail.getByText(/Correction task task-human-preview-copy - targets deliverable-accepted/).waitFor({
+    state: "visible",
+  });
+  await detail
+    .getByText("Resolution proposal: Render the pinned candidate SHA in the footer.")
+    .waitFor({ state: "visible" });
+  await detail.getByText("Resolution evidence: artifact-space:resolution-preview").waitFor({
+    state: "visible",
+  });
+  await detail
+    .getByText(/task-human-preview-copy - Correct preview candidate footer in_progress - origin task-accepted/)
+    .waitFor({ state: "visible" });
+  await detail.getByRole("heading", { name: "Evidence and attachments" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText("artifact-space:release-bundle", { exact: true }).waitFor({
+    state: "visible",
+  });
+  for (const evidenceRef of [
+    "artifact-space:deliverable-test-notes",
+    "artifact-space:finding-screenshot",
+    "artifact-space:preview-manifest",
+    "artifact-space:prior-decision-log",
+    "artifact-space:resolution-preview",
+  ]) {
+    await detail.getByText(evidenceRef, { exact: true }).last().waitFor({
+      state: "visible",
+    });
+  }
+
+  const decisionForm = detail.locator("[data-human-review-decision-form]");
+  await decisionForm.locator('[data-human-checklist-id="smoke-release"]').check();
+  await decisionForm
+    .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
+    .check();
+  await decisionForm.locator('textarea[name="summary"]').fill("Smoke test passed against the pinned preview.");
+  await decisionForm
+    .locator('textarea[name="evidence_refs"]')
+    .fill("artifact-space:human-smoke-evidence");
+  await decisionForm.getByRole("button", { name: "Approve" }).click();
+  await page.getByText("Human review approved recorded.").waitFor({ state: "visible" });
+
+  const decisionRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname ===
+        "/api/addons/team-addon/human-review-requests/human-review-release-human/decisions",
+  );
+  assert.ok(decisionRequest, "expected a human release review decision request");
+  assert.equal(decisionRequest.payload.decision, "approved");
+  assert.equal(decisionRequest.payload.expected_revision, 3);
+  assert.match(
+    decisionRequest.payload.request_id,
+    /^team-ui:human-review-release-human:approved:/,
+  );
+  assert.deepEqual(decisionRequest.payload.checklist_results, {
+    "smoke-release": true,
+  });
+  assert.deepEqual(decisionRequest.payload.confirmed_finding_ids, [
+    "human-finding-carried-accessibility",
+  ]);
+  assert.deepEqual(decisionRequest.payload.evidence_refs, [
+    "artifact-space:human-smoke-evidence",
+  ]);
+  assert.equal("reviewer_user_id" in decisionRequest.payload, false);
+  assert.equal("reviewer_display_name" in decisionRequest.payload, false);
+  assert.equal(initialState.human_review_requests[humanRequest.id].state, "approved");
+
+  await page.goto(
+    `http://127.0.0.1:${port}/addons/team-addon/?privileged_unlocked=true&view=my-human-reviews&human_review_request_id=missing-review`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await waitForRevision(page, 5);
+  await page
+    .getByText(
+      "Human review missing-review is not assigned or visible; showing your assigned reviews instead.",
+    )
+    .waitFor({ state: "visible" });
+  await page.locator('[data-my-human-reviews][aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page
+    .locator("#team-delivery-page [data-releases-view]")
+    .getByText("release-human", { exact: true })
+    .first()
+    .waitFor({ state: "visible" });
+});
+
+test("team add-on reports published release regressions without implying rollback or successor creation", async (t) => {
+  const initialState = seededGitState();
+  initialState.release_packages["release-timestamp-only"] = {
+    ...initialState.release_packages["release-accepted"],
+    id: "release-timestamp-only",
+    published_commit_sha: null,
+  };
+  initialState.release_packages["release-commit-only"] = {
+    ...initialState.release_packages["release-accepted"],
+    id: "release-commit-only",
+    published_at: null,
+  };
+  const { port, requests, state } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(
+    t,
+    port,
+    {},
+    "/addons/team-addon/?privileged_unlocked=true",
+  );
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  for (const incompleteReleaseId of [
+    "release-timestamp-only",
+    "release-commit-only",
+  ]) {
+    const incompleteCard = page.locator(
+      "#team-delivery-page .releases-view .record-item",
+      { hasText: incompleteReleaseId },
+    );
+    await incompleteCard.waitFor({ state: "visible" });
+    assert.equal(
+      await incompleteCard.locator(".post-release-report-control").count(),
+      0,
+      `${incompleteReleaseId} must not expose post-release reporting`,
+    );
+  }
+  const releaseCard = page.locator("#team-delivery-page .releases-view .record-item", {
+    hasText: "release-accepted",
+  });
+  await releaseCard.waitFor({ state: "visible" });
+  await releaseCard.locator(":scope > details > summary").click();
+
+  const reportControl = releaseCard.locator(".post-release-report-control");
+  await reportControl
+    .getByText(
+      "Reporting creates a follow-up case and triage task. It does not roll back this published release and does not automatically create or authorize a successor.",
+      { exact: true },
+    )
+    .waitFor({ state: "attached" });
+  await reportControl.getByText("Report regression or adjustment", { exact: true }).click();
+  const reportForm = reportControl.locator("[data-post-release-report-form]");
+  await reportForm.waitFor({ state: "visible" });
+  assert.equal(await reportForm.locator('textarea[name="report"]').getAttribute("required"), "");
+  assert.equal(
+    await reportForm.locator('textarea[name="evidence_refs"]').getAttribute("required"),
+    "",
+  );
+
+  await reportForm
+    .locator('textarea[name="report"]')
+    .fill("The published confirmation path regressed after rollout.");
+  await reportForm.locator('textarea[name="evidence_refs"]').fill("   ");
+  await reportForm
+    .getByRole("button", { name: "Create follow-up case and triage task" })
+    .click();
+  await page.getByText("At least one evidence reference is required.").waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.pathname ===
+          "/api/addons/team-addon/release-packages/release-accepted/report-issue",
+    ).length,
+    0,
+  );
+
+  await reportForm
+    .locator('textarea[name="evidence_refs"]')
+    .fill("artifact-space:reports/release-accepted-regression.png");
+  await reportForm
+    .getByRole("button", { name: "Create follow-up case and triage task" })
+    .click();
+  await page
+    .getByText(
+      "Post-release follow-up recorded. The published release remains unchanged pending triage.",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+
+  const reportRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname ===
+        "/api/addons/team-addon/release-packages/release-accepted/report-issue",
+  );
+  assert.ok(reportRequest, "expected a published release report request");
+  assert.equal(
+    reportRequest.payload.report,
+    "The published confirmation path regressed after rollout.",
+  );
+  assert.deepEqual(reportRequest.payload.evidence_refs, [
+    "artifact-space:reports/release-accepted-regression.png",
+  ]);
+  assert.equal(reportRequest.payload.expected_revision, 4);
+  assert.match(
+    reportRequest.payload.request_id,
+    /^team-ui:release-accepted:report-issue:/,
+  );
+  assert.equal("reporter_user_id" in reportRequest.payload, false);
+  assert.equal("reporter_display_name" in reportRequest.payload, false);
+
+  const result = releaseCard.locator(".post-release-report-result");
+  await result.waitFor({ state: "visible" });
+  await result.getByText(/Case post-release-case-5 .* triage/).waitFor({
+    state: "visible",
+  });
+  await result
+    .getByText(/Triage task post-release-triage-5 .* Triage post-release feedback for release-accepted .* pending/)
+    .waitFor({ state: "visible" });
+  assert.equal(state.release_packages["release-accepted"].state, "accepted");
+  assert.equal(state.release_packages["release-accepted"].published_commit_sha, "ccc333");
+  assert.equal(Object.keys(state.release_packages).length, 3);
+  assert.equal(state.cases["post-release-case-5"].source, "post_release_feedback");
+  assert.equal(state.tasks["post-release-triage-5"].case_id, "post-release-case-5");
+});
+
+test("team add-on project editor keeps human release policy in bounded controls", async (t) => {
+  const initialState = seededGitState();
+  initialState.projects["alpha-project"].release_policy = {
+    allow_ungated: false,
+    verification_commands: [{ name: "pytest", command: "./.venv/bin/pytest -q" }],
+    human_review_requirement: {
+      reviewer_group_ids: ["release-approvers"],
+      checklist: [
+        {
+          id: "operator-smoke",
+          label: "Operator smoke test",
+          description: "Run the primary operator flow.",
+          required: true,
+        },
+      ],
+      test_instructions: "Exercise the primary operator flow.",
+      preparation_mode: "workflow",
+    },
+  };
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Teams" }).click();
+  const alphaGroup = page.locator(
+    '#team-people-page [data-team-record-group-id="team-alpha"]',
+  );
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator('[data-team-record-tab="project"]').click();
+  await alphaGroup
+    .locator('[data-project-id="alpha-project"]')
+    .getByRole("button")
+    .click();
+  await page
+    .locator(
+      '#people-agent-detail-view [data-edit-type="project"][data-edit-id="alpha-project"]',
+    )
+    .click();
+
+  const form = page.locator("#edit-record-form");
+  await form.waitFor({ state: "visible" });
+  assert.equal(await form.locator('[name="human_review_enabled"]').isChecked(), true);
+  assert.equal(
+    await form.locator('[name="human_reviewer_group_ids"]').inputValue(),
+    "release-approvers",
+  );
+  assert.match(
+    await form.locator('[name="human_review_checklist"]').inputValue(),
+    /operator-smoke \| Operator smoke test \| Run the primary operator flow\. \| required/,
+  );
+  assert.equal(
+    await form.locator('[name="human_review_preparation_mode"]').inputValue(),
+    "workflow",
+  );
+  const rawPolicy = await form.locator('[name="release_policy_json"]').inputValue();
+  assert.match(rawPolicy, /verification_commands/);
+  assert.doesNotMatch(rawPolicy, /human_review_requirement/);
+  await form
+    .locator('[name="release_policy_json"]')
+    .fill(
+      '{"allow_ungated":false,"human_review_requirement":{"reviewer_group_ids":["injected-user-control"]}}',
+    );
+  await form
+    .locator('[name="human_reviewer_group_ids"]')
+    .fill("release-approvers\nrelease-qa");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+
+  const patchRequest = requests.find(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname === "/api/addons/team-addon/projects/alpha-project",
+  );
+  assert.ok(patchRequest, "expected the project release policy update");
+  assert.deepEqual(
+    patchRequest.payload.release_policy.human_review_requirement.reviewer_group_ids,
+    ["release-approvers", "release-qa"],
+  );
+  assert.equal(
+    patchRequest.payload.release_policy.human_review_requirement.preparation_mode,
+    "workflow",
+  );
+  assert.equal(
+    patchRequest.payload.release_policy.human_review_requirement.checklist[0].id,
+    "operator-smoke",
+  );
+  assert.equal(
+    JSON.stringify(patchRequest.payload.release_policy).includes("injected-user-control"),
+    false,
+  );
+  assert.equal(
+    "reviewer_user_ids" in patchRequest.payload.release_policy.human_review_requirement,
+    false,
+  );
 });

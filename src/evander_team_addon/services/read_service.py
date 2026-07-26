@@ -22,12 +22,12 @@ from ..models import (
     agent_lead_project_ids,
     agent_project_ids,
     effective_role_permissions,
-    release_package_payload_with_derived,
     runtime_operations_payload,
-    task_payload_with_derived,
 )
+from ..human_review_projection import release_package_api_payload
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
+from .domain.task_assessment import task_payload_with_assessment
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
@@ -70,7 +70,7 @@ class TeamReadService:
         task = self._state.tasks.get(_text(task_id))
         if task is None or not self._task_visible(task):
             return None
-        payload = task_payload_with_derived(self._state, task)
+        payload = task_payload_with_assessment(self._state, task)
         git_contexts = self._git_work_context_rows_for_task(task.id)
         if git_contexts:
             payload["git_work_contexts"] = git_contexts
@@ -259,7 +259,13 @@ class TeamReadService:
         release = self._state.release_packages.get(_text(release_package_id))
         if release is None or not self._release_visible(release):
             return None
-        return _without_none(release_package_payload_with_derived(self._state, release))
+        return _without_none(
+            release_package_api_payload(
+                self._state,
+                release,
+                include_human_details=False,
+            )
+        )
 
     def list_agents(
         self,
@@ -609,7 +615,7 @@ class TeamReadService:
         return sorted(rows, key=lambda row: (_maybe_text(row.get("task_id")) or "", row["id"]))
 
     def _task_row(self, task: AgentTask) -> dict[str, Any]:
-        derived = task_payload_with_derived(self._state, task)
+        derived = task_payload_with_assessment(self._state, task)
         child_ids = _capped_list(derived.get("child_task_ids") or [], 12)
         row: dict[str, Any] = {
             "id": task.id,
@@ -621,6 +627,10 @@ class TeamReadService:
             "project_id": task.project_id,
             "case_id": task.case_id,
             "dependency_status": derived.get("dependency_status"),
+            "resolution_status": derived.get("resolution_status"),
+            "readiness": derived.get("readiness"),
+            "integration_ready": derived.get("integration_ready"),
+            "assessment": derived.get("assessment"),
             "blocked_by_task_ids": derived.get("blocked_by_task_ids") or [],
             "child_task_ids": child_ids["items"],
             "child_task_omitted_count": child_ids["omitted_count"],
@@ -740,7 +750,11 @@ class TeamReadService:
         )
 
     def _release_row(self, release: ReleasePackage) -> dict[str, Any]:
-        payload = release_package_payload_with_derived(self._state, release)
+        payload = release_package_api_payload(
+            self._state,
+            release,
+            include_human_details=False,
+        )
         return _without_none(
             {
                 "id": release.id,
@@ -753,6 +767,7 @@ class TeamReadService:
                 "feature_branch_count": len(release.feature_branches),
                 "next_action": payload.get("next_action"),
                 "next_action_hint": _compact_text(payload.get("next_action_hint"), 360),
+                "human_review": payload.get("human_review"),
                 "error": _compact_text(release.error, 240),
                 "updated_at": _json_value(release.updated_at),
                 "created_at": _json_value(release.created_at),

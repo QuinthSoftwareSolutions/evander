@@ -19,6 +19,7 @@ MAX_PROJECTS = 8
 MAX_OUTCOME_KINDS = 20
 MAX_INBOX = 10
 MAX_BLOCKERS = 8
+MAX_REVIEWS = 8
 MAX_CASES = 8
 MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
@@ -142,6 +143,21 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
             "blockers",
         )
 
+    reviews = sorted(
+        (_compact_review(row) for row in _mapping_rows(lease.get("reviews"))),
+        key=lambda row: (
+            _sort_text(row.get("created_at")),
+            _sort_text(row.get("id")),
+        ),
+    )
+    if reviews:
+        context["reviews"] = _limited_rows(
+            reviews,
+            MAX_REVIEWS,
+            omitted_counts,
+            "reviews",
+        )
+
     if _optional_text(lease.get("reason")) == "action_feedback":
         action_feedback = sorted(
             (
@@ -229,6 +245,12 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         context["project_repo"] = _compact_project_repo(project_repo)
+    project_repos = [
+        _compact_project_repo(row)
+        for row in _mapping_rows(lease.get("project_repos"))
+    ]
+    if project_repos:
+        context["project_repos"] = project_repos
 
     review_artifact_imports = sorted(
         (
@@ -938,6 +960,7 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
         (
             "prepared",
             "project_id",
+            "managed_repo_id",
             "target_dir",
             "guest_repo_name",
             "remote_url",
@@ -962,6 +985,26 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
     message = _optional_text(repo.get("message"))
     if message is not None:
         row["message"] = _trim_text(message)
+    return row
+
+
+def _compact_review(review: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        review,
+        (
+            "id",
+            "deliverable_id",
+            "release_package_id",
+            "reviewer_agent_id",
+            "state",
+            "review_profile_id",
+            "candidate_commit_sha",
+            "created_at",
+        ),
+    )
+    instructions = _optional_text(review.get("instructions"))
+    if instructions is not None:
+        row["instructions"] = _trim_text(instructions)
     return row
 
 

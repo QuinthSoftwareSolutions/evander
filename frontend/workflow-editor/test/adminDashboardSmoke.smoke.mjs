@@ -483,6 +483,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
         schedule_kind: "cron",
       },
     ],
+    git_grants: [],
     summary_json: {},
   };
 
@@ -1127,6 +1128,30 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
     if (pathname === "/api/admin/sessions/session-1") {
       await route.fulfill(jsonResponse(sessionDetailResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/git-repositories") {
+      assert.equal(url.searchParams.get("directory_path"), "root");
+      assert.equal(url.searchParams.get("include_descendants"), "false");
+      await route.fulfill(jsonResponse({ repositories: [] }));
+      return;
+    }
+
+    if (pathname === "/api/admin/codex-auth") {
+      assert.equal(url.searchParams.get("directory_path"), "root");
+      await route.fulfill(
+        jsonResponse({
+          available: true,
+          signed_in: false,
+          account_type: null,
+          email: null,
+          plan_type: null,
+          last_refresh: null,
+          access_token_expires_at: null,
+          error: null,
+        }),
+      );
       return;
     }
 

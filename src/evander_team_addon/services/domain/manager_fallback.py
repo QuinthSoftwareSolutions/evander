@@ -16,7 +16,6 @@ from ...models import (
     TeamInboxItemState,
     TeamState,
     agent_project_ids,
-    task_payload_with_derived,
 )
 
 from .agent_access import (
@@ -32,6 +31,7 @@ from .common import (
 )
 from .deliverables import _active_task_deliverables
 from .stand_down import _active_stand_downs_for_agent
+from .task_assessment import task_payload_with_assessment
 
 
 _MANAGER_FALLBACK_OPEN_WORK_LIMIT = 20
@@ -302,7 +302,7 @@ def _manager_fallback_task_row(
     task: AgentTask,
     visible_reviews: list[ReviewRequest],
 ) -> dict[str, Any]:
-    task_payload = task_payload_with_derived(state, task)
+    task_payload = task_payload_with_assessment(state, task)
     deliverables = _active_task_deliverables(state, task)
     deliverable_ids = [deliverable.id for deliverable in deliverables]
     reviews = [review for review in visible_reviews if review.deliverable_id in deliverable_ids]

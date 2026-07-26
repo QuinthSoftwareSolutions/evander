@@ -89,9 +89,11 @@ To an operator, a task is the clearest answer to “who owns the next concrete p
 >
 > - parent task;
 > - dependency tasks;
+> - an originating task for provenance;
 > - case;
 > - deliverables;
 > - task kind, outcome contract, and structured completion;
+> - reason-coded cancellation;
 > - metadata and timestamps.
 
 Task state has a deliberate review-aware lifecycle:
@@ -102,15 +104,49 @@ Task state has a deliberate review-aware lifecycle:
 | <code>in_progress</code> | The owner is working or reworking it. |
 | <code>blocked</code> | Work cannot proceed without a named dependency or intervention. |
 | <code>waiting_for_review</code> | Evidence has been submitted and active review remains. |
-| <code>finished</code> | Support work was completed directly, or an outcome task recorded a validated completion. |
+| <code>finished</code> | Support or coordination work completed directly. |
 | <code>accepted</code> | Required deliverables and reviews accepted the task's durable outcome. |
 | <code>rejected</code> | The task outcome was rejected under the applicable transition. |
+| <code>cancelled</code> | Authorized actor recorded why the task became obsolete, when, and optionally which task succeeds it. |
 
-The state payload derives child IDs, subtask counts, dependency status, and blockers. A task whose dependencies are waiting or blocked is not ready merely because its own state says pending.
+The state payload includes a recursive assessment with child IDs, unresolved
+descendants, dependency status, active acceptance and review IDs, canonical
+blocker IDs, integration readiness, and contribution coverage. A task whose
+descendants or dependencies remain unresolved is not ready merely because its
+own state says pending.
 
-Only authorized agents may create a root task. An owner may decompose assigned work into child tasks within policy, and <code>team_create_tasks</code> provides one validated batch mutation. Batch validation happens before commit, so a bad item does not leave a half-created plan.
+Only agents with project-scoped <code>create_root_task</code> authority may
+create ordinary roots. Supplying <code>originating_task_id</code> never grants
+that authority. An owner may decompose assigned work into constituent child
+tasks within policy, and <code>team_create_tasks</code> provides one validated
+batch mutation. Batch validation happens before commit, so a bad item does not
+leave a half-created plan. The only system-authorized root-creation exception is
+the atomic transition from authenticated human changes-requested feedback to
+same-project correction or triage work.
 
 Task graphs cannot contain parent or dependency cycles. Dependencies and parents remain within the project. A deliverable, review, or Git work context cannot silently migrate a task to another project.
+
+### Containment, ordering, provenance, and grouping
+
+Use the relationship that describes the real lifecycle:
+
+- <code>parent_task_id</code> means the child contributes to the parent's
+  combined outcome. It recursively gates parent submission, acceptance,
+  resolution, and release.
+- <code>dependency_task_ids</code> means this task must wait for another task to
+  resolve. It does not transfer ownership and does not make that task part of
+  this task's deliverable.
+- <code>originating_task_id</code> records that another task caused independent
+  work to be created. It is immutable provenance only: neither task gates the
+  other, and the reference confers no visibility or authority.
+- <code>case_id</code> groups tasks around one intake, correction, or feedback
+  story. A case is not a hidden parent task.
+
+For example, an investigation child whose result must be integrated belongs
+under the incident outcome. A newly discovered, separately releasable
+improvement is an independent root with optional provenance. Human correction
+tasks are likewise independent roots linked by a correction case; they do not
+rewrite or become children of the accepted historical task.
 
 ### Support work and outcome work
 
@@ -122,15 +158,50 @@ Team distinguishes coordination from work that must produce a durable external r
   outcome kinds, choosing <code>all</code> or <code>any</code> matching, and optionally allowing
   an evidence-backed no-op.
 
-An outcome deliverable records typed outcomes with durable reference IDs and optional evidence
-refs. A report alone does not satisfy the contract. Every submitted outcome for an outcome task
-must identify the durable record it represents. When the work genuinely has no new external
-effect, <code>evidenced_noop</code> completion is valid only if the contract allows it and the
-completion includes evidence refs. A <code>delivered</code> completion must point to outcomes on
-accepted current deliverables that satisfy the contract.
+An outcome deliverable records typed outcomes with durable reference IDs and
+optional evidence refs. A report alone does not satisfy the contract. Every
+submitted outcome for an outcome task must identify the durable record it
+represents. When the work genuinely has no new external effect,
+<code>evidenced_noop</code> is submitted as a deliverable completion, follows
+the normal direct-acceptance or formal-review path, and is valid only if the
+contract allows it and evidence refs are present. Only acceptance copies that
+completion to the task and moves it to <code>accepted</code>. Agents cannot
+finish an outcome task directly. A normal <code>delivered</code> completion
+derives from outcomes on accepted current deliverables that satisfy the
+contract.
 
 These rules apply to both agent and operator command paths. A task also cannot be hidden by
 marking it finished while a current deliverable, review, or blocker remains blocked.
+
+### Recursive resolution and cancellation
+
+Team computes one non-persisted <code>TaskAssessment</code> for every lifecycle
+decision. Valid resolution is intentionally narrow:
+
+| Task form | Valid resolution |
+|---|---|
+| Support or coordination | <code>finished</code> |
+| Outcome with an accepted delivered result | <code>accepted</code> |
+| Outcome with an accepted evidenced no-op | <code>accepted</code> |
+| Any task made obsolete through an authorized disposition | <code>cancelled</code> |
+
+<code>blocked</code> and <code>rejected</code> never resolve a task for an
+ancestor. A parent in <code>finished</code> or <code>accepted</code> while a
+descendant remains unresolved is invalid, as is an outcome task merely marked
+<code>finished</code>. Readiness precedence is invalid state, valid terminal
+resolution, intrinsic blocker, unresolved descendants, unsatisfied
+dependencies, active acceptance, active review, then actionable.
+
+The task board and task details render the canonical reason and routing context
+for each inherited dependency or descendant blocker. The row points back to
+the upstream task and blocker rather than creating another blocker on the
+waiting task.
+
+Cancellation is explicit audit evidence, not a shortcut around the outcome
+contract. It records a stable reason code, explanation, actor kind and ID,
+timestamp, and optional same-project successor. Team rejects cancellation while
+descendants remain unresolved and reconciles source-aware blockers after the
+transition.
 
 ![Team task board showing telemetry-retry work by lane](../../assets/evander-user-manual/screenshots/team-task-board.png)
 
@@ -172,15 +243,23 @@ Team does not wake every agent who has an unfinished task. It looks for work tha
 
 > <span class="sidebar-kicker">Deeper detail</span> **Readiness inputs**
 >
-> The wake service evaluates ready work rather than simply searching for nonterminal tasks. It considers:
+> The shared assessment service evaluates ready work rather than letting each
+> command, wake, release, and UI invent terminal-state rules. It considers:
 >
 > - ownership and active agent status;
-> - dependency readiness;
-> - pending reviews and rework;
+> - recursive descendant resolution and direct-child contribution coverage;
+> - dependency readiness and canonical blockers;
+> - pending direct acceptance, reviews, and rework;
 > - inbox and action feedback;
 > - active leases, stand-downs, no-progress state, and cost caps.
 
 A task in <code>waiting_for_review</code> with an active review normally wakes its reviewer, not its producer. A rejected review returns the task to active rework. Accepted deliverables and closed findings can cascade the task to accepted. Only then should project goals and status be reevaluated.
+
+An aggregate parent that is merely waiting on children does not receive
+periodic implementation wakes. Notify its owner on child blocker, handoff,
+rejection, resolution, or the transition to integration-ready. If the parent
+owner must also implement part of the result, represent that substantive work
+as an explicit self-owned child.
 
 The repository derives project status. A project is completed only when all required goals are accepted and no active work remains. Blocking work can produce blocked status; otherwise it remains active. An operator should fix the underlying goal/task state rather than overwrite the project summary.
 
@@ -189,12 +268,17 @@ The repository derives project status. A project is completed only when all requ
 One sensible plan is:
 
 1. Case <code>telemetry-retry-incident</code> captures <code>OBS-184</code>, user impact, reproduction evidence, and priority.
-2. Root task <code>telemetry-retry</code>, owned by Imani, defines bounded retry and idempotency behavior.
-3. Child task <code>telemetry-retry-tests</code> depends on the implementation seam or is assigned as part of the same work package.
-4. Imani submits a deliverable containing the pinned Git context and verification evidence.
-5. Rowan reviews the current deliverable, not a moving branch tip.
-6. Priya updates the goal only when the accepted evidence demonstrates the intended outcome.
-7. Riley requests a release only after project and release rules are satisfied.
+2. Aggregate root <code>telemetry-retry</code>, owned by Priya, defines the
+   combined retry outcome.
+3. Constituent children cover implementation, verification, and operator
+   guidance; Priya's own integration work is an explicit self-owned child.
+4. Each child resolves through support completion, accepted outcome,
+   evidenced no-op, or authorized cancellation as appropriate.
+5. Priya's consolidated deliverable names the exact accepted direct-child
+   <code>source_deliverable_ids</code>.
+6. Rowan reviews the current combined deliverable, not a moving branch tip.
+7. Priya updates the goal only when the accepted evidence demonstrates the intended outcome.
+8. Riley requests a release only after the hierarchy and release rules are satisfied.
 
 That sequence lets later chapters build from one traceable line of work.
 
@@ -207,6 +291,9 @@ Start with the record that appears stuck. For a task, read its owner, dependenci
 | Unknown role, agent, or project | A referenced stable ID is absent or archived. | Reload Team state and choose an active in-scope record. |
 | Reporting cycle or invalid manager hierarchy | The organizational graph would no longer have a valid root. | Correct the proposed reporting edge; do not patch the database. |
 | Parent or dependency cycle | The task graph would make readiness undefined. | Remove or reverse the bad edge and resubmit the whole intended mutation. |
+| Parent is terminal with unresolved descendants | Historical or manual state contradicts recursive resolution. | Inspect the assessment's exact descendant IDs and repair through supported task/deliverable transitions; do not force project status. |
+| Outcome task is merely <code>finished</code> | No accepted contracted result or evidenced no-op exists. | Submit and accept a contract-compatible deliverable, or record an authorized cancellation when the work is truly obsolete. |
+| Root creation denied despite provenance | The caller lacks <code>create_root_task</code>; provenance does not grant authority. | Ask an authorized planner/lead to create the root or use the normal proposal/inbox path. |
 | Case/task mismatch | Only one side of the relation, Team, or project agrees. | Update through the supported case/task mutation so both sides converge. |
 | Task never wakes | It is not actually ready, or runtime safety guards apply. | Inspect derived dependency status, active review, lease, stand-down, cost, and no-progress attention. |
 | Project status looks wrong | A goal, task, review, or deliverable remains active or blocked. | Inspect the underlying records; project status is derived. |

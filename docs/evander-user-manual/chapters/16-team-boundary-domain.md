@@ -87,13 +87,27 @@ A <code>TeamRole</code> names an organizational function. It may be project-scop
 
 A <code>Project</code> groups goals and executable work. It may reference a core <code>managed_repo_id</code>, base branch, canonical release prefix, and release policy. A <code>Case</code> holds intake and lifecycle context; a <code>Task</code> is the assignable unit of execution. Tasks can form parent/child and dependency graphs.
 
+The links around a task are intentionally not interchangeable:
+
+| Link | Meaning | Does it gate completion? |
+|---|---|---|
+| <code>parent_task_id</code> | This task is a constituent part of the parent outcome. | Yes. Every descendant must resolve before the parent can resolve or release. |
+| <code>dependency_task_ids</code> | Another task must resolve before this task is actionable. | It gates readiness, but does not make the dependency part of this task's output. |
+| <code>originating_task_id</code> | Work on another task caused this independent work to be created. | No. It is provenance only and grants no creation or access authority. |
+| <code>case_id</code> | Several tasks share one intake, correction, or feedback story. | No. The case groups records; task and finding state still decide completion. |
+| <code>source_deliverable_ids</code> | A parent deliverable incorporated these exact accepted direct-child outputs. | Yes for contribution coverage. Transitive lineage is derived recursively. |
+
+If work can continue independently after another task finishes, model it as an
+independent root, optionally with <code>originating_task_id</code>. Do not make it
+a child merely because one task discovered or requested it.
+
 ### Evidence and decisions
 
-A <code>Deliverable</code> records an agent's evidence for a task: artifact references, a pinned Git context, verification status, and supersession history. A <code>ReviewRequest</code> binds a deliverable, reviewer, optional profile, criteria, findings, and immutable decision. A <code>ReleasePackage</code> freezes accepted scope and the candidate evidence needed to decide whether publication is safe.
+A <code>Deliverable</code> records an agent's evidence for a task: artifact references, a pinned Git context, verification status, contribution sources, and supersession history. A <code>ReviewRequest</code> binds a deliverable, reviewer, optional profile, criteria, findings, and immutable decision. A <code>ReleasePackage</code> freezes accepted scope and the candidate evidence needed to decide whether publication is safe. When policy requires a person to test or accept the candidate, a <code>HumanReviewRequest</code> pins that same candidate and a <code>HumanReviewFinding</code> preserves any requested correction through a later successor release.
 
 ### Runtime and communication
 
-<code>AgentRuntime</code> records leases, dispatch identity, wake timing, context-rotation policy, and no-progress state. Inbox items, conversations, messages, stand-downs, ephemeral assignments, Git promotions, and governance agenda items connect durable intent to asynchronous runtime work.
+<code>AgentRuntime</code> records leases, wake timing, context-rotation policy, and no-progress state. A durable <code>TeamDispatch</code> records the immutable task, blocker, review, inbox, project, and repository scope actually delivered by one wake. <code>GitWorkContext</code> records dispatch-bound checkout authority, while <code>WorktreeCleanupCandidate</code> retains the evidence needed to reclaim one resolved or reassigned task checkout safely. Inbox items, conversations, messages, stand-downs, ephemeral assignments, Git promotions, blockers, and governance agenda items connect durable intent to asynchronous runtime work.
 
 ### Memory
 
@@ -135,9 +149,34 @@ An operator normally encounters these rules as a rejected edit with a useful exp
 - IDs and map keys agree, and enumerated states are validated;
 - a Team manager remains the reporting root rather than an ordinary subordinate.
 
-Task states are <code>pending</code>, <code>in_progress</code>, <code>blocked</code>, <code>waiting_for_review</code>, <code>finished</code>, <code>accepted</code>, and <code>rejected</code>. Cases use <code>open</code>, <code>triage</code>, <code>in_progress</code>, <code>waiting</code>, <code>resolved</code>, and <code>closed</code>. Other records have domain-specific state machines; do not infer that the same word has identical transition rules everywhere.
+Task states are <code>pending</code>, <code>in_progress</code>, <code>blocked</code>, <code>waiting_for_review</code>, <code>finished</code>, <code>accepted</code>, <code>rejected</code>, and <code>cancelled</code>. Cancellation is a terminal, reason-coded disposition with actor, time, and optional successor; it is not a synonym for acceptance or an editable description. Cases use <code>open</code>, <code>triage</code>, <code>in_progress</code>, <code>waiting</code>, <code>resolved</code>, and <code>closed</code>. Other records have domain-specific state machines; do not infer that the same word has identical transition rules everywhere.
 
-The project status is recalculated from its goals and work. A project becomes complete only when its goals are accepted and no active work remains. Blocking work can make it blocked; otherwise it remains active. It is not an operator-maintained cosmetic flag.
+Agents enter and leave intrinsic blocked work through
+<code>team_report_blocker</code> and source-aware blocker resolution. Generic
+Admin task <code>PATCH</code> rejects transitions into or out of
+<code>blocked</code>. Repair a legacy contradiction through
+<code>POST /api/addons/team-addon/tasks/&lt;id&gt;/repair-state</code> with a
+required reason; the linked blocker event history retains the Admin actor and
+references.
+
+Task resolution and readiness are also derived, not hand-maintained. The recursive
+<code>TaskAssessment</code> first detects invalid historical or structural state,
+then valid terminal dispositions, blockers, unresolved descendants,
+dependencies, acceptances, and reviews. A blocked child therefore leaves its
+parent waiting on children while exposing the child's canonical blocker; Team
+does not manufacture a second parent blocker.
+
+Task read payloads carry that relationship as a non-persisted, deduplicated
+<code>inherited_blockers</code> projection with the upstream task ID, canonical
+blocker ID, reason code and explanation, source, owner/delegate, route, and
+escalation context. Scoped reads omit a row when its upstream task or blocker
+is outside the caller's visible records.
+
+The project status is recalculated from its goals, assessments, reviews,
+releases, human requests, findings, and canonical blockers. A project becomes
+complete only when its goals are accepted, every task is validly resolved, and
+no acceptance, review, release, human finding, or blocker remains active. It is
+not an operator-maintained cosmetic flag.
 
 ## Deeper detail: how writes enter Team state
 

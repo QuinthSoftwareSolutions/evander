@@ -14,6 +14,8 @@ from evander_team_addon.models import (
     PersistentAgent,
     Project,
     Team,
+    TeamBlocker,
+    TeamBlockerSourceKind,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRole,
@@ -167,6 +169,79 @@ def test_team_state_payload_embeds_activity_summaries() -> None:
         payload["agents"]["agent"]["activity_summary"]["headline"]
         == "Working on Checkout validation"
     )
+    assert payload["tasks"]["task"]["assessment"]["task_id"] == "task"
+    assert payload["tasks"]["task"]["readiness"] == "actionable"
+
+
+def test_filtered_task_assessment_does_not_leak_hidden_upstream_blocker() -> None:
+    state = _state(
+        tasks={
+            "visible-task": _task(
+                task_id="visible-task",
+                dependency_task_ids=["hidden-task"],
+            ),
+        }
+    )
+    state.agents["hidden-agent"] = PersistentAgent(
+        id="hidden-agent",
+        team_id="team",
+        role_id="team__worker",
+        session_id="session-hidden",
+        status=AgentStatus.ACTIVE,
+    )
+    state.project_assignments = {
+        "visible-assignment": AgentProjectAssignment(
+            id="visible-assignment",
+            team_id="team",
+            project_id="project",
+            agent_id="agent",
+            kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+        ),
+        "hidden-assignment": AgentProjectAssignment(
+            id="hidden-assignment",
+            team_id="team",
+            project_id="project",
+            agent_id="hidden-agent",
+            kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+        ),
+    }
+    state.tasks["hidden-task"] = AgentTask(
+        id="hidden-task",
+        owner_agent_id="hidden-agent",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.BLOCKED,
+        title="Hidden upstream task",
+        description="This task is outside the caller's agent scope.",
+        created_by_agent_id="hidden-agent",
+    )
+    state.blockers["hidden-blocker"] = TeamBlocker(
+        id="hidden-blocker",
+        team_id="team",
+        project_id="project",
+        task_id="hidden-task",
+        source_kind=TeamBlockerSourceKind.TASK,
+        source_id="hidden-task",
+        reason_code="secret_contract_failure",
+        owner_agent_id="hidden-agent",
+        summary="The confidential supplier contract failed.",
+    )
+
+    payload = _filtered_team_state_payload(
+        state,
+        team_id="team",
+        project_id="project",
+        agent_id="agent",
+    )
+
+    visible_task = payload["tasks"]["visible-task"]
+    assert visible_task["dependency_task_ids"] == []
+    assert visible_task["assessment"]["unsatisfied_dependency_ids"] == []
+    assert visible_task["assessment"]["active_blocker_ids"] == []
+    assert visible_task["inherited_blockers"] == []
+    assert payload["blockers"] == {}
+    assert "hidden-task" not in json.dumps(payload)
+    assert "secret_contract_failure" not in json.dumps(payload)
 
 
 def test_filtered_team_state_payload_keeps_visible_activity_summary() -> None:

@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-07-25 - Unified Team Hierarchy and Human Release Review
+
+- Added one recursive `TaskAssessment` for support completion, accepted outcomes and evidenced
+  no-ops, authorized cancellation, dependency and descendant readiness, invalid legacy topology,
+  and direct-child contribution coverage at every submit, accept, review, release, Admin, MCP,
+  workflow, and ephemeral-prompt boundary. Task reads now project each unique inherited upstream
+  blocker with its exact reason and routing context without persisting a duplicate blocker.
+- Added task provenance, immutable cancellation dispositions, exact source-deliverable lineage,
+  authority-scoped root creation, source-aware blockers that reconcile linked local and shared
+  incidents during reassignment or cancellation without rewriting formal review decisions,
+  transition-driven parent supervision, and project-completion blocking for unresolved hierarchy
+  and review work.
+- Added SHA/tree-pinned human release requests, current Admin-directory reviewer reconciliation,
+  strict session identity and RBAC, audited reassignment, retryable notifications and deep links,
+  blocked/resume recovery, workflow-prepared previews, and expiry handling.
+- Added immutable human decisions and findings, deterministic correction cases and independent
+  roots, predecessor-based successor releases with carried findings, complete gate reruns, and
+  exactly-once canonical publication of the approved candidate.
+- Added published-release regression or adjustment intake that preserves the published package,
+  creates one idempotent triage case, and requires an explicit open case plus accepted correction
+  scope to authorize an optional successor; reporting never implies rollback.
+- Added evidence-required post-release case closure plus supported Team MCP and Admin API
+  operations to retarget ambiguous findings to independent correction roots and propose
+  resolution from accepted correction deliverables without replacing the human decision.
+- Added Admin and Team UI policy, hierarchy, blocker, worktree, human-review, release-detail, and
+  post-release reporting surfaces, plus updated agent guidance and canonical operator manuals.
+- Upgraded Team SQLite state to schema 33 with normalized hierarchy, dispatch, human-review, and
+  cleanup relationships plus idempotent v32 backfill and round-trip validation.
+- Added one routed execution-stall incident when no-progress allowance is exhausted, reason-required
+  audited Admin repair for legacy task transitions into or out of `blocked`, Admin-accountable
+  empty-reviewer recovery, and preview URL rejection for userinfo or secret-bearing parameters.
+- Made the Admin Sessions repository-grant summary tolerate legacy detail payloads without a
+  `git_grants` collection and refreshed its browser contracts for repository and Codex-auth reads.
+
+## 2026-07-25 - Hierarchical Team Dispatch and Parent Supervision
+
+- Made agent dispatch a durable two-phase lifecycle: work is first reserved as `PREPARING`,
+  exact task, blocker, review, inbox, project, and repository scope is frozen, and the dispatch
+  becomes `LEASED` only after every scoped worktree is ready.
+- Required agent commands to present a current durable dispatch and rejected resources that were
+  not captured in its immutable scope or stopped being actionable before mutation.
+- Routed child blockers and deliverable acceptance to the owning parent task, and emitted
+  coalesced transition-driven parent supervision for handoff, rejection, resolution, and
+  integration readiness while retaining periodic readiness scans as a recovery backstop.
+
+## 2026-07-25 - Safe Task Worktree Cleanup Backends
+
+- Added structured container-worker task-worktree cleanup with a repository lock, repeated
+  branch, commit, registration, tracked-change, and untracked-file validation immediately before
+  removal.
+- Preserved refused cleanup evidence and ignored-file byte inventories, supported dry runs and
+  idempotent already-absent cleanup, and pruned Git registrations only after safe removal.
+- Added a self-contained libvirt guest cleanup command using the same locked validation contract.
+- Added durable Team cleanup candidates and periodic reconciliation for resolved or reassigned
+  task checkouts, with configurable dry-run, grace, retry, recovery, and batch limits.
+- Re-read Team safety state twice before backend mutation, retained active-dispatch/context
+  deferrals, and recorded refused cleanup as auditable recovery-required work with exact
+  path, branch, failed-check, ignored-file, and byte evidence.
+- Prevented Git-context metadata pruning until physical cleanup succeeds, then pruned only
+  obsolete unreferenced context rows after the backend confirms removal.
+
 ## 2026-07-24 - Team Git Work Context Lifecycle
 
 - Marked Git work contexts as submitted when deliverables consume them and abandoned remaining

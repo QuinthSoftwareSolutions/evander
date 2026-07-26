@@ -4627,6 +4627,264 @@ label textarea {
   white-space: pre-wrap;
 }
 
+.task-hierarchy-child {
+  margin-left: min(calc(var(--task-depth, 0) * 1rem), 5rem) !important;
+  position: relative;
+}
+
+.task-hierarchy-child::before {
+  content: "";
+  position: absolute;
+  left: -0.7rem;
+  top: 1rem;
+  width: 0.55rem;
+  border-top: 2px solid var(--line);
+}
+
+.task-hierarchy-invalid,
+.task-invalid-warning,
+.task-cleanup-recovery {
+  border-color: rgba(154, 107, 19, 0.48);
+  background: rgba(154, 107, 19, 0.09);
+}
+
+.task-lifecycle-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  margin-top: 0.45rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.task-invalid-warning,
+.task-cancellation,
+.task-cleanup-recovery,
+.release-carried-findings {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid rgba(154, 107, 19, 0.38);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.task-cancellation {
+  border-color: rgba(86, 97, 110, 0.35);
+  background: var(--panel-alt);
+}
+
+.task-blocker-details,
+.human-review-request-list {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+}
+
+.task-blocker-card,
+.human-review-request,
+.release-review-detail {
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-alt);
+  overflow-wrap: anywhere;
+}
+
+.task-blocker-card {
+  border-left: 4px solid var(--danger);
+}
+
+.task-worktree-mapping,
+.release-detail-section {
+  margin-top: 0.65rem;
+}
+
+.task-worktree-scroll {
+  margin-top: 0.4rem;
+  overflow-x: auto;
+}
+
+.task-worktree-scroll table {
+  width: 100%;
+  min-width: 48rem;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.task-worktree-scroll th,
+.task-worktree-scroll td {
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.task-board-card {
+  margin-left: min(calc(var(--task-depth, 0) * 0.35rem), 1.4rem);
+}
+
+.release-human-summary {
+  margin-top: 0.45rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.release-detail-actions {
+  margin-top: 0.55rem;
+}
+
+.post-release-report-control {
+  margin-top: 0.55rem;
+}
+
+.post-release-report-control > details > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.post-release-report-form {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.post-release-report-form label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.post-release-report-boundary {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.post-release-report-result {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(43, 116, 78, 0.35);
+  border-radius: 7px;
+  background: rgba(43, 116, 78, 0.1);
+  overflow-wrap: anywhere;
+}
+
+.release-review-detail {
+  margin-top: 0.65rem;
+  background: var(--panel);
+}
+
+.release-review-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.release-review-heading h3,
+.release-detail-section h4 {
+  margin: 0;
+}
+
+.release-detail-section h4 {
+  margin-bottom: 0.4rem;
+}
+
+.human-review-request {
+  background: var(--panel-alt);
+}
+
+.human-review-request-focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(23, 111, 122, 0.24);
+}
+
+.human-review-request:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.human-test-instructions,
+.human-review-target,
+.human-finding-history {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.human-review-checklist {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.human-review-decision-form,
+.human-review-policy-editor {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.human-review-decision-form fieldset,
+.human-review-policy-editor {
+  min-width: 0;
+}
+
+.human-review-decision-form label,
+.human-review-policy-editor label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.human-review-decision-form .checkbox-label,
+.human-review-policy-editor .checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.human-review-approve {
+  border-color: var(--accent);
+}
+
+.human-review-owner-actions {
+  margin-top: 0.55rem;
+}
+
+.state-pill.cancelled,
+.state-pill.approved {
+  color: var(--success);
+  border-color: rgba(43, 116, 78, 0.35);
+  background: rgba(43, 116, 78, 0.1);
+}
+
+.state-pill.changes_requested,
+.state-pill.recovery_required {
+  color: var(--danger);
+  border-color: rgba(155, 47, 47, 0.35);
+  background: rgba(155, 47, 47, 0.1);
+}
+
+.state-pill.preparing {
+  color: var(--accent);
+  border-color: rgba(25, 97, 76, 0.32);
+  background: rgba(25, 97, 76, 0.08);
+}
+
 @media (max-width: 1050px) {
   .mail-toolbar {
     grid-template-columns: repeat(2, minmax(11rem, 1fr));

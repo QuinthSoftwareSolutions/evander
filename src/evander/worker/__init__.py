@@ -28,6 +28,10 @@ from .models import (
     WorkerSessionPaths,
     WorkerSessionRecord,
     WorkerSessionStorageTelemetry,
+    WorkerTaskWorktreeCleanupRecord,
+    WorkerTaskWorktreeCleanupRequest,
+    WorkerTaskWorktreeRecord,
+    WorkerTaskWorktreeRequest,
     WorkerTelemetryPayload,
 )
 from .runtime import ContainerRuntime
@@ -77,6 +81,10 @@ __all__ = [
     "WorkerSessionPaths",
     "WorkerSessionRecord",
     "WorkerSessionStorageTelemetry",
+    "WorkerTaskWorktreeCleanupRecord",
+    "WorkerTaskWorktreeCleanupRequest",
+    "WorkerTaskWorktreeRecord",
+    "WorkerTaskWorktreeRequest",
     "WorkerTelemetryPayload",
     "create_app",
     "default_worker_sandbox_profile",

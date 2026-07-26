@@ -20,6 +20,7 @@ from .models import (
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRequest,
 )
 from .codex_auth_broker import CodexAuthBroker, CodexAuthBrokerError
@@ -132,6 +133,19 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             worktree_request = WorkerTaskWorktreeRequest.model_validate(payload)
             record = daemon.prepare_task_worktree(
                 request.path_params["session_id"], worktree_request
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
+
+    async def cleanup_task_worktree(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            cleanup_request = WorkerTaskWorktreeCleanupRequest.model_validate(payload)
+            record = daemon.cleanup_task_worktree(
+                request.path_params["session_id"], cleanup_request
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
@@ -331,6 +345,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route(
                 "/v1/sessions/{session_id}/worktrees",
                 prepare_task_worktree,
+                methods=["POST"],
+            ),
+            Route(
+                "/v1/sessions/{session_id}/worktrees/cleanup",
+                cleanup_task_worktree,
                 methods=["POST"],
             ),
             Route(

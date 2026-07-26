@@ -17,6 +17,8 @@ from ...models import (
     ReleaseVerificationRun,
     ReviewRequest,
     ReviewProfile,
+    HumanReviewRequirementSnapshot,
+    HumanReviewFindingSnapshot,
     TeamBlockerSourceKind,
     TeamInboxPriority,
     TeamRecordState,
@@ -26,6 +28,11 @@ from .common import _append_unique, _required_text, utc_now
 from .blockers import open_release_blocker, resolve_active_blockers_for_source
 from .review_handoff import queue_actionable_inbox_item
 from .outcome_catalog import snapshot_review_profile_outcomes
+from .human_reviews import (
+    ensure_human_review_request,
+    human_review_request_for_release,
+)
+from .task_assessment import deliverable_source_lineage
 
 
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
@@ -189,6 +196,33 @@ def begin_release_gates(
 
     release.candidate_commit_sha = candidate_commit_sha
     release.candidate_tree_hash = candidate_tree_hash
+    predecessor = state.release_packages.get(
+        release.supersedes_release_package_id or ""
+    )
+    if (
+        predecessor is not None
+        and (
+            (
+                candidate_tree_hash is not None
+                and candidate_tree_hash == predecessor.candidate_tree_hash
+            )
+            or (
+                candidate_tree_hash is None
+                and candidate_commit_sha == predecessor.candidate_commit_sha
+            )
+        )
+    ):
+        _reject_release(
+            release,
+            stage="human_review",
+            kind="candidate",
+            error=(
+                f"successor release candidate is unchanged from predecessor "
+                f"{predecessor.id}"
+            ),
+            result=result,
+        )
+        return
     unchanged_release = _unchanged_failed_release(
         state,
         release=release,
@@ -253,7 +287,7 @@ def begin_release_gates(
         result.setdefault("release_verification_run_ids", []).append(run.id)
         return
 
-    create_release_reviews_or_approve(
+    advance_release_gates(
         state,
         release=release,
         release_promotion=release_promotion,
@@ -348,10 +382,53 @@ def record_release_verification_result(
             result=result,
         )
         return
-    create_release_reviews_or_approve(
+    advance_release_gates(
         state,
         release=release,
         release_promotion=release_promotion,
+        result=result,
+    )
+
+
+def advance_release_gates(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    result: dict[str, Any],
+    release_promotion: GitPromotionRecord | None = None,
+) -> None:
+    """Idempotently create only the next missing release gate in policy order."""
+
+    manifest = release.manifest
+    if manifest is None or release.candidate_commit_sha is None:
+        _reject_release(
+            release,
+            stage="configuration",
+            kind="configuration",
+            error="release gate configuration is incomplete",
+            result=result,
+        )
+        return
+    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+        return
+    if manifest.verification_commands:
+        current_run = _current_verification_run(state, release)
+        if current_run is None or current_run.state != "passed":
+            return
+    promotion = release_promotion or _release_promotion(state, release)
+    if promotion is None:
+        _reject_release(
+            release,
+            stage="configuration",
+            kind="configuration",
+            error="release promotion record is missing",
+            result=result,
+        )
+        return
+    create_release_reviews_or_approve(
+        state,
+        release=release,
+        release_promotion=promotion,
         result=result,
     )
 
@@ -435,7 +512,19 @@ def create_release_reviews_or_approve(
             now=now,
         )
 
-    if _current_release_reviews(state, release):
+    current_reviews = _current_release_reviews(state, release)
+    if any(
+        review.state != TeamRecordState.ACCEPTED
+        for review in current_reviews
+    ):
+        release.updated_at = utc_now()
+        return
+    human_request = ensure_human_review_request(
+        state,
+        release=release,
+        result=result,
+    )
+    if human_request is not None and human_request.state != "approved":
         release.updated_at = utc_now()
         return
     approve_release_candidate(
@@ -463,11 +552,36 @@ def approve_release_candidate(
             result=result,
         )
         return
+    if release.manifest is not None and (
+        release.manifest.human_review_requirement is not None
+        or release.manifest.carried_human_findings
+    ):
+        request = human_review_request_for_release(state, release.id)
+        decisions = [
+            decision
+            for decision in state.human_review_decisions.values()
+            if request is not None
+            and decision.human_review_request_id == request.id
+            and decision.decision == "approved"
+        ]
+        if (
+            request is None
+            or request.state != "approved"
+            or request.candidate_commit_sha != candidate
+            or request.candidate_tree_hash != release.candidate_tree_hash
+            or not decisions
+        ):
+            raise ValueError(
+                f"release {release.id} cannot be approved before its pinned "
+                "human review accepts"
+            )
     release.gate_failure = None
     release.approved_commit_sha = candidate
     release.updated_at = utc_now()
     from .git_promotion import _queue_canonical_push_after_release_success
 
+    result.setdefault("events", [])
+    result.setdefault("git_promotion_event_ids", [])
     _queue_canonical_push_after_release_success(
         state,
         release=release,
@@ -704,6 +818,79 @@ def _candidate_manifest(
                 feature_commit_sha=deliverable.git_refs.feature_commit_sha,
             )
         )
+    predecessor = state.release_packages.get(
+        release.supersedes_release_package_id or ""
+    )
+    predecessor_manifest = predecessor.manifest if predecessor is not None else None
+    human_requirement = policy.human_review_requirement
+    human_snapshot = (
+        HumanReviewRequirementSnapshot(
+            directory_path=(
+                human_requirement.directory_path
+                or (project.git.directory_path if project.git is not None else "root")
+            ),
+            configured_group_ids=list(human_requirement.reviewer_group_ids),
+            initially_eligible_user_ids=list(
+                human_requirement.resolved_reviewer_user_ids
+            ),
+            checklist=[
+                item.model_copy(deep=True)
+                for item in human_requirement.checklist
+            ],
+            test_instructions=human_requirement.test_instructions,
+            preparation_mode=human_requirement.preparation_mode,
+        )
+        if human_requirement is not None
+        else None
+    )
+    predecessor_deliverable_ids = set(
+        predecessor.deliverable_ids if predecessor is not None else []
+    )
+    correction_deliverable_ids = [
+        deliverable_id
+        for deliverable_id in release.deliverable_ids
+        if deliverable_id not in predecessor_deliverable_ids
+    ]
+    predecessor_requests = [
+        request
+        for request in state.human_review_requests.values()
+        if predecessor is not None
+        and request.release_package_id == predecessor.id
+    ]
+    predecessor_request_ids = {request.id for request in predecessor_requests}
+    carried_findings = [
+        HumanReviewFindingSnapshot(
+            finding_id=finding.id,
+            text=finding.text,
+            target_deliverable_ids=list(finding.target_deliverable_ids),
+            correction_task_id=finding.correction_task_id,
+            proposed_resolution=finding.proposed_resolution,
+            resolution_evidence_refs=list(finding.resolution_evidence_refs),
+            proposed_by_deliverable_ids=list(
+                finding.proposed_by_deliverable_ids
+            ),
+        )
+        for finding in sorted(
+            state.human_review_findings.values(),
+            key=lambda item: item.id,
+        )
+        if finding.source_human_review_request_id in predecessor_request_ids
+        and finding.state == "open"
+    ]
+    if human_snapshot is None and carried_findings:
+        if predecessor_manifest is not None and (
+            predecessor_manifest.human_review_requirement is not None
+        ):
+            human_snapshot = (
+                predecessor_manifest.human_review_requirement.model_copy(deep=True)
+            )
+        elif predecessor_requests:
+            human_snapshot = predecessor_requests[-1].requirement_snapshot.model_copy(
+                deep=True
+            )
+    lineage = deliverable_source_lineage(state, release.deliverable_ids)
+    if not lineage["valid"]:
+        raise ValueError("release candidate contribution graph is invalid")
     return ReleaseCandidateManifest(
         project_id=project.id,
         release_package_id=release.id,
@@ -719,6 +906,11 @@ def _candidate_manifest(
         ),
         verification_commands=list(policy.verification_commands),
         review_requirements=list(policy.review_requirements),
+        human_review_requirement=human_snapshot,
+        predecessor_release_package_id=release.supersedes_release_package_id,
+        correction_deliverable_ids=correction_deliverable_ids,
+        carried_human_findings=carried_findings,
+        contribution_graph=lineage["graph"],
     )
 
 
@@ -782,7 +974,18 @@ def current_release_gates_passed(state: TeamState, release: ReleasePackage) -> b
     verification_passed = current_run is None or current_run.state == "passed"
     reviews = _current_release_reviews(state, release)
     reviews_accepted = all(review.state == TeamRecordState.ACCEPTED for review in reviews)
-    return verification_passed and reviews_accepted
+    human_required = bool(
+        release.manifest is not None
+        and (
+            release.manifest.human_review_requirement is not None
+            or release.manifest.carried_human_findings
+        )
+    )
+    human_request = human_review_request_for_release(state, release.id)
+    human_accepted = not human_required or (
+        human_request is not None and human_request.state == "approved"
+    )
+    return verification_passed and reviews_accepted and human_accepted
 
 
 def _append_verification_requested_event(
@@ -901,6 +1104,7 @@ def _reject_release(
 
 __all__ = [
     "RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE",
+    "advance_release_gates",
     "approve_release_candidate",
     "begin_release_gates",
     "create_release_reviews_or_approve",

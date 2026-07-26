@@ -71,6 +71,7 @@ const DIRECT_WORKFLOW_PERMISSIONS = ["workflows.read", "workflows.write"] as con
 const PERMISSION_HELP: Record<string, string> = {
   "admin.owner": "Full Admin Web ownership. Grants every catalog permission in every directory scope.",
   "groups.manage": "Create, edit, and delete reusable permission groups and the permissions assigned to them.",
+  "team.human_reviews.decide": "Decide assigned human release reviews in the request's directory scope.",
   "users.manage": "Create and edit user records, directory-scoped group assignments, and direct workflow grants.",
   "workflow_runs.control": "Resume, dismiss, or clear workflow runs. Pair with workflow_runs.read when the user also needs run details.",
   "workflow_runs.read": "Inspect workflow run snapshots, run details, trigger/gate/effect activity, and runtime graph status.",
