@@ -107,6 +107,7 @@ from .domain.blockers import (
     open_or_get_blocker,
     reconcile_task_blockers_after_cancellation,
     resolve_blocker,
+    task_cancellation_blocking_handoff_ids,
 )
 from .domain.common import (
     _NON_TERMINAL_TASK_STATES,
@@ -2825,14 +2826,21 @@ class TeamAdminService:
                     f"task {task.id} cannot be cancelled while descendants remain "
                     f"unresolved: {', '.join(assessment.unresolved_descendant_ids)}"
                 )
-            active_handoff_ids = sorted(
-                set(assessment.active_acceptance_ids)
-                | set(assessment.active_review_request_ids)
+            (
+                blocking_acceptance_ids,
+                blocking_review_request_ids,
+            ) = task_cancellation_blocking_handoff_ids(
+                state_model,
+                acceptance_ids=assessment.active_acceptance_ids,
+                review_request_ids=assessment.active_review_request_ids,
             )
-            if active_handoff_ids:
+            blocking_handoff_ids = sorted(
+                {*blocking_acceptance_ids, *blocking_review_request_ids}
+            )
+            if blocking_handoff_ids:
                 raise ValueError(
                     f"task {task.id} cannot be cancelled while acceptance or review "
-                    f"handoffs remain active: {', '.join(active_handoff_ids)}"
+                    f"handoffs remain active: {', '.join(blocking_handoff_ids)}"
                 )
             if normalized_successor_id is not None:
                 successor = _require_present(

@@ -10,6 +10,8 @@ from evander_team_addon.models import (
     Deliverable,
     ProjectGitConfig,
     ProjectGoal,
+    ReviewBlockKind,
+    ReviewRequest,
     RolePermission,
     TeamBlockerEventType,
     TeamBlockerSourceKind,
@@ -17,6 +19,7 @@ from evander_team_addon.models import (
     TeamDispatch,
     TeamDispatchStatus,
     TeamInboxItemType,
+    TeamRecordState,
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -29,7 +32,11 @@ from evander_team_addon.services.commands import (
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
 )
-from evander_team_addon.services.domain.blockers import resolve_blocker
+from evander_team_addon.services.domain.blockers import (
+    open_or_get_blocker,
+    resolve_blocker,
+    task_cancellation_blocking_handoff_ids,
+)
 from evander_team_addon.services.domain.task_assessment import assess_task
 from evander_team_addon.services.domain.work_due import _mark_agent_work_due
 from evander_team_addon.services.runtime_service import TeamRuntimeService
@@ -422,6 +429,101 @@ def test_cancellation_rejects_an_active_direct_acceptance_handoff(
     assert rejected["success"] is False
     assert rejected["errors"][0]["code"] == "task_cancellation_active_handoff"
     assert state.tasks["task"].state == TeamTaskState.PENDING
+
+
+def test_cancellation_reconciles_blocker_backed_blocked_review_handoff(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _add_blocked_review_handoff(state):
+        deliverable = Deliverable(
+            id="blocked-deliverable",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="Review could not complete.",
+            state=TeamRecordState.BLOCKED,
+            review_request_ids=["blocked-review"],
+        )
+        state.deliverables[deliverable.id] = deliverable
+        state.review_requests["blocked-review"] = ReviewRequest(
+            id="blocked-review",
+            deliverable_id=deliverable.id,
+            reviewer_agent_id="lead",
+            requested_by_agent_id="worker",
+            state=TeamRecordState.BLOCKED,
+            block_kind=ReviewBlockKind.SYSTEM,
+            findings=["The review environment is unavailable."],
+            decision_at=LEASE_NOW,
+        )
+        task = state.tasks["task"]
+        task.deliverable_ids = [deliverable.id]
+        task.state = TeamTaskState.BLOCKED
+        task.state_entered_at = LEASE_NOW
+        state.inbox["cancellation-context"] = AgentInboxItem(
+            id="cancellation-context",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            task_id=task.id,
+            payload={"task_id": task.id, "kind": "cancellation_review"},
+        )
+        return state
+
+    repository.update(_add_blocked_review_handoff)
+    unbacked = repository.read()
+    assert task_cancellation_blocking_handoff_ids(
+        unbacked,
+        acceptance_ids=[],
+        review_request_ids=["blocked-review"],
+    ) == ([], ["blocked-review"])
+
+    def _add_review_blocker(state):
+        open_or_get_blocker(
+            state,
+            source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+            source_id="blocked-review",
+            summary="Review environment unavailable",
+            reporter_agent_id="lead",
+            team_id="team",
+            project_id="project",
+            result={"events": []},
+            now=LEASE_NOW,
+        )
+        return state
+
+    repository.update(_add_review_blocker)
+    state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert assess_task(state, "task").active_review_request_ids == [
+        "blocked-review"
+    ]
+
+    state, cancelled = TeamTaskUpdateCommandService(
+        repository
+    ).cancel_task_command(
+        session_id="session-worker",
+        task_id="task",
+        reason_code="obsolete",
+        reason="The blocked review scope is no longer required.",
+        handled_inbox_item_ids=["cancellation-context"],
+        request_id="cancel-blocked-review-handoff",
+    )
+
+    assert cancelled["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.CANCELLED
+    assert state.deliverables["blocked-deliverable"].state == TeamRecordState.REJECTED
+    assert state.review_requests["blocked-review"].retired_at is not None
+    review_blocker = next(
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_id == "blocked-review"
+    )
+    assert review_blocker.state == TeamBlockerState.RESOLVED
 
 
 def test_project_lead_links_accepted_cross_task_replacement_from_inbox_scope(

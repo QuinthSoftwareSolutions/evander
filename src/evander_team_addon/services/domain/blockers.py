@@ -1220,6 +1220,39 @@ def resolve_active_blockers_for_source(
     return resolved_ids
 
 
+def task_cancellation_blocking_handoff_ids(
+    state: TeamState,
+    *,
+    acceptance_ids: Sequence[str],
+    review_request_ids: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    """Return handoffs that cancellation cannot close through blocker reconciliation."""
+
+    # Direct acceptance has no terminal blocked decision of its own, so every
+    # active acceptance handoff must close before cancellation.
+    blocking_acceptance_ids = sorted(set(acceptance_ids))
+
+    blocking_review_request_ids: list[str] = []
+    for review_request_id in sorted(set(review_request_ids)):
+        review = state.review_requests.get(review_request_id)
+        reconcilable = (
+            review is not None
+            and review.deliverable_id is not None
+            and review.state == TeamRecordState.BLOCKED
+            and bool(
+                active_blockers_for_source(
+                    state,
+                    source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                    source_id=review_request_id,
+                )
+            )
+        )
+        if not reconcilable:
+            blocking_review_request_ids.append(review_request_id)
+
+    return blocking_acceptance_ids, blocking_review_request_ids
+
+
 def reconcile_task_blockers_after_cancellation(
     state: TeamState,
     *,
@@ -1723,5 +1756,6 @@ __all__ = [
     "reconcile_task_blockers_after_reassignment",
     "resolve_blocker",
     "route_blocker_terminal",
+    "task_cancellation_blocking_handoff_ids",
     "transfer_blocker_up",
 ]

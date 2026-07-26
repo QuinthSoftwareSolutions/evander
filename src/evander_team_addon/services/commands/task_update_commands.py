@@ -44,6 +44,7 @@ from ..domain.blockers import (
     reconcile_task_blockers_after_cancellation,
     reconcile_task_blockers_after_reassignment,
     resolve_blocker,
+    task_cancellation_blocking_handoff_ids,
 )
 from ..domain.common import (
     DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
@@ -162,11 +163,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         ),
                     },
                 )
-            active_handoff_ids = sorted(
-                set(assessment.active_acceptance_ids)
-                | set(assessment.active_review_request_ids)
+            (
+                blocking_acceptance_ids,
+                blocking_review_request_ids,
+            ) = task_cancellation_blocking_handoff_ids(
+                state_model,
+                acceptance_ids=assessment.active_acceptance_ids,
+                review_request_ids=assessment.active_review_request_ids,
             )
-            if active_handoff_ids:
+            if blocking_acceptance_ids or blocking_review_request_ids:
                 raise TeamCommandValidationError(
                     code="task_cancellation_active_handoff",
                     message=(
@@ -175,10 +180,8 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     ),
                     correction_context={
                         "task_id": task.id,
-                        "active_acceptance_ids": list(assessment.active_acceptance_ids),
-                        "active_review_request_ids": list(
-                            assessment.active_review_request_ids
-                        ),
+                        "active_acceptance_ids": blocking_acceptance_ids,
+                        "active_review_request_ids": blocking_review_request_ids,
                     },
                 )
             if normalized_successor_id is not None:
