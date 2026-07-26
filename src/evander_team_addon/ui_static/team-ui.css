@@ -5184,8 +5184,60 @@ label textarea {
   }
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #121817;
+  --panel: #182220;
+  --panel-alt: #202d2a;
+  --ink: #edf4f1;
+  --muted: #a7b8b5;
+  --line: #31433f;
+  --accent: #44a6b4;
+  --accent-strong: #6ac2cc;
+  --amber: #ddb15d;
+  --red: #e18181;
+  --green: #83d5aa;
+  --shadow: rgba(0, 0, 0, 0.22);
+}
+
+:root[data-theme="dark"] .project-block {
+  background: linear-gradient(180deg, #1a2522 0%, #17201e 100%);
+}
+
+:root[data-theme="dark"] .hierarchy-team {
+  background: linear-gradient(180deg, #19221f 0%, #16201d 100%);
+}
+
+:root[data-theme="dark"] .hierarchy-node-card--warning {
+  background: linear-gradient(180deg, rgba(221, 177, 93, 0.14) 0%, rgba(221, 177, 93, 0.06) 100%);
+}
+
+:root[data-theme="dark"] .governance-goals-subsection {
+  border-color: rgba(221, 177, 93, 0.34);
+  background:
+    linear-gradient(180deg, rgba(221, 177, 93, 0.14), rgba(221, 177, 93, 0.07)),
+    var(--panel);
+}
+
+:root[data-theme="dark"] .governance-goal-list li {
+  border-color: rgba(221, 177, 93, 0.34);
+  background:
+    linear-gradient(180deg, rgba(221, 177, 93, 0.12), rgba(221, 177, 93, 0.06)),
+    var(--panel);
+}
+
+:root[data-theme="dark"] .review-delivery-panel,
+:root[data-theme="dark"] .delivery-row,
+:root[data-theme="dark"] .delivery-detail {
+  background: var(--panel);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --surface: #121817;
     --panel: #182220;
     --panel-alt: #202d2a;
@@ -5200,35 +5252,35 @@ label textarea {
     --shadow: rgba(0, 0, 0, 0.22);
   }
 
-  .project-block {
+  :root:not([data-theme]) .project-block {
     background: linear-gradient(180deg, #1a2522 0%, #17201e 100%);
   }
 
-  .hierarchy-team {
+  :root:not([data-theme]) .hierarchy-team {
     background: linear-gradient(180deg, #19221f 0%, #16201d 100%);
   }
 
-  .hierarchy-node-card--warning {
+  :root:not([data-theme]) .hierarchy-node-card--warning {
     background: linear-gradient(180deg, rgba(221, 177, 93, 0.14) 0%, rgba(221, 177, 93, 0.06) 100%);
   }
 
-  .governance-goals-subsection {
+  :root:not([data-theme]) .governance-goals-subsection {
     border-color: rgba(221, 177, 93, 0.34);
     background:
       linear-gradient(180deg, rgba(221, 177, 93, 0.14), rgba(221, 177, 93, 0.07)),
       var(--panel);
   }
 
-  .governance-goal-list li {
+  :root:not([data-theme]) .governance-goal-list li {
     border-color: rgba(221, 177, 93, 0.34);
     background:
       linear-gradient(180deg, rgba(221, 177, 93, 0.12), rgba(221, 177, 93, 0.06)),
       var(--panel);
   }
 
-  .review-delivery-panel,
-  .delivery-row,
-  .delivery-detail {
+  :root:not([data-theme]) .review-delivery-panel,
+  :root:not([data-theme]) .delivery-row,
+  :root:not([data-theme]) .delivery-detail {
     background: var(--panel);
   }
 }

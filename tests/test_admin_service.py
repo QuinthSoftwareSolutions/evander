@@ -6581,6 +6581,96 @@ def test_get_admin_agent_log_page_container_session_threads_bounds_legacy_probes
     }
 
 
+def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across_windows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-legacy-shared",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-legacy-shared",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-legacy-shared",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(25):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"agent-legacy-shared-{index:03d}",
+                session_id="session-thread-legacy-shared",
+                worker_job_id=f"job-legacy-shared-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-legacy-shared",
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
+                + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+                metadata={"effect_type": "effect:agent:prompt"},
+            )
+        )
+
+    class FakeContainerBackend:
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            if mode == "raw":
+                return "session id: thread-legacy-shared\n"
+            if mode == "session":
+                return ""
+            if mode == "execution":
+                return f"fallback body for {target}\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page_texts: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = service.vm_agent_admin.get_admin_agent_log_page(
+            "session-thread-legacy-shared",
+            backend="container_worker_vm",
+            view="threads",
+            limit=40,
+            cursor=cursor,
+        )
+        page_texts.append(str(page["text"]))
+        next_cursor = page.get("next_cursor")
+        if not next_cursor:
+            break
+        cursor = str(next_cursor)
+    else:
+        pytest.fail("legacy shared-thread pagination did not terminate")
+
+    combined_text = "\n".join(page_texts)
+    for index in range(25):
+        assert (
+            combined_text.count(
+                f"fallback body for agent-legacy-shared-{index:03d}"
+            )
+            == 1
+        )
+    assert page["has_more_before"] is False
+
+
 def test_get_admin_agent_log_page_container_session_threads_large_history_rebuilds_grouped_fallback(
     tmp_path: Path,
     monkeypatch,

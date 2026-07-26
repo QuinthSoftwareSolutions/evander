@@ -477,7 +477,7 @@ def test_manual_blocked_review_resumes_same_request_and_candidate() -> None:
         decision="blocked",
         request_id="manual-testing-blocked",
         expected_revision=request.revision,
-        checklist_results={"smoke": True},
+        checklist_results={"smoke": False},
         summary="The manual test account is unavailable.",
         result={"events": []},
     )
@@ -495,6 +495,69 @@ def test_manual_blocked_review_resumes_same_request_and_candidate() -> None:
     )
     assert len(state.human_review_requests) == 1
     assert release.state == TeamRecordState.PENDING
+
+
+def test_human_approval_requires_completed_checklist() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    with pytest.raises(
+        ValueError,
+        match="required human review checklist items are incomplete: smoke",
+    ):
+        record_human_review_decision(
+            state,
+            human_review_request_id=request.id,
+            reviewer_user_id="reviewer",
+            reviewer_display_name="Reviewer",
+            decision="approved",
+            request_id="incomplete-approval",
+            expected_revision=request.revision,
+            checklist_results={"smoke": False},
+            result={"events": []},
+        )
+
+    assert state.human_review_decisions == {}
+    assert request.state == "pending"
+
+
+def test_changes_requested_allows_incomplete_checklist() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    decision = record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="incomplete-negative-decision",
+        expected_revision=request.revision,
+        checklist_results={"smoke": False},
+        summary="The smoke test did not pass.",
+        findings=[
+            {
+                "text": "The candidate fails the required smoke test.",
+                "target_deliverable_ids": ["source-deliverable"],
+            }
+        ],
+        result={"events": []},
+    )
+
+    assert decision.checklist_results == {"smoke": False}
+    assert request.state == "changes_requested"
 
 
 def test_human_approval_queues_exact_candidate_once() -> None:
@@ -1282,6 +1345,9 @@ def test_preview_result_rejects_secrets_and_blocked_resume_reuses_request() -> N
     for credential_url in (
         "https://reviewer:password@preview.example",
         "https://preview.example?access_token=secret",
+        "https://preview.example?token=secret",
+        "https://preview.example?sig=azure-sas-signature",
+        "https://preview.example?X-Amz-Signature=aws-signature",
         "https://preview.example#api_key=secret",
     ):
         with pytest.raises(

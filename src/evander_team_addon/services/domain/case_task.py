@@ -772,6 +772,15 @@ def _task_creation_plan_graph_error(
             target_task_id=plan.task_id,
         ):
             return f"task dependency cycle includes {plan.task_id}"
+    wait_map = {
+        task_id: list(dependencies)
+        for task_id, dependencies in dependency_map.items()
+    }
+    for task_id, parent_task_id in parent_map.items():
+        if parent_task_id is not None:
+            wait_map.setdefault(parent_task_id, []).append(task_id)
+    if _has_dependency_cycle(wait_map):
+        return f"task hierarchy/dependency cycle includes {plan.task_id}"
     return None
 
 

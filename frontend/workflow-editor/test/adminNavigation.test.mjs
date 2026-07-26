@@ -802,9 +802,29 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
     await route.fulfill({
       status: 200,
       contentType: "text/html",
-      body: "<!doctype html><title>Team Add-on</title><main>Team Add-on</main>",
+      body: `<!doctype html>
+        <title>Team Add-on</title>
+        <main>Team Add-on</main>
+        <script>
+          window.addEventListener("message", (event) => {
+            const data = event.data || {};
+            if (data.type === "admin-addon-context") {
+              document.documentElement.dataset.theme = data.theme;
+              document.body.dataset.privilegedUnlocked =
+                String(Boolean(data.privileged_operations?.unlocked));
+            } else if (data.type === "admin-privileged-operations") {
+              document.body.dataset.privilegedUnlocked =
+                String(Boolean(data.privileged_operations?.unlocked));
+            }
+          });
+          window.parent.postMessage({ type: "admin-addon-ready" }, window.location.origin);
+        </script>`,
     });
   });
+  await page.addInitScript(
+    (storageKey) => window.localStorage.setItem(storageKey, "dark"),
+    THEME_STORAGE_KEY,
+  );
 
   await page.goto(
     `http://127.0.0.1:${address.port}/#addon:team-addon?view=my-human-reviews&human_review_request_id=review-1&directory_path=ignored&privileged_unlocked=true&unsafe=drop-me`,
@@ -828,9 +848,31 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   assert.equal(initialFrameUrl.searchParams.get("human_review_request_id"), "review-1");
   assert.equal(initialFrameUrl.searchParams.get("unsafe"), null);
   await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('html[data-theme="dark"]')
+    .waitFor({ state: "attached" });
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('body[data-privileged-unlocked="false"]')
+    .waitFor({ state: "attached" });
 
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('body[data-privileged-unlocked="true"]')
+    .waitFor({ state: "attached" });
+  await page.getByRole("button", { name: "Light mode", exact: true }).click();
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('html[data-theme="light"]')
+    .waitFor({ state: "attached" });
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('body[data-privileged-unlocked="false"]')
+    .waitFor({ state: "attached" });
   assert.equal(await frame.getAttribute("src"), initialFrameSrc);
   assert.equal(addonFrameRequests, 1);
 

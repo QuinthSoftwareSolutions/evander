@@ -2241,17 +2241,39 @@ function setTeamPrivilegedUnlocked(unlocked) {
   restoreFormDrafts(drafts);
 }
 
+function setTeamTheme(theme) {
+  const normalizedTheme = text(theme);
+  if (normalizedTheme !== "light" && normalizedTheme !== "dark") {
+    return;
+  }
+  document.documentElement.dataset.theme = normalizedTheme;
+  document.documentElement.style.colorScheme = normalizedTheme;
+}
+
 function bindPrivilegeMessages() {
   window.addEventListener("message", (event) => {
-    if (event.origin !== window.location.origin) {
+    if (
+      event.origin !== window.location.origin
+      || event.source !== window.parent
+    ) {
       return;
     }
     const data = event.data || {};
-    if (data.type !== "admin-privileged-operations") {
+    if (data.type === "admin-addon-context") {
+      setTeamTheme(data.theme);
+      setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
       return;
     }
-    setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+    if (data.type === "admin-privileged-operations") {
+      setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+    }
   });
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { type: "admin-addon-ready" },
+      window.location.origin,
+    );
+  }
 }
 
 function teamMutationLocked() {
@@ -5387,8 +5409,8 @@ function renderRuntimeAttentionRow(row) {
     return renderCompactRuntimeAttentionRow(row);
   }
   const refs = runtimeReferenceParts(row);
-  const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
-  const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
+  const stateLine = row.state ? `State ${row.state}` : "";
+  const errorLine = row.error ? `Error ${row.error}` : "";
   const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
   const nextActionLine = row.next_action_hint
     ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
@@ -5432,8 +5454,8 @@ function renderRuntimeAttentionRow(row) {
 
 function renderCompactRuntimeAttentionRow(row) {
   const refs = runtimeReferenceParts(row);
-  const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
-  const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
+  const stateLine = row.state ? `State ${row.state}` : "";
+  const errorLine = row.error ? `Error ${row.error}` : "";
   const nextActionLine = row.next_action_hint
     ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
     : "";
@@ -9897,7 +9919,7 @@ function renderProjectOutcomeKindCreateForm(project) {
       <div class="project-review-profile-fields">
         <label>Kind <input name="kind" required placeholder="durable_result_kind" /></label>
         <label>Name <input name="name" required /></label>
-        <label><input type="checkbox" name="team_wide" /> Team-wide definition</label>
+        <label class="checkbox-label"><input type="checkbox" name="team_wide" /><span>Team-wide definition</span></label>
         <label>Description <textarea name="description" rows="2" required></textarea></label>
         <label>Reference requirements <textarea name="reference_requirements" rows="2" required></textarea></label>
         <label>Evidence requirements <textarea name="evidence_requirements" rows="2"></textarea></label>
@@ -11893,20 +11915,25 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
-    renderReleases();
+    renderReleaseDetailSurfaces();
     return;
   }
   expandedReleaseDetailIds.add(releaseId);
-  renderReleases();
+  renderReleaseDetailSurfaces();
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
     await loadReleaseDetail(releaseId);
   }
 }
 
+function renderReleaseDetailSurfaces() {
+  renderReleases();
+  renderProjectFocus();
+}
+
 async function loadReleaseDetail(releaseId) {
   releaseDetailCache.set(releaseId, { loading: true, error: null, release: null });
-  renderReleases();
+  renderReleaseDetailSurfaces();
   try {
     const response = await teamFetch(`${API_BASE}/release-packages/${encodeURIComponent(releaseId)}`, {
       headers: { Accept: "application/json" },
@@ -11923,7 +11950,7 @@ async function loadReleaseDetail(releaseId) {
       release: null,
     });
   }
-  renderReleases();
+  renderReleaseDetailSurfaces();
 }
 
 async function loadMyHumanReviews() {

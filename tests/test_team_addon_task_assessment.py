@@ -288,11 +288,13 @@ def test_task_payload_projects_unique_upstream_blocker_reasons() -> None:
     ].count("blocker-shared") == 1
 
 
-def test_rejected_task_remains_terminal_for_resolution_and_dependencies() -> None:
+def test_rejected_task_remains_unresolved_for_ancestors_and_dependencies() -> None:
     state = _state()
+    state.tasks["parent"] = _support_task("parent")
     state.tasks["rejected"] = _support_task(
         "rejected",
         state=TeamTaskState.REJECTED,
+        parent_task_id="parent",
     )
     state.tasks["dependent"] = _support_task(
         "dependent",
@@ -300,13 +302,16 @@ def test_rejected_task_remains_terminal_for_resolution_and_dependencies() -> Non
     )
 
     rejected = assess_task(state, "rejected")
+    parent = assess_task(state, "parent")
     dependent = assess_task(state, "dependent")
 
-    assert rejected.resolution_status == TaskResolutionStatus.RESOLVED
-    assert rejected.resolution_reason == "rejected_terminal_disposition"
-    assert rejected.readiness == TaskAssessmentReadiness.RESOLVED
-    assert dependent.unsatisfied_dependency_ids == []
-    assert dependent.readiness == TaskAssessmentReadiness.ACTIONABLE
+    assert rejected.resolution_status == TaskResolutionStatus.UNRESOLVED
+    assert rejected.resolution_reason == "rejected_requires_recovery"
+    assert rejected.readiness == TaskAssessmentReadiness.BLOCKED
+    assert parent.unresolved_descendant_ids == ["rejected"]
+    assert parent.readiness == TaskAssessmentReadiness.WAITING_ON_CHILDREN
+    assert dependent.unsatisfied_dependency_ids == ["rejected"]
+    assert dependent.readiness == TaskAssessmentReadiness.WAITING_ON_DEPENDENCIES
 
 
 def test_support_outcome_noop_and_cancellation_have_distinct_valid_resolutions() -> None:

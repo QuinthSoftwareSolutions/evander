@@ -112,6 +112,61 @@ def _deferred_dispatch(
     return runtime, str(leases[0]["dispatch_id"])
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        TeamDispatchStatus.COMPLETED,
+        TeamDispatchStatus.EXPIRED,
+        TeamDispatchStatus.FAILED,
+    ],
+)
+def test_terminal_dispatch_keeps_historical_session_after_agent_rebind(
+    tmp_path: Path,
+    status: TeamDispatchStatus,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _add_terminal_dispatch(state):
+        state.dispatches[f"dispatch-{status.value}"] = TeamDispatch(
+            id=f"dispatch-{status.value}",
+            agent_id="worker",
+            session_id="session-worker",
+            cause_kind="scheduled",
+            status=status,
+            completed_at=LEASE_NOW,
+            error="dispatch failed" if status == TeamDispatchStatus.FAILED else None,
+        )
+        return state
+
+    repository.update(_add_terminal_dispatch)
+    state = TeamAdminService(repository).update_agent(
+        agent_id="worker",
+        session_id="session-worker-next",
+        expected_revision=repository.read().revision,
+    )
+
+    assert state.agents["worker"].session_id == "session-worker-next"
+    assert (
+        state.dispatches[f"dispatch-{status.value}"].session_id
+        == "session-worker"
+    )
+
+
+def test_preparing_dispatch_prevents_agent_session_rebind(tmp_path: Path) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _runtime, dispatch_id = _deferred_dispatch(repository)
+
+    with pytest.raises(ValueError, match="session does not match agent"):
+        TeamAdminService(repository).update_agent(
+            agent_id="worker",
+            session_id="session-worker-next",
+            expected_revision=repository.read().revision,
+        )
+
+    assert repository.read().dispatches[dispatch_id].status == TeamDispatchStatus.PREPARING
+    assert repository.read().agents["worker"].session_id == "session-worker"
+
+
 def test_preparing_dispatch_rejects_commands_and_scope_does_not_widen(
     tmp_path: Path,
 ) -> None:

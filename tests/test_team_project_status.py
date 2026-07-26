@@ -190,7 +190,7 @@ def test_terminal_release_resolves_obsolete_sibling_review_blocker() -> None:
     assert state.projects["project"].status == ProjectStatus.COMPLETED
 
 
-def test_rejected_task_remains_terminal_for_project_completion() -> None:
+def test_rejected_task_blocks_project_completion_until_recovery() -> None:
     state = TeamState.empty()
     state.projects["project"] = Project(
         id="project",
@@ -205,10 +205,23 @@ def test_rejected_task_remains_terminal_for_project_completion() -> None:
         priority=1,
         state=TeamTaskState.REJECTED,
         title="Rejected historical task",
-        description="This persisted terminal disposition must remain resolved.",
+        description="This task requires recovery, replacement, or cancellation.",
         created_by_agent_id="lead",
     )
 
     _recalculate_project_status(state, "project")
 
-    assert state.projects["project"].status == ProjectStatus.COMPLETED
+    assert state.projects["project"].status == ProjectStatus.BLOCKED
+    assert project_blocking_sources(state, "project") == [
+        {
+            "kind": "task",
+            "id": "rejected-task",
+            "state": "blocked",
+            "summary": "Rejected historical task",
+            "reason_code": "rejected_requires_recovery",
+            "source_kind": "task",
+            "source_id": "rejected-task",
+            "affected_task_ids": ["rejected-task"],
+            "next_action": "resolve the task blocker",
+        }
+    ]

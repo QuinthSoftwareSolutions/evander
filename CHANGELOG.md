@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-26 - Team Review and Guided Tour Fixes
+
+- Kept rejected tasks unresolved for parent, dependency, release, and project completion; rejected
+  work now remains blocked until recovery, replacement, or authorized cancellation.
+- Restricted required human-review checklist completion to approvals, rejected common signed-URL
+  `token` and `sig` credentials, and enforced the review request's immutable outcome snapshot when
+  a profile changes while review is pending.
+- Allowed agent session rebinding after terminal dispatches, rejected mixed hierarchy/dependency
+  cycles during task creation, and retained same-thread legacy execution fallbacks across bounded
+  log cursor windows.
+- Synchronized Admin theme and privilege changes into the mounted Team Add-on, repaired project
+  release-detail refresh, aligned the team-wide outcome checkbox, and escaped runtime errors
+  exactly once.
+
 ## 2026-07-26 - Team Stand-down UI Clarity
 
 - Relabeled the Team agent action to “Revoke stand-down” so its effect remains clear wherever the
@@ -15,8 +29,9 @@
   acceptance or review handoffs remain active.
 - Treated cancelled tasks as terminal across activity, runtime, API, access, outcome-catalog, and
   Git-work-context projections, and reused one task-assessment evaluator per project-status pass.
-- Made workflow-preparation requests transactional, preserved persisted rejected tasks as terminal
-  dispositions, and reconciled obsolete sibling review blockers when a release becomes terminal.
+- Made workflow-preparation requests transactional, preserved persisted rejected-task history for
+  explicit recovery, and reconciled obsolete sibling review blockers when a release becomes
+  terminal.
 - Allowed authorized task cancellation to retire blocker-backed blocked review attempts while
   continuing to reject cancellation across pending acceptance or review handoffs.
 

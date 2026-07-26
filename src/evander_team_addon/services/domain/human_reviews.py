@@ -325,7 +325,8 @@ def record_human_review_decision(
     normalized_decision = str(decision or "").strip()
     if normalized_decision not in {"approved", "changes_requested", "blocked"}:
         raise ValueError("decision must be approved, changes_requested, or blocked")
-    _validate_checklist(request, checklist_results or {})
+    if normalized_decision == "approved":
+        _validate_checklist(request, checklist_results or {})
     effective_now = now or utc_now()
     release = _require_release_for_request(state, request)
     _require_request_candidate(request, release)
@@ -1403,8 +1404,10 @@ def _secret_bearing_url_parameter(name: str) -> bool:
         "secret",
         "session",
         "session_id",
+        "sig",
         "signature",
         "signed",
+        "token",
     }:
         return True
     return normalized.endswith(

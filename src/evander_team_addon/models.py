@@ -4743,7 +4743,14 @@ class TeamState(TeamModel):
                 errors.append(
                     f"dispatch {dispatch.id} references missing agent {dispatch.agent_id}"
                 )
-            elif agent.session_id != dispatch.session_id:
+            elif (
+                dispatch.status
+                in {
+                    TeamDispatchStatus.PREPARING,
+                    TeamDispatchStatus.LEASED,
+                }
+                and agent.session_id != dispatch.session_id
+            ):
                 errors.append(f"dispatch {dispatch.id} session does not match agent {agent.id}")
             for task_id in dispatch.task_ids:
                 task = self.tasks.get(task_id)

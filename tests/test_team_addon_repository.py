@@ -42,6 +42,7 @@ from evander_team_addon.models import (
     ProjectStatus,
     ReleasePackage,
     ReviewBlockKind,
+    ReviewCriterionResult,
     ReviewRequest,
     ReviewProfileCriterion,
     RolePermission,
@@ -11001,6 +11002,79 @@ def test_outcome_definition_snapshots_preserve_task_deliverable_and_review_seman
     ] == ["prepared_action"]
 
 
+def test_review_decision_uses_snapshotted_outcome_requirements_after_profile_edit(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    _seed_outcome_kind(repo, "prepared_action")
+    _seed_outcome_kind(repo, "later_requirement")
+    _seed_task(repo, task_id="outcome-review-task")
+    state = admin.record_deliverable(
+        deliverable_id="outcome-review-deliverable",
+        task_id="outcome-review-task",
+        producer_agent_id="backend",
+        summary="Prepared the durable action.",
+        outcomes=[
+            {
+                "kind": "prepared_action",
+                "reference_ids": ["prepared-action:123"],
+            }
+        ],
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_review_profile(
+        profile_id="outcome-decision-profile",
+        team_id="team",
+        project_id="project",
+        name="Outcome decision review",
+        criteria=[
+            ReviewProfileCriterion(
+                id="tests",
+                label="Required tests pass",
+                required=True,
+            )
+        ],
+        required_outcome_kinds=["prepared_action"],
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="outcome-decision-review",
+        deliverable_id="outcome-review-deliverable",
+        reviewer_agent_id="worker",
+        review_profile_id="outcome-decision-profile",
+        expected_revision=state.revision,
+    )
+    assert [
+        definition.kind
+        for definition in state.review_requests[
+            "outcome-decision-review"
+        ].required_outcome_kind_definitions
+    ] == ["prepared_action"]
+
+    state = admin.update_review_profile(
+        profile_id="outcome-decision-profile",
+        required_outcome_kinds=["prepared_action", "later_requirement"],
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_decision(
+        review_request_id="outcome-decision-review",
+        state=TeamRecordState.ACCEPTED,
+        criteria=[
+            ReviewCriterionResult(
+                criterion_id="tests",
+                state="passed",
+            )
+        ],
+        expected_revision=state.revision,
+    )
+
+    assert (
+        state.review_requests["outcome-decision-review"].state
+        == TeamRecordState.ACCEPTED
+    )
+
+
 def test_outcome_kind_archive_requires_active_review_profiles_to_release_it(
     tmp_path: Path,
 ) -> None:
@@ -15185,6 +15259,36 @@ def test_apply_agent_action_task_creation_batch_rejects_sibling_cycle(
     assert any("dependency cycle" in error for error in result["errors"])
     assert "a" not in state.tasks
     assert "b" not in state.tasks
+
+
+def test_apply_agent_action_task_creation_rejects_mixed_hierarchy_dependency_cycle(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="parent", owner_agent_id="backend")
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "child",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Child",
+                    "description": "Must not wait on its own parent.",
+                    "parent_task_id": "parent",
+                    "dependency_task_ids": ["parent"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("hierarchy/dependency cycle" in error for error in result["errors"])
+    assert "child" not in state.tasks
 
 
 def test_apply_agent_action_task_creation_rejects_conflicting_task_id_alias(

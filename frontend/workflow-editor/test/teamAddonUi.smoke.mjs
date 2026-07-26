@@ -2994,6 +2994,15 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   await waitForRevision(page, 8);
   await openProjects(page);
   const panel = page.locator("#team-projects-page");
+  const teamWideOutcomeLabel = panel.locator(
+    'form[data-form-id="create-outcome-kind-form"] label.checkbox-label',
+    { hasText: "Team-wide definition" },
+  );
+  await teamWideOutcomeLabel.waitFor({ state: "visible" });
+  assert.equal(
+    await teamWideOutcomeLabel.locator('input[name="team_wide"]').count(),
+    1,
+  );
   await panel.locator("#create-project-from-projects-form").waitFor({ state: "hidden" });
   assert.equal(await panel.locator("#create-review-profile-for-project-form").count(), 0);
 
@@ -3141,6 +3150,16 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
     "release-rejected",
   );
+
+  const releaseCard = releasesSection.locator(".record-item", {
+    hasText: "release-12",
+  });
+  await releaseCard.locator("summary.compact-record-summary").click();
+  await releaseCard.getByRole("button", { name: "Open release detail" }).click();
+  await releaseCard
+    .getByRole("button", { name: "Close release detail" })
+    .waitFor({ state: "visible" });
+  await releaseCard.locator(".release-review-detail").waitFor({ state: "visible" });
 });
 
 test("team add-on UI retries only a typed retryable release gate with an audited reason", async (t) => {
@@ -3774,6 +3793,55 @@ test("team add-on privilege messages update controls without losing selected man
     const button = detail?.querySelector('[data-stand-down-revoke-agent-id="manager"]');
     return Boolean(detail?.textContent?.includes("Ops Manager") && button?.disabled);
   });
+});
+
+test("team add-on admin context overrides the browser color scheme", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port, { colorScheme: "light" });
+
+  await waitForRevision(page, 8);
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-addon-context",
+        theme: "dark",
+        privileged_operations: { unlocked: true },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+  assert.equal(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--surface")
+        .trim(),
+    ),
+    "#121817",
+  );
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-addon-context",
+        theme: "light",
+        privileged_operations: { unlocked: true },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+  assert.equal(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--surface")
+        .trim(),
+    ),
+    "#f7f9f7",
+  );
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
@@ -6575,6 +6643,39 @@ test("team add-on Mail renders body, error, and generic historical payloads", as
   const genericBody = await mailPage.locator(".mail-reader-body").innerText();
   assert.match(genericBody, /Diagnostic:/);
   assert.match(genericBody, /"code": "stale_ref"/);
+});
+
+test("team add-on runtime attention escapes state and error text exactly once", async (t) => {
+  const initialState = seededGitState();
+  initialState.runtime_operations.attention.push({
+    id: "failed-action-special-characters",
+    kind: "failed_action_record",
+    severity: "critical",
+    title: "Failed action with validation details",
+    state: "failed",
+    error: "invalid {'key': '<value>&'}\nretry isn't allowed",
+    detail: "Container validation rejected the request.",
+    action_record_id: "action-special-characters",
+  });
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Operations" }).click();
+  await page.locator("#team-operations-page").waitFor({ state: "visible" });
+  await page
+    .locator("#team-operations-page")
+    .getByRole("button", { name: "Needs attention" })
+    .click();
+  const row = page.locator("#team-operations-page .runtime-item-compact", {
+    hasText: "Failed action with validation details",
+  });
+  await row.locator("summary").click();
+  const bodyText = await row.locator(".compact-record-body").innerText();
+
+  assert.match(bodyText, /Error invalid \{'key': '<value>&'\}/);
+  assert.match(bodyText, /retry isn't allowed/);
+  assert.doesNotMatch(bodyText, /&#(?:39|x27);|&lt;|&amp;/);
 });
 
 test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {

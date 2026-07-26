@@ -1280,8 +1280,6 @@ def _task_resolution_reason(
     current_deliverables: Sequence[Deliverable],
 ) -> str | None:
     del state
-    if task.state == TeamTaskState.REJECTED:
-        return "rejected_terminal_disposition"
     if task.state == TeamTaskState.CANCELLED:
         return "cancelled_by_authorized_disposition"
     if (
@@ -1315,6 +1313,8 @@ def _unresolved_readiness(
     local_review_ids: Sequence[str],
     local_blocker_ids: Sequence[str],
 ) -> tuple[TaskAssessmentReadiness, str]:
+    if task.state == TeamTaskState.REJECTED:
+        return TaskAssessmentReadiness.BLOCKED, "rejected_requires_recovery"
     if task.state == TeamTaskState.BLOCKED or local_blocker_ids:
         return TaskAssessmentReadiness.BLOCKED, "intrinsic_blocker_open"
     if unresolved_descendant_ids:

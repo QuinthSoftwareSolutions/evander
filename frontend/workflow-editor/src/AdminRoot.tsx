@@ -782,12 +782,14 @@ function AddonView({
   tab,
   selectedDirectoryPath,
   privilegedUnlocked,
+  theme,
   onFrameLoad,
   onNavigateToSession,
 }: {
   tab: AdminTabDefinition;
   selectedDirectoryPath: string;
   privilegedUnlocked: boolean;
+  theme: AdminTheme;
   onFrameLoad?: () => void;
   onNavigateToSession?: (sessionId: string) => void;
 }) {
@@ -819,8 +821,17 @@ function AddonView({
   }
   const iframeSrc = iframeSrcRef.current.value;
 
-  function postPrivilegeState() {
-    iframeRef.current?.contentWindow?.postMessage(
+  function postAddonContext() {
+    const contentWindow = iframeRef.current?.contentWindow;
+    contentWindow?.postMessage(
+      {
+        type: "admin-addon-context",
+        theme,
+        privileged_operations: { unlocked: privilegedUnlocked },
+      },
+      window.location.origin,
+    );
+    contentWindow?.postMessage(
       {
         type: "admin-privileged-operations",
         privileged_operations: { unlocked: privilegedUnlocked },
@@ -830,8 +841,8 @@ function AddonView({
   }
 
   useEffect(() => {
-    postPrivilegeState();
-  }, [privilegedUnlocked, iframeSrc]);
+    postAddonContext();
+  }, [privilegedUnlocked, theme, iframeSrc]);
 
   useEffect(() => {
     function handleAddonNavigation(event: MessageEvent<unknown>) {
@@ -843,6 +854,10 @@ function AddonView({
         return;
       }
       const data = payload as { type?: unknown; session_id?: unknown };
+      if (data.type === "admin-addon-ready") {
+        postAddonContext();
+        return;
+      }
       if (data.type !== "admin-navigate-to-session" || typeof data.session_id !== "string") {
         return;
       }
@@ -854,10 +869,10 @@ function AddonView({
 
     window.addEventListener("message", handleAddonNavigation);
     return () => window.removeEventListener("message", handleAddonNavigation);
-  }, [onNavigateToSession]);
+  }, [onNavigateToSession, privilegedUnlocked, theme]);
 
   function handleFrameLoad() {
-    postPrivilegeState();
+    postAddonContext();
     onFrameLoad?.();
   }
 
@@ -2281,6 +2296,7 @@ export default function AdminRoot() {
                   tab={activeTab}
                   selectedDirectoryPath={selectedDirectoryPath}
                   privilegedUnlocked={privilegeUnlocked}
+                  theme={theme}
                   onFrameLoad={() => {
                     void refreshAuthSession();
                   }}

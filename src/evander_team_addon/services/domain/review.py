@@ -1230,14 +1230,17 @@ def _review_decision_policy_error(
         and review.deliverable_id is not None
         and review.review_profile_id is not None
     ):
-        profile = state.review_profiles.get(review.review_profile_id)
         deliverable = state.deliverables.get(review.deliverable_id)
-        if profile is not None and deliverable is not None:
+        if deliverable is not None:
             delivered_outcome_kinds = {
                 outcome.kind for outcome in deliverable.outcomes
             }
             missing_outcome_kinds = sorted(
-                set(profile.required_outcome_kinds) - delivered_outcome_kinds
+                {
+                    definition.kind
+                    for definition in review.required_outcome_kind_definitions
+                }
+                - delivered_outcome_kinds
             )
             if missing_outcome_kinds:
                 return (
