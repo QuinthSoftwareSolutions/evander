@@ -1625,24 +1625,38 @@ def test_successor_carries_open_findings_from_the_full_release_lineage() -> None
     }
 
 
-def test_git_promotion_queues_initial_human_review_notifications_in_outbox(
+@pytest.mark.parametrize(
+    ("preparation_mode", "event_type"),
+    [
+        ("manual", "team.release.human_review_requested"),
+        ("workflow", "team.release.human_review_preparation_requested"),
+    ],
+)
+def test_git_promotion_queues_initial_human_review_intent_in_outbox(
     tmp_path: Path,
+    preparation_mode: str,
+    event_type: str,
 ) -> None:
-    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state, release, promotion = _human_state(
+        eligible_user_ids=["reviewer"],
+        preparation_mode=preparation_mode,
+    )
     state.projects["project"].release_policy = ProjectReleasePolicy(
         human_review_requirement=HumanReviewRequirement(
             reviewer_group_ids=["release-reviewers"],
             resolved_reviewer_user_ids=["reviewer"],
+            preparation_mode=preparation_mode,
         )
     )
     promotion.state = "pending"
     repository = TeamStateRepository(tmp_path)
     repository.update(lambda _current: state)
 
-    _state, result = TeamGitReleaseService(
+    service = TeamGitReleaseService(
         repository,
         human_review_eligibility_resolver=lambda _requirement: ["reviewer"],
-    ).record_git_promotion_result(
+    )
+    _state, result = service.record_git_promotion_result(
         promotion_id=promotion.id,
         success=True,
         commit_sha=release.candidate_commit_sha,
@@ -1650,21 +1664,57 @@ def test_git_promotion_queues_initial_human_review_notifications_in_outbox(
     )
 
     assert any(
-        event["event_type"] == "team.release.human_review_requested"
+        event["event_type"] == event_type
         for event in result["events"]
     )
     outbox = repository.list_outbox_records(
         status=TeamOutboxStatus.PENDING,
-        intent_type="team.release.human_review_requested",
+        intent_type=event_type,
     )
     assert len(outbox) == 1
-    assert outbox[0].payload["payload"]["recipient_user_id"] == "reviewer"
+    request = next(iter(repository.read().human_review_requests.values()))
+    assert request.state == (
+        "preparing" if preparation_mode == "workflow" else "pending"
+    )
+    if preparation_mode == "workflow":
+        assert outbox[0].payload["payload"]["preparation_generation"] == 1
+    else:
+        assert outbox[0].payload["payload"]["recipient_user_id"] == "reviewer"
+    if preparation_mode == "workflow":
+        _replayed_state, replayed = service.record_git_promotion_result(
+            promotion_id=promotion.id,
+            success=True,
+            commit_sha=release.candidate_commit_sha,
+            outputs={"tree_hash": release.candidate_tree_hash},
+        )
+        assert not any(
+            event["event_type"] == event_type
+            for event in replayed["events"]
+        )
+        assert len(
+            repository.list_outbox_records(
+                status=TeamOutboxStatus.PENDING,
+                intent_type=event_type,
+            )
+        ) == 1
 
 
-def test_verification_queues_initial_human_review_notifications_in_outbox(
+@pytest.mark.parametrize(
+    ("preparation_mode", "event_type"),
+    [
+        ("manual", "team.release.human_review_requested"),
+        ("workflow", "team.release.human_review_preparation_requested"),
+    ],
+)
+def test_verification_queues_initial_human_review_intent_in_outbox(
     tmp_path: Path,
+    preparation_mode: str,
+    event_type: str,
 ) -> None:
-    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state, release, promotion = _human_state(
+        eligible_user_ids=["reviewer"],
+        preparation_mode=preparation_mode,
+    )
     verification_command = ReleaseVerificationCommand(
         name="candidate-tests",
         argv=["pytest", "-q"],
@@ -1674,6 +1724,7 @@ def test_verification_queues_initial_human_review_notifications_in_outbox(
         human_review_requirement=HumanReviewRequirement(
             reviewer_group_ids=["release-reviewers"],
             resolved_reviewer_user_ids=["reviewer"],
+            preparation_mode=preparation_mode,
         ),
     )
     begin_release_gates(
@@ -1688,32 +1739,56 @@ def test_verification_queues_initial_human_review_notifications_in_outbox(
     repository = TeamStateRepository(tmp_path)
     repository.update(lambda _current: state)
 
-    _state, result = TeamReleaseGateService(
+    service = TeamReleaseGateService(
         repository,
         human_review_eligibility_resolver=lambda _requirement: ["reviewer"],
-    ).record_verification_result(
+    )
+    command_results = [
+        {
+            "name": verification_command.name,
+            "state": "passed",
+            "exit_code": 0,
+        }
+    ]
+    _state, result = service.record_verification_result(
         release_package_id=release.id,
         verification_run_id=verification_run.id,
         candidate_commit_sha=release.candidate_commit_sha or "",
         verification_state="passed",
-        command_results=[
-            {
-                "name": verification_command.name,
-                "state": "passed",
-                "exit_code": 0,
-            }
-        ],
+        command_results=command_results,
     )
 
     assert any(
-        event["event_type"] == "team.release.human_review_requested"
+        event["event_type"] == event_type
         for event in result["events"]
     )
     outbox = repository.list_outbox_records(
         status=TeamOutboxStatus.PENDING,
-        intent_type="team.release.human_review_requested",
+        intent_type=event_type,
     )
     assert len(outbox) == 1
+    request = next(iter(repository.read().human_review_requests.values()))
+    assert request.state == (
+        "preparing" if preparation_mode == "workflow" else "pending"
+    )
+    if preparation_mode == "workflow":
+        _replayed_state, replayed = service.record_verification_result(
+            release_package_id=release.id,
+            verification_run_id=verification_run.id,
+            candidate_commit_sha=release.candidate_commit_sha or "",
+            verification_state="passed",
+            command_results=command_results,
+        )
+        assert not any(
+            event["event_type"] == event_type
+            for event in replayed["events"]
+        )
+        assert len(
+            repository.list_outbox_records(
+                status=TeamOutboxStatus.PENDING,
+                intent_type=event_type,
+            )
+        ) == 1
 
 
 def test_successor_rejects_unchanged_predecessor_tree() -> None:

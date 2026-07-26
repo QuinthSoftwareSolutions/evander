@@ -288,7 +288,7 @@ def test_task_payload_projects_unique_upstream_blocker_reasons() -> None:
     ].count("blocker-shared") == 1
 
 
-def test_dependency_readiness_uses_canonical_resolution_not_terminal_enum() -> None:
+def test_rejected_task_remains_terminal_for_resolution_and_dependencies() -> None:
     state = _state()
     state.tasks["rejected"] = _support_task(
         "rejected",
@@ -302,10 +302,11 @@ def test_dependency_readiness_uses_canonical_resolution_not_terminal_enum() -> N
     rejected = assess_task(state, "rejected")
     dependent = assess_task(state, "dependent")
 
-    assert rejected.resolution_status == TaskResolutionStatus.UNRESOLVED
-    assert rejected.readiness == TaskAssessmentReadiness.BLOCKED
-    assert dependent.unsatisfied_dependency_ids == ["rejected"]
-    assert dependent.readiness == TaskAssessmentReadiness.WAITING_ON_DEPENDENCIES
+    assert rejected.resolution_status == TaskResolutionStatus.RESOLVED
+    assert rejected.resolution_reason == "rejected_terminal_disposition"
+    assert rejected.readiness == TaskAssessmentReadiness.RESOLVED
+    assert dependent.unsatisfied_dependency_ids == []
+    assert dependent.readiness == TaskAssessmentReadiness.ACTIONABLE
 
 
 def test_support_outcome_noop_and_cancellation_have_distinct_valid_resolutions() -> None:

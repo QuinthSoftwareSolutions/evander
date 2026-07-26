@@ -61,7 +61,11 @@ class FakeCleanupBackend:
         return self.outcomes.pop(0)
 
 
-def _seed_cleanup_state(tmp_path) -> TeamStateRepository:
+def _seed_cleanup_state(
+    tmp_path,
+    *,
+    task_state: TeamTaskState = TeamTaskState.FINISHED,
+) -> TeamStateRepository:
     repository = TeamStateRepository(tmp_path)
     admin = TeamAdminService(repository)
     admin.create_team(
@@ -111,7 +115,7 @@ def _seed_cleanup_state(tmp_path) -> TeamStateRepository:
 
     def _finish_with_checkout(state: TeamState) -> TeamState:
         task = state.tasks["task"]
-        task.state = TeamTaskState.FINISHED
+        task.state = task_state
         task.state_entered_at = datetime(2026, 7, 25, tzinfo=UTC)
         task.updated_at = task.state_entered_at
         state.git_work_contexts["context"] = GitWorkContext(
@@ -199,6 +203,28 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert audit[0].audit_record_id == candidate.id
     assert audit[0].status.value == "success"
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
+
+
+def test_rejected_task_remains_eligible_for_resolved_worktree_cleanup(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(
+        tmp_path,
+        task_state=TeamTaskState.REJECTED,
+    )
+    service = TeamWorktreeCleanupService(
+        repository,
+        FakeCleanupBackend([_removed_outcome()]),
+    )
+
+    state, counts = service.enqueue_candidates(
+        now=datetime(2026, 7, 25, 12, tzinfo=UTC),
+        grace_seconds=0,
+    )
+
+    assert counts == {"enqueued": 1, "recovered": 0, "refreshed": 0}
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
+    assert candidate.reason == "task_resolved"
 
 
 def test_backend_refusal_is_durable_recovery_and_retry_is_idempotent(

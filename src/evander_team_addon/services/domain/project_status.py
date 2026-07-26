@@ -6,11 +6,13 @@ from ...models import (
     ProjectStatus,
     TaskAssessmentReadiness,
     TaskResolutionStatus,
+    TeamBlockerSourceKind,
     TeamBlockerState,
     TeamRecordState,
     TeamState,
 )
 
+from .blockers import resolve_active_blockers_for_source
 from .common import utc_now
 from .task_assessment import TaskAssessmentService
 
@@ -30,10 +32,17 @@ def project_blocking_sources(
         and deliverable.superseded_by_deliverable_id is None
     ]
     deliverable_ids = {deliverable.id for deliverable in deliverables}
-    release_ids = {
-        release.id
+    project_releases = [
+        release
         for release in state.release_packages.values()
         if release.project_id == project_id
+    ]
+    release_ids = {release.id for release in project_releases}
+    terminal_release_review_ids = {
+        review_id
+        for release in project_releases
+        if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+        for review_id in release.review_request_ids
     }
     project = state.projects.get(project_id)
     rows: list[dict[str, Any]] = []
@@ -97,6 +106,10 @@ def project_blocking_sources(
         }
         for blocker in state.blockers.values()
         if blocker.state == TeamBlockerState.OPEN
+        and not (
+            blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST
+            and blocker.source_id in terminal_release_review_ids
+        )
         and (
             blocker.project_id == project_id
             or blocker.task_id in task_ids
@@ -139,6 +152,7 @@ def project_blocking_sources(
             review.deliverable_id in deliverable_ids
             or review.release_package_id in release_ids
         )
+        and review.id not in terminal_release_review_ids
         and review.superseded_by_review_request_id is None
         and review.retired_at is None
         and review.state == TeamRecordState.BLOCKED
@@ -208,6 +222,26 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
     project_releases = [
         release for release in state.release_packages.values() if release.project_id == project_id
     ]
+    terminal_release_reviews = {
+        review_id: release
+        for release in project_releases
+        if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+        for review_id in release.review_request_ids
+    }
+    for review_id, release in terminal_release_reviews.items():
+        resolve_active_blockers_for_source(
+            state,
+            source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+            source_id=review_id,
+            actor_agent_id=None,
+            dispatch_id=None,
+            note=(
+                f"Release package {release.id} reached terminal state "
+                f"{release.state.value}; its review blocker is obsolete."
+            ),
+            reference_ids=[release.id],
+            now=release.updated_at,
+        )
     project_release_ids = {release.id for release in project_releases}
     project_human_requests = [
         request

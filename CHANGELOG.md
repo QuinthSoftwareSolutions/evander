@@ -10,6 +10,8 @@
   acceptance or review handoffs remain active.
 - Treated cancelled tasks as terminal across activity, runtime, API, access, outcome-catalog, and
   Git-work-context projections, and reused one task-assessment evaluator per project-status pass.
+- Made workflow-preparation requests transactional, preserved persisted rejected tasks as terminal
+  dispositions, and reconciled obsolete sibling review blockers when a release becomes terminal.
 
 ## 2026-07-25 - Unified Team Hierarchy and Human Release Review
 

@@ -38,6 +38,7 @@ from .domain.release_packages import (
 )
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+    HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
 from .domain.task_assessment import (
@@ -137,7 +138,11 @@ class TeamGitReleaseService:
                 [
                     event
                     for event in result["events"]
-                    if event.get("event_type") == HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+                    if event.get("event_type")
+                    in {
+                        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+                        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                    }
                 ]
             ),
         )

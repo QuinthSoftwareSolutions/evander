@@ -9,6 +9,7 @@ from .commands.outbox import _team_event_outbox_records
 from .domain.release_gates import record_release_verification_result
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+    HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
 
@@ -75,7 +76,11 @@ class TeamReleaseGateService:
                 [
                     event
                     for event in result["events"]
-                    if event.get("event_type") == HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+                    if event.get("event_type")
+                    in {
+                        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+                        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                    }
                 ]
             ),
         )

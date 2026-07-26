@@ -13,6 +13,9 @@ from evander_team_addon.models import (
     ReleasePackage,
     ReviewBlockKind,
     ReviewRequest,
+    TeamBlocker,
+    TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamRecordState,
     TeamState,
     TeamTaskState,
@@ -134,3 +137,78 @@ def test_project_completion_waits_for_human_request_finding_and_successor() -> N
     )
     _recalculate_project_status(state, "project")
     assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_terminal_release_resolves_obsolete_sibling_review_blocker() -> None:
+    state = TeamState.empty()
+    state.projects["project"] = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+    )
+    state.release_packages["release"] = ReleasePackage(
+        id="release",
+        project_id="project",
+        state=TeamRecordState.REJECTED,
+        review_request_ids=["blocked-review", "rejecting-review"],
+    )
+    state.review_requests["blocked-review"] = ReviewRequest(
+        id="blocked-review",
+        release_package_id="release",
+        candidate_commit_sha="candidate",
+        reviewer_agent_id="reviewer-a",
+        state=TeamRecordState.BLOCKED,
+        block_kind=ReviewBlockKind.SYSTEM,
+        findings=["The review environment is unavailable."],
+    )
+    state.review_requests["rejecting-review"] = ReviewRequest(
+        id="rejecting-review",
+        release_package_id="release",
+        candidate_commit_sha="candidate",
+        reviewer_agent_id="reviewer-b",
+        state=TeamRecordState.REJECTED,
+        findings=["The candidate cannot be released."],
+    )
+    state.blockers["blocked-review-blocker"] = TeamBlocker(
+        id="blocked-review-blocker",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+        source_id="blocked-review",
+        owner_agent_id="lead",
+        summary="Release review blocked",
+    )
+
+    assert project_blocking_sources(state, "project") == []
+
+    _recalculate_project_status(state, "project")
+
+    blocker = state.blockers["blocked-review-blocker"]
+    assert blocker.state == TeamBlockerState.RESOLVED
+    assert blocker.terminal_reference_ids == ["release"]
+    assert state.projects["project"].status == ProjectStatus.COMPLETED
+
+
+def test_rejected_task_remains_terminal_for_project_completion() -> None:
+    state = TeamState.empty()
+    state.projects["project"] = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+    )
+    state.tasks["rejected-task"] = AgentTask(
+        id="rejected-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        state=TeamTaskState.REJECTED,
+        title="Rejected historical task",
+        description="This persisted terminal disposition must remain resolved.",
+        created_by_agent_id="lead",
+    )
+
+    _recalculate_project_status(state, "project")
+
+    assert state.projects["project"].status == ProjectStatus.COMPLETED
