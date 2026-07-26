@@ -10,6 +10,7 @@ from evander_team_addon.models import (
     Deliverable,
     ProjectGitConfig,
     ProjectGoal,
+    ReleasePackage,
     ReviewBlockKind,
     ReviewRequest,
     RolePermission,
@@ -27,7 +28,9 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands import (
     TeamBlockerCommandService,
     TeamDeliverableSubmissionCommandService,
+    TeamMemoryCommandService,
     TeamNoteCommandService,
+    TeamOutcomeCatalogCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
@@ -110,6 +113,49 @@ def _deferred_dispatch(
     )
     assert len(leases) == 1
     return runtime, str(leases[0]["dispatch_id"])
+
+
+def _seed_secondary_project_for_lead(repository: TeamStateRepository) -> None:
+    admin = TeamAdminService(repository)
+    admin.create_project(
+        project_id="other-project",
+        team_id="team",
+        name="Other Project",
+        lead_agent_id="lead",
+        lead_session_id=None,
+        lead_role_id="other-project__project-lead",
+        goals=[ProjectGoal(id="other-goal", description="Ship other work")],
+        expected_revision=repository.read().revision,
+    )
+    admin.update_role(
+        role_id="other-project__project-lead",
+        permissions=[
+            RolePermission.CREATE_ROOT_TASK,
+            RolePermission.MANAGE_OUTCOME_KINDS,
+        ],
+        expected_revision=repository.read().revision,
+    )
+
+
+def _lease_lead_for_primary_project(repository: TeamStateRepository) -> None:
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="lead-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Lead work",
+        description="This dispatch is scoped only to the primary project.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    _state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="lead",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["project_ids"] == ["project"]
 
 
 @pytest.mark.parametrize(
@@ -398,6 +444,21 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
     )
 
     def _add_supervision_handoff(state):
+        child = state.tasks["child-task"]
+        child.state = TeamTaskState.BLOCKED
+        child.state_entered_at = LEASE_NOW
+        open_or_get_blocker(
+            state,
+            source_kind=TeamBlockerSourceKind.TASK,
+            source_id=child.id,
+            summary="The child cannot complete its obsolete scope.",
+            reporter_agent_id="lead",
+            team_id="team",
+            project_id="project",
+            task_id=child.id,
+            result={"events": []},
+            now=LEASE_NOW,
+        )
         state.inbox["child-supervision"] = AgentInboxItem(
             id="child-supervision",
             recipient_agent_id="worker",
@@ -420,7 +481,7 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
     assert len(leases) == 1
     assert leases[0]["reason"] == "inbox"
     assert leases[0]["dispatch"]["task_ids"] == []
-    assert leases[0]["dispatch"]["inbox_item_ids"] == ["child-supervision"]
+    assert "child-supervision" in leases[0]["dispatch"]["inbox_item_ids"]
 
     state, cancelled = TeamTaskUpdateCommandService(repository).cancel_task_command(
         session_id="session-worker",
@@ -437,6 +498,21 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
     assert state.tasks["child-task"].cancellation.actor_id == "worker"
     assert state.inbox["child-supervision"].state.value == "handled"
     assert assess_task(state, "task").readiness.value == "actionable"
+    child_blockers = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_id == "child-task"
+    ]
+    assert len(child_blockers) == 1
+    assert child_blockers[0].state == TeamBlockerState.RESOLVED
+    parent_transitions = {
+        item.payload.get("transition")
+        for item in state.inbox.values()
+        if item.payload.get("kind") == "parent_task_transition"
+        and item.payload.get("parent_task_id") == "task"
+        and "child-task" in item.payload.get("child_task_ids", [])
+    }
+    assert {"resolution", "integration_ready"} <= parent_transitions
 
 
 def test_cancellation_rejects_an_active_direct_acceptance_handoff(
@@ -705,6 +781,58 @@ def test_delivered_task_context_does_not_grant_cancellation_authority(
     assert state.inbox["lead-root-context"].state.value == "pending"
 
 
+def test_deliverable_blocker_accepts_exact_handoff_inbox_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _add_handoff(state):
+        state.deliverables["handoff-deliverable"] = Deliverable(
+            id="handoff-deliverable",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="The superior received this exact handoff.",
+            acceptance_recipient_agent_id="lead",
+        )
+        state.tasks["task"].deliverable_ids = ["handoff-deliverable"]
+        state.tasks["task"].state = TeamTaskState.WAITING_FOR_REVIEW
+        state.inbox["handoff-notice"] = AgentInboxItem(
+            id="handoff-notice",
+            recipient_agent_id="lead",
+            sender_agent_id="worker",
+            item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+            task_id="task",
+            payload={
+                "kind": "superior_acceptance_requested",
+                "task_id": "task",
+                "deliverable_id": "handoff-deliverable",
+            },
+        )
+        return state
+
+    repository.update(_add_handoff)
+    _state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="lead",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["task_ids"] == []
+    assert leases[0]["dispatch"]["inbox_item_ids"] == ["handoff-notice"]
+
+    state, reported = TeamBlockerCommandService(repository).report_blocker_command(
+        session_id="session-lead",
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id="handoff-deliverable",
+        summary="The handed-off product cannot be accepted yet.",
+        request_id="report-blocker-from-handoff-notice",
+    )
+
+    assert reported["success"] is True
+    assert reported["created_blocker_ids"]
+    assert state.deliverables["handoff-deliverable"].state == TeamRecordState.BLOCKED
+
+
 def test_task_review_and_blocker_commands_require_exact_dispatch_scope(
     tmp_path: Path,
 ) -> None:
@@ -766,6 +894,91 @@ def test_task_review_and_blocker_commands_require_exact_dispatch_scope(
     state = repository.read()
     assert state.tasks["later-task"].state == TeamTaskState.PENDING
     assert state.review_requests == {}
+    assert state.blockers == {}
+
+
+def test_id_only_project_resources_require_exact_dispatch_project_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_secondary_project_for_lead(repository)
+    admin = TeamAdminService(repository)
+    admin.create_or_update_memory(
+        memory_id="other-memory",
+        team_id="team",
+        project_id="other-project",
+        scope="project",
+        kind="decision",
+        title="Other-project decision",
+        summary="This record is visible to the multi-project lead.",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_outcome_kind_definition(
+        definition_id="other-outcome",
+        team_id="team",
+        project_id="other-project",
+        kind="other_result",
+        name="Other result",
+        expected_revision=repository.read().revision,
+    )
+    _lease_lead_for_primary_project(repository)
+
+    _state, archived_memory = TeamMemoryCommandService(
+        repository
+    ).archive_memory_command(
+        session_id="session-lead",
+        memory_id="other-memory",
+        request_id="archive-memory-outside-dispatch-project",
+    )
+    _state, updated_outcome = TeamOutcomeCatalogCommandService(
+        repository
+    ).update_outcome_kind_command(
+        session_id="session-lead",
+        definition_id="other-outcome",
+        name="Mutated outside dispatch scope",
+        request_id="update-outcome-outside-dispatch-project",
+    )
+    state, archived_outcome = TeamOutcomeCatalogCommandService(
+        repository
+    ).archive_outcome_kind_command(
+        session_id="session-lead",
+        definition_id="other-outcome",
+        request_id="archive-outcome-outside-dispatch-project",
+    )
+
+    assert archived_memory["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert updated_outcome["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert archived_outcome["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.memories["other-memory"].status.value == "active"
+    assert state.outcome_kind_definitions["other-outcome"].name == "Other result"
+    assert state.outcome_kind_definitions["other-outcome"].archived is False
+
+
+def test_release_blocker_source_requires_exact_dispatch_project_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_secondary_project_for_lead(repository)
+
+    def _add_other_release(state):
+        state.release_packages["other-release"] = ReleasePackage(
+            id="other-release",
+            project_id="other-project",
+        )
+        return state
+
+    repository.update(_add_other_release)
+    _lease_lead_for_primary_project(repository)
+
+    state, reported = TeamBlockerCommandService(repository).report_blocker_command(
+        session_id="session-lead",
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id="other-release",
+        summary="This release belongs to a project outside the dispatch.",
+        request_id="report-release-blocker-outside-dispatch-project",
+    )
+
+    assert reported["errors"][0]["code"] == "dispatch_scope_forbidden"
     assert state.blockers == {}
 
 

@@ -299,6 +299,9 @@ class TeamCommandExecutor:
             state,
             dispatch=dispatch,
             task_ids=targets["task_ids"],
+            require_actionable=(
+                resolved.context.tool_name not in _DELIVERABLE_SUBMISSION_TOOLS
+            ),
         )
         _validate_dispatch_blocker_scope(
             state,
@@ -338,6 +341,12 @@ class TeamCommandExecutor:
                 )
         if resolved.context.tool_name == "team_request_review":
             _validate_request_review_dispatch_scope(
+                state,
+                dispatch=dispatch,
+                payload=normalized_payload,
+            )
+        if resolved.context.tool_name == "team_report_blocker":
+            _validate_report_blocker_dispatch_scope(
                 state,
                 dispatch=dispatch,
                 payload=normalized_payload,
@@ -833,6 +842,12 @@ _TASK_SCOPE_TOOLS = frozenset(
         "team_reject_ephemeral_result",
     }
 )
+_DELIVERABLE_SUBMISSION_TOOLS = frozenset(
+    {
+        "team_submit_deliverable",
+        "team_submit_deliverable_for_review",
+    }
+)
 _BLOCKER_SCOPE_TOOLS = frozenset({"team_update_blocker"})
 _REVIEW_SCOPE_TOOLS = frozenset({"team_decide_review"})
 _PROJECT_SCOPE_TOOLS = frozenset(
@@ -1153,6 +1168,56 @@ def _validate_request_review_dispatch_scope(
     )
 
 
+def _validate_report_blocker_dispatch_scope(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    payload: Mapping[str, Any],
+) -> None:
+    """Authorize deliverable reports from their exact task or handoff scope."""
+
+    source_kind = _optional_text(payload.get("source_kind"))
+    if source_kind != TeamBlockerSourceKind.DELIVERABLE.value:
+        return
+    source_id = _optional_text(payload.get("source_id"))
+    deliverable = state.deliverables.get(source_id or "")
+    task = (
+        state.tasks.get(deliverable.task_id)
+        if deliverable is not None
+        else None
+    )
+    if deliverable is None or task is None:
+        # Source validation returns the stable missing-resource error.
+        return
+
+    matching_notice_ids = {
+        item.id
+        for item in state.inbox.values()
+        if item.id in dispatch.inbox_item_ids
+        and item.recipient_agent_id == dispatch.agent_id
+        and item.state == TeamInboxItemState.PENDING
+        and item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+        and item.task_id == task.id
+        and item.payload.get("deliverable_id") == deliverable.id
+    }
+    if matching_notice_ids:
+        _validate_dispatch_inbox_scope(
+            state,
+            dispatch=dispatch,
+            inbox_item_ids=matching_notice_ids,
+        )
+        return
+
+    # Submission can move the producer's task out of actionable readiness
+    # before the same dispatch needs to report a blocker on that handoff.
+    _validate_dispatch_task_scope(
+        state,
+        dispatch=dispatch,
+        task_ids={task.id},
+        require_actionable=False,
+    )
+
+
 def _add_blocker_report_dispatch_scope_targets(
     state: TeamState,
     *,
@@ -1168,12 +1233,22 @@ def _add_blocker_report_dispatch_scope_targets(
         return
     if source_kind == TeamBlockerSourceKind.DELIVERABLE.value:
         deliverable = state.deliverables.get(source_id or "")
-        if deliverable is not None:
-            targets["task_ids"].add(deliverable.task_id)
+        task = (
+            state.tasks.get(deliverable.task_id)
+            if deliverable is not None
+            else None
+        )
+        if task is not None:
+            targets["project_ids"].add(task.project_id)
         return
     if source_kind == TeamBlockerSourceKind.REVIEW_REQUEST.value:
         if source_id in state.review_requests:
             targets["review_request_ids"].add(source_id)
+        return
+    if source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE.value:
+        release = state.release_packages.get(source_id or "")
+        if release is not None:
+            targets["project_ids"].add(release.project_id)
         return
     # Explicit reports may optionally be attached to a task. Other source
     # kinds are release- or project-level and remain project scoped.
@@ -1342,6 +1417,25 @@ def _project_ids_from_payload_relationships(
         assignment = state.ephemeral_assignments.get(assignment_id)
         if assignment is not None:
             project_ids.add(assignment.project_id)
+    for memory_id in _values_for_keys(
+        payload,
+        {
+            "memory_id",
+            "memory_ids",
+            "supersedes_memory_id",
+            "superseded_by_memory_id",
+        },
+    ):
+        memory = state.memories.get(memory_id)
+        if memory is not None and memory.project_id is not None:
+            project_ids.add(memory.project_id)
+    for definition_id in _values_for_keys(
+        payload,
+        {"definition_id", "definition_ids"},
+    ):
+        definition = state.outcome_kind_definitions.get(definition_id)
+        if definition is not None and definition.project_id is not None:
+            project_ids.add(definition.project_id)
     return project_ids
 
 
@@ -1387,6 +1481,7 @@ def _validate_dispatch_task_scope(
     *,
     dispatch: TeamDispatch,
     task_ids: set[str],
+    require_actionable: bool = True,
 ) -> None:
     missing = sorted(task_ids - set(dispatch.task_ids))
     if missing:
@@ -1417,6 +1512,11 @@ def _validate_dispatch_task_scope(
                     "owner_agent_id": task.owner_agent_id,
                 },
             )
+        if not require_actionable:
+            # A first product may move the task into acceptance or review waiting
+            # while this immutable dispatch still owns the task. The command's
+            # lifecycle boundary decides whether another submission is valid.
+            continue
         assessment = assessments.assess(task.id)
         if assessment.readiness != TaskAssessmentReadiness.ACTIONABLE:
             raise TeamCommandValidationError(

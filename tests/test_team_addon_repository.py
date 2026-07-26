@@ -2239,7 +2239,7 @@ def test_direct_acceptance_decision_survives_promotion_failure(
     )
 
 
-def test_task_dispatch_does_not_allow_second_handoff_after_task_starts_waiting(
+def test_task_dispatch_allows_additional_products_after_task_starts_waiting(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -2271,12 +2271,56 @@ def test_task_dispatch_does_not_allow_second_handoff_after_task_starts_waiting(
         ],
         request_id="request-submit-formal",
     )
+    state, second_direct = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-direct-2",
+        task_id="task",
+        summary="A second independent direct handoff.",
+        artifact_refs=["artifact-space:/direct-2"],
+        request_id="request-submit-direct-2",
+    )
+
+    assert direct["success"] is True
     assert direct["waiting_reason"] == "superior_acceptance"
-    assert formal["success"] is False
-    assert formal["errors"][0]["code"] == "dispatch_scope_stale"
+    assert formal["success"] is True
+    assert second_direct["success"] is True
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
-    assert "deliverable-formal" not in state.deliverables
-    assert "review-formal" not in state.review_requests
+    assert state.tasks["task"].deliverable_ids == [
+        "deliverable-direct",
+        "deliverable-formal",
+        "deliverable-direct-2",
+    ]
+    assert "deliverable-formal" in state.deliverables
+    assert "review-formal" in state.review_requests
+
+
+def test_producer_reports_deliverable_blocker_from_original_task_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-blocked",
+        task_id="task",
+        summary="The product reached a blocked handoff.",
+        artifact_refs=["artifact-space:/blocked"],
+        request_id="request-submit-blocked",
+    )
+
+    state, reported = _command_service(repo).report_blocker_command(
+        session_id="session-backend",
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id="deliverable-blocked",
+        summary="The submitted product cannot advance.",
+        request_id="request-report-deliverable-blocker",
+    )
+
+    assert submitted["success"] is True
+    assert reported["success"] is True
+    assert reported["created_blocker_ids"]
+    assert state.deliverables["deliverable-blocked"].state == TeamRecordState.BLOCKED
 
 
 def test_superior_rejects_direct_deliverable_with_actionable_rework(

@@ -228,19 +228,19 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "git_context_finalization": git_context_finalization,
                 "progress_made": True,
             }
-            queue_parent_resolution_transitions(
-                state_model,
-                child_task_id=task.id,
-                sender_agent_id=actor.id,
-                result=result,
-                now=now,
-            )
             before_event_ids = set(state_model.blocker_events)
             reconcile_task_blockers_after_cancellation(
                 state_model,
                 task_id=task.id,
                 actor_agent_id=actor.id,
                 dispatch_id=resolved.dispatch_id,
+                result=result,
+                now=now,
+            )
+            queue_parent_resolution_transitions(
+                state_model,
+                child_task_id=task.id,
+                sender_agent_id=actor.id,
                 result=result,
                 now=now,
             )

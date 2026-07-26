@@ -9,6 +9,12 @@
   to that contribution's owning task.
 - Loaded execution-mode content for unthreaded container logs before applying legacy cursorless
   offsets instead of paginating the one-line thread probe.
+- Bound ID-only memory, outcome-catalog, and release-blocker mutations to the projects frozen into
+  the active dispatch, including multi-project agents.
+- Allowed one task dispatch to submit multiple independently reviewed products and to report
+  deliverable blockers from the preserved producer task or exact recipient handoff scope.
+- Reconciled cancelled-child blockers before evaluating parent resolution transitions so newly
+  integration-ready parent work is notified immediately.
 
 ## 2026-07-26 - Team Review and Guided Tour Fixes
 
