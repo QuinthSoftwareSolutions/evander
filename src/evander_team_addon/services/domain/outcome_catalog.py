@@ -11,14 +11,15 @@ from ...models import (
     ReviewProfile,
     RolePermission,
     TaskOutcomeContract,
+    TaskResolutionStatus,
     TeamState,
-    TeamTaskState,
     effective_outcome_kind_definitions,
     effective_role_permissions,
     outcome_kind_snapshots,
     resolve_outcome_kind_definition,
 )
 from .agent_access import _is_project_lead_for, _is_team_manager
+from .task_assessment import TaskAssessmentService
 
 
 def outcome_kind_definition_payload(
@@ -165,14 +166,14 @@ def active_outcome_kind_references(
     definition: OutcomeKindDefinition,
 ) -> list[str]:
     references: list[str] = []
-    terminal_task_states = {
-        TeamTaskState.FINISHED,
-        TeamTaskState.ACCEPTED,
-        TeamTaskState.REJECTED,
-        TeamTaskState.CANCELLED,
-    }
+    assessments = TaskAssessmentService(state)
     for task in state.tasks.values():
-        if task.state in terminal_task_states or task.outcome_contract is None:
+        if task.outcome_contract is None:
+            continue
+        if (
+            assessments.assess(task.id).resolution_status
+            == TaskResolutionStatus.RESOLVED
+        ):
             continue
         contract = task.outcome_contract
         if definition.kind not in (
@@ -195,10 +196,13 @@ def active_outcome_kind_references(
             continue
         if profile.team_id != definition.team_id:
             continue
+        resolution_project_id = profile.project_id
+        if resolution_project_id is None and definition.project_id is not None:
+            resolution_project_id = definition.project_id
         effective = resolve_outcome_kind_definition(
             state,
             team_id=profile.team_id,
-            project_id=profile.project_id,
+            project_id=resolution_project_id,
             kind=definition.kind,
         )
         if effective is not None and effective.id == definition.id:

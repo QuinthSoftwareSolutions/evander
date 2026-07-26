@@ -12,6 +12,8 @@
   newest work context rather than opaque ID order.
 - Prevented completed legacy session transcripts from replaying across bounded log-scan windows
   and kept sibling direct-acceptance handoffs decidable after one product is rejected.
+- Rejected artifact-only correction successors that cannot enter release gates and kept outcome
+  definitions reserved for rejected-task recovery and team-wide profiles using project overrides.
 - Allowed stale review attempts on superseded deliverables to close their reviewer inboxes and
   blockers without recalculating historical deliverable or current task state.
 - Revalidated release scope when the asynchronous candidate manifest is built, accepted human

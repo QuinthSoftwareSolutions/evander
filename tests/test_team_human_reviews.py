@@ -218,6 +218,27 @@ def _human_state(
     return state, release, promotion
 
 
+def _mark_deliverable_as_reviewed_git_correction(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    commit_sha: str,
+) -> None:
+    review_id = f"{deliverable.id}-review"
+    deliverable.git_refs.feature_branch = (
+        f"team/team/features/{deliverable.task_id}-{deliverable.producer_agent_id}"
+    )
+    deliverable.git_refs.feature_commit_sha = commit_sha
+    deliverable.review_request_ids.append(review_id)
+    state.review_requests[review_id] = ReviewRequest(
+        id=review_id,
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="lead",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=commit_sha,
+    )
+
+
 def _successor_manifest(
     state: TeamState,
     *,
@@ -1356,7 +1377,7 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     assert len(state.inbox) == 1
 
 
-def test_ambiguous_finding_can_retarget_to_independent_correction_root() -> None:
+def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
     state.deliverables["source-deliverable"].verification = (
@@ -1464,23 +1485,29 @@ def test_ambiguous_finding_can_retarget_to_independent_correction_root() -> None
         "events": [],
         "git_promotion_event_ids": [],
     }
-    successor_id = _build_release_package(
-        state,
-        project=state.projects["project"],
-        request={
-            "id": "successor-after-triage",
-            "deliverable_ids": [deliverable.id],
-            "supersedes_release_package_id": release.id,
-            "waiver_actor_kind": "operator",
-            "waiver_actor_id": "admin",
-        },
-        result=completed_result,
-        projects_to_recalc=set(),
-        actor_agent_id="lead",
-        team_id="team",
+    assert (
+        _build_release_package(
+            state,
+            project=state.projects["project"],
+            request={
+                "id": "successor-after-triage",
+                "deliverable_ids": [deliverable.id],
+                "supersedes_release_package_id": release.id,
+                "waiver_actor_kind": "operator",
+                "waiver_actor_id": "admin",
+            },
+            result=completed_result,
+            projects_to_recalc=set(),
+            actor_agent_id="lead",
+            team_id="team",
+        )
+        is None
     )
-    assert successor_id == "successor-after-triage"
-    assert completed_result["errors"] == []
+    assert completed_result["errors"] == [
+        "successor release correction deliverables must include reviewed Git "
+        "content so a changed candidate can enter release gates"
+    ]
+    assert "successor-after-triage" not in state.release_packages
 
 
 def test_preview_result_rejects_secrets_and_blocked_resume_reuses_request() -> None:
@@ -1619,6 +1646,11 @@ def test_successor_rejects_unrelated_work_and_derives_exact_candidate_baseline()
     )
     state.deliverables[correction.id] = correction
     correction_task.deliverable_ids.append(correction.id)
+    _mark_deliverable_as_reviewed_git_correction(
+        state,
+        deliverable=correction,
+        commit_sha="c" * 40,
+    )
     record_human_finding_resolution_proposal(
         state,
         finding_id=finding.id,
@@ -2113,6 +2145,11 @@ def test_published_release_successor_requires_explicit_open_feedback_case() -> N
         verification=DeliverableVerification(status="passed"),
     )
     state.deliverables[correction.id] = correction
+    _mark_deliverable_as_reviewed_git_correction(
+        state,
+        deliverable=correction,
+        commit_sha="c" * 40,
+    )
 
     missing_authorization_result: dict[str, object] = {
         "errors": [],

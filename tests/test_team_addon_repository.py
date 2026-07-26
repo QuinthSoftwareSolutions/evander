@@ -11438,6 +11438,90 @@ def test_outcome_kind_archive_rejects_nonterminal_task_contract_references(
     ].archived is False
 
 
+def test_outcome_kind_archive_rejects_rejected_task_recovery_reference(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    _seed_outcome_kind(repo, "prepared_action")
+    state = admin.create_or_reprioritize_task(
+        task_id="rejected-outcome-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=10,
+        title="Prepare an action",
+        description="Recover this rejected outcome with a replacement.",
+        created_by_agent_id="lead",
+        task_kind=TeamTaskKind.OUTCOME,
+        outcome_contract={"required_outcome_kinds": ["prepared_action"]},
+        expected_revision=repo.read().revision,
+    )
+
+    def _reject_task(current):
+        current.tasks["rejected-outcome-task"].state = TeamTaskState.REJECTED
+        return current
+
+    state = repo.update(_reject_task, expected_revision=state.revision)
+
+    with pytest.raises(
+        ValueError,
+        match="used by nonterminal task rejected-outcome-task",
+    ):
+        admin.update_outcome_kind_definition(
+            definition_id="outcome-kind-prepared_action",
+            archived=True,
+            expected_revision=state.revision,
+        )
+
+    assert repo.read().outcome_kind_definitions[
+        "outcome-kind-prepared_action"
+    ].archived is False
+
+
+def test_team_wide_review_profile_protects_project_outcome_override(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_outcome_kind_definition(
+        definition_id="team-prepared-action",
+        team_id="team",
+        project_id=None,
+        kind="prepared_action",
+        name="Team prepared action",
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_outcome_kind_definition(
+        definition_id="project-prepared-action",
+        team_id="team",
+        project_id="project",
+        kind="prepared_action",
+        name="Project prepared action",
+        expected_revision=state.revision,
+    )
+    state = admin.create_review_profile(
+        profile_id="team-outcome-review-profile",
+        team_id="team",
+        name="Team outcome review",
+        required_outcome_kinds=["prepared_action"],
+        expected_revision=state.revision,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="used by review profile team-outcome-review-profile",
+    ):
+        admin.update_outcome_kind_definition(
+            definition_id="project-prepared-action",
+            archived=True,
+            expected_revision=state.revision,
+        )
+
+    assert repo.read().outcome_kind_definitions[
+        "project-prepared-action"
+    ].archived is False
+
+
 def test_team_wide_review_profile_snapshots_target_project_outcome_override(
     tmp_path: Path,
 ) -> None:

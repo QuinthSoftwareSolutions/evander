@@ -59,6 +59,7 @@ from evander_team_addon.models import (
     ReleaseGateFailure,
     ReleasePackage,
     ReleaseScopeValidation,
+    ReviewRequest,
     TeamConversationMessage,
     TeamBlocker,
     TeamBlockerEventType,
@@ -1840,6 +1841,19 @@ def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
             summary="Accepted human correction",
             state=TeamRecordState.ACCEPTED,
             verification=DeliverableVerification(status="passed"),
+        )
+        correction = state.deliverables["human-correction-deliverable-api"]
+        correction.git_refs.feature_branch = (
+            "team/team/features/human-current-correction-api-backend"
+        )
+        correction.git_refs.feature_commit_sha = "c" * 40
+        correction.review_request_ids = ["human-correction-review-api"]
+        state.review_requests["human-correction-review-api"] = ReviewRequest(
+            id="human-correction-review-api",
+            deliverable_id=correction.id,
+            reviewer_agent_id="lead",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha="c" * 40,
         )
         state.human_review_findings["human-finding-successor-api"] = (
             HumanReviewFinding(

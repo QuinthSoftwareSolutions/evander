@@ -591,6 +591,13 @@ def _build_release_package(
             artifact_refs = _append_unique(artifact_refs, artifact_ref)
     if not valid:
         return None
+    needs_git_release = bool(feature_branches or feature_sources_by_task)
+    if predecessor is not None and not needs_git_release:
+        result["errors"].append(
+            "successor release correction deliverables must include reviewed Git "
+            "content so a changed candidate can enter release gates"
+        )
+        return None
     unknown_waiver_ids = sorted(
         set(waivers_by_deliverable) - promotion_deliverable_ids
     )
@@ -623,7 +630,6 @@ def _build_release_package(
     target_release_branch: str | None = None
     target_canonical_branch: str | None = None
     git = None
-    needs_git_release = bool(feature_branches or feature_sources_by_task)
     effective_team_id = team_id or project.team_id
     if needs_git_release:
         git = _project_git_or_error(project, result)
