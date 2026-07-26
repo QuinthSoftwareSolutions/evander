@@ -366,6 +366,24 @@ def test_support_outcome_noop_and_cancellation_have_distinct_valid_resolutions()
     )
 
 
+def test_finish_boundary_assesses_proposed_dependencies() -> None:
+    state = _state()
+    state.tasks["task"] = _support_task("task")
+    state.tasks["dependency"] = _support_task("dependency")
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_task_can_finish(
+            state,
+            "task",
+            dependency_task_ids=["dependency"],
+        )
+
+    assert raised.value.code == "task_boundary_blocked"
+    assert raised.value.correction_context["unsatisfied_dependency_ids"] == [
+        "dependency"
+    ]
+
+
 @pytest.mark.parametrize(
     ("task_kind", "state_value", "reason_code"),
     [

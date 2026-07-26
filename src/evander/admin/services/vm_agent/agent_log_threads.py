@@ -371,7 +371,7 @@ class VmAgentThreadLogMixin:
         limit: int,
         offset: int,
         include_header: bool = True,
-    ) -> tuple[str, int, bool]:
+    ) -> tuple[str, int, bool, bool]:
         ordered_records = sorted(records, key=self._container_execution_sort_key)
         first_execution = ordered_records[0]
         header_parts = [
@@ -385,6 +385,7 @@ class VmAgentThreadLogMixin:
             header_parts.append("continuation=older")
         header = "=== " + " ".join(header_parts) + " ==="
         if thread_id is None:
+            used_session_transcript = False
             page = self._container_execution_log_page_payload(
                 worker_backend,
                 first_execution,
@@ -402,7 +403,10 @@ class VmAgentThreadLogMixin:
                 query=None,
                 mode="session",
             )
-            if bool(page.get("log_unavailable")) or not str(page.get("text") or "").strip():
+            used_session_transcript = not bool(
+                page.get("log_unavailable")
+            ) and bool(str(page.get("text") or "").strip())
+            if not used_session_transcript:
                 page = self._container_thread_fallback_page(
                     worker_backend,
                     ordered_records,
@@ -420,6 +424,7 @@ class VmAgentThreadLogMixin:
             chunk,
             consumed_lines,
             bool(page.get("has_more_before")),
+            used_session_transcript,
         )
 
     def _container_thread_fallback_page(
@@ -526,7 +531,7 @@ class VmAgentThreadLogMixin:
             max_groups=_CONTAINER_THREAD_GROUP_WINDOW,
             skip_thread_ids=skip_thread_ids,
         )
-        completed_thread_ids = skip_thread_ids.union(
+        completed_thread_ids = set(skip_thread_ids).union(
             thread_id
             for thread_id, _records, _raw_text in groups
             if thread_id is not None
@@ -538,7 +543,7 @@ class VmAgentThreadLogMixin:
                     record_offset + records_consumed,
                     0,
                     0,
-                    skip_thread_ids=completed_thread_ids,
+                    skip_thread_ids=frozenset(completed_thread_ids),
                     anchor_record_id=anchor_record_id,
                 )
                 if records_truncated and records_consumed > 0
@@ -575,7 +580,12 @@ class VmAgentThreadLogMixin:
                 # Return one body line and carry the body offset in the cursor.
                 body_limit = 1
                 include_header = False
-            chunk, consumed_lines, has_more_in_thread = self._container_thread_page_chunk(
+            (
+                chunk,
+                consumed_lines,
+                has_more_in_thread,
+                used_session_transcript,
+            ) = self._container_thread_page_chunk(
                 worker_backend,
                 thread_id=thread_id,
                 records=records,
@@ -584,6 +594,12 @@ class VmAgentThreadLogMixin:
                 offset=next_line_offset,
                 include_header=include_header,
             )
+            if (
+                thread_id is not None
+                and used_session_transcript
+                and not has_more_in_thread
+            ):
+                completed_thread_ids.add(thread_id)
             chunks_newest_first.append(chunk)
             used_lines += len(chunk.splitlines()) + separator_lines
             if has_more_in_thread and consumed_lines > 0:
@@ -610,7 +626,7 @@ class VmAgentThreadLogMixin:
                     record_offset + records_consumed,
                     0,
                     0,
-                    skip_thread_ids=completed_thread_ids,
+                    skip_thread_ids=frozenset(completed_thread_ids),
                     anchor_record_id=anchor_record_id,
                 )
             else:

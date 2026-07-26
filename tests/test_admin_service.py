@@ -7020,6 +7020,94 @@ def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across
     assert page["has_more_before"] is False
 
 
+def test_get_admin_agent_log_page_emits_legacy_shared_transcript_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-legacy-transcript",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-legacy-transcript",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-legacy-transcript",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(25):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"agent-legacy-transcript-{index:03d}",
+                session_id="session-thread-legacy-transcript",
+                worker_job_id=f"job-legacy-transcript-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-legacy-transcript",
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
+                + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+                metadata={"effect_type": "effect:agent:prompt"},
+            )
+        )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.session_calls = 0
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            if mode == "raw":
+                return "session id: thread-legacy-transcript\n"
+            if mode == "session":
+                self.session_calls += 1
+                return "complete shared transcript\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page_texts: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = service.vm_agent_admin.get_admin_agent_log_page(
+            "session-thread-legacy-transcript",
+            backend="container_worker_vm",
+            view="threads",
+            limit=40,
+            cursor=cursor,
+        )
+        page_texts.append(str(page["text"]))
+        next_cursor = page.get("next_cursor")
+        if not next_cursor:
+            break
+        cursor = str(next_cursor)
+    else:
+        pytest.fail("legacy shared transcript pagination did not terminate")
+
+    combined_text = "\n".join(page_texts)
+    assert combined_text.count("thread=thread-legacy-transcript") == 1
+    assert combined_text.count("complete shared transcript") == 1
+    assert fake_backend.session_calls == 1
+    assert page["has_more_before"] is False
+
+
 def test_get_admin_agent_log_page_container_session_threads_large_history_rebuilds_grouped_fallback(
     tmp_path: Path,
     monkeypatch,

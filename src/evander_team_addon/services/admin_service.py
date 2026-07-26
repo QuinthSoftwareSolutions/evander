@@ -92,6 +92,7 @@ from .domain.case_task import (
     _sync_case_task_link,
     _task_graph_edit_error,
     _unlink_task_from_case,
+    _validate_generic_case_source,
     _validate_protected_case_update,
     _validate_case_scope,
     _validate_case_status_transition,
@@ -2090,6 +2091,7 @@ class TeamAdminService:
         normalized_tags = _unique_text_list(tags or [], "tags")
         normalized_metadata = _mapping(metadata or {}, "metadata")
         normalized_task_ids = _unique_text_list(task_ids or [], "task_ids")
+        _validate_generic_case_source(normalized_source)
         _validate_case_status_transition(
             source=normalized_source,
             current_status=None,
@@ -2648,7 +2650,11 @@ class TeamAdminService:
                     raise ValueError(graph_error)
             if state == TeamTaskState.FINISHED:
                 try:
-                    require_task_can_finish(state_model, task.id)
+                    require_task_can_finish(
+                        state_model,
+                        task.id,
+                        dependency_task_ids=normalized_dependency_task_ids,
+                    )
                 except TaskAssessmentBoundaryError as exc:
                     raise ValueError(exc.message) from None
             elif state in {

@@ -286,7 +286,11 @@ class TeamWorktreeCleanupService:
             assessments = TaskAssessmentService(state)
             for context in sorted(
                 state.git_work_contexts.values(),
-                key=lambda item: item.id,
+                key=lambda item: (
+                    _ensure_utc(item.created_at),
+                    _ensure_utc(item.updated_at),
+                    item.id,
+                ),
             ):
                 if (
                     context.state == GitWorkContextState.ACTIVE

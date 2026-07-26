@@ -380,6 +380,50 @@ def test_newer_checkout_generation_reopens_succeeded_candidate(tmp_path) -> None
     assert len(backend.calls) == 2
 
 
+def test_cleanup_candidate_uses_newest_context_not_opaque_id_order(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    old_commit = "1" * 40
+    new_commit = "2" * 40
+
+    def _add_reverse_sorted_contexts(state: TeamState) -> TeamState:
+        old_context = state.git_work_contexts.pop("context")
+        old_context.id = "z-old-context"
+        old_context.commit_sha = old_commit
+        old_context.created_at = datetime(2026, 7, 25, 9, tzinfo=UTC)
+        old_context.updated_at = datetime(2026, 7, 25, 11, tzinfo=UTC)
+        state.git_work_contexts[old_context.id] = old_context
+        state.git_work_contexts["a-new-context"] = GitWorkContext(
+            id="a-new-context",
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/tasks/task-12345678",
+            base_branch="main",
+            base_commit=_BASE_COMMIT,
+            commit_sha=new_commit,
+            worktree_path=_WORKTREE_PATH,
+            state=GitWorkContextState.ABANDONED,
+            created_at=datetime(2026, 7, 25, 10, tzinfo=UTC),
+            updated_at=datetime(2026, 7, 25, 11, tzinfo=UTC),
+        )
+        return state
+
+    repository.update(_add_reverse_sorted_contexts)
+
+    state, counts = TeamWorktreeCleanupService(
+        repository,
+        FakeCleanupBackend([_removed_outcome()]),
+    ).enqueue_candidates(
+        now=datetime(2026, 7, 25, 12, tzinfo=UTC),
+        grace_seconds=0,
+    )
+
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
+    assert counts == {"enqueued": 1, "recovered": 0, "refreshed": 1}
+    assert candidate.expected_head == new_commit
+
+
 def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
     monkeypatch,
 ) -> None:

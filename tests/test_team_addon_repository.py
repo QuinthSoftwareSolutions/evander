@@ -2377,6 +2377,47 @@ def test_superior_rejects_direct_deliverable_with_actionable_rework(
     assert rework.payload["reason"] == "The migration evidence is missing."
 
 
+def test_superior_can_decide_sibling_handoff_after_rejection(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    service = _command_service(repo)
+    for deliverable_id in ("deliverable-first", "deliverable-second"):
+        _state, submitted = service.submit_deliverable_command(
+            session_id="session-backend",
+            id=deliverable_id,
+            task_id="task",
+            summary=f"Independent product {deliverable_id}.",
+            artifact_refs=[f"artifact-space:/{deliverable_id}"],
+            request_id=f"request-submit-{deliverable_id}",
+        )
+        assert submitted["success"] is True
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-decide")
+    state, rejected = service.decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-first",
+        decision="rejected",
+        reason="The first product needs rework.",
+        request_id="request-reject-first",
+    )
+
+    assert rejected["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    state, accepted = service.decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-second",
+        decision="accepted",
+        request_id="request-accept-second",
+    )
+
+    assert accepted["success"] is True
+    assert state.deliverables["deliverable-second"].state == TeamRecordState.ACCEPTED
+
+
 def test_superior_decision_migrates_legacy_notice_recipient(
     tmp_path: Path,
 ) -> None:
@@ -4559,6 +4600,41 @@ def test_repository_update_task_command_owner_finishes_without_deliverable_notic
     )
 
 
+def test_task_finish_with_proposed_unresolved_dependency_is_rejected(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_task(repo, task_id="dependency")
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="task",
+        state="finished",
+        dependency_task_ids=["dependency"],
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "task_boundary_blocked"
+    assert result["correction_context"]["unsatisfied_dependency_ids"] == [
+        "dependency"
+    ]
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].dependency_task_ids == []
+
+    with pytest.raises(ValueError, match="unsatisfied dependencies"):
+        _team_admin_service(repo).update_task(
+            task_id="task",
+            state=TeamTaskState.FINISHED,
+            dependency_task_ids=["dependency"],
+        )
+
+    persisted = repo.read()
+    assert persisted.tasks["task"].state == TeamTaskState.PENDING
+    assert persisted.tasks["task"].dependency_task_ids == []
+
+
 def test_repository_update_task_command_cannot_hide_blocked_deliverable(
     tmp_path: Path,
 ) -> None:
@@ -5942,6 +6018,63 @@ def test_post_release_case_generic_updates_preserve_closure_invariants(
         "published-release"
     )
     assert persisted.cases["post-release-case"].task_ids == ["post-release-triage"]
+
+
+def test_generic_case_paths_reject_reserved_post_release_source(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-reserved-case-source",
+    )
+    service = _command_service(repo)
+
+    state, created = service.create_case_command(
+        session_id="session-lead",
+        case_id="fabricated-post-release",
+        project_id="project",
+        title="Fabricated report",
+        source="post_release_feedback",
+        source_ref="release:request",
+        request_id="create-fabricated-post-release",
+    )
+
+    assert created["success"] is False
+    assert "reserved" in created["errors"][0]["message"]
+    assert "fabricated-post-release" not in state.cases
+
+    with pytest.raises(ValueError, match="reserved"):
+        _team_admin_service(repo).create_case(
+            case_id="admin-fabricated-post-release",
+            team_id="team",
+            project_id="project",
+            title="Admin fabricated report",
+            source="post_release_feedback",
+            source_ref="release:request",
+            metadata={"release_package_id": "release"},
+        )
+
+    state = _team_admin_service(repo).create_case(
+        case_id="ordinary-case",
+        team_id="team",
+        project_id="project",
+        title="Ordinary case",
+        source="manual",
+    )
+    state, converted = service.update_case_command(
+        session_id="session-lead",
+        case_id="ordinary-case",
+        source="post_release_feedback",
+        source_ref="release:request",
+        request_id="convert-to-fabricated-post-release",
+    )
+
+    assert converted["success"] is False
+    assert "reserved" in converted["errors"][0]["message"]
+    assert state.cases["ordinary-case"].source == "manual"
+    assert state.cases["ordinary-case"].source_ref is None
 
 
 def test_repository_migrates_legacy_chat_operator_ids_to_lowercase() -> None:

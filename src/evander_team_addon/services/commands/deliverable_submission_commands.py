@@ -64,6 +64,7 @@ from ..domain.review import (
 from ..domain.review_handoff import queue_actionable_inbox_item
 from ..domain.task_assessment import (
     TaskAssessmentBoundaryError,
+    assess_task,
     require_deliverable_acceptance,
     task_payload_with_assessment,
 )
@@ -403,7 +404,19 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 )
             else:
                 deliverable.state = TeamRecordState.REJECTED
-                _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+                remaining_assessment = assess_task(state, task.id)
+                _set_task_state(
+                    task,
+                    (
+                        TeamTaskState.WAITING_FOR_REVIEW
+                        if (
+                            remaining_assessment.active_acceptance_ids
+                            or remaining_assessment.active_review_request_ids
+                        )
+                        else TeamTaskState.IN_PROGRESS
+                    ),
+                    now=now,
+                )
                 task.updated_at = now
                 task_accepted = False
                 queue_actionable_inbox_item(

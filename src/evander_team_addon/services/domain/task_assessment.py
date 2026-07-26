@@ -752,7 +752,12 @@ def require_task_boundary_clear(
     return assessment
 
 
-def require_task_can_finish(state: TeamState, task_id: str) -> TaskAssessment:
+def require_task_can_finish(
+    state: TeamState,
+    task_id: str,
+    *,
+    dependency_task_ids: Sequence[str] | None = None,
+) -> TaskAssessment:
     task = state.tasks.get(task_id)
     if task is None:
         return require_task_boundary_clear(
@@ -769,8 +774,21 @@ def require_task_can_finish(state: TeamState, task_id: str) -> TaskAssessment:
             ),
             correction_context={"task_id": task_id},
         )
+    assessment_state = state
+    if dependency_task_ids is not None:
+        proposed_task = task.model_copy(
+            update={"dependency_task_ids": list(dependency_task_ids)}
+        )
+        assessment_state = state.model_copy(
+            update={
+                "tasks": {
+                    **state.tasks,
+                    task_id: proposed_task,
+                }
+            }
+        )
     return require_task_boundary_clear(
-        state,
+        assessment_state,
         task_id,
         boundary="finish",
     )

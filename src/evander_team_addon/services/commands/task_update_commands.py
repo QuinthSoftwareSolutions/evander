@@ -432,14 +432,6 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         },
                     )
                 if next_state == TeamTaskState.FINISHED:
-                    try:
-                        require_task_can_finish(state_model, task.id)
-                    except TaskAssessmentBoundaryError as exc:
-                        raise TeamCommandValidationError(
-                            code=exc.code,
-                            message=exc.message,
-                            correction_context=exc.correction_context,
-                        ) from None
                     if has_completion:
                         raise TeamCommandValidationError(
                             code="task_completion_requires_accepted_deliverable",
@@ -523,6 +515,19 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                             dependency_task_ids=new_dependency_ids,
                         ),
                     )
+            if next_state == TeamTaskState.FINISHED:
+                try:
+                    require_task_can_finish(
+                        state_model,
+                        task.id,
+                        dependency_task_ids=new_dependency_ids,
+                    )
+                except TaskAssessmentBoundaryError as exc:
+                    raise TeamCommandValidationError(
+                        code=exc.code,
+                        message=exc.message,
+                        correction_context=exc.correction_context,
+                    ) from None
             changed = False
             now = utc_now()
             previous_task_state = task.state

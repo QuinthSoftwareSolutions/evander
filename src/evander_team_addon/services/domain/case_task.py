@@ -94,6 +94,14 @@ def _validate_case_status_transition(
         )
 
 
+def _validate_generic_case_source(source: str | None) -> None:
+    if source == _POST_RELEASE_FEEDBACK_SOURCE:
+        raise ValueError(
+            "post-release feedback case source is reserved for the "
+            "evidence-backed report operation"
+        )
+
+
 def _validate_protected_case_update(
     state: TeamState,
     *,
@@ -107,6 +115,7 @@ def _validate_protected_case_update(
     next_task_ids: list[str] | None,
 ) -> None:
     if case.source != _POST_RELEASE_FEEDBACK_SOURCE:
+        _validate_generic_case_source(next_source)
         return
     if next_project_id != case.project_id:
         raise ValueError("post-release feedback case project is immutable")
@@ -391,6 +400,7 @@ def _apply_case_update(
     _require_absent(state.cases, case_id, "case")
     status = TeamCaseStatus(_optional_text(update.get("status")) or TeamCaseStatus.OPEN.value)
     source = _optional_text(update.get("source"))
+    _validate_generic_case_source(source)
     _validate_case_status_transition(
         source=source,
         current_status=None,
