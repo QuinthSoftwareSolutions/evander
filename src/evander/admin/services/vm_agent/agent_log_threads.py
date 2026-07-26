@@ -133,10 +133,10 @@ class VmAgentThreadLogMixin:
     @staticmethod
     def _container_thread_cursor_state(
         cursor: str | None,
-    ) -> tuple[int, int, int, frozenset[str]]:
+    ) -> tuple[int, int, int, frozenset[str], str | None]:
         normalized = str(cursor or "").strip()
         if not normalized:
-            return 0, 0, 0, frozenset()
+            return 0, 0, 0, frozenset(), None
         try:
             padding = "=" * (-len(normalized) % 4)
             payload = json.loads(
@@ -157,11 +157,13 @@ class VmAgentThreadLogMixin:
             legacy_skip_thread_id = str(payload.get("skip_thread") or "").strip()
             if legacy_skip_thread_id:
                 skip_thread_ids.add(legacy_skip_thread_id)
+            anchor_record_id = str(payload.get("anchor_record") or "").strip() or None
             return (
                 max(0, int(payload.get("record") or 0)),
                 max(0, int(payload.get("group") or 0)),
                 max(0, int(payload.get("line") or 0)),
                 frozenset(skip_thread_ids),
+                anchor_record_id,
             )
         except (
             binascii.Error,
@@ -179,6 +181,7 @@ class VmAgentThreadLogMixin:
         line_offset: int,
         *,
         skip_thread_ids: frozenset[str] = frozenset(),
+        anchor_record_id: str | None = None,
     ) -> str:
         normalized_skip_thread_ids = sorted(
             thread_id
@@ -194,6 +197,14 @@ class VmAgentThreadLogMixin:
                 **(
                     {"skip_threads": normalized_skip_thread_ids}
                     if normalized_skip_thread_ids
+                    else {}
+                ),
+                **(
+                    {"anchor_record": normalized_anchor_record_id}
+                    if (
+                        normalized_anchor_record_id
+                        := str(anchor_record_id or "").strip()
+                    )
                     else {}
                 ),
             },
@@ -472,9 +483,37 @@ class VmAgentThreadLogMixin:
             )
             page["next_cursor"] = None
             return page
-        record_offset, group_offset, line_offset, skip_thread_ids = (
+        (
+            record_offset,
+            group_offset,
+            line_offset,
+            skip_thread_ids,
+            anchor_record_id,
+        ) = (
             self._container_thread_cursor_state(cursor)
         )
+        sorted_records = sorted(
+            execution_records,
+            key=self._container_execution_sort_key,
+            reverse=True,
+        )
+        if anchor_record_id is None:
+            anchor_record_id = str(
+                getattr(sorted_records[0], "execution_id", "") or ""
+            ).strip()
+        else:
+            anchor_index = next(
+                (
+                    index
+                    for index, execution in enumerate(sorted_records)
+                    if str(getattr(execution, "execution_id", "") or "")
+                    == anchor_record_id
+                ),
+                None,
+            )
+            if anchor_index is None:
+                raise ValueError("Invalid agent thread log cursor")
+            sorted_records = sorted_records[anchor_index:]
         (
             groups,
             records_consumed,
@@ -482,7 +521,7 @@ class VmAgentThreadLogMixin:
             incomplete_probed_thread_ids,
         ) = self._container_recent_thread_groups(
             worker_backend,
-            execution_records,
+            sorted_records,
             record_offset=record_offset,
             max_groups=_CONTAINER_THREAD_GROUP_WINDOW,
             skip_thread_ids=skip_thread_ids,
@@ -500,6 +539,7 @@ class VmAgentThreadLogMixin:
                     0,
                     0,
                     skip_thread_ids=completed_thread_ids,
+                    anchor_record_id=anchor_record_id,
                 )
                 if records_truncated and records_consumed > 0
                 else None
@@ -552,6 +592,7 @@ class VmAgentThreadLogMixin:
                     next_group_offset,
                     next_line_offset + consumed_lines,
                     skip_thread_ids=skip_thread_ids,
+                    anchor_record_id=anchor_record_id,
                 )
                 break
             next_group_offset += 1
@@ -562,6 +603,7 @@ class VmAgentThreadLogMixin:
                     next_group_offset,
                     0,
                     skip_thread_ids=skip_thread_ids,
+                    anchor_record_id=anchor_record_id,
                 )
             elif records_truncated:
                 next_cursor = self._container_thread_cursor(
@@ -569,6 +611,7 @@ class VmAgentThreadLogMixin:
                     0,
                     0,
                     skip_thread_ids=completed_thread_ids,
+                    anchor_record_id=anchor_record_id,
                 )
             else:
                 next_cursor = None

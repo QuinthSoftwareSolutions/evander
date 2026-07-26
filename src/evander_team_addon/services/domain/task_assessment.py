@@ -783,6 +783,16 @@ def require_deliverable_submission(
     source_deliverable_ids: Sequence[str],
 ) -> TaskAssessment:
     current_assessment = assess_task(state, task_id)
+    if current_assessment.resolution_status == TaskResolutionStatus.RESOLVED:
+        raise _boundary_error(
+            current_assessment,
+            boundary="deliverable submission",
+            code="task_already_resolved",
+            message=(
+                f"task {task_id} is already resolved and cannot enter "
+                "deliverable submission"
+            ),
+        )
     assessment = require_task_boundary_clear(
         state,
         task_id,

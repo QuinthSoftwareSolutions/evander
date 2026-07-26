@@ -4828,7 +4828,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "title": "Build backend",
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
-            "state": "finished",
+            "state": "pending",
             "expected_revision": 4,
         },
     )
@@ -4858,12 +4858,18 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
-            "state": "accepted",
-            "decision_at": "2026-01-01T12:00:00",
             "expected_revision": 7,
         },
     )
     assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/review-requests/review/decision",
+        json={
+            "state": "accepted",
+            "expected_revision": 8,
+        },
+    )
+    assert response.status_code == 200, response.text
 
     timeline = client.get(
         "/api/addons/team-addon/timeline",
@@ -4923,7 +4929,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     assert windowed_payload["has_more"] is True
     assert len(windowed_payload["entries"]) == 2
     assert windowed_payload["facets"] == {
-        "types": ["review", "task"],
+        "types": ["deliverable", "review", "task"],
         "statuses": ["accepted", "finished"],
     }
 

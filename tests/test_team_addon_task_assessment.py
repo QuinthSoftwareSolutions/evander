@@ -533,6 +533,39 @@ def test_submission_boundary_returns_exact_missing_contribution_ids() -> None:
     ] == [child_deliverable.id]
 
 
+@pytest.mark.parametrize(
+    "task",
+    [
+        _support_task("finished", state=TeamTaskState.FINISHED),
+        AgentTask.model_validate(
+            {
+                **_support_task("cancelled").model_dump(),
+                "state": TeamTaskState.CANCELLED,
+                "cancellation": TaskCancellation(
+                    reason_code="obsolete",
+                    reason="A successor made this task obsolete.",
+                    actor_kind="operator",
+                    actor_id="operator:test",
+                ),
+            }
+        ),
+    ],
+)
+def test_submission_boundary_rejects_resolved_tasks(task: AgentTask) -> None:
+    state = _state()
+    state.tasks[task.id] = task
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_submission(
+            state,
+            task_id=task.id,
+            source_deliverable_ids=[],
+        )
+
+    assert raised.value.code == "task_already_resolved"
+    assert raised.value.correction_context["resolution_status"] == "resolved"
+
+
 def test_acceptance_boundary_rejects_unresolved_descendants() -> None:
     state = _state()
     state.tasks["parent"] = _outcome_task(

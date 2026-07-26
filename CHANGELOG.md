@@ -2,6 +2,11 @@
 
 ## 2026-07-26 - Team Review Follow-up Fixes
 
+- Rejected deliverable submissions after task resolution, kept post-release case source,
+  release provenance, and unresolved task membership protected across agent and Admin updates,
+  and made evidence-backed post-release closure terminal.
+- Normalized human-review preview expiry timestamps to UTC and anchored container thread-log
+  cursors to the first stable execution so newly arriving work cannot shift older pages.
 - Allowed stale review attempts on superseded deliverables to close their reviewer inboxes and
   blockers without recalculating historical deliverable or current task state.
 - Revalidated release scope when the asynchronous candidate manifest is built, accepted human

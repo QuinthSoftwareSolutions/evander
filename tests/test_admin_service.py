@@ -6560,6 +6560,95 @@ def test_get_admin_agent_log_page_container_session_threads_stays_within_line_li
     assert one_line_page["text"] == "body for exec-thread-b\n"
 
 
+def test_get_admin_agent_log_page_thread_cursor_ignores_newer_executions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-stable-cursor",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-stable-cursor",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-stable-cursor",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+
+    def _record(suffix: str, minute: int) -> ContainerWorkerExecutionRecord:
+        return ContainerWorkerExecutionRecord(
+            execution_id=f"exec-thread-{suffix}",
+            session_id="session-thread-stable-cursor",
+            worker_job_id=f"job-thread-{suffix}",
+            worker_url="http://worker.test",
+            target_name="target-thread-stable-cursor",
+            started_at=datetime(2026, 7, 26, 8, minute, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+            metadata={"resume_thread_id": f"thread-{suffix}"},
+        )
+
+    repository.put(_record("a", 0))
+    repository.put(_record("b", 1))
+
+    class FakeContainerBackend:
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            assert mode == "session"
+            assert query is None
+            return {
+                "text": f"body for {target}\n",
+                "returned_lines": 1,
+                "has_more_before": False,
+            }
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    latest_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-stable-cursor",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+    )
+
+    assert "thread=thread-b" in latest_page["text"]
+    assert "thread=thread-a" not in latest_page["text"]
+    assert latest_page["next_cursor"]
+
+    repository.put(_record("c", 2))
+    older_page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-thread-stable-cursor",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+        cursor=str(latest_page["next_cursor"]),
+    )
+
+    assert "thread=thread-a" in older_page["text"]
+    assert "thread=thread-b" not in older_page["text"]
+    assert "thread=thread-c" not in older_page["text"]
+
+
 def test_get_admin_agent_log_page_container_session_threads_uses_cursor_for_older_lines(
     tmp_path: Path,
     monkeypatch,

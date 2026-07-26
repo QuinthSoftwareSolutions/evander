@@ -16,6 +16,7 @@ from ...models import (
     TeamTaskState,
     TeamTaskKind,
     TaskOutcomeContract,
+    TaskResolutionStatus,
     _unique_text_list,
     agent_has_project_assignment,
 )
@@ -41,6 +42,18 @@ from .common import (
     utc_now,
 )
 from .work_due import _mark_agent_work_due
+from .task_assessment import assess_task
+
+
+_POST_RELEASE_FEEDBACK_SOURCE = "post_release_feedback"
+_POST_RELEASE_PROVENANCE_METADATA_KEYS = frozenset(
+    {
+        "evidence_refs",
+        "release_package_id",
+        "reporter_display_name",
+        "reporter_user_id",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -66,14 +79,72 @@ def _validate_case_status_transition(
     current_status: TeamCaseStatus | None,
     next_status: TeamCaseStatus,
 ) -> None:
+    terminal_statuses = {TeamCaseStatus.RESOLVED, TeamCaseStatus.CLOSED}
     if (
-        source == "post_release_feedback"
-        and next_status in {TeamCaseStatus.RESOLVED, TeamCaseStatus.CLOSED}
-        and current_status not in {TeamCaseStatus.RESOLVED, TeamCaseStatus.CLOSED}
+        source == _POST_RELEASE_FEEDBACK_SOURCE
+        and next_status != current_status
+        and (
+            next_status in terminal_statuses
+            or current_status in terminal_statuses
+        )
     ):
         raise ValueError(
             "post-release feedback cases require the evidence-backed "
             "post-release close operation"
+        )
+
+
+def _validate_protected_case_update(
+    state: TeamState,
+    *,
+    case: TeamCase,
+    next_project_id: str | None,
+    next_source: str | None,
+    source_ref_present: bool,
+    next_source_ref: str | None,
+    metadata_present: bool,
+    next_metadata: Mapping[str, Any] | None,
+    next_task_ids: list[str] | None,
+) -> None:
+    if case.source != _POST_RELEASE_FEEDBACK_SOURCE:
+        return
+    if next_project_id != case.project_id:
+        raise ValueError("post-release feedback case project is immutable")
+    if next_source != case.source:
+        raise ValueError("post-release feedback case source is immutable")
+    if source_ref_present and next_source_ref != case.source_ref:
+        raise ValueError("post-release feedback case source_ref is immutable")
+    if metadata_present:
+        candidate_metadata = dict(next_metadata or {})
+        protected_keys = set(_POST_RELEASE_PROVENANCE_METADATA_KEYS)
+        if "post_release_feedback_resolution" in case.metadata:
+            protected_keys.add("post_release_feedback_resolution")
+        changed_keys = sorted(
+            key
+            for key in protected_keys
+            if candidate_metadata.get(key) != case.metadata.get(key)
+        )
+        if changed_keys:
+            raise ValueError(
+                "post-release feedback case provenance metadata is immutable: "
+                + ", ".join(changed_keys)
+            )
+    if next_task_ids is None:
+        return
+    unresolved_removed_task_ids = sorted(
+        task_id
+        for task_id in case.task_ids
+        if task_id not in next_task_ids
+        and (
+            task_id not in state.tasks
+            or assess_task(state, task_id).resolution_status
+            != TaskResolutionStatus.RESOLVED
+        )
+    )
+    if unresolved_removed_task_ids:
+        raise ValueError(
+            "post-release feedback case cannot remove unresolved tasks: "
+            + ", ".join(unresolved_removed_task_ids)
         )
 
 
@@ -134,6 +205,17 @@ def _unlink_task_from_case(
 ) -> None:
     case = state.cases.get(case_id)
     if case is not None and task_id in case.task_ids:
+        _validate_protected_case_update(
+            state,
+            case=case,
+            next_project_id=case.project_id,
+            next_source=case.source,
+            source_ref_present=False,
+            next_source_ref=case.source_ref,
+            metadata_present=False,
+            next_metadata=None,
+            next_task_ids=[item for item in case.task_ids if item != task_id],
+        )
         case.task_ids = [item for item in case.task_ids if item != task_id]
         case.updated_at = now
     task = state.tasks.get(task_id)
@@ -198,11 +280,37 @@ def _apply_case_update(
             next_owner_agent_id = _optional_text(update.get("owner_agent_id"))
         if "source" in update:
             next_source = _optional_text(update.get("source"))
+        next_source_ref = (
+            _optional_text(update.get("source_ref"))
+            if "source_ref" in update
+            else case.source_ref
+        )
+        next_metadata = (
+            _mapping(update.get("metadata") or {}, "metadata")
+            if "metadata" in update
+            else None
+        )
+        next_task_ids = (
+            _unique_text_list(update.get("task_ids"), "task_ids")
+            if "task_ids" in update
+            else None
+        )
         _validate_case_scope(
             state,
             team_id=case.team_id,
             project_id=next_project_id,
             owner_agent_id=next_owner_agent_id,
+        )
+        _validate_protected_case_update(
+            state,
+            case=case,
+            next_project_id=next_project_id,
+            next_source=next_source,
+            source_ref_present="source_ref" in update,
+            next_source_ref=next_source_ref,
+            metadata_present="metadata" in update,
+            next_metadata=next_metadata,
+            next_task_ids=next_task_ids,
         )
         if "title" in update:
             case.title = _required_text(update.get("title"), "title")
@@ -216,10 +324,16 @@ def _apply_case_update(
                 _required_text(update.get("status"), "status")
             )
             _validate_case_status_transition(
-                source=next_source,
+                source=case.source,
                 current_status=previous_status,
                 next_status=next_status,
             )
+            if next_source != case.source:
+                _validate_case_status_transition(
+                    source=next_source,
+                    current_status=previous_status,
+                    next_status=next_status,
+                )
             case.status = next_status
             if case.status == TeamCaseStatus.CLOSED and previous_status != TeamCaseStatus.CLOSED:
                 case.closed_at = now
@@ -232,17 +346,16 @@ def _apply_case_update(
         if "source" in update:
             case.source = next_source
         if "source_ref" in update:
-            case.source_ref = _optional_text(update.get("source_ref"))
+            case.source_ref = next_source_ref
         if "tags" in update:
             case.tags = _unique_text_list(update.get("tags"), "tags")
         if "metadata" in update:
-            case.metadata = _mapping(update.get("metadata") or {}, "metadata")
+            case.metadata = dict(next_metadata or {})
         if "task_ids" in update:
-            task_ids = _unique_text_list(update.get("task_ids"), "task_ids")
             for task_id in list(case.task_ids):
-                if task_id not in task_ids:
+                if task_id not in (next_task_ids or []):
                     _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
-            for task_id in task_ids:
+            for task_id in next_task_ids or []:
                 _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
         else:
             for task_id in list(case.task_ids):

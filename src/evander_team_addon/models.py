@@ -2659,6 +2659,11 @@ class HumanReviewTestTarget(TeamModel):
     def _instructions(cls, value: object) -> str:
         return _optional_text(value) or ""
 
+    @field_validator("expires_at", mode="after")
+    @classmethod
+    def _expires_at(cls, value: datetime | None) -> datetime | None:
+        return _ensure_utc(value) if value is not None else None
+
     @field_validator("evidence_refs", mode="before")
     @classmethod
     def _evidence_refs(cls, value: object) -> list[str]:

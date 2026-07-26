@@ -75,6 +75,15 @@ from evander_team_addon.services.release_gate_service import TeamReleaseGateServ
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 
 
+def test_human_review_target_normalizes_naive_expiry_to_utc() -> None:
+    target = HumanReviewTestTarget(
+        alias="staging",
+        expires_at="2026-07-26T10:00:00",
+    )
+
+    assert target.expires_at == datetime(2026, 7, 26, 10, 0, tzinfo=UTC)
+
+
 def _human_state(
     *,
     eligible_user_ids: list[str] | None = None,

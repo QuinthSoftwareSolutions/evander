@@ -92,6 +92,7 @@ from .domain.case_task import (
     _sync_case_task_link,
     _task_graph_edit_error,
     _unlink_task_from_case,
+    _validate_protected_case_update,
     _validate_case_scope,
     _validate_case_status_transition,
 )
@@ -2203,6 +2204,17 @@ class TeamAdminService:
                 project_id=next_project_id,
                 owner_agent_id=next_owner_agent_id,
             )
+            _validate_protected_case_update(
+                state,
+                case=case,
+                next_project_id=next_project_id,
+                next_source=next_source,
+                source_ref_present=set_source_ref or source_ref is not None,
+                next_source_ref=normalized_source_ref,
+                metadata_present=normalized_metadata is not None,
+                next_metadata=normalized_metadata,
+                next_task_ids=normalized_task_ids,
+            )
             now = utc_now()
             if normalized_title is not None:
                 case.title = normalized_title
@@ -2213,10 +2225,16 @@ class TeamAdminService:
             if normalized_status is not None:
                 previous_status = case.status
                 _validate_case_status_transition(
-                    source=next_source,
+                    source=case.source,
                     current_status=previous_status,
                     next_status=normalized_status,
                 )
+                if next_source != case.source:
+                    _validate_case_status_transition(
+                        source=next_source,
+                        current_status=previous_status,
+                        next_status=normalized_status,
+                    )
                 case.status = normalized_status
                 if (
                     case.status == TeamCaseStatus.CLOSED

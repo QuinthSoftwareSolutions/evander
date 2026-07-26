@@ -2595,6 +2595,36 @@ def test_submit_deliverable_command_rejects_active_context_for_terminal_task(
     assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ACTIVE
 
 
+def test_submit_deliverable_command_rejects_resolved_task_without_git_context(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-resolved-task",
+    )
+    _team_admin_service(repo).update_task(
+        task_id="task",
+        state=TeamTaskState.FINISHED,
+    )
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-after-resolution",
+        task_id="task",
+        summary="A stale dispatch must not reopen resolved work.",
+        artifact_refs=["artifact:late-result"],
+        request_id="request-submit-after-resolution",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "task_already_resolved"
+    assert state.tasks["task"].state == TeamTaskState.FINISHED
+    assert state.deliverables == {}
+
+
 def test_submit_deliverable_command_rejects_git_refs_without_context(
     tmp_path: Path,
 ) -> None:
@@ -5825,6 +5855,93 @@ def test_human_finding_and_post_release_case_commands_are_supported(
     assert state.cases["post-release-case"].metadata[
         "post_release_feedback_resolution"
     ]["evidence_refs"] == ["monitoring:recovery"]
+
+
+def test_post_release_case_generic_updates_preserve_closure_invariants(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _seed(state):
+        state.cases["post-release-case"] = TeamCase(
+            id="post-release-case",
+            team_id="team",
+            project_id="project",
+            title="Post-release report",
+            status=TeamCaseStatus.IN_PROGRESS,
+            owner_agent_id="lead",
+            source="post_release_feedback",
+            source_ref="published-release:report-1",
+            metadata={
+                "release_package_id": "published-release",
+                "reporter_user_id": "reporter",
+                "reporter_display_name": "Reporter",
+                "evidence_refs": ["artifact:report"],
+            },
+            task_ids=["post-release-triage"],
+        )
+        state.tasks["post-release-triage"] = AgentTask(
+            id="post-release-triage",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="post-release-case",
+            priority=0,
+            state=TeamTaskState.PENDING,
+            task_kind=TeamTaskKind.SUPPORT,
+            title="Triage post-release report",
+            description="Investigate and correct the reported regression.",
+            created_by_actor="system:post-release-feedback",
+        )
+        return state
+
+    repo.update(_seed)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-protected-case",
+    )
+    service = _command_service(repo)
+
+    state, source_bypass = service.update_case_command(
+        session_id="session-lead",
+        case_id="post-release-case",
+        source="manual",
+        status=TeamCaseStatus.CLOSED.value,
+        request_id="bypass-protected-case-source",
+    )
+
+    assert source_bypass["success"] is False
+    assert "source is immutable" in source_bypass["errors"][0]["message"]
+    assert state.cases["post-release-case"].source == "post_release_feedback"
+    assert state.cases["post-release-case"].status == TeamCaseStatus.IN_PROGRESS
+
+    state, task_bypass = service.update_case_command(
+        session_id="session-lead",
+        case_id="post-release-case",
+        task_ids=[],
+        request_id="bypass-protected-case-task",
+    )
+
+    assert task_bypass["success"] is False
+    assert "cannot remove unresolved tasks" in task_bypass["errors"][0]["message"]
+    assert state.cases["post-release-case"].task_ids == ["post-release-triage"]
+    assert state.tasks["post-release-triage"].case_id == "post-release-case"
+
+    with pytest.raises(ValueError, match="provenance metadata is immutable"):
+        _team_admin_service(repo).update_case(
+            case_id="post-release-case",
+            metadata={
+                **state.cases["post-release-case"].metadata,
+                "release_package_id": "different-release",
+            },
+            expected_revision=state.revision,
+        )
+
+    persisted = repo.read()
+    assert persisted.cases["post-release-case"].metadata["release_package_id"] == (
+        "published-release"
+    )
+    assert persisted.cases["post-release-case"].task_ids == ["post-release-triage"]
 
 
 def test_repository_migrates_legacy_chat_operator_ids_to_lowercase() -> None:
