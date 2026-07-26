@@ -12302,8 +12302,8 @@ function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
       </details>
       <div class="record-actions">
         <button type="submit" class="record-action human-review-approve" data-human-review-decision="approved">Approve</button>
-        <button type="submit" class="record-action" data-human-review-decision="changes_requested">Request changes</button>
-        <button type="submit" class="record-action" data-human-review-decision="blocked">Blocked</button>
+        <button type="submit" class="record-action" data-human-review-decision="changes_requested" formnovalidate>Request changes</button>
+        <button type="submit" class="record-action" data-human-review-decision="blocked" formnovalidate>Blocked</button>
       </div>
     </form>
   `;

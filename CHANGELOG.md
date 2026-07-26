@@ -4,9 +4,9 @@
 
 - Kept rejected tasks unresolved for parent, dependency, release, and project completion; rejected
   work now remains blocked until recovery, replacement, or authorized cancellation.
-- Restricted required human-review checklist completion to approvals, rejected common signed-URL
-  `token` and `sig` credentials, and enforced the review request's immutable outcome snapshot when
-  a profile changes while review is pending.
+- Restricted required human-review checklist completion to approvals (including the Team UI),
+  rejected common signed-URL `token` and `sig` credentials, and enforced the review request's
+  immutable outcome snapshot when a profile changes while review is pending.
 - Allowed agent session rebinding after terminal dispatches, rejected mixed hierarchy/dependency
   cycles during task creation, and retained same-thread legacy execution fallbacks across bounded
   log cursor windows.

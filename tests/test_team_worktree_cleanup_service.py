@@ -205,7 +205,7 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
 
 
-def test_rejected_task_remains_eligible_for_resolved_worktree_cleanup(
+def test_rejected_task_remains_unresolved_and_is_not_enqueued_for_worktree_cleanup(
     tmp_path,
 ) -> None:
     repository = _seed_cleanup_state(
@@ -222,9 +222,8 @@ def test_rejected_task_remains_eligible_for_resolved_worktree_cleanup(
         grace_seconds=0,
     )
 
-    assert counts == {"enqueued": 1, "recovered": 0, "refreshed": 0}
-    candidate = next(iter(state.worktree_cleanup_candidates.values()))
-    assert candidate.reason == "task_resolved"
+    assert counts == {"enqueued": 0, "recovered": 0, "refreshed": 0}
+    assert state.worktree_cleanup_candidates == {}
 
 
 def test_backend_refusal_is_durable_recovery_and_retry_is_idempotent(

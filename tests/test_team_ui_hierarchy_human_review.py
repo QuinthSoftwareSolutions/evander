@@ -117,3 +117,18 @@ def test_task_ui_renders_self_contained_inherited_blocker_reasons() -> None:
     assert "function renderInheritedTaskBlockerDetail(blocker)" in source
     assert "blocker.reason || blocker.summary" in source
     assert "task-inherited-blocker-card" in source
+
+
+def test_human_review_non_approval_actions_bypass_required_checklist_validation() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-human-review-decision="approved">Approve</button>' in source
+    assert (
+        'data-human-review-decision="changes_requested" formnovalidate>'
+        "Request changes</button>"
+    ) in source
+    assert (
+        'data-human-review-decision="blocked" formnovalidate>Blocked</button>'
+    ) in source
