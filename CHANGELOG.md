@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-26 - Team Stand-down UI Clarity
+
+- Relabeled the Team agent action to “Revoke stand-down” so its effect remains clear wherever the
+  control is rendered.
+
 ## 2026-07-26 - Team Lifecycle Review Fixes
 
 - Carried open human findings through the full successor-release lineage, made reviewer-request

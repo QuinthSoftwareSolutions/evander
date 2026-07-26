@@ -3739,6 +3739,7 @@ test("team add-on privilege messages update controls without losing selected man
   await detail.waitFor({ state: "visible" });
   const revokeButton = detail.locator('[data-stand-down-revoke-agent-id="manager"]');
   await revokeButton.waitFor({ state: "visible" });
+  await assert.doesNotReject(() => detail.getByRole("button", { name: "Revoke stand-down" }).waitFor({ state: "visible" }));
   assert.equal(await revokeButton.isDisabled(), true);
   const requestCountBeforeMessage = requests.length;
 

@@ -8853,7 +8853,7 @@ function renderAgentStandDownControls(agentId, record) {
     <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
     ${
       operatorRoot
-        ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke</button>`
+        ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke stand-down</button>`
         : ""
     }
   `;
