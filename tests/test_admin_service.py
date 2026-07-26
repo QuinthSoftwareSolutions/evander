@@ -6374,6 +6374,110 @@ def test_get_admin_agent_log_page_container_session_threads_honors_cursorless_of
     assert fake_backend.calls == [("exec-thread-offset", 0, "session")]
 
 
+def test_get_admin_agent_log_page_container_unthreaded_honors_cursorless_offset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-unthreaded-offset",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-unthreaded-offset",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-unthreaded-offset",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-unthreaded-offset",
+            session_id="session-unthreaded-offset",
+            worker_job_id="job-unthreaded-offset",
+            worker_url="http://worker.test",
+            target_name="target-unthreaded-offset",
+            started_at=datetime(2026, 7, 26, 8, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+            metadata={"effect_type": "effect:agent:prompt"},
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, int, str | None, str | None]] = []
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+            mode: str | None = None,
+        ) -> dict[str, object]:
+            self.calls.append((target, limit, offset, query, mode))
+            assert target == "exec-unthreaded-offset"
+            if mode == "raw":
+                assert query == "session id:"
+                return {
+                    "text": "",
+                    "returned_lines": 0,
+                    "has_more_before": False,
+                }
+            if mode == "execution":
+                assert query is None
+                lines = [f"execution line {index}" for index in range(1, 11)]
+                end_index = max(0, len(lines) - offset)
+                start_index = max(0, end_index - limit)
+                selected = lines[start_index:end_index]
+                return {
+                    "text": "\n".join(selected) + ("\n" if selected else ""),
+                    "returned_lines": len(selected),
+                    "has_more_before": start_index > 0,
+                }
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
+    )
+
+    page = service.vm_agent_admin.get_admin_agent_log_page(
+        "session-unthreaded-offset",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+        offset=3,
+    )
+
+    assert page["offset"] == 3
+    assert page["returned_lines"] == 3
+    assert page["text"] == (
+        "execution line 5\nexecution line 6\nexecution line 7\n"
+    )
+    assert page["next_cursor"] is None
+    assert fake_backend.calls == [
+        (
+            "exec-unthreaded-offset",
+            1,
+            0,
+            "session id:",
+            "raw",
+        ),
+        ("exec-unthreaded-offset", 6, 0, None, "execution"),
+    ]
+
+
 def test_get_admin_agent_log_page_container_session_threads_stays_within_line_limit(
     tmp_path: Path,
     monkeypatch,

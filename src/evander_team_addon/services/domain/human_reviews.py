@@ -1093,10 +1093,7 @@ def _validate_human_finding_targets(
     release: ReleasePackage,
     finding_inputs: Sequence[Mapping[str, Any]],
 ) -> None:
-    candidate_deliverable_ids = {
-        evidence.deliverable_id
-        for evidence in (release.manifest.deliverables if release.manifest else [])
-    }
+    candidate_deliverable_ids = _reviewed_candidate_deliverable_ids(release)
     for position, raw in enumerate(finding_inputs):
         if not isinstance(raw, Mapping):
             raise ValueError(f"human finding {position + 1} must be an object")
@@ -1123,6 +1120,26 @@ def _validate_human_finding_targets(
             )
 
 
+def _reviewed_candidate_deliverable_ids(
+    release: ReleasePackage,
+) -> set[str]:
+    manifest = release.manifest
+    if manifest is None:
+        return set()
+    candidate_ids = {
+        evidence.deliverable_id
+        for evidence in manifest.deliverables
+    }
+    pending_ids = list(candidate_ids)
+    while pending_ids:
+        deliverable_id = pending_ids.pop()
+        for source_id in manifest.contribution_graph.get(deliverable_id, []):
+            if source_id not in candidate_ids:
+                candidate_ids.add(source_id)
+                pending_ids.append(source_id)
+    return candidate_ids
+
+
 def _specific_finding_route(
     state: TeamState,
     *,
@@ -1139,10 +1156,7 @@ def _specific_finding_route(
         deliverable is None
         or task is None
         or task.project_id != release.project_id
-        or deliverable.id not in {
-            evidence.deliverable_id
-            for evidence in (release.manifest.deliverables if release.manifest else [])
-        }
+        or deliverable.id not in _reviewed_candidate_deliverable_ids(release)
     ):
         return None, lead_id
     return task.id, task.owner_agent_id

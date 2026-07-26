@@ -304,6 +304,7 @@ class VmAgentThreadLogMixin:
         thread_id: str | None,
         records: list[Any],
         raw_text: str | None,
+        body_lines: int | None = None,
     ) -> str:
         ordered_records = sorted(records, key=self._container_execution_sort_key)
         first_execution = ordered_records[0]
@@ -316,7 +317,31 @@ class VmAgentThreadLogMixin:
             header_parts.append(f"started={first_execution.started_at.isoformat()}")
         header = "=== " + " ".join(header_parts) + " ==="
         if thread_id is None:
-            body = str(raw_text or "").rstrip()
+            if body_lines is None:
+                body = self._container_thread_execution_fallback_log(
+                    worker_backend,
+                    ordered_records,
+                    lines=0,
+                ).rstrip()
+            else:
+                execution_chunk, _truncated_before = (
+                    self._container_execution_log_page_chunk(
+                        worker_backend,
+                        first_execution,
+                        body_lines=max(1, body_lines),
+                        mode="execution",
+                    )
+                )
+                _execution_header, separator, execution_body = (
+                    execution_chunk.partition("\n")
+                )
+                body = (
+                    self._container_log_without_session_id_lines(execution_body).rstrip()
+                    if separator
+                    else ""
+                )
+            if not body:
+                body = str(raw_text or "").rstrip()
             return header if not body else header + "\n" + body
         transcript = self._container_thread_transcript(
             worker_backend,
@@ -599,6 +624,11 @@ class VmAgentThreadLogMixin:
                 thread_id=thread_id,
                 records=records,
                 raw_text=raw_text,
+                body_lines=(
+                    None
+                    if normalized_query
+                    else max(1, limit) + max(0, offset)
+                ),
             )
             chunks.append(chunk)
         page = _log_page_from_end(

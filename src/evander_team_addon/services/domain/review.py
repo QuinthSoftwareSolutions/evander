@@ -629,11 +629,6 @@ def _review_closure_target(
         review.deliverable_id,
         "deliverable",
     )
-    if deliverable.superseded_by_deliverable_id is not None:
-        raise ValueError(
-            f"review {review.id} belongs to superseded deliverable {deliverable.id}; "
-            "historical review attempts cannot be closed"
-        )
     task = _require_present(state.tasks, deliverable.task_id, "task")
     return review, deliverable, task
 
@@ -674,15 +669,16 @@ def _close_review_attempt(
         result=result,
         now=now,
     )
-    _recalculate_deliverable_after_review_closure(
-        state,
-        closed_review=review,
-        deliverable=deliverable,
-        task=task,
-        sender_agent_id=actor_agent_id or deliverable.producer_agent_id,
-        result=result,
-        now=now,
-    )
+    if deliverable.superseded_by_deliverable_id is None:
+        _recalculate_deliverable_after_review_closure(
+            state,
+            closed_review=review,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=actor_agent_id or deliverable.producer_agent_id,
+            result=result,
+            now=now,
+        )
 
 
 def _close_review_inbox_items(

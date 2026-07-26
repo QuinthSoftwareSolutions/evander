@@ -593,6 +593,68 @@ def test_changes_requested_allows_incomplete_checklist() -> None:
     assert request.state == "changes_requested"
 
 
+def test_changes_requested_routes_recursive_contribution_finding_to_owner() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.tasks["child-task"] = AgentTask(
+        id="child-task",
+        owner_agent_id="owner",
+        project_id="project",
+        parent_task_id="source-task",
+        priority=1,
+        state=TeamTaskState.FINISHED,
+        title="Child contribution",
+        description="Accepted child work included by the aggregate.",
+        created_by_agent_id="lead",
+        deliverable_ids=["child-deliverable"],
+    )
+    state.deliverables["child-deliverable"] = Deliverable(
+        id="child-deliverable",
+        task_id="child-task",
+        producer_agent_id="owner",
+        summary="Recursive source contribution",
+        state=TeamRecordState.ACCEPTED,
+    )
+    state.deliverables["source-deliverable"].source_deliverable_ids = [
+        "child-deliverable"
+    ]
+    assert release.manifest is not None
+    release.manifest.contribution_graph = {
+        "source-deliverable": ["child-deliverable"],
+        "child-deliverable": [],
+    }
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="recursive-contribution-finding",
+        expected_revision=request.revision,
+        checklist_results={"smoke": True},
+        findings=[
+            {
+                "text": "Correct the recursively included child contribution.",
+                "target_deliverable_ids": ["child-deliverable"],
+            }
+        ],
+        result={"events": []},
+    )
+
+    finding = next(iter(state.human_review_findings.values()))
+    correction_task = state.tasks[finding.correction_task_id]
+    assert finding.target_deliverable_ids == ["child-deliverable"]
+    assert correction_task.originating_task_id == "child-task"
+    assert correction_task.owner_agent_id == "owner"
+
+
 def test_changes_requested_rejects_deliverables_outside_reviewed_candidate() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     state.tasks["foreign-task"] = AgentTask(

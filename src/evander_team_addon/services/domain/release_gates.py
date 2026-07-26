@@ -32,7 +32,7 @@ from .human_reviews import (
     ensure_human_review_request,
     human_review_request_for_release,
 )
-from .task_assessment import deliverable_source_lineage
+from .task_assessment import deliverable_source_lineage, require_release_scope
 
 
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
@@ -770,6 +770,11 @@ def _candidate_manifest(
     policy = project.release_policy
     if policy is None or release.candidate_commit_sha is None:
         raise ValueError("release candidate policy or commit is missing")
+    require_release_scope(
+        state,
+        project_id=release.project_id,
+        deliverable_ids=release.deliverable_ids,
+    )
     waivers = {waiver.deliverable_id: waiver for waiver in release.verification_waivers}
     deliverable_rows: list[ReleaseCandidateDeliverableEvidence] = []
     for deliverable_id in release.deliverable_ids:

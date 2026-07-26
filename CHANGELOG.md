@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-26 - Team Review Follow-up Fixes
+
+- Allowed stale review attempts on superseded deliverables to close their reviewer inboxes and
+  blockers without recalculating historical deliverable or current task state.
+- Revalidated release scope when the asynchronous candidate manifest is built, accepted human
+  findings against recursively included contribution evidence, and routed single-source findings
+  to that contribution's owning task.
+- Loaded execution-mode content for unthreaded container logs before applying legacy cursorless
+  offsets instead of paginating the one-line thread probe.
+
 ## 2026-07-26 - Team Review and Guided Tour Fixes
 
 - Kept rejected tasks unresolved for parent, dependency, release, and project completion; rejected
@@ -13,9 +23,8 @@
 - Synchronized Admin theme and privilege changes into the mounted Team Add-on, repaired project
   release-detail refresh, aligned the team-wide outcome checkbox, and escaped runtime errors
   exactly once.
-- Excluded retired or superseded reviews from immutable release evidence, rejected retirement of
-  historical reviews after deliverable replacement, and rejected human findings that target work
-  outside the reviewed release candidate.
+- Excluded retired or superseded reviews from immutable release evidence and rejected human
+  findings that target work outside the reviewed release candidate.
 - Preserved cursorless offset paging for thread logs and kept grouped thread responses within the
   requested line budget, including one-line pages.
 - Restored Team project mutation controls in both directions as Admin privileges change, required

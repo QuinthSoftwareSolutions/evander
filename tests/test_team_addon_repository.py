@@ -11805,7 +11805,7 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    _team_agent_action_service(repo).apply_agent_action(
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -11814,9 +11814,20 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
                     "deliverable_id": "deliverable",
                     "reviewer_agent_id": "worker",
                     "instructions": "Review.",
-                }
+                },
+                {
+                    "id": "review-stale",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "lead",
+                    "instructions": "Perform a second review.",
+                },
             ],
         },
+    )
+    stale_assignment_id = next(
+        inbox_id
+        for inbox_id in requested["created_inbox_item_ids"]
+        if state.inbox[inbox_id].payload.get("review_request_id") == "review-stale"
     )
 
     state, result = _team_agent_action_service(repo).apply_agent_action(
@@ -11930,12 +11941,29 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
         request_id="request-retire-superseded-review",
     )
 
-    assert retirement["success"] is False
-    assert retirement["errors"][0]["code"] == "review_retire_invalid"
-    assert "belongs to superseded deliverable deliverable" in (
-        retirement["errors"][0]["message"]
+    assert retirement["success"] is True
+    assert state.review_requests["review-1"].retired_at is not None
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.FINISHED
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-withdraw-superseded-review",
     )
-    assert state.review_requests["review-1"].retired_at is None
+    state, withdrawal = _command_service(repo).withdraw_review_command(
+        session_id="session-lead",
+        review_request_id="review-stale",
+        reason="The historical handoff is no longer actionable.",
+        request_id="request-withdraw-superseded-review",
+    )
+
+    assert withdrawal["success"] is True
+    assert withdrawal["closed_inbox_item_ids"] == [stale_assignment_id]
+    assert state.review_requests["review-stale"].retired_at is not None
+    assert state.inbox[stale_assignment_id].state == TeamInboxItemState.HANDLED
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
     assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.FINISHED
 
@@ -13303,6 +13331,71 @@ def test_apply_agent_action_rejects_combined_feature_update_and_release_request(
     action_record = next(iter(state.action_records.values()))
     assert action_record.success is False
     assert action_record.error == error
+
+
+def test_release_candidate_revalidates_deliverable_after_review_retirement(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-review-retired",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    promotion_id = requested["git_promotion_event_ids"][0]
+    assert state.release_packages["release-review-retired"].state == (
+        TeamRecordState.PENDING
+    )
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-retire-release-evidence",
+    )
+    state, retired = _command_service(repo).retire_review_command(
+        session_id="session-lead",
+        review_request_id="review-deliverable",
+        reason="The accepted review evidence was attached in error.",
+        request_id="request-retire-release-evidence",
+    )
+    assert retired["success"] is True
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=promotion_id,
+        success=True,
+        commit_sha="candidate-with-retired-evidence",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages["release-review-retired"]
+    assert release.state == TeamRecordState.REJECTED
+    assert release.manifest is None
+    assert release.approved_commit_sha is None
+    assert release.gate_failure is not None
+    assert release.gate_failure.stage == "configuration"
+    assert "release deliverable not accepted" in (release.error or "")
+    assert result["git_promotion_event_ids"] == []
+    assert not any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
 
 
 def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) -> None:
