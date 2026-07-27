@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27 - Team Project Catalog Card Layout
+
+- Let project catalog cards grow across available desktop space, keep the project name and status
+  together in the primary row, show only the human-readable team name beneath it, and preserve
+  ordinary project-name words instead of breaking them mid-word.
+
 ## 2026-07-27 - Team Governance Cost Roll-up Clarity
 
 - Distinguished governance portfolio cost roll-ups from team, project, and agent spend by giving

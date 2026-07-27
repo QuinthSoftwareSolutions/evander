@@ -3806,6 +3806,65 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
+test("team add-on project catalog uses growing cards with concise project metadata", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.teams.team.name = "Accounting Department";
+  initialState.projects.project.name = "Bookkeeping Operations";
+  for (const [id, name, teamId, teamName] of [
+    ["launch-operations", "Launch Operations", "launch-team", "Launch Team"],
+    ["platform-reliability", "Platform Reliability", "platform-team", "Platform Team"],
+    ["customer-operations", "Customer Operations", "customer-team", "Customer Team"],
+  ]) {
+    initialState.teams[teamId] = {
+      id: teamId,
+      name: teamName,
+      manager_agent_id: "manager",
+      operator_communication_target_id: "ops-channel",
+      project_ids: [id],
+      archived: false,
+    };
+    initialState.projects[id] = {
+      id,
+      team_id: teamId,
+      name,
+      lead_agent_id: "lead",
+      goals: [],
+      git: { managed_repo_id: `mr_${id}`, base_branch: "main" },
+      status: "active",
+    };
+  }
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const cards = page.locator("#team-projects-page button.projects-focus-row");
+  await cards.first().waitFor({ state: "visible" });
+  assert.equal(await cards.count(), 4);
+
+  const bookkeepingCard = page.locator('[data-project-focus-id="project"]');
+  assert.equal(await bookkeepingCard.locator(".projects-focus-row-primary").count(), 1);
+  assert.equal(await bookkeepingCard.locator(".projects-focus-row-team").innerText(), "Accounting Department");
+  assert.equal(await bookkeepingCard.getByText("team", { exact: true }).count(), 0);
+  assert.equal(await bookkeepingCard.getByText("profiles", { exact: false }).count(), 0);
+  assert.equal(await bookkeepingCard.locator(".state-pill.active").count(), 1);
+
+  const layout = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const title = element.querySelector(".projects-focus-row-primary strong");
+      const titleRange = document.createRange();
+      titleRange.selectNodeContents(title);
+      return {
+        width: element.getBoundingClientRect().width,
+        titleLineCount: titleRange.getClientRects().length,
+      };
+    }),
+  );
+  assert.ok(layout.every(({ width }) => width > 250), `expected growing cards: ${JSON.stringify(layout)}`);
+  assert.equal(layout[0].titleLineCount, 1, `expected Bookkeeping Operations to stay intact: ${JSON.stringify(layout[0])}`);
+});
+
 test("team add-on project controls follow privilege changes and partial rerenders", async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),

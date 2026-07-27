@@ -593,10 +593,9 @@ button.workspace-link-card {
 }
 
 button.projects-focus-row {
-  display: flex;
-  flex: 0 1 15rem;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  flex: 1 1 15rem;
+  align-content: center;
   gap: 0.55rem;
   min-width: min(15rem, 100%);
   text-align: left;
@@ -613,31 +612,31 @@ button.projects-focus-row[aria-selected="true"] {
   background: rgba(23, 111, 122, 0.1);
 }
 
-.projects-focus-row-main,
-.projects-focus-row-meta {
+.projects-focus-row-primary {
   display: flex;
   gap: 0.45rem;
-  flex-wrap: wrap;
   min-width: 0;
+  align-items: center;
+  justify-content: space-between;
 }
 
-.projects-focus-row-main {
-  flex-direction: column;
-  gap: 0.18rem;
+.projects-focus-row-primary strong {
+  min-width: 0;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
-.projects-focus-row-main strong,
 .projects-detail-header h2 {
   overflow-wrap: anywhere;
 }
 
-.projects-focus-row-main span,
-.projects-focus-row-meta {
-  align-items: center;
-  justify-content: flex-end;
+.projects-focus-row-team {
   color: var(--muted);
   font-size: 0.8rem;
   font-weight: 700;
+}
+
+.projects-focus-row-primary .state-pill {
   flex: 0 0 auto;
 }
 

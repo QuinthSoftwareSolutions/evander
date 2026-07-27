@@ -9814,7 +9814,6 @@ function renderProjectFocus() {
 function renderProjectFocusListItem(project) {
   const active = project.id === selectedProjectFocusId;
   const team = state.teams[project.team_id];
-  const reviewProfiles = projectSpecificReviewProfiles(project);
   return `
     <button
       type="button"
@@ -9823,14 +9822,11 @@ function renderProjectFocusListItem(project) {
       data-project-focus-id="${escapeAttr(project.id)}"
       aria-selected="${active ? "true" : "false"}"
     >
-      <span class="projects-focus-row-main">
+      <span class="projects-focus-row-primary">
         <strong>${escapeHtml(project.name)}</strong>
-        <span>${escapeHtml(team ? `${team.name} (${team.id})` : project.team_id)}</span>
-      </span>
-      <span class="projects-focus-row-meta">
         <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
-        <span>${reviewProfiles.length} profiles</span>
       </span>
+      ${team ? `<span class="projects-focus-row-team">${escapeHtml(team.name)}</span>` : ""}
     </button>
   `;
 }
