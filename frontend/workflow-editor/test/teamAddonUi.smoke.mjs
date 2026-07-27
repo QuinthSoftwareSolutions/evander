@@ -3865,6 +3865,146 @@ test("team add-on project catalog uses growing cards with concise project metada
   assert.equal(layout[0].titleLineCount, 1, `expected Bookkeeping Operations to stay intact: ${JSON.stringify(layout[0])}`);
 });
 
+test("team add-on review profiles and task descendants prioritize display names", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.teams.team.name = "Accounting Department";
+  initialState.projects.project.name = "Bookkeeping Operations";
+  initialState.roles.project__backend.name = "Bookkeeping Reviewer";
+  initialState.outcome_kind_definitions = {
+    "bokio-prepared-action": {
+      id: "bokio-prepared-action",
+      team_id: "team",
+      project_id: "project",
+      kind: "bokio_prepared_action",
+      name: "Bokio Prepared Action",
+      description: "A reviewed draft that is ready for operator approval.",
+      archived: false,
+    },
+  };
+  initialState.review_profiles = {
+    "bookkeeping-review-profile": {
+      id: "bookkeeping-review-profile",
+      team_id: "team",
+      project_id: "project",
+      name: "Bookkeeping preparation review",
+      description: "Confirm the draft is supported and safe to hand to an operator.",
+      applicable_role_ids: ["project__backend"],
+      required_outcome_kinds: ["bokio_prepared_action"],
+      criteria: [
+        {
+          id: "supporting_documentation",
+          label: "Supporting Documentation",
+          description: "The source document and bookkeeping rationale are attached.",
+          required: true,
+        },
+        {
+          id: "duplicate_check",
+          label: "Duplicate Check",
+          description: "Existing Bokio records were checked before preparation.",
+          required: false,
+        },
+      ],
+      archived: false,
+    },
+  };
+  const descendantIds = Array.from(
+    { length: 26 },
+    (_, index) => `task-descendant-${String(index + 1).padStart(2, "0")}`,
+  );
+  initialState.tasks.task_open.child_task_ids = descendantIds;
+  initialState.tasks.task_open.assessment = {
+    direct_child_ids: descendantIds,
+    unresolved_descendant_ids: descendantIds,
+  };
+  descendantIds.forEach((id, index) => {
+    initialState.tasks[id] = {
+      id,
+      owner_agent_id: "worker",
+      project_id: "project",
+      priority: index + 10,
+      state: "in_progress",
+      title: `Bookkeeping follow-up ${index + 1}`,
+      description: "Unresolved descendant used to exercise task-board hierarchy.",
+      created_by_agent_id: "backend",
+      parent_task_id: "task_open",
+      created_at: "2026-06-11T08:30:00Z",
+      updated_at: "2026-06-11T08:45:00Z",
+    };
+  });
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 900 } });
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const profileCard = page.locator("#team-projects-page .review-profile-card", {
+    hasText: "Bookkeeping preparation review",
+  });
+  await profileCard.waitFor({ state: "visible" });
+  await profileCard.getByText("Bookkeeping Operations", { exact: false }).waitFor({
+    state: "visible",
+  });
+  await profileCard.getByText("2 criteria", { exact: false }).waitFor({ state: "visible" });
+  await profileCard.getByText("active", { exact: true }).waitFor({ state: "visible" });
+  await profileCard.getByRole("button", { name: "Edit" }).waitFor({ state: "visible" });
+  assert.equal(await profileCard.getByText("bookkeeping-review-profile", { exact: true }).isVisible(), false);
+  assert.equal(await profileCard.getByText("project", { exact: true }).isVisible(), false);
+
+  await profileCard.getByText("View profile", { exact: true }).click();
+  for (const heading of ["Purpose", "Reviewers", "Required outcomes", "Criteria"]) {
+    await profileCard.getByRole("heading", { name: heading }).waitFor({ state: "visible" });
+  }
+  await profileCard.getByText("Bookkeeping Reviewer", { exact: true }).waitFor({ state: "visible" });
+  await profileCard.getByText("Bokio Prepared Action", { exact: true }).waitFor({ state: "visible" });
+  await profileCard.getByText("Supporting Documentation", { exact: true }).waitFor({ state: "visible" });
+  await profileCard.getByText("Required", { exact: true }).waitFor({ state: "visible" });
+  await profileCard.getByText("Optional", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await profileCard.getByText("bokio_prepared_action", { exact: true }).isVisible(), false);
+  assert.equal(await profileCard.getByText("supporting_documentation", { exact: true }).isVisible(), false);
+
+  await profileCard.getByText("Technical details", { exact: true }).click();
+  await profileCard.getByText("bookkeeping-review-profile", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await profileCard.getByText("bokio_prepared_action", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await profileCard.getByText("supporting_documentation", { exact: true }).waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team");
+  await page.locator("#task-board-project-select").selectOption("project");
+  const rootTaskCard = page.locator(".task-board-card").filter({
+    has: page.locator(".task-board-card-title-row strong", { hasText: /^Build API$/ }),
+  });
+  await rootTaskCard.waitFor({ state: "visible" });
+  await rootTaskCard.getByText("26 unresolved descendants", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await rootTaskCard
+    .getByText("Bookkeeping follow-up 1, Bookkeeping follow-up 2, Bookkeeping follow-up 3, +23 more", {
+      exact: true,
+    })
+    .waitFor({ state: "visible" });
+  assert.equal(await rootTaskCard.getByText("task-descendant-26", { exact: true }).isVisible(), false);
+  assert.equal(await rootTaskCard.getByText("task_open", { exact: true }).isVisible(), false);
+
+  await rootTaskCard.getByText("View all 26 descendants", { exact: true }).click();
+  assert.equal(await rootTaskCard.locator(".task-board-descendant-list > li").count(), 26);
+  await rootTaskCard.getByText("Bookkeeping follow-up 26", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await rootTaskCard.getByText("task-descendant-26", { exact: true }).isVisible(), false);
+
+  await rootTaskCard.getByText("Technical details", { exact: true }).click();
+  await rootTaskCard.getByText("task_open", { exact: true }).waitFor({ state: "visible" });
+  await rootTaskCard.getByText("task-descendant-26", { exact: false }).waitFor({
+    state: "visible",
+  });
+});
+
 test("team add-on project controls follow privilege changes and partial rerenders", async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
@@ -7891,16 +8031,20 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await page.getByRole("tab", { name: "Task board" }).click();
   await page.locator("#task-board-team-select").selectOption("team-alpha");
   await page.locator("#task-board-project-select").selectOption("alpha-project");
-  const childCard = page.locator(".task-board-card", { hasText: "Draft pending delivery" });
-  await childCard.getByText("Parent: task-planned - depth 1").waitFor({ state: "visible" });
+  const childCard = page.locator(".task-board-card").filter({
+    has: page.locator(".task-board-card-title-row strong", {
+      hasText: /^↳ Draft pending delivery$/,
+    }),
+  });
+  await childCard.getByText("Parent: Plan alpha delivery - depth 1").waitFor({ state: "visible" });
   await childCard
     .getByText("Readiness: blocked - resolution: unresolved - integration not ready")
     .waitFor({ state: "visible" });
   await childCard
-    .getByText("Unresolved descendants (1): task-waiting")
+    .getByText("1 unresolved descendant")
     .waitFor({ state: "visible" });
   await childCard
-    .getByText("Worktree: /home/agent/worktrees/task-pending (ctx-task-pending)")
+    .getByText("Worktree: /home/agent/worktrees/task-pending")
     .waitFor({ state: "visible" });
   await childCard
     .getByText(

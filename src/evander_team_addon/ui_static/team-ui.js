@@ -10574,17 +10574,88 @@ function renderTaskBoardCard(task) {
         <strong>${depth ? `${"↳ ".repeat(Math.min(depth, 4))}` : ""}${escapeHtml(task.title)}</strong>
         <span class="state-pill ${blocked ? "blocked" : escapeAttr(task.state)}">${escapeHtml(stateLabel)}</span>
       </div>
-      <div class="task-board-card-meta">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)}</div>
-      ${task.parent_task_id ? `<div class="task-board-card-meta">Parent: ${escapeHtml(task.parent_task_id)} - depth ${depth}</div>` : ""}
-      ${task.originating_task_id ? `<div class="task-board-card-meta">Provenance: ${escapeHtml(task.originating_task_id)}</div>` : ""}
+      <div class="task-board-card-meta">Priority ${Number(task.priority ?? 0)}</div>
+      ${task.parent_task_id ? `<div class="task-board-card-meta">Parent: ${escapeHtml(taskBoardTaskReferenceLabel(task.parent_task_id))} - depth ${depth}</div>` : ""}
+      ${task.originating_task_id ? `<div class="task-board-card-meta">Provenance: ${escapeHtml(taskBoardTaskReferenceLabel(task.originating_task_id))}</div>` : ""}
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
       <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
-      ${unresolvedIds.length ? `<div class="task-board-card-meta">Unresolved descendants (${unresolvedIds.length}): ${escapeHtml(unresolvedIds.join(", "))}</div>` : ""}
-      ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => `${row.worktree_path || "control"} (${row.id || row.branch_context_id})`).join(", "))}</div>` : ""}
+      ${renderTaskBoardUnresolvedDescendants(unresolvedIds)}
+      ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
       ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
       ${renderTaskBoardBlockerLine(task)}
+      ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
     </li>
+  `;
+}
+
+function taskBoardTaskReferenceLabel(taskId) {
+  const linkedTask = state.tasks[text(taskId)];
+  return text(linkedTask?.title) || "Unavailable task";
+}
+
+function renderTaskBoardUnresolvedDescendants(unresolvedIds) {
+  const ids = [...new Set((unresolvedIds || []).map(text).filter(Boolean))];
+  if (!ids.length) {
+    return "";
+  }
+  const descendants = ids.map((id) => {
+    const task = state.tasks[id] || null;
+    return {
+      id,
+      label: text(task?.title) || "Unavailable descendant",
+      state: text(task?.state),
+      stateLabel: task ? taskStateLabel(task) : "Unavailable",
+    };
+  });
+  const previewLabels = descendants.slice(0, 3).map((descendant) => descendant.label);
+  if (descendants.length > previewLabels.length) {
+    previewLabels.push(`+${descendants.length - previewLabels.length} more`);
+  }
+  return `
+    <div class="task-board-card-descendants">
+      <div class="task-board-card-descendant-summary">
+        <strong>${descendants.length} unresolved descendant${descendants.length === 1 ? "" : "s"}</strong>
+        <span>${escapeHtml(previewLabels.join(", "))}</span>
+      </div>
+      <details class="task-board-descendant-details">
+        <summary>View all ${descendants.length} descendant${descendants.length === 1 ? "" : "s"}</summary>
+        <ul class="task-board-descendant-list">
+          ${descendants.map((descendant) => `
+            <li>
+              <span>${escapeHtml(descendant.label)}</span>
+              <span class="state-pill ${escapeAttr(descendant.state || "neutral")}">${escapeHtml(descendant.stateLabel)}</span>
+            </li>
+          `).join("")}
+        </ul>
+      </details>
+    </div>
+  `;
+}
+
+function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) {
+  const worktreeContextIds = worktreeContexts
+    .map((row) => text(row.id || row.branch_context_id))
+    .filter(Boolean);
+  const rows = [
+    ["Task ID", text(task.id)],
+    ["Parent task ID", text(task.parent_task_id)],
+    ["Originating task ID", text(task.originating_task_id)],
+    ["Worktree context IDs", worktreeContextIds.join(", ")],
+    ["Unresolved descendant IDs", (unresolvedIds || []).map(text).filter(Boolean).join(", ")],
+  ].filter(([, value]) => value);
+  return `
+    <details class="technical-details task-board-technical-details">
+      <summary>Technical details</summary>
+      <dl class="technical-details-list">
+        ${rows.map(([label, value]) => `
+          <div>
+            <dt>${escapeHtml(label)}</dt>
+            <dd>${escapeHtml(value)}</dd>
+          </div>
+        `).join("")}
+      </dl>
+    </details>
   `;
 }
 
@@ -11563,86 +11634,177 @@ function renderReviewProfiles() {
     renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No visible review profiles.</p>`);
     return;
   }
-  if (activeTeamView === "delivery") {
-    renderIntoActiveTargets("[data-review-profiles-view]", `
-      <ul class="review-list compact-record-list">
-        ${profiles.map((profile) => renderCompactReviewProfile(profile)).join("")}
-      </ul>
-    `);
-    return;
-  }
   renderIntoActiveTargets("[data-review-profiles-view]", `
-    <ul class="review-list">
-      ${profiles
-        .map((profile) => {
-          const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
-          const roles = (profile.applicable_role_ids || []).length
-            ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
-            : "all reviewer roles";
-          return `
-              <li class="record-item">
-                <div class="record-line">
-                  <strong>${escapeHtml(profile.name)}</strong>
-                  <div class="record-actions">
-                    <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
-                    ${editButton("review-profile", profile.id)}
-                  </div>
-                </div>
-              <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
-              ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
-              ${renderProfileCriteria(profile.criteria || [])}
-            </li>
-          `;
-        })
-        .join("")}
+    <ul class="review-list compact-record-list">
+      ${profiles.map((profile) => renderCompactReviewProfile(profile)).join("")}
     </ul>
   `);
 }
 
 function renderCompactReviewProfile(profile) {
-  const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
-  const roles = (profile.applicable_role_ids || []).length
-    ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
-    : "all reviewer roles";
   const criteria = profile.criteria || [];
+  const scope = reviewProfileScope(profile);
+  const reviewerLabels = reviewProfileReviewerLabels(profile);
+  const outcomeKinds = profile.required_outcome_kinds || [];
+  const outcomeLabels = outcomeKinds.map((kind) => reviewProfileOutcomeLabel(profile, kind));
   return `
-    <li class="record-item compact-record-card">
-      <details>
-        <summary class="compact-record-summary">
-          <span class="compact-record-main">
-            <strong>${escapeHtml(profile.name)}</strong>
-            <span>${escapeHtml(scope)} - ${criteria.length} criteria</span>
-          </span>
+    <li class="record-item compact-record-card review-profile-card">
+      <div class="review-profile-card-header">
+        <span class="review-profile-card-title">
+          <strong>${escapeHtml(profile.name)}</strong>
+          <span>${escapeHtml(scope.summary)} · ${criteria.length} ${criteria.length === 1 ? "criterion" : "criteria"}</span>
+        </span>
+        <div class="record-actions">
           <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
-        </summary>
-        <div class="compact-record-body">
-          <div class="record-actions">
-            ${editButton("review-profile", profile.id)}
+          ${editButton("review-profile", profile.id)}
+        </div>
+      </div>
+      <details class="review-profile-card-details">
+        <summary class="review-profile-detail-toggle">View profile</summary>
+        <div class="review-profile-card-body">
+          <div class="review-profile-section-grid">
+            <section class="review-profile-section">
+              <h4>Purpose</h4>
+              <p>${escapeHtml(profile.description || "No purpose description provided.")}</p>
+            </section>
+            <section class="review-profile-section">
+              <h4>Reviewers</h4>
+              ${renderReviewProfileChips(reviewerLabels, "All reviewer roles")}
+            </section>
+            <section class="review-profile-section">
+              <h4>Required outcomes</h4>
+              ${renderReviewProfileChips(outcomeLabels, "No required outcomes")}
+            </section>
+            <section class="review-profile-section review-profile-criteria-section">
+              <h4>Criteria</h4>
+              ${renderProfileCriteria(criteria)}
+            </section>
           </div>
-          <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
-          ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
-          ${(profile.required_outcome_kinds || []).length ? `<div class="meta-line">Required outcomes: ${escapeHtml(profile.required_outcome_kinds.join(", "))}</div>` : ""}
-          ${renderProfileCriteria(criteria)}
+          ${renderReviewProfileTechnicalDetails(profile, scope, outcomeKinds)}
         </div>
       </details>
     </li>
   `;
 }
 
-function renderProfileCriteria(criteria) {
-  if (!criteria.length) {
+function reviewProfileScope(profile) {
+  if (profile.project_id) {
+    const project = state.projects[text(profile.project_id)];
+    return {
+      idLabel: "Project ID",
+      id: text(profile.project_id),
+      summary: `Project · ${text(project?.name) || "Unavailable project"}`,
+    };
+  }
+  const team = state.teams[text(profile.team_id)];
+  return {
+    idLabel: "Team ID",
+    id: text(profile.team_id),
+    summary: `Team-wide · ${text(team?.name) || "Unavailable team"}`,
+  };
+}
+
+function reviewProfileReviewerLabels(profile) {
+  return (profile.applicable_role_ids || []).map((roleId) => {
+    const role = state.roles[text(roleId)];
+    if (role) {
+      return roleLabel(role);
+    }
+    const roleKey = text(roleId).split("__").pop() || "";
+    return roleKey ? humanizeToken(roleKey.replace(/-/g, "_")) : "Unavailable role";
+  });
+}
+
+function reviewProfileOutcomeLabel(profile, kind) {
+  const normalizedKind = text(kind);
+  if (!normalizedKind) {
     return "";
   }
+  const project = state.projects[text(profile.project_id)];
+  const definition = project
+    ? effectiveOutcomeKindsForProject(project).find((candidate) => text(candidate.kind) === normalizedKind)
+    : values(state.outcome_kind_definitions)
+        .filter((candidate) =>
+          text(candidate.team_id) === text(profile.team_id)
+          && !candidate.project_id
+          && !candidate.archived
+          && text(candidate.kind) === normalizedKind
+        )
+        .sort(byId)
+        .at(-1);
+  return text(definition?.name) || humanizeToken(normalizedKind);
+}
+
+function renderReviewProfileChips(labels, emptyLabel) {
+  const visibleLabels = labels.map(text).filter(Boolean);
+  if (!visibleLabels.length) {
+    return `<p class="review-profile-empty">${escapeHtml(emptyLabel)}</p>`;
+  }
   return `
-    <ul class="inline-list">
+    <ul class="review-profile-chip-list">
+      ${visibleLabels.map((label) => `<li class="review-profile-chip">${escapeHtml(label)}</li>`).join("")}
+    </ul>
+  `;
+}
+
+function renderProfileCriteria(criteria) {
+  if (!criteria.length) {
+    return `<p class="review-profile-empty">No criteria defined.</p>`;
+  }
+  return `
+    <ul class="review-profile-criteria-list">
       ${criteria
         .map((criterion) => {
-          const required = criterion.required === false ? "optional" : "required";
-          const description = criterion.description ? ` - ${escapeHtml(criterion.description)}` : "";
-          return `<li>${escapeHtml(criterion.id)}: ${escapeHtml(criterion.label)} (${required})${description}</li>`;
+          const required = criterion.required !== false;
+          return `
+            <li class="review-profile-criterion">
+              <div class="review-profile-criterion-header">
+                <strong>${escapeHtml(criterion.label || "Unnamed criterion")}</strong>
+                <span class="criterion-requirement-badge ${required ? "required" : "optional"}">${required ? "Required" : "Optional"}</span>
+              </div>
+              ${criterion.description ? `<p>${escapeHtml(criterion.description)}</p>` : ""}
+            </li>
+          `;
         })
         .join("")}
     </ul>
+  `;
+}
+
+function renderReviewProfileTechnicalDetails(profile, scope, outcomeKinds) {
+  const criteria = profile.criteria || [];
+  return `
+    <details class="technical-details review-profile-technical-details">
+      <summary>Technical details</summary>
+      <dl class="technical-details-list">
+        <div>
+          <dt>Profile ID</dt>
+          <dd><code>${escapeHtml(profile.id)}</code></dd>
+        </div>
+        <div>
+          <dt>${escapeHtml(scope.idLabel)}</dt>
+          <dd><code>${escapeHtml(scope.id)}</code></dd>
+        </div>
+        ${(profile.applicable_role_ids || []).length ? `
+          <div>
+            <dt>Reviewer role IDs</dt>
+            <dd>${profile.applicable_role_ids.map((roleId) => `<code>${escapeHtml(roleId)}</code>`).join(" ")}</dd>
+          </div>
+        ` : ""}
+        ${outcomeKinds.length ? `
+          <div>
+            <dt>Outcome kinds</dt>
+            <dd>${outcomeKinds.map((kind) => `<code>${escapeHtml(kind)}</code>`).join(" ")}</dd>
+          </div>
+        ` : ""}
+        ${criteria.length ? `
+          <div>
+            <dt>Criterion IDs</dt>
+            <dd>${criteria.map((criterion) => `<code>${escapeHtml(criterion.id)}</code>`).join(" ")}</dd>
+          </div>
+        ` : ""}
+      </dl>
+    </details>
   `;
 }
 

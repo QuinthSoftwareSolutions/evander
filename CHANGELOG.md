@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-27 - Team Review Profile Readability
+
+- Reworked review-profile cards around display names and clear Purpose, Reviewers, Required
+  outcomes, and Criteria groups, with internal identifiers moved behind optional technical
+  details.
+- Summarized unresolved task descendants with named previews and an expandable structured list
+  instead of printing long comma-separated ID sequences on task-board cards.
+
 ## 2026-07-27 - Team Project Catalog Card Layout
 
 - Let project catalog cards grow across available desktop space, keep the project name and status
