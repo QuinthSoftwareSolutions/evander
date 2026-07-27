@@ -41,7 +41,23 @@ from ..domain.common import (
     _required_text,
 )
 from ..domain.project_status import _recalculate_project_status
+from ..domain.outcome_catalog import snapshot_task_outcome_contract
 from ..domain.wake import _append_agent_wake_requested_event
+
+
+def _creation_with_outcome_definition_snapshots(
+    state: TeamState,
+    creation: Mapping[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(creation)
+    contract = creation.get("outcome_contract")
+    if isinstance(contract, Mapping):
+        enriched["outcome_contract"] = snapshot_task_outcome_contract(
+            state,
+            project_id=_required_text(creation.get("project_id"), "project_id"),
+            contract=contract,
+        ).model_dump(mode="json")
+    return enriched
 
 
 class TeamTaskCreationCommandService(TeamCommandExecutor):
@@ -59,6 +75,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
         priority: int = 0,
         state: TeamTaskState | str = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
+        originating_task_id: str | None = None,
         dependency_task_ids: Sequence[str] | None = None,
         task_kind: str = "support",
         outcome_contract: Mapping[str, Any] | None = None,
@@ -78,6 +95,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             description=description,
             state=state,
             parent_task_id=parent_task_id,
+            originating_task_id=originating_task_id,
             dependency_task_ids=dependency_task_ids,
             task_kind=task_kind,
             outcome_contract=outcome_contract,
@@ -109,7 +127,10 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             plan = _command_plan_task_creation(
                 state,
                 actor=agent,
-                creation=creation,
+                creation=_creation_with_outcome_definition_snapshots(
+                    state,
+                    creation,
+                ),
                 reserved_task_ids=set(),
             )
             graph_errors = _task_creation_batch_graph_errors(
@@ -206,7 +227,10 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 plan = _command_plan_task_creation(
                     state,
                     actor=agent,
-                    creation=creation,
+                    creation=_creation_with_outcome_definition_snapshots(
+                        state,
+                        creation,
+                    ),
                     reserved_task_ids=reserved_task_ids,
                 )
                 reserved_task_ids.add(plan.task_id)

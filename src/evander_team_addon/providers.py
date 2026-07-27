@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,11 @@ from evander.artifact_spaces import (
     ArtifactSpaceStore,
     normalize_space_path,
 )
+from evander.admin.user_notifications import (
+    AdminUserNotificationStore,
+    normalize_admin_notification_user_id,
+)
+from evander.admin.web.user_store import AdminWebUserStore
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -78,18 +83,25 @@ from .mcp import (
     READ_TEAM_MCP_TOOL_NAMES,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_ASK_QUESTION_TOOL,
+    TEAM_CANCEL_TASK_TOOL,
+    TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
+    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_GET_DELIVERABLE_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_LIST_OUTCOME_KINDS_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
-    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
+    TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
@@ -99,7 +111,6 @@ from .mcp import (
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
-    TEAM_RETRY_REVIEW_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
@@ -114,6 +125,7 @@ from .mcp import (
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
 )
+from .human_review_projection import apply_compact_human_review_projection
 from .models import (
     AgentStatus,
     RolePermission,
@@ -124,6 +136,10 @@ from .models import (
     TeamTaskState,
     team_session_health_payload,
     team_state_payload,
+)
+from .services.domain.task_assessment import (
+    assess_tasks,
+    task_payload_with_assessment,
 )
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -143,6 +159,7 @@ from .provider_schemas import (
     TeamPublishOutboxEventsEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
+    TeamRecordHumanReviewPreparationResultEffectDefinition,
     TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
@@ -153,6 +170,7 @@ from .provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
+from .sqlite_store import TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
@@ -163,6 +181,10 @@ from .services.domain.ephemeral import (
     EPHEMERAL_REQUESTED_EVENT_TYPE,
 )
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.domain.human_reviews import (
+    HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+    HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+)
 from .services.domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
@@ -173,6 +195,11 @@ from .services.domain.wake import (
 )
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
+from .services.human_review_assignment_service import (
+    human_review_eligibility_resolver,
+    reconcile_current_human_review_assignments,
+)
+from .services.release_gate_service import TeamReleaseGateService
 from .services.release_verification_effects import EffectReleaseVerificationExecutor
 from .services.release_verification_runner import (
     ReleaseVerificationExecutor,
@@ -186,8 +213,13 @@ from .services.memory_service import (
 )
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
+from .services.worktree_cleanup_service import (
+    EffectTaskWorktreeCleanupBackend,
+    TeamWorktreeCleanupService,
+    team_task_worktree_cleanup_lock,
+)
 
-TEAM_AGENT_GUIDANCE_VERSION = 18
+TEAM_AGENT_GUIDANCE_VERSION = 23
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -378,6 +410,60 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Respect wake interval",
                 "boolean",
                 description="When false, ready task work can lease before next_wake_at; active leases and no-progress throttles still apply.",
+                default_value=True,
+            ),
+            _catalog_field(
+                "worktree_cleanup_limit",
+                "Worktree cleanup limit",
+                "number",
+                description=(
+                    "Maximum resolved or reassigned task worktrees reconciled in "
+                    "this cycle."
+                ),
+                default_value=10,
+                placeholder="10",
+            ),
+            _catalog_field(
+                "worktree_cleanup_grace_seconds",
+                "Cleanup grace seconds",
+                "number",
+                description=(
+                    "Delay after a task checkout becomes cleanup-eligible before "
+                    "the first safety pass."
+                ),
+                default_value=300,
+                placeholder="300",
+            ),
+            _catalog_field(
+                "worktree_cleanup_retry_seconds",
+                "Cleanup retry seconds",
+                "number",
+                description=(
+                    "Delay before a deferred or recovery-required worktree is "
+                    "eligible for another reconciliation attempt."
+                ),
+                default_value=300,
+                placeholder="300",
+            ),
+            _catalog_field(
+                "worktree_cleanup_recovery_seconds",
+                "Cleanup recovery seconds",
+                "number",
+                description=(
+                    "Age after which an interrupted processing claim is recovered "
+                    "for retry."
+                ),
+                default_value=900,
+                placeholder="900",
+            ),
+            _catalog_field(
+                "worktree_cleanup_dry_run",
+                "Cleanup dry run",
+                "boolean",
+                description=(
+                    "Inventory safe deletions without removing worktrees. Disable "
+                    "only after reviewing the cleanup audit."
+                ),
                 default_value=True,
             ),
             _catalog_field(
@@ -1219,6 +1305,73 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     _catalog_entry(
         "effect",
+        "effect:team:record-human-review-preparation-result",
+        "Record human review preparation result",
+        (
+            "Return safe preview target metadata or a preparation failure for the "
+            "exact pinned human-review generation."
+        ),
+        [
+            _catalog_field(
+                "human_review_request_id",
+                "Human review request ID",
+                "string",
+                required=True,
+                description="Pinned human review request being prepared.",
+            ),
+            _catalog_field(
+                "candidate_commit_sha",
+                "Candidate commit SHA",
+                "string",
+                required=True,
+                description="Exact candidate commit received from the preparation event.",
+            ),
+            _catalog_field(
+                "candidate_tree_hash",
+                "Candidate tree hash",
+                "string",
+                required=True,
+                description="Exact candidate tree received from the preparation event.",
+            ),
+            _catalog_field(
+                "preparation_generation",
+                "Preparation generation",
+                "integer",
+                required=True,
+                description="Preparation generation received from the event.",
+            ),
+            _catalog_field(
+                "target",
+                "Safe target metadata",
+                "json",
+                description=(
+                    "URL or alias, expiry, instructions, and evidence only. "
+                    "Credentials and secret-bearing fields are rejected."
+                ),
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "error",
+                "Preparation error",
+                "string",
+                description="Failure explanation when no target was prepared.",
+            ),
+            _catalog_field(
+                "request_id",
+                "Idempotency key",
+                "string",
+                description="Optional stable workflow result key.",
+            ),
+            _catalog_field(
+                "recorded_by",
+                "Workflow actor",
+                "string",
+                description="Host-owned workflow actor label used in audit records.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
         "effect:team:consolidate-git-branches",
         "Consolidate Team branches",
         "Merge multiple Team source branches into a deterministic target branch.",
@@ -1256,6 +1409,15 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Base branch",
                 "string",
                 description="Optional base branch to reset from before merging source branches.",
+            ),
+            _catalog_field(
+                "base_commit_sha",
+                "Base commit SHA",
+                "string",
+                description=(
+                    "Optional exact immutable base commit. Successor releases use "
+                    "the predecessor candidate SHA."
+                ),
             ),
             _catalog_field(
                 "expected_source_commits",
@@ -1535,6 +1697,19 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         "Team release verification requested",
         "Published after a release candidate commit is pinned and ready for CI verification.",
     ),
+    _team_internal_event(
+        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+        "Team human release review requested",
+        "Published when a pinned release candidate is ready for an assigned human reviewer.",
+    ),
+    _team_internal_event(
+        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+        "Team human review preparation requested",
+        (
+            "Published when workflow-owned preview preparation is required for a "
+            "pinned human review request."
+        ),
+    ),
 )
 
 
@@ -1648,6 +1823,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "max_no_progress_count",
             "low_priority_wake_after_cycles",
             "respect_wake_interval",
+            "worktree_cleanup_limit",
+            "worktree_cleanup_grace_seconds",
+            "worktree_cleanup_retry_seconds",
+            "worktree_cleanup_recovery_seconds",
+            "worktree_cleanup_dry_run",
             "resume_mode",
         )
         if resolved_config:
@@ -1658,6 +1838,57 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        human_review_assignment_reconciliation: dict[str, Any] = {}
+        human_review_assignment_reconciliation_error: str | None = None
+        try:
+            human_review_assignment_reconciliation = (
+                reconcile_current_human_review_assignments(
+                    repository=repo,
+                    user_store=AdminWebUserStore(
+                        _runtime_dir(context) / "admin-web.db"
+                    ),
+                )
+            )
+        except Exception as exc:
+            # Directory/RBAC drift must be visible, but it must not suppress
+            # unrelated agent wakes or worktree cleanup.
+            human_review_assignment_reconciliation_error = (
+                str(exc) or exc.__class__.__name__
+            )
+        worktree_cleanup: dict[str, Any] = {}
+        worktree_cleanup_error: str | None = None
+        try:
+            worktree_cleanup = TeamWorktreeCleanupService(
+                repo,
+                EffectTaskWorktreeCleanupBackend(context, repository=repo),
+            ).reconcile(
+                limit=_optional_int(
+                    payload.get("worktree_cleanup_limit"),
+                    default=10,
+                )
+                or 0,
+                grace_seconds=_optional_int(
+                    payload.get("worktree_cleanup_grace_seconds"),
+                    default=300,
+                )
+                or 0,
+                retry_seconds=_optional_int(
+                    payload.get("worktree_cleanup_retry_seconds"),
+                    default=300,
+                )
+                or 0,
+                recovery_seconds=_optional_int(
+                    payload.get("worktree_cleanup_recovery_seconds"),
+                    default=900,
+                )
+                or 1,
+                dry_run=_optional_bool(
+                    payload.get("worktree_cleanup_dry_run"),
+                    default=True,
+                ),
+            ).model_dump()
+        except Exception as exc:  # cleanup must not suppress unrelated Team wakes
+            worktree_cleanup_error = str(exc) or exc.__class__.__name__
         current_state = repo.read()
         session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
@@ -1694,6 +1925,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             resumer=resumer,
         )
         errors.extend(chat_errors)
+        agent_lease_seconds = (
+            _optional_int(payload.get("lease_seconds"), default=900) or 900
+        )
         if normalized_limit and len(queued_chat_claims) >= normalized_limit:
             leases = []
         else:
@@ -1705,7 +1939,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 project_id=_optional_text(payload.get("project_id")),
                 agent_id=_optional_text(payload.get("agent_id")),
                 limit=regular_limit,
-                lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
+                lease_seconds=agent_lease_seconds,
                 wake_interval_seconds=_optional_int(
                     payload.get("wake_interval_seconds"),
                     default=900,
@@ -1727,6 +1961,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     context,
                     session_id=session_id,
                 ),
+                defer_activation=True,
             )
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
@@ -1736,7 +1971,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         review_artifact_import_errors: list[dict[str, Any]] = []
         transient_conflicts: list[dict[str, Any]] = []
         retry_event_ids: list[str] = []
-        for lease in leases:
+        for lease_index, lease in enumerate(leases):
             agent = lease["agent"]
             try:
                 lease = {
@@ -1755,13 +1990,21 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
-                    state, project_repo = _prepare_project_repo(
+                    dispatch_scope = (
+                        lease.get("dispatch")
+                        if isinstance(lease.get("dispatch"), Mapping)
+                        else {}
+                    )
+                    state, project_repos = _prepare_project_repos(
                         context,
                         repo=repo,
                         state=state,
                         agent=agent,
                         dispatch_id=lease["dispatch_id"],
                         tasks=lease.get("tasks"),
+                        project_ids=_string_items(
+                            dispatch_scope.get("project_ids")
+                        ),
                     )
                 except TeamStateConflictError:
                     raise
@@ -1774,8 +2017,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         )
                     )
                     raise
-                if project_repo is not None:
-                    lease = {**lease, "project_repo": project_repo}
+                if project_repos:
+                    lease = {**lease, "project_repos": project_repos}
+                    if len(project_repos) == 1:
+                        lease["project_repo"] = project_repos[0]
+                for project_repo in project_repos:
                     conflict_retry_count = int(project_repo.get("state_conflict_retry_count") or 0)
                     if conflict_retry_count:
                         transient_conflicts.append(
@@ -1800,6 +2046,21 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             project_repo=project_repo,
                         )
                     )
+                state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
+                    agent_id=agent["id"],
+                    dispatch_id=lease["dispatch_id"],
+                    lease_seconds=agent_lease_seconds,
+                )
+                lease = {
+                    **lease,
+                    "runtime": state.agent_runtimes[agent["id"]].model_dump(
+                        mode="json"
+                    ),
+                    "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(
+                        mode="json"
+                    ),
+                }
+                leases[lease_index] = lease
                 review_artifacts = _prepare_review_artifacts_for_lease(
                     context,
                     lease=lease,
@@ -1813,6 +2074,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     review_artifact_import_errors.extend(
                         review_artifacts["review_artifact_import_errors"]
                     )
+                    leases[lease_index] = lease
                 runtime_payload = lease.get("runtime")
                 context_rotation_pending = isinstance(runtime_payload, Mapping) and bool(
                     runtime_payload.get("context_rotation_pending")
@@ -1857,8 +2119,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     dispatch_payload["delivered_action_feedback_dispatch_ids"] = (
                         delivered_action_feedback_dispatch_ids
                     )
-                if project_repo is not None:
-                    dispatch_payload["project_repo"] = project_repo
+                if project_repos:
+                    dispatch_payload["project_repos"] = project_repos
+                    if len(project_repos) == 1:
+                        dispatch_payload["project_repo"] = project_repos[0]
                 if lease.get("review_artifact_imports"):
                     dispatch_payload["review_artifact_imports"] = lease["review_artifact_imports"]
                 if lease.get("review_artifact_import_errors"):
@@ -1904,6 +2168,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = TeamRuntimeService(repo).release_agent_wake_lease_for_retry(
                         agent_id=agent["id"],
                         dispatch_id=lease["dispatch_id"],
+                        error=(
+                            "repository/worktree preparation state conflict: "
+                            f"expected revision {exc.expected_revision}, current "
+                            f"revision {exc.current_revision}"
+                        ),
                     )
                     retry_result: dict[str, Any] = {"events": []}
                     _append_agent_wake_requested_event(
@@ -1953,6 +2222,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "retry_scheduled_count": len(retry_event_ids),
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
+            "worktree_cleanup": worktree_cleanup,
+            "worktree_cleanup_error": worktree_cleanup_error,
+            "human_review_assignment_reconciliation": (
+                human_review_assignment_reconciliation
+            ),
+            "human_review_assignment_reconciliation_error": (
+                human_review_assignment_reconciliation_error
+            ),
             "errors": errors,
         }
 
@@ -2292,6 +2569,7 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
             )
         else:
             state_payload = team_state_payload(state, include_agent_avatars=False)
+            apply_compact_human_review_projection(state_payload, state)
             state_payload["conversations"] = {}
             state_payload["conversation_messages"] = {}
         return {**result, "state": state_payload}
@@ -2977,6 +3255,18 @@ class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
             try:
                 event = dict(record.payload)
                 event.setdefault("idempotency_key", record.idempotency_key)
+                if record.intent_type == "team.release.human_review_requested":
+                    notification_result = _publish_human_review_admin_notification(
+                        runtime_dir=_runtime_dir(self.runtime_context),
+                        event=event,
+                    )
+                    if notification_result.get("skipped"):
+                        repo.complete_outbox_record(
+                            record_id=record.id,
+                            claim_token=record.claim_token,
+                        )
+                        completed_record_ids.append(record.id)
+                        continue
                 record_event_ids = _publish_team_events(self.runtime_context, [event])
                 if not record_event_ids:
                     raise RuntimeError("outbox record did not publish an internal event")
@@ -3011,6 +3301,68 @@ class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
             "failed_outbox_record_ids": failed_record_ids,
             "errors": errors,
         }
+
+
+def _publish_human_review_admin_notification(
+    *,
+    runtime_dir: Path,
+    event: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _optional_mapping(event.get("payload"), "payload") or {}
+    request_id = _required_text(
+        payload.get("human_review_request_id"),
+        "human_review_request_id",
+    )
+    release_id = _required_text(
+        payload.get("release_package_id"),
+        "release_package_id",
+    )
+    recipient_user_id = normalize_admin_notification_user_id(
+        payload.get("recipient_user_id")
+    )
+    if recipient_user_id is None:
+        raise ValueError("recipient_user_id is required")
+    reconcile_current_human_review_assignments(
+        repository=TeamStateRepository(runtime_dir),
+        user_store=AdminWebUserStore(runtime_dir / "admin-web.db"),
+        request_ids=[request_id],
+    )
+    state = TeamStateRepository(runtime_dir).read()
+    request = state.human_review_requests.get(request_id)
+    if (
+        request is None
+        or request.state != "pending"
+        or recipient_user_id not in request.current_assignment.eligible_user_ids
+    ):
+        return {
+            "skipped": True,
+            "reason": "human review recipient is no longer decision-eligible",
+            "human_review_request_id": request_id,
+            "recipient_user_id": recipient_user_id,
+        }
+    generation = _optional_int(payload.get("assignment_generation"), default=1)
+    generation = 1 if generation is None else max(1, generation)
+    candidate_sha = _optional_text(payload.get("candidate_commit_sha"))
+    candidate_label = candidate_sha[:12] if candidate_sha is not None else "pending candidate"
+    return AdminUserNotificationStore(runtime_dir).push(
+        user_id=recipient_user_id,
+        title="Human release review assigned",
+        body=(
+            f"Release {release_id} is ready for your review at candidate "
+            f"{candidate_label}."
+        ),
+        source="team_human_review",
+        source_id=f"{request_id}:{recipient_user_id}:{generation}",
+        target_url=(
+            "#addon:team-addon?view=my-human-reviews"
+            f"&human_review_request_id={request_id}"
+        ),
+        metadata={
+            "human_review_request_id": request_id,
+            "release_package_id": release_id,
+            "assignment_generation": generation,
+        },
+    )
 
 
 class TeamAcceptEphemeralDeliverableEffectProvider(EffectProviderBase):
@@ -3107,7 +3459,12 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        git_release_service = TeamGitReleaseService(repo)
+        git_release_service = TeamGitReleaseService(
+            repo,
+            human_review_eligibility_resolver=human_review_eligibility_resolver(
+                AdminWebUserStore(_runtime_dir(self.runtime_context) / "admin-web.db")
+            ),
+        )
         try:
             _state, result = git_release_service.record_git_promotion_result(
                 promotion_id=_required_text(payload.get("promotion_id"), "promotion_id"),
@@ -3126,10 +3483,87 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
             }
         published_event_ids = _publish_team_events(
             self.runtime_context,
-            result.get("events"),
+            [
+                event
+                for event in (result.get("events") or [])
+                if event.get("event_type") != HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+            ],
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
+        return result
+
+
+class TeamRecordHumanReviewPreparationResultEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(
+                TeamRecordHumanReviewPreparationResultEffectDefinition,
+                effect_definition,
+            )
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "human_review_request_id",
+            "candidate_commit_sha",
+            "candidate_tree_hash",
+            "preparation_generation",
+            "target",
+            "error",
+            "request_id",
+            "recorded_by",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        request_id = _required_text(
+            payload.get("human_review_request_id"),
+            "human_review_request_id",
+        )
+        generation = _optional_int(
+            payload.get("preparation_generation"),
+            default=None,
+        )
+        if generation is None or generation < 1:
+            raise ValueError("preparation_generation must be greater than zero")
+        idempotency_key = _optional_text(payload.get("request_id")) or (
+            f"human-review-preparation:{request_id}:{generation}"
+        )
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        service = TeamAdminService(repo)
+        try:
+            _state, result = service.record_human_review_preparation_result_with_result(
+                human_review_request_id=request_id,
+                recorded_by_user_id=(
+                    _optional_text(payload.get("recorded_by"))
+                    or "workflow:human-review-preparation"
+                ),
+                request_id=idempotency_key,
+                expected_request_revision=None,
+                candidate_commit_sha=_required_text(
+                    payload.get("candidate_commit_sha"),
+                    "candidate_commit_sha",
+                ),
+                candidate_tree_hash=_required_text(
+                    payload.get("candidate_tree_hash"),
+                    "candidate_tree_hash",
+                ),
+                preparation_generation=generation,
+                target=_optional_mapping(payload.get("target"), "target"),
+                error=_optional_text(payload.get("error")),
+            )
+        except (
+            TeamIdempotencyConflictError,
+            TeamStateConflictError,
+            ValueError,
+        ) as exc:
+            return {
+                "success": False,
+                "human_review_request_id": request_id,
+                "error": str(exc),
+            }
         return result
 
 
@@ -3159,6 +3593,14 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         result = TeamReleaseVerificationRunner(
             repo,
             executor,
+            release_gate_service=TeamReleaseGateService(
+                repo,
+                human_review_eligibility_resolver=human_review_eligibility_resolver(
+                    AdminWebUserStore(
+                        _runtime_dir(self.runtime_context) / "admin-web.db"
+                    )
+                ),
+            ),
         ).run(
             release_package_id=release_id,
             verification_run_id=run_id,
@@ -3166,7 +3608,11 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         )
         published_event_ids = _publish_team_events(
             self.runtime_context,
-            result.get("events"),
+            [
+                event
+                for event in (result.get("events") or [])
+                if event.get("event_type") != HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+            ],
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
@@ -3295,6 +3741,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             "source_branches",
             "target_branch",
             "base_branch",
+            "base_commit_sha",
             "expected_source_commits",
             "allowed_changed_paths",
         )
@@ -3311,6 +3758,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             )
             base_value = _optional_text(payload.get("base_branch"))
             base_branch = validate_branch_name(base_value) if base_value else None
+            base_commit_sha = _optional_text(payload.get("base_commit_sha"))
             expected_source_commits = {
                 validate_branch_name(str(branch)): _required_text(
                     commit,
@@ -3358,6 +3806,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 source_branches=source_branches,
                 target_branch=target_branch,
                 base_branch=base_branch,
+                base_commit_sha=base_commit_sha,
                 expected_source_commits=expected_source_commits,
                 allowed_changed_paths=allowed_changed_paths,
             )
@@ -4465,6 +4914,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:mark-ephemeral-cleaned-up": (TeamMarkEphemeralCleanedUpEffectProvider),
             "effect:team:record-git-promotion": TeamRecordGitPromotionEffectProvider,
+            "effect:team:record-human-review-preparation-result": (
+                TeamRecordHumanReviewPreparationResultEffectProvider
+            ),
             "effect:team:verify-release-candidate": TeamVerifyReleaseCandidateEffectProvider,
             "effect:team:publish-review-branch": TeamPublishReviewBranchEffectProvider,
             "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
@@ -4531,6 +4983,12 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:record-git-promotion": (
                 lambda node: _materialize(TeamRecordGitPromotionEffectDefinition, node)
+            ),
+            "effect:team:record-human-review-preparation-result": (
+                lambda node: _materialize(
+                    TeamRecordHumanReviewPreparationResultEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:verify-release-candidate": (
                 lambda node: _materialize(TeamVerifyReleaseCandidateEffectDefinition, node)
@@ -4603,6 +5061,14 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "report deliverable as a completion ritual.\n"
         f"- Use {TEAM_CREATE_CASE_TOOL} and {TEAM_UPDATE_CASE_TOOL} for intake, "
         "source references, priority, owner, lifecycle, and case-task links.\n"
+        f"- For an ambiguous or release-wide human-review finding, use "
+        f"{TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL} to create and retarget "
+        "an independent correction root. After accepted correction deliverables "
+        f"exist, use {TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL} with concrete "
+        "evidence; that proposal never substitutes for the human decision. Close "
+        f"a post-release feedback case with {TEAM_CLOSE_POST_RELEASE_CASE_TOOL} "
+        "only after every linked triage or correction task is resolved, supplying "
+        "closure evidence. Closing that case does not roll back publication.\n"
         f"- Use {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} only within "
         "the task creation mandate in your wake prompt.\n"
         f"- Use {TEAM_REQUEST_STATUS_TOOL} only for direct subordinates. Use "
@@ -4619,13 +5085,44 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "blocked_by_task_ids clear. Decompose large work by creating child tasks "
         f"with {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} instead of ad "
         "hoc checklists in descriptions. Declare ordering between tasks with "
-        "dependency_task_ids.\n\n"
+        "dependency_task_ids. parent_task_id means constituent composition; "
+        "dependency_task_ids means execution ordering; originating_task_id records "
+        "provenance for independent correction or follow-up work and does not make "
+        "that task a child.\n\n"
+        "Parent and child lifecycle:\n"
+        "- A parent owner creates constituent children for delegated work. If the "
+        "parent owner also has substantive implementation work, model that work as "
+        "a self-owned child instead of editing invisibly on the coordination parent.\n"
+        "- While children are merely running, the parent stays quiet. Wake-worthy "
+        "parent work is supervision of a child blocker, rejection, handoff, "
+        "reassignment, cancellation, or integration-ready transition.\n"
+        "- When you are the acceptance recipient, decide each direct-child handoff. "
+        "After every non-cancelled direct child resolves, integrate the exact current "
+        "accepted child deliverables through source_deliverable_ids and submit one "
+        "consolidated parent deliverable. Do not copy child state into the parent.\n"
+        "- A parent owner must resolve, reassign, explicitly cancel with "
+        f"{TEAM_CANCEL_TASK_TOOL}, or escalate unresolved children. Cancellation "
+        "requires a stable reason code and reason, and a successor task ID when "
+        "work continues elsewhere; never simulate cancellation with a description "
+        "or generic state edit.\n"
+        "- A child owner completes support work with the supported finish path, or "
+        "submits an assessable delivered/evidenced-noop contribution. Request a "
+        "specialist review when needed. When blocked, use "
+        f"{TEAM_REPORT_BLOCKER_TOOL} with a stable reason_code and concrete "
+        "explanation instead of a prose-only status report.\n\n"
         "Deliverables and review:\n"
         f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} only for an assessable work product "
         "that needs acceptance by your direct superior. This always moves the task "
         "to waiting_for_review and sends the superior a deliverable notice. Use "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} when the deliverable should "
         "immediately be handed to a reviewer.\n"
+        f"- When a deliverable_notice hands a direct subordinate's deliverable to "
+        f"you for superior acceptance, use {TEAM_DECIDE_DELIVERABLE_TOOL} to accept "
+        "or reject it and handle that notice in the same call. Rejection requires "
+        f"a concrete reason. Use {TEAM_REQUEST_REVIEW_TOOL} instead when specialist "
+        f"review is needed, or {TEAM_REPORT_BLOCKER_TOOL} when evidence or a "
+        "dependency prevents a decision. Do not use the direct decision tool once "
+        "formal review requests exist.\n"
         "- For non-Git deliverables, stage files under /artifacts and pass paths "
         f"relative to /artifacts to {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}. The Team runtime publishes "
@@ -4651,16 +5148,17 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "with durable reference_ids; reports and artifacts are supporting evidence "
         "and do not satisfy an outcome contract by themselves. Finish an allowed "
         "existing-record no-op with structured evidenced_noop completion evidence.\n"
-        "- When responding to a review_rejected inbox item, create a revised "
-        "deliverable with supersedes_deliverable_id set to the "
-        "payload's supersedes_deliverable_id.\n"
-        f"- Use {TEAM_DECIDE_REVIEW_TOOL} only for review requests assigned to "
-        "you. Accepting a review is what cascades to deliverable/task acceptance "
-        "once all attached reviews are accepted.\n"
-        f"- Use {TEAM_RETRY_REVIEW_TOOL} to replace a current blocked review "
-        "attempt after its dependency or system problem is corrected. Use "
-        f"{TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL} when an accepted replacement "
-        "must retire a blocked or rejected predecessor across tasks.\n"
+        f"- Outcome kinds are a controlled vocabulary. Inspect the wake context or "
+        f"use {TEAM_LIST_OUTCOME_KINDS_TOOL} before creating an outcome task; do "
+        "not invent kind strings. Use support tasks when no durable external result "
+        "is required. If no suitable kind exists and your role has "
+        "manage_outcome_kinds, create a project-scoped definition with "
+        f"{TEAM_CREATE_OUTCOME_KIND_TOOL}; otherwise escalate the catalog gap to "
+        "your operator.\n"
+        "- Review decisions and findings are durable history. Follow the relevant "
+        "inbox or blocker next action and the selected Team tool's description for "
+        "rework, retry, withdrawal, retirement, or replacement; lifecycle actions "
+        "never waive findings.\n"
         "- During manager fallback, routing_gaps take priority. If a gap says an "
         "idle profile-eligible reviewer has review work, create a fresh "
         f"{TEAM_REQUEST_REVIEW_TOOL} call for that reviewer instead of accepting "
@@ -4814,6 +5312,9 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
     context = build_compact_wake_context(lease)
     project_repo = lease.get("project_repo")
+    project_repos = _mapping_items(lease.get("project_repos"))
+    if not project_repos and isinstance(project_repo, Mapping):
+        project_repos = [project_repo]
     runtime = lease.get("runtime")
     handoff_summary = (
         _optional_text(runtime.get("last_handoff_summary"))
@@ -4885,6 +5386,7 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         if context.get("blockers")
         else ""
     )
+    superior_acceptance_section = _superior_acceptance_guidance(context)
     context_json = json.dumps(context, sort_keys=True, indent=2)
     return (
         "Continue your assigned team-agent work.\n"
@@ -4905,12 +5407,13 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         "or review-focused tasks, not implementation task ownership.\n\n"
         f"{_task_creation_mandate_guidance(agent)}"
         f"{_deliverable_mechanics_guidance(lease)}"
-        f"{_project_repo_prompt_guidance(project_repo)}"
+        f"{_project_repos_prompt_guidance(project_repos)}"
         f"{handoff_section}"
         f"{review_artifact_section}"
         f"{git_release_sequence_section}"
         f"{manager_fallback_section}"
         f"{blocker_section}"
+        f"{superior_acceptance_section}"
         f"Team context JSON:\n{context_json}\n\n"
         "MCP action surface:\n"
         "- Call the appropriate Team MCP tool for each state change, handoff, "
@@ -4919,6 +5422,54 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         "before finishing.\n"
         f"- Use {TEAM_MARK_INBOX_HANDLED_TOOL} for inbox items that are handled "
         "without needing a reply.\n"
+    )
+
+
+def _superior_acceptance_guidance(context: Mapping[str, Any]) -> str:
+    handoffs: list[tuple[str, str, str | None]] = []
+    for item in context.get("inbox") or []:
+        if not isinstance(item, Mapping) or item.get("item_type") != "deliverable_notice":
+            continue
+        payload = item.get("payload")
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("kind") not in {None, "superior_acceptance_requested"}
+        ):
+            continue
+        inbox_item_id = _optional_text(item.get("id"))
+        deliverable_id = _optional_text(payload.get("deliverable_id"))
+        if inbox_item_id is None or deliverable_id is None:
+            continue
+        handoffs.append(
+            (
+                deliverable_id,
+                inbox_item_id,
+                _optional_text(item.get("task_id") or payload.get("task_id")),
+            )
+        )
+    if not handoffs:
+        return ""
+    labels = ", ".join(
+        (
+            f"{deliverable_id} (notice {inbox_item_id}, task {task_id})"
+            if task_id is not None
+            else f"{deliverable_id} (notice {inbox_item_id})"
+        )
+        for deliverable_id, inbox_item_id, task_id in handoffs
+    )
+    return (
+        "Superior deliverable decisions for this wake:\n"
+        f"- Pending direct handoffs: {labels}.\n"
+        f"- Inspect evidence with {TEAM_GET_DELIVERABLE_TOOL} when needed, then call "
+        f"{TEAM_DECIDE_DELIVERABLE_TOOL} with decision accepted or rejected. Include "
+        "the matching notice id in handled_inbox_item_ids so the decision and inbox "
+        "handling are atomic. A rejection must state a concrete reason.\n"
+        f"- If specialist review is required, call {TEAM_REQUEST_REVIEW_TOOL} and "
+        "handle the notice in that call. If evidence or a dependency prevents any "
+        f"decision, call {TEAM_REPORT_BLOCKER_TOOL} and handle the notice there.\n"
+        f"- If formal review requests already exist, do not call "
+        f"{TEAM_DECIDE_DELIVERABLE_TOOL}; handle the stale direct notice and follow "
+        f"the assigned review path with {TEAM_DECIDE_REVIEW_TOOL}.\n\n"
     )
 
 
@@ -5116,7 +5667,10 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
             f"{lead_scope} include {RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
             f"tasks with {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} by omitting "
             "parent_task_id when you otherwise have authority to create the task. "
-            "You may also create child tasks with "
+            "Use parent_task_id only for constituent work contained by that parent. "
+            "Create an independent root for separate work, and set "
+            "originating_task_id when that root is correction or follow-up work "
+            "provenanced from an earlier task. You may also create child tasks with "
             "parent_task_id.\n\n"
         )
     return (
@@ -5124,7 +5678,8 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
         f"have {RolePermission.CREATE_ROOT_TASK.value}. You may NOT create "
         f"top-level tasks. Every {TEAM_CREATE_TASK_TOOL} or "
         f"{TEAM_CREATE_TASKS_TOOL} call must set parent_task_id to one of your "
-        "own active tasks.\n\n"
+        "own active tasks. Do not misuse originating_task_id to bypass that root "
+        "creation boundary; it records provenance, not containment authority.\n\n"
     )
 
 
@@ -5201,6 +5756,56 @@ def _team_chat_agent_display_name(agent: object) -> str:
     )
 
 
+def _project_repos_prompt_guidance(
+    project_repos: Sequence[Mapping[str, Any]],
+) -> str:
+    if not project_repos:
+        return ""
+    if len(project_repos) == 1:
+        return _project_repo_prompt_guidance(project_repos[0])
+    rows = [
+        (
+            _optional_text(context_row.get("task_id")) or "-",
+            _optional_text(project_repo.get("project_id")) or "-",
+            _optional_text(project_repo.get("managed_repo_id")) or "-",
+            _optional_text(context_row.get("worktree_path")) or "-",
+            _optional_text(context_row.get("agent_branch")) or "-",
+            _optional_text(context_row.get("branch_context_id")) or "-",
+        )
+        for project_repo in project_repos
+        for context_row in _mapping_items(project_repo.get("git_work_contexts"))
+    ]
+    table = "\n".join(
+        [
+            "| Task | Project | Repository | Worktree | Branch | Context |",
+            "| --- | --- | --- | --- | --- | --- |",
+            *[
+                "| " + " | ".join(columns) + " |"
+                for columns in rows
+            ],
+        ]
+    )
+    control_checkouts = ", ".join(
+        sorted(
+            {
+                target_dir
+                for project_repo in project_repos
+                if (
+                    target_dir := _optional_text(project_repo.get("target_dir"))
+                )
+                is not None
+            }
+        )
+    )
+    return (
+        "Project repositories: the base checkouts "
+        f"({control_checkouts or 'none'}) are control checkouts. Enter the exact "
+        "task worktree below before editing, and submit its matching context and "
+        "branch.\n"
+        f"{table}\n\n"
+    )
+
+
 def _project_repo_prompt_guidance(project_repo: object) -> str:
     if not isinstance(project_repo, Mapping):
         return ""
@@ -5208,22 +5813,101 @@ def _project_repo_prompt_guidance(project_repo: object) -> str:
     if target_dir is None:
         return ""
     git_context_rows = _mapping_items(project_repo.get("git_work_contexts"))
-    git_context_guidance = (
-        " Use the project_repo.git_work_contexts row matching your deliverable "
-        "task_id; pass its branch_context_id and push the code to its agent_branch."
+    project_id = _optional_text(project_repo.get("project_id")) or "unknown"
+    repository = (
+        _optional_text(project_repo.get("guest_repo_name"))
+        or _optional_text(project_repo.get("remote_url"))
+        or "prepared repository"
+    )
+    mapping_lines = [
+        "| Task | Project | Repository | Worktree | Branch | Context |",
+        "| --- | --- | --- | --- | --- | --- |",
+        *[
+            "| "
+            + " | ".join(
+                [
+                    _optional_text(row.get("task_id")) or "unknown",
+                    project_id,
+                    repository,
+                    _optional_text(row.get("worktree_path")) or "missing",
+                    _optional_text(row.get("agent_branch")) or "missing",
+                    _optional_text(row.get("branch_context_id") or row.get("id"))
+                    or "missing",
+                ]
+            )
+            + " |"
+            for row in git_context_rows
+        ],
+    ]
+    worktree_guidance = (
+        "Task-to-worktree mapping:\n"
+        + "\n".join(mapping_lines)
+        + "\nBefore editing, enter the row whose Task matches the task you are "
+        "working on. Pass that row's Context as branch_context_id and push only "
+        "its Branch. Never edit in the control checkout or reuse another task's "
+        "worktree, branch, context, or dispatch.\n"
         if git_context_rows
-        else ""
+        else "No task worktree is assigned for this repository; treat the control "
+        "checkout as read-only and do not make code changes until a task context "
+        "is prepared.\n"
     )
-    effective_target = (
-        _optional_text(git_context_rows[0].get("worktree_path"))
-        if len(git_context_rows) == 1
-        else target_dir
-    ) or target_dir
     return (
-        f"Project repository: work in the prepared guest checkout at {effective_target}. "
+        f"Project repository control checkout: {target_dir}. "
         "The project host checkout is not mounted in the guest; use this guest "
-        f"repo and its configured Git helpers for code changes.{git_context_guidance}\n\n"
+        "repository and its configured Git helpers. The control checkout exists "
+        "for repository preparation and base operations, not task edits.\n"
+        "Use project_repo.git_work_contexts to select the row for the task.\n"
+        f"{worktree_guidance}\n"
     )
+
+
+def _prepare_project_repos(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    state: Any,
+    agent: Mapping[str, Any],
+    dispatch_id: str,
+    tasks: object,
+    project_ids: Sequence[str],
+) -> tuple[Any, list[dict[str, Any]]]:
+    project_repos: list[dict[str, Any]] = []
+    for project_id in sorted(set(project_ids)):
+        state, project_repo = _prepare_project_repo(
+            context,
+            repo=repo,
+            state=state,
+            agent={**agent, "project_ids": [project_id]},
+            dispatch_id=dispatch_id,
+            tasks=tasks,
+        )
+        if project_repo is not None:
+            project_repos.append(project_repo)
+    expected_managed_repo_ids = {
+        project.git.managed_repo_id
+        for project_id in project_ids
+        if (project := state.projects.get(project_id)) is not None
+        and project.git is not None
+    }
+    prepared_managed_repo_ids = {
+        _required_text(project_repo.get("managed_repo_id"), "managed_repo_id")
+        for project_repo in project_repos
+    }
+    missing_managed_repo_ids = sorted(
+        expected_managed_repo_ids - prepared_managed_repo_ids
+    )
+    if missing_managed_repo_ids:
+        raise RuntimeError(
+            "dispatch repository preparation omitted managed repositories: "
+            + ", ".join(missing_managed_repo_ids)
+        )
+    if project_repos:
+        _mark_project_repos_prepared(
+            context,
+            session_id=_required_text(agent.get("session_id"), "session_id"),
+            project_repos=project_repos,
+        )
+    return state, project_repos
 
 
 def _prepare_project_repo(
@@ -5286,6 +5970,7 @@ def _prepare_project_repo(
         raise RuntimeError(message)
     project_repo = _project_repo_payload(
         project_id=project_id,
+        managed_repo_id=managed_repo_id,
         clone_result=clone_result,
         base_branch=clone_branch,
     )
@@ -5317,12 +6002,14 @@ def _prepare_project_repo(
 def _project_repo_payload(
     *,
     project_id: str,
+    managed_repo_id: str,
     clone_result: Mapping[str, Any],
     base_branch: str | None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "prepared": True,
         "project_id": project_id,
+        "managed_repo_id": managed_repo_id,
     }
     for key in (
         "target_dir",
@@ -5368,6 +6055,10 @@ def _create_project_repo_git_work_contexts(
     admin = TeamAdminService(repo)
     state_commit_attempt_count = 0
     state_conflict_retry_count = 0
+    task_worktree_repo_name = _required_text(
+        project_repo.get("guest_repo_name"),
+        "guest_repo_name",
+    )
     for task in _project_repo_context_tasks(
         tasks,
         project_id=project_id,
@@ -5375,60 +6066,67 @@ def _create_project_repo_git_work_contexts(
     ):
         task_id = _required_text(task.get("id"), "task.id")
         agent_branch = _project_repo_agent_branch(session_id, task_id=task_id)
-        worktree_path = _prepare_project_repo_task_worktree(
-            context,
-            project_repo=project_repo,
+        with team_task_worktree_cleanup_lock(
+            runtime_dir=_runtime_dir(context),
             session_id=session_id,
-            task_id=task_id,
-            agent_branch=agent_branch,
-            base_ref=base_branch or "HEAD",
-        )
-        context_id = _project_repo_git_work_context_id(
-            agent_id=agent_id,
-            task_id=task_id,
-            dispatch_id=dispatch_id,
-        )
-        last_conflict: TeamStateConflictError | None = None
-        for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
-            state_commit_attempt_count += 1
-            state = repo.read()
-            runtime = state.agent_runtimes.get(agent_id)
-            if runtime is None or runtime.active_dispatch_id != dispatch_id:
-                raise RuntimeError(
-                    f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
-                )
-            existing = state.git_work_contexts.get(context_id)
-            if existing is not None:
-                _validate_project_repo_git_work_context(
-                    existing,
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    dispatch_id=dispatch_id,
-                    agent_branch=agent_branch,
-                    base_branch=base_branch,
-                    worktree_path=worktree_path,
-                )
-                break
-            try:
-                state, context_id = admin.create_git_work_context_with_id(
-                    context_id=context_id,
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    agent_branch=agent_branch,
-                    base_branch=base_branch,
-                    dispatch_id=dispatch_id,
-                    worktree_path=worktree_path,
-                    expected_revision=state.revision,
-                )
-                break
-            except TeamStateConflictError as exc:
-                last_conflict = exc
-                state_conflict_retry_count += 1
-        else:
-            assert last_conflict is not None
-            raise last_conflict
-        context_model = state.git_work_contexts[context_id]
-        rows.append(_git_work_context_prompt_payload(context_model))
+            repo_name=task_worktree_repo_name,
+        ):
+            worktree_path, base_commit = _prepare_project_repo_task_worktree(
+                context,
+                project_repo=project_repo,
+                session_id=session_id,
+                task_id=task_id,
+                agent_branch=agent_branch,
+                base_ref=base_branch or "HEAD",
+            )
+            context_id = _project_repo_git_work_context_id(
+                agent_id=agent_id,
+                task_id=task_id,
+                dispatch_id=dispatch_id,
+            )
+            last_conflict: TeamStateConflictError | None = None
+            for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
+                state_commit_attempt_count += 1
+                state = repo.read()
+                runtime = state.agent_runtimes.get(agent_id)
+                if runtime is None or runtime.active_dispatch_id != dispatch_id:
+                    raise RuntimeError(
+                        f"dispatch {dispatch_id} no longer owns the wake lease "
+                        f"for agent {agent_id}"
+                    )
+                existing = state.git_work_contexts.get(context_id)
+                if existing is not None:
+                    _validate_project_repo_git_work_context(
+                        existing,
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        dispatch_id=dispatch_id,
+                        agent_branch=agent_branch,
+                        base_branch=base_branch,
+                        worktree_path=worktree_path,
+                    )
+                    break
+                try:
+                    state, context_id = admin.create_git_work_context_with_id(
+                        context_id=context_id,
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        agent_branch=agent_branch,
+                        base_branch=base_branch,
+                        base_commit=base_commit,
+                        dispatch_id=dispatch_id,
+                        worktree_path=worktree_path,
+                        expected_revision=state.revision,
+                    )
+                    break
+                except TeamStateConflictError as exc:
+                    last_conflict = exc
+                    state_conflict_retry_count += 1
+            else:
+                assert last_conflict is not None
+                raise last_conflict
+            context_model = state.git_work_contexts[context_id]
+            rows.append(_git_work_context_prompt_payload(context_model))
     return (
         state,
         rows,
@@ -5493,7 +6191,7 @@ def _prepare_project_repo_task_worktree(
     task_id: str,
     agent_branch: str,
     base_ref: str,
-) -> str:
+) -> tuple[str, str | None]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
@@ -5518,7 +6216,7 @@ def _prepare_project_repo_task_worktree(
                 f"prepared worktree {record.target_dir} uses {record.branch!r}, "
                 f"expected {agent_branch!r}"
             )
-        return record.target_dir
+        return record.target_dir, record.commit_sha
     if execution_backend != "libvirt_vm":
         raise RuntimeError(
             f"Team task worktrees do not support execution backend {execution_backend!r}"
@@ -5529,12 +6227,18 @@ def _prepare_project_repo_task_worktree(
     quoted_target = shlex.quote(worktree_path)
     quoted_branch = shlex.quote(agent_branch)
     quoted_base = shlex.quote(base_ref)
+    lock_path = f"/home/agent/.evander/locks/task-worktree-{repo_name}.lock"
+    quoted_lock = shlex.quote(lock_path)
     command = "\n".join(
         (
             "set -eu",
             f"target={quoted_target}",
             f"branch={quoted_branch}",
             f"base={quoted_base}",
+            f"lock={quoted_lock}",
+            'mkdir -p "$(dirname "$lock")"',
+            'exec 9>"$lock"',
+            "flock 9",
             'mkdir -p "$(dirname "$target")"',
             "git config extensions.worktreeConfig true",
             'if [ -e "$target/.git" ]; then',
@@ -5547,6 +6251,7 @@ def _prepare_project_repo_task_worktree(
             'git -C "$target" config --worktree evander.workBranch "$branch"',
             'git -C "$target" config --worktree evander.baseBranch "$base"',
             'if [ -d .evander ] && [ ! -e "$target/.evander" ]; then cp -R .evander "$target/.evander"; fi',
+            'git -C "$target" rev-parse HEAD',
         )
     )
     provider = AgentExecEffectProvider()
@@ -5570,7 +6275,15 @@ def _prepare_project_repo_task_worktree(
             or _optional_text(result.get("message"))
             or f"failed to prepare task worktree {worktree_path}"
         )
-    return worktree_path
+    commit_sha = next(
+        (
+            line.strip().casefold()
+            for line in reversed(str(result.get("stdout") or "").splitlines())
+            if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", line.strip())
+        ),
+        None,
+    )
+    return worktree_path, commit_sha
 
 
 def _project_repo_context_tasks(
@@ -5973,6 +6686,27 @@ def _mark_project_repo_prepared(
     update_fn(
         target=session_id,
         metadata={"team_addon": {"project_repo": dict(project_repo)}},
+    )
+
+
+def _mark_project_repos_prepared(
+    context: Any,
+    *,
+    session_id: str,
+    project_repos: Sequence[Mapping[str, Any]],
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    metadata: dict[str, Any] = {
+        "project_repos": [dict(project_repo) for project_repo in project_repos],
+    }
+    if len(project_repos) == 1:
+        metadata["project_repo"] = dict(project_repos[0])
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": metadata},
     )
 
 
@@ -6413,13 +7147,31 @@ def _record_wake_failure(
     lease: Mapping[str, Any],
     error: str,
 ) -> Any:
+    agent_id = _required_text(lease["agent"].get("id"), "agent_id")
+    dispatch_id = _required_text(lease.get("dispatch_id"), "dispatch_id")
+    current_dispatch = repo.read().dispatches.get(dispatch_id)
+    if (
+        current_dispatch is not None
+        and current_dispatch.status.value == "preparing"
+    ):
+        return TeamRuntimeService(repo).fail_agent_dispatch(
+            agent_id=agent_id,
+            dispatch_id=dispatch_id,
+            error=error,
+        )
     state, _result = TeamAgentActionService(repo).apply_agent_action(
         action={},
         session_id=_required_text(lease["agent"].get("session_id"), "session_id"),
-        dispatch_id=_required_text(lease.get("dispatch_id"), "dispatch_id"),
+        dispatch_id=dispatch_id,
         valid=False,
         error=error,
     )
+    if current_dispatch is not None:
+        state = TeamRuntimeService(repo).fail_agent_dispatch(
+            agent_id=agent_id,
+            dispatch_id=dispatch_id,
+            error=error,
+        )
     return state
 
 
@@ -6560,7 +7312,11 @@ def _team_deliverable_created_payload(
     project = state.projects.get(task.project_id) if task is not None else None
     team = state.teams.get(project.team_id) if project is not None else None
     deliverable_payload = deliverable.model_dump(mode="json")
-    task_payload = task.model_dump(mode="json") if task is not None else None
+    task_payload = (
+        task_payload_with_assessment(state, task)
+        if task is not None
+        else None
+    )
     project_payload = project.model_dump(mode="json") if project is not None else None
     team_payload = team.model_dump(mode="json") if team is not None else None
     return {
@@ -6717,7 +7473,11 @@ def _task_effect_success_result(
     created: bool,
 ) -> dict[str, Any]:
     task = state.tasks.get(task_id or "")
-    task_payload = task.model_dump(mode="json") if task is not None else None
+    task_payload = (
+        task_payload_with_assessment(state, task)
+        if task is not None
+        else None
+    )
     project = state.projects.get(task.project_id) if task is not None else None
     return {
         "success": task is not None,
@@ -6950,6 +7710,7 @@ def _filtered_team_state_payload(
         include_agent_avatars=False,
         session_records=session_records,
     )
+    apply_compact_human_review_projection(filtered, state)
     filtered["memories"] = {}
     teams = filtered["teams"]
     projects = filtered["projects"]
@@ -7088,6 +7849,18 @@ def _filtered_team_state_payload(
         if value.get("deliverable_id") in visible_deliverable_ids
         and value.get("reviewer_agent_id") in visible_agent_ids
     }
+    filtered["outcome_kind_definitions"] = {
+        key: value
+        for key, value in filtered.get(
+            "outcome_kind_definitions",
+            {},
+        ).items()
+        if value.get("team_id") in visible_team_ids
+        and (
+            value.get("project_id") is None
+            or value.get("project_id") in visible_project_ids
+        )
+    }
     filtered["review_profiles"] = {
         key: {
             **value,
@@ -7175,6 +7948,61 @@ def _filtered_team_state_payload(
         )
     }
     visible_release_ids = set(filtered["release_packages"])
+    visible_human_review_ids = {
+        request.id
+        for request in state.human_review_requests.values()
+        if request.release_package_id in visible_release_ids
+    }
+    filtered["blockers"] = {
+        key: _scoped_blocker_payload(
+            value,
+            visible_task_ids=visible_task_ids,
+            visible_agent_ids=visible_agent_ids,
+        )
+        for key, value in filtered.get("blockers", {}).items()
+        if _blocker_payload_is_visible(
+            value,
+            visible_team_ids=visible_team_ids,
+            visible_project_ids=visible_project_ids,
+            visible_agent_ids=visible_agent_ids,
+            visible_task_ids=visible_task_ids,
+            visible_deliverable_ids=visible_deliverable_ids,
+            visible_review_ids=visible_review_ids,
+            visible_release_ids=visible_release_ids,
+            visible_human_review_ids=visible_human_review_ids,
+        )
+    }
+    visible_blocker_ids = set(filtered["blockers"])
+    filtered["blocker_events"] = {
+        key: _scoped_blocker_event_payload(
+            value,
+            visible_agent_ids=visible_agent_ids,
+        )
+        for key, value in filtered.get("blocker_events", {}).items()
+        if value.get("blocker_id") in visible_blocker_ids
+    }
+    assessments = assess_tasks(state)
+    filtered["tasks"] = {
+        task_id: {
+            **task_payload_with_assessment(
+                state,
+                state.tasks[task_id],
+                assessment=assessments[task_id],
+                assessments=assessments,
+                visible_task_ids=visible_task_ids,
+                visible_deliverable_ids=visible_deliverable_ids,
+                visible_review_request_ids=visible_review_ids,
+                visible_blocker_ids=visible_blocker_ids,
+                visible_agent_ids=visible_agent_ids,
+            ),
+            "case_id": (
+                state.tasks[task_id].case_id
+                if state.tasks[task_id].case_id in visible_case_ids
+                else None
+            ),
+        }
+        for task_id in sorted(visible_task_ids)
+    }
     filtered["git_promotions"] = {
         key: value
         for key, value in filtered.get("git_promotions", {}).items()
@@ -7360,7 +8188,10 @@ def _filter_runtime_operations(
         if _optional_text(row.get("id")) in visible_agent_ids
     ]
     attention = [
-        row
+        _scoped_runtime_attention_row(
+            row,
+            visible_task_ids=visible_task_ids,
+        )
         for row in _mapping_items(value.get("attention"))
         if _runtime_row_is_visible(
             row,
@@ -7386,6 +8217,31 @@ def _filter_runtime_operations(
         "attention": attention,
         "session_health": session_health,
     }
+
+
+def _scoped_runtime_attention_row(
+    row: dict[str, Any],
+    *,
+    visible_task_ids: set[str],
+) -> dict[str, Any]:
+    payload = dict(row)
+    if payload.get("kind") not in {
+        "blocked_task",
+        "waiting_dependency_task",
+    }:
+        return payload
+    payload["blocked_by_task_ids"] = _filter_ids(
+        payload.get("blocked_by_task_ids"),
+        visible_task_ids,
+    )
+    detail = _optional_text(payload.get("detail"))
+    if detail is not None:
+        payload["detail"] = "; ".join(
+            part
+            for part in detail.split("; ")
+            if not part.startswith("depends on ")
+        )
+    return payload
 
 
 def _runtime_row_is_visible(
@@ -7433,6 +8289,120 @@ def _mapping_items(value: object) -> list[dict[str, Any]]:
 
 def _filter_ids(value: object, allowed: set[str]) -> list[str]:
     return [item for item in _string_items(value) if item in allowed]
+
+
+def _blocker_payload_is_visible(
+    value: object,
+    *,
+    visible_team_ids: set[str],
+    visible_project_ids: set[str],
+    visible_agent_ids: set[str],
+    visible_task_ids: set[str],
+    visible_deliverable_ids: set[str],
+    visible_review_ids: set[str],
+    visible_release_ids: set[str],
+    visible_human_review_ids: set[str],
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("team_id") not in visible_team_ids:
+        return False
+    project_id = _optional_text(value.get("project_id"))
+    if project_id is not None and project_id not in visible_project_ids:
+        return False
+    source_id = _optional_text(value.get("source_id"))
+    source_kind = _optional_text(value.get("source_kind"))
+    source_visible = {
+        "task": source_id in visible_task_ids,
+        "deliverable": source_id in visible_deliverable_ids,
+        "review_request": source_id in visible_review_ids,
+        "release_package": source_id in visible_release_ids,
+        "human_review_request": source_id in visible_human_review_ids,
+        "agent_execution_stall": source_id in visible_agent_ids,
+    }.get(source_kind)
+    if source_visible is not None:
+        return source_visible
+    if source_kind != "explicit":
+        return False
+    linked_task_ids = {
+        task_id
+        for task_id in [
+            _optional_text(value.get("task_id")),
+            *_string_items(value.get("affected_task_ids")),
+        ]
+        if task_id is not None
+    }
+    if linked_task_ids.intersection(visible_task_ids):
+        return True
+    return any(
+        agent_id in visible_agent_ids
+        for agent_id in (
+            _optional_text(value.get("reporter_agent_id")),
+            _optional_text(value.get("owner_agent_id")),
+            _optional_text(value.get("delegate_agent_id")),
+        )
+        if agent_id is not None
+    )
+
+
+def _scoped_blocker_payload(
+    value: dict[str, Any],
+    *,
+    visible_task_ids: set[str],
+    visible_agent_ids: set[str],
+) -> dict[str, Any]:
+    return {
+        **value,
+        "task_id": (
+            value.get("task_id")
+            if value.get("task_id") in visible_task_ids
+            else None
+        ),
+        "affected_task_ids": _filter_ids(
+            value.get("affected_task_ids"),
+            visible_task_ids,
+        ),
+        "reporter_agent_id": (
+            value.get("reporter_agent_id")
+            if value.get("reporter_agent_id") in visible_agent_ids
+            else None
+        ),
+        "owner_agent_id": (
+            value.get("owner_agent_id")
+            if value.get("owner_agent_id") in visible_agent_ids
+            else None
+        ),
+        "delegate_agent_id": (
+            value.get("delegate_agent_id")
+            if value.get("delegate_agent_id") in visible_agent_ids
+            else None
+        ),
+    }
+
+
+def _scoped_blocker_event_payload(
+    value: dict[str, Any],
+    *,
+    visible_agent_ids: set[str],
+) -> dict[str, Any]:
+    return {
+        **value,
+        "actor_agent_id": (
+            value.get("actor_agent_id")
+            if value.get("actor_agent_id") in visible_agent_ids
+            else None
+        ),
+        "from_agent_id": (
+            value.get("from_agent_id")
+            if value.get("from_agent_id") in visible_agent_ids
+            else None
+        ),
+        "to_agent_id": (
+            value.get("to_agent_id")
+            if value.get("to_agent_id") in visible_agent_ids
+            else None
+        ),
+    }
 
 
 def _filter_deliverable_git_refs(value: dict[str, Any], allowed: set[str]) -> dict[str, Any]:

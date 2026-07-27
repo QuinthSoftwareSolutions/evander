@@ -141,10 +141,29 @@ def test_agent_exec_uses_session_container_image(
         _context(tmp_path, session_repository),
     )
 
-    result = provider.execute()
+    result = provider.execute(
+        resolved_config={
+            "execution_metadata": {
+                "operation_kind": "artifact_import",
+                "operation_label": "Import artifact",
+                "artifact_key": "reports/one",
+                "artifact_destination_path": "imports/one",
+                "not_allowed": "ignored",
+            }
+        }
+    )
 
     assert result["success"] is True
     assert backend.started_specs[0].image == "runner:exec-image"
+    assert backend.started_specs[0].metadata == {
+        "effect_type": "effect:agent:exec",
+        "effect_id": "effect-1",
+        "effect_display_name": "Exec",
+        "operation_kind": "artifact_import",
+        "operation_label": "Import artifact",
+        "artifact_key": "reports/one",
+        "artifact_destination_path": "imports/one",
+    }
 
 
 def test_agent_clone_repo_uses_session_container_image(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -35,11 +36,29 @@ from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _normalized_release_deliverable_set,
 )
+from .domain.human_reviews import (
+    HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+    HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+    HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+)
+from .domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_release_scope,
+)
+from .commands.outbox import _team_event_outbox_records
 
 
 class TeamGitReleaseService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+    ) -> None:
         self._repository = repository
+        self._human_review_eligibility_resolver = (
+            human_review_eligibility_resolver
+        )
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -72,6 +91,10 @@ class TeamGitReleaseService:
             "git_promotion_event_ids": [],
             "error": None,
         }
+        if self._human_review_eligibility_resolver is not None:
+            result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                self._human_review_eligibility_resolver
+            )
 
         def _mutate(state_model: TeamState) -> TeamState:
             promotion = _require_present(
@@ -108,7 +131,22 @@ class TeamGitReleaseService:
             result["success"] = True
             return state_model
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            expected_revision=expected_revision,
+            outbox_records=lambda: _team_event_outbox_records(
+                [
+                    event
+                    for event in result["events"]
+                    if event.get("event_type")
+                    in {
+                        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+                        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                    }
+                ]
+            ),
+        )
+        result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         return state, result
 
@@ -234,12 +272,53 @@ class TeamGitReleaseService:
                 "release package",
             )
             now = utc_now()
+            if release.state == TeamRecordState.ACCEPTED:
+                conflicting_commit = (
+                    normalized_commit is not None
+                    and normalized_commit != release.published_commit_sha
+                )
+                conflicting_branch = (
+                    normalized_canonical is not None
+                    and normalized_canonical != release.canonical_branch
+                )
+                if conflicting_commit or conflicting_branch:
+                    result["error"] = (
+                        f"published release {release.id} is immutable; "
+                        "late publication result was ignored"
+                    )
+                result["state"] = release.state.value
+                result["ignored_terminal_state"] = True
+                result["success"] = True
+                return state_model
             if release.state == TeamRecordState.REJECTED:
                 result["state"] = release.state.value
                 result["ignored_terminal_state"] = True
                 result["success"] = True
                 return state_model
             if success:
+                publication_error = _release_publication_validation_error(
+                    state_model,
+                    release=release,
+                    canonical_branch=normalized_canonical,
+                    published_commit_sha=normalized_commit,
+                )
+                if publication_error is not None:
+                    release.state = TeamRecordState.BLOCKED
+                    release.error = publication_error
+                    release.updated_at = now
+                    result["error"] = publication_error
+                    open_release_blocker(
+                        state_model,
+                        release_package_id=release.id,
+                        summary=f"Release publication blocked: {release.id}",
+                        details=publication_error,
+                        result=result,
+                        now=now,
+                    )
+                    _recalculate_project_status(state_model, release.project_id)
+                    result["state"] = release.state.value
+                    result["success"] = True
+                    return state_model
                 release.state = TeamRecordState.ACCEPTED
                 if normalized_canonical is not None:
                     release.canonical_branch = normalized_canonical
@@ -352,6 +431,193 @@ class TeamGitReleaseService:
         state = self._repository.update(_mutate, expected_revision=expected_revision)
         result["revision"] = state.revision
         return state, result
+
+
+def _release_publication_validation_error(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    canonical_branch: str | None,
+    published_commit_sha: str | None,
+) -> str | None:
+    try:
+        require_release_scope(
+            state,
+            project_id=release.project_id,
+            deliverable_ids=release.deliverable_ids,
+        )
+    except TaskAssessmentBoundaryError as exc:
+        return (
+            "release publication scope is no longer valid: "
+            f"{exc.message}"
+        )
+
+    candidate_commit_sha = _optional_text(getattr(release, "candidate_commit_sha", None))
+    approved_commit_sha = _optional_text(getattr(release, "approved_commit_sha", None))
+    if candidate_commit_sha is None:
+        return "release publication requires candidate_commit_sha"
+    if approved_commit_sha is None:
+        return "release publication requires approved_commit_sha"
+    if approved_commit_sha != candidate_commit_sha:
+        return (
+            f"approved commit {approved_commit_sha} does not match "
+            f"release candidate {candidate_commit_sha}"
+        )
+    if published_commit_sha is None:
+        return "release publication requires published_commit_sha"
+    if published_commit_sha != approved_commit_sha:
+        return (
+            f"published commit {published_commit_sha} does not match "
+            f"approved candidate {approved_commit_sha}"
+        )
+
+    human_review_error = _human_review_publication_validation_error(
+        state,
+        release=release,
+        candidate_commit_sha=candidate_commit_sha,
+    )
+    if human_review_error is not None:
+        return human_review_error
+
+    release_branch = _optional_text(getattr(release, "release_branch", None))
+    target_branch = canonical_branch or _optional_text(getattr(release, "canonical_branch", None))
+    if release_branch is None:
+        return "release publication requires release_branch"
+    if target_branch is None:
+        return "release publication requires canonical_branch"
+
+    linked_promotion_ids = set(getattr(release, "git_promotion_record_ids", ()) or ())
+    for promotion in state.git_promotions.values():
+        if (
+            promotion.id not in linked_promotion_ids
+            or promotion.release_package_id != release.id
+            or promotion.project_id != release.project_id
+            or promotion.promotion_kind != "canonical_push"
+            or promotion.state != "succeeded"
+            or _optional_text(promotion.commit_sha) != published_commit_sha
+            or _optional_text(promotion.source_branch) != release_branch
+            or _optional_text(promotion.target_branch) != target_branch
+        ):
+            continue
+        if any(
+            _optional_text(getattr(source, "source_branch", None)) == release_branch
+            and _optional_text(getattr(source, "expected_commit_sha", None))
+            == approved_commit_sha
+            for source in (getattr(promotion, "sources", ()) or ())
+        ):
+            return None
+    return (
+        "release publication requires a linked succeeded canonical promotion "
+        f"for {release_branch} -> {target_branch} at {published_commit_sha}"
+    )
+
+
+def _human_review_publication_validation_error(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    candidate_commit_sha: str,
+) -> str | None:
+    manifest = getattr(release, "manifest", None)
+    human_requirement = (
+        getattr(manifest, "human_review_requirement", None)
+        if manifest is not None
+        else None
+    )
+    carried_findings = (
+        getattr(manifest, "carried_human_findings", None)
+        if manifest is not None
+        else None
+    )
+    requests = _record_collection_values(state, "human_review_requests")
+    linked_requests = [
+        request
+        for request in requests
+        if _optional_text(getattr(request, "release_package_id", None)) == release.id
+    ]
+    has_human_obligation = (
+        human_requirement is not None
+        or bool(carried_findings)
+        or bool(linked_requests)
+    )
+    if not has_human_obligation:
+        return None
+    if len(linked_requests) != 1:
+        return (
+            f"release {release.id} has a human review obligation but requires "
+            "exactly one human review request"
+        )
+
+    request = linked_requests[0]
+    request_state = getattr(getattr(request, "state", None), "value", None)
+    if request_state is None:
+        request_state = getattr(request, "state", None)
+    if str(request_state or "").strip().lower() != "approved":
+        return f"human review request for release {release.id} is not approved"
+    if _optional_text(getattr(request, "candidate_commit_sha", None)) != candidate_commit_sha:
+        return f"human review request for release {release.id} does not match candidate commit"
+
+    candidate_tree_hash = _optional_text(getattr(release, "candidate_tree_hash", None))
+    if candidate_tree_hash is None:
+        return f"human-reviewed release {release.id} requires candidate_tree_hash"
+    if _optional_text(getattr(request, "candidate_tree_hash", None)) != candidate_tree_hash:
+        return f"human review request for release {release.id} does not match candidate tree"
+
+    approved_decisions = [
+        decision
+        for decision in _record_collection_values(state, "human_review_decisions")
+        if _optional_text(getattr(decision, "human_review_request_id", None))
+        == _optional_text(getattr(request, "id", None))
+        and str(getattr(decision, "decision", "") or "").strip().lower()
+        == "approved"
+    ]
+    if len(approved_decisions) != 1:
+        return (
+            f"approved human review request for release {release.id} requires "
+            "exactly one durable approval decision"
+        )
+
+    if manifest is not None:
+        manifest_commit_sha = _optional_text(
+            getattr(manifest, "candidate_commit_sha", None)
+        )
+        manifest_tree_hash = _optional_text(
+            getattr(manifest, "candidate_tree_hash", None)
+        )
+        if manifest_commit_sha is not None and manifest_commit_sha != candidate_commit_sha:
+            return f"release manifest for {release.id} does not match candidate commit"
+        if manifest_tree_hash is not None and manifest_tree_hash != candidate_tree_hash:
+            return f"release manifest for {release.id} does not match candidate tree"
+        carried_finding_ids = {
+            finding_id
+            for finding in (getattr(manifest, "carried_human_findings", None) or ())
+            if (
+                finding_id := _optional_text(
+                    getattr(finding, "finding_id", None)
+                    or getattr(finding, "id", None)
+                )
+            )
+            is not None
+        }
+        confirmed_finding_ids = set(
+            getattr(approved_decisions[0], "confirmed_finding_ids", None) or ()
+        )
+        missing_confirmations = carried_finding_ids - confirmed_finding_ids
+        if missing_confirmations:
+            return (
+                f"human approval for release {release.id} does not confirm carried "
+                f"findings: {', '.join(sorted(missing_confirmations))}"
+            )
+    return None
+
+
+def _record_collection_values(owner: object, field_name: str) -> list[object]:
+    raw_records = getattr(owner, field_name, None)
+    if isinstance(raw_records, Mapping):
+        return list(raw_records.values())
+    if isinstance(raw_records, (list, tuple, set)):
+        return list(raw_records)
+    return []
 
 
 def _resolve_superseded_release_failure_inbox_items(

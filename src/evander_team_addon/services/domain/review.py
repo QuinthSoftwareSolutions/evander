@@ -8,6 +8,8 @@ from datetime import (
 from typing import Any
 from uuid import uuid4
 from ...models import (
+    AgentInboxItem,
+    AgentTask,
     Deliverable,
     PersistentAgent,
     ReleaseGateFailure,
@@ -18,13 +20,12 @@ from ...models import (
     ReviewProfileCriterion,
     ReviewRequest,
     TeamBlockerSourceKind,
+    TeamInboxItemState,
+    TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
-    TeamTaskKind,
     TeamTaskState,
-    TaskCompletion,
-    TaskCompletionKind,
 )
 
 from .agent_access import (
@@ -46,11 +47,52 @@ from .common import (
     utc_now,
 )
 from .deliverables import (
-    _active_task_deliverables,
+    _accept_deliverable_and_maybe_task,
+    _active_deliverable_acceptance_blocker_ids,
     _deliverable_verification_payload,
 )
 from .manager_fallback import _manager_fallback_review_decision_guard_error
+from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
+from .task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_deliverable_acceptance,
+)
+from .task_supervision import (
+    parent_task_for_child,
+    queue_parent_task_transition,
+    task_acceptance_recipient_agent_id,
+)
+from .work_due import _mark_agent_work_due
+
+
+_TERMINAL_REVIEW_STATES = frozenset(
+    {
+        TeamRecordState.ACCEPTED,
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    }
+)
+_REVIEW_ASSIGNMENT_INBOX_KINDS = frozenset(
+    {
+        "review_request",
+        "review_retry_request",
+    }
+)
+
+
+def _is_team_manager_for_task_project(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    task: AgentTask,
+) -> bool:
+    project = state.projects.get(task.project_id)
+    return bool(
+        project is not None
+        and actor.team_id == project.team_id
+        and _is_team_manager(state, actor)
+    )
 
 
 def _review_profile_for_request(
@@ -263,8 +305,14 @@ def _apply_review_request(
         id=review_id,
         deliverable_id=deliverable_id,
         reviewer_agent_id=reviewer_id,
+        requested_by_agent_id=actor.id,
         state=TeamRecordState.PENDING,
         review_profile_id=profile_id,
+        required_outcome_kind_definitions=snapshot_review_profile_outcomes(
+            state,
+            profile=profile,
+            project_id=project_id,
+        ),
         instructions=instructions,
         reviewed_commit_sha=reviewed_commit_sha,
         created_at=now,
@@ -308,6 +356,11 @@ def _apply_review_request(
                     "required": criterion.required,
                 }
                 for criterion in profile.criteria
+            ],
+            "required_outcome_kinds": list(profile.required_outcome_kinds),
+            "outcome_kind_definitions": [
+                definition.model_dump(mode="json")
+                for definition in review.required_outcome_kind_definitions
             ],
         }
     queue_actionable_inbox_item(
@@ -380,6 +433,7 @@ def retry_blocked_review(
         ),
         deliverable_id=deliverable.id,
         reviewer_agent_id=reviewer.id,
+        requested_by_agent_id=actor.id,
         state=TeamRecordState.PENDING,
         review_profile_id=profile.id if profile is not None else current.review_profile_id,
         criteria_snapshot=(
@@ -390,6 +444,18 @@ def retry_blocked_review(
                 if current.criteria_snapshot is not None
                 else None
             )
+        ),
+        required_outcome_kind_definitions=(
+            snapshot_review_profile_outcomes(
+                state,
+                profile=profile,
+                project_id=task.project_id,
+            )
+            if profile is not None
+            else [
+                definition.model_copy(deep=True)
+                for definition in current.required_outcome_kind_definitions
+            ]
         ),
         instructions=(
             f"Retry blocked review {current.id}. Reason: {normalized_reason}"
@@ -437,6 +503,11 @@ def retry_blocked_review(
             "criteria": [
                 criterion.model_dump(mode="json") for criterion in profile.criteria
             ],
+            "required_outcome_kinds": list(profile.required_outcome_kinds),
+            "outcome_kind_definitions": [
+                definition.model_dump(mode="json")
+                for definition in retry.required_outcome_kind_definitions
+            ],
         }
     queue_actionable_inbox_item(
         state,
@@ -452,6 +523,435 @@ def retry_blocked_review(
     return retry
 
 
+def withdraw_pending_review(
+    state: TeamState,
+    *,
+    review_request_id: str,
+    reason: str,
+    retired_by: str,
+    actor: PersistentAgent | None,
+    result: dict[str, Any] | None = None,
+) -> ReviewRequest:
+    """Withdraw one current pending non-release review without inventing a decision."""
+
+    review, deliverable, task = _review_closure_target(
+        state,
+        review_request_id=review_request_id,
+    )
+    if review.state != TeamRecordState.PENDING or review.decision_at is not None:
+        raise ValueError("only a pending undecided review may be withdrawn")
+    if actor is not None:
+        permitted = (
+            actor.id == review.requested_by_agent_id
+            or actor.id == deliverable.producer_agent_id
+            or _supervises(state, actor.id, deliverable.producer_agent_id)
+            or _is_project_lead_for(state, actor.id, task.project_id)
+            or _is_team_manager_for_task_project(state, actor=actor, task=task)
+        )
+        if not permitted:
+            raise ValueError(
+                f"agent {actor.id} is not permitted to withdraw review {review.id}"
+            )
+    _close_review_attempt(
+        state,
+        review=review,
+        deliverable=deliverable,
+        task=task,
+        reason=reason,
+        retired_by=retired_by,
+        action="withdrawn",
+        actor_agent_id=actor.id if actor is not None else None,
+        result=result,
+    )
+    return review
+
+
+def retire_terminal_review(
+    state: TeamState,
+    *,
+    review_request_id: str,
+    reason: str,
+    retired_by: str,
+    actor: PersistentAgent | None,
+    result: dict[str, Any] | None = None,
+) -> ReviewRequest:
+    """Retire one current terminal non-release review without changing its decision."""
+
+    review, deliverable, task = _review_closure_target(
+        state,
+        review_request_id=review_request_id,
+    )
+    if review.state not in _TERMINAL_REVIEW_STATES:
+        raise ValueError("only a terminal review may be retired")
+    if actor is not None and not (
+        _is_project_lead_for(state, actor.id, task.project_id)
+        or _is_team_manager_for_task_project(state, actor=actor, task=task)
+    ):
+        raise ValueError(
+            f"agent {actor.id} must be the project lead or team manager "
+            f"to retire review {review.id}"
+        )
+    _close_review_attempt(
+        state,
+        review=review,
+        deliverable=deliverable,
+        task=task,
+        reason=reason,
+        retired_by=retired_by,
+        action="retired",
+        actor_agent_id=actor.id if actor is not None else None,
+        result=result,
+    )
+    return review
+
+
+def _review_closure_target(
+    state: TeamState,
+    *,
+    review_request_id: str,
+) -> tuple[ReviewRequest, Deliverable, AgentTask]:
+    review = _require_present(
+        state.review_requests,
+        _required_text(review_request_id, "review_request_id"),
+        "review request",
+    )
+    if review.release_package_id is not None:
+        raise ValueError("release reviews must be recovered through release gates")
+    if review.superseded_by_review_request_id is not None:
+        raise ValueError(
+            f"review {review.id} is already superseded by "
+            f"{review.superseded_by_review_request_id}"
+        )
+    if review.retired_at is not None:
+        raise ValueError(f"review {review.id} is already retired")
+    deliverable = _require_present(
+        state.deliverables,
+        review.deliverable_id,
+        "deliverable",
+    )
+    task = _require_present(state.tasks, deliverable.task_id, "task")
+    return review, deliverable, task
+
+
+def _close_review_attempt(
+    state: TeamState,
+    *,
+    review: ReviewRequest,
+    deliverable: Deliverable,
+    task: AgentTask,
+    reason: str,
+    retired_by: str,
+    action: str,
+    actor_agent_id: str | None,
+    result: dict[str, Any] | None,
+) -> None:
+    normalized_reason = _required_text(reason, "reason")
+    normalized_actor = _required_text(retired_by, "retired_by")
+    now = utc_now()
+    review.retired_at = now
+    review.retired_by = normalized_actor
+    review.retirement_reason = normalized_reason
+    closed_inbox_ids = _close_review_inbox_items(
+        state,
+        review_request_id=review.id,
+        reviewer_agent_id=review.reviewer_agent_id,
+        now=now,
+    )
+    if result is not None:
+        result.setdefault("closed_inbox_item_ids", []).extend(closed_inbox_ids)
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+        source_id=review.id,
+        actor_agent_id=actor_agent_id,
+        dispatch_id=None,
+        note=f"Review attempt {action} by {normalized_actor}: {normalized_reason}",
+        result=result,
+        now=now,
+    )
+    if deliverable.superseded_by_deliverable_id is None:
+        _recalculate_deliverable_after_review_closure(
+            state,
+            closed_review=review,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=actor_agent_id or deliverable.producer_agent_id,
+            result=result,
+            now=now,
+        )
+
+
+def _close_review_inbox_items(
+    state: TeamState,
+    *,
+    review_request_id: str,
+    reviewer_agent_id: str,
+    now: datetime,
+) -> list[str]:
+    closed_ids: list[str] = []
+    for item in state.inbox.values():
+        if (
+            item.state == TeamInboxItemState.PENDING
+            and item.recipient_agent_id == reviewer_agent_id
+            and item.payload.get("kind") in _REVIEW_ASSIGNMENT_INBOX_KINDS
+            and item.payload.get("review_request_id") == review_request_id
+        ):
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = now
+            closed_ids.append(item.id)
+    return sorted(closed_ids)
+
+
+def _current_deliverable_reviews(
+    state: TeamState,
+    deliverable: Deliverable,
+) -> list[ReviewRequest]:
+    return [
+        state.review_requests[review_id]
+        for review_id in deliverable.review_request_ids
+        if review_id in state.review_requests
+        and state.review_requests[review_id].superseded_by_review_request_id is None
+        and state.review_requests[review_id].retired_at is None
+    ]
+
+
+def _recalculate_deliverable_after_review_closure(
+    state: TeamState,
+    *,
+    closed_review: ReviewRequest,
+    deliverable: Deliverable,
+    task: AgentTask,
+    sender_agent_id: str,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    current_reviews = _current_deliverable_reviews(state, deliverable)
+    active_acceptance_blocker_ids = _active_deliverable_acceptance_blocker_ids(
+        state,
+        deliverable=deliverable,
+        task=task,
+    )
+    if any(review.state == TeamRecordState.BLOCKED for review in current_reviews):
+        deliverable.state = TeamRecordState.BLOCKED
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+    elif any(review.state == TeamRecordState.REJECTED for review in current_reviews):
+        deliverable.state = TeamRecordState.REJECTED
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+    elif current_reviews and all(
+        review.state == TeamRecordState.ACCEPTED for review in current_reviews
+    ):
+        if any(finding.state == "open" for finding in deliverable.carried_findings):
+            deliverable.state = TeamRecordState.PENDING
+            _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        elif active_acceptance_blocker_ids:
+            deliverable.state = TeamRecordState.PENDING
+            _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        else:
+            require_deliverable_acceptance(state, deliverable.id)
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+            )
+    elif current_reviews:
+        deliverable.state = TeamRecordState.PENDING
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+    elif any(finding.state == "open" for finding in deliverable.carried_findings):
+        deliverable.state = TeamRecordState.PENDING
+        deliverable.acceptance_recipient_agent_id = None
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+        _restore_owner_rework_after_review_closure(
+            state,
+            closed_review=closed_review,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        )
+    elif (
+        deliverable.acceptance_decision is not None
+        and deliverable.acceptance_decision.decision == "accepted"
+    ):
+        if active_acceptance_blocker_ids:
+            deliverable.state = TeamRecordState.PENDING
+            _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        else:
+            require_deliverable_acceptance(state, deliverable.id)
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+            )
+    elif active_acceptance_blocker_ids:
+        deliverable.state = TeamRecordState.PENDING
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+    else:
+        _route_to_superior_acceptance(
+            state,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        )
+    task.updated_at = now
+
+
+def _restore_owner_rework_after_review_closure(
+    state: TeamState,
+    *,
+    closed_review: ReviewRequest,
+    deliverable: Deliverable,
+    task: AgentTask,
+    sender_agent_id: str,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    owner_agent_id = task.owner_agent_id
+    existing = next(
+        (
+            item
+            for item in state.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.item_type == TeamInboxItemType.STATUS_REQUEST
+            and item.recipient_agent_id == owner_agent_id
+            and item.task_id == task.id
+            and item.payload.get("deliverable_id") == deliverable.id
+            and item.payload.get("kind")
+            in {
+                "review_rejected",
+                "review_rework_restored",
+            }
+        ),
+        None,
+    )
+    if existing is not None:
+        _mark_agent_work_due(state, agent_id=owner_agent_id, now=now)
+        return
+    queue_actionable_inbox_item(
+        state,
+        recipient_agent_id=owner_agent_id,
+        sender_agent_id=sender_agent_id,
+        task_id=task.id,
+        priority=TeamInboxPriority.NORMAL,
+        payload={
+            "kind": "review_rework_restored",
+            "review_request_id": closed_review.id,
+            "review_state": closed_review.state.value,
+            "retirement_reason": closed_review.retirement_reason,
+            "deliverable_id": deliverable.id,
+            "task_id": task.id,
+            "summary": "Review closed with open findings; obtain a resolving review.",
+            "open_findings": [
+                finding.model_dump(mode="json")
+                for finding in deliverable.carried_findings
+                if finding.state == "open"
+            ],
+            "next_action": (
+                f"Request a new review for deliverable {deliverable.id} and resolve "
+                "every carried finding with evidence; use an explicit replacement "
+                "path if the deliverable itself must change."
+            ),
+            "artifact_refs": list(deliverable.artifact_refs),
+        },
+        result=result,
+        now=now,
+    )
+
+
+def _route_to_superior_acceptance(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+    sender_agent_id: str,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    producer = _require_present(
+        state.agents,
+        deliverable.producer_agent_id,
+        "deliverable producer",
+    )
+    parent_task = parent_task_for_child(state, task)
+    recipient_id = task_acceptance_recipient_agent_id(
+        state,
+        task=task,
+        producer_agent_id=producer.id,
+    )
+    deliverable.state = TeamRecordState.PENDING
+    deliverable.acceptance_recipient_agent_id = recipient_id
+    if recipient_id is None:
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+        return
+    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+    existing = next(
+        (
+            item
+            for item in state.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+            and item.payload.get("deliverable_id") == deliverable.id
+            and item.recipient_agent_id == recipient_id
+        ),
+        None,
+    )
+    if existing is not None:
+        _mark_agent_work_due(state, agent_id=recipient_id, now=now)
+        return
+    payload: dict[str, Any] = {
+        "kind": "superior_acceptance_requested",
+        "deliverable_id": deliverable.id,
+        "task_id": task.id,
+        "producer_agent_id": producer.id,
+        "acceptance_recipient_agent_id": recipient_id,
+        "summary": deliverable.summary,
+        "artifact_refs": list(deliverable.artifact_refs),
+        "available_decisions": ["accepted", "rejected"],
+        "available_alternatives": ["request_review", "report_blocker"],
+    }
+    if parent_task is not None:
+        payload.update(
+            {
+                "transition": "handoff",
+                "parent_task_id": parent_task.id,
+                "child_task_id": task.id,
+            }
+        )
+    verification_payload = _deliverable_verification_payload(deliverable)
+    if verification_payload is not None:
+        payload["verification"] = verification_payload
+    item = AgentInboxItem(
+        id=f"inbox-{uuid4().hex}",
+        recipient_agent_id=recipient_id,
+        sender_agent_id=sender_agent_id,
+        task_id=task.id,
+        item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+        response_requested=True,
+        priority=TeamInboxPriority.LOW,
+        payload=payload,
+        created_at=now,
+        updated_at=now,
+    )
+    state.inbox[item.id] = item
+    if result is not None:
+        result.setdefault("created_inbox_item_ids", []).append(item.id)
+    _mark_agent_work_due(state, agent_id=recipient_id, now=now)
+    if parent_task is not None and recipient_id != parent_task.owner_agent_id:
+        queue_parent_task_transition(
+            state,
+            child_task_id=task.id,
+            transition="handoff",
+            sender_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+            references={"deliverable_id": deliverable.id},
+        )
+
+
 def _reopen_accepted_deliverable_for_pending_review(
     *,
     deliverable: Any,
@@ -463,7 +963,10 @@ def _reopen_accepted_deliverable_for_pending_review(
     if deliverable.state == TeamRecordState.ACCEPTED:
         deliverable.state = TeamRecordState.PENDING
         reopened = True
-    if task is not None and task.state == TeamTaskState.ACCEPTED:
+    if task is not None and task.state in {
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.FINISHED,
+    }:
         _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
         task.updated_at = now
         reopened = True
@@ -516,6 +1019,16 @@ def _apply_review_decision(
     if review is None:
         result["errors"].append(
             f"review decision references missing review request {review_request_id}"
+        )
+        return None
+    if review.retired_at is not None:
+        action = (
+            "withdrawn"
+            if review.state == TeamRecordState.PENDING
+            else "retired"
+        )
+        result["errors"].append(
+            f"review {review_request_id} was {action} and cannot receive a decision"
         )
         return None
     if review.reviewer_agent_id != actor.id:
@@ -601,6 +1114,20 @@ def _apply_review_decision(
     if decision_error is not None:
         result["errors"].append(decision_error)
         return None
+    if (
+        decision_state == TeamRecordState.ACCEPTED
+        and review.release_package_id is None
+        and review.deliverable_id is not None
+    ):
+        try:
+            require_deliverable_acceptance(state, review.deliverable_id)
+        except TaskAssessmentBoundaryError as exc:
+            result["errors"].append(exc.message)
+            result["task_assessment_error"] = {
+                "code": exc.code,
+                **exc.correction_context,
+            }
+            return None
     if criterion_results is not None:
         review.criteria = criterion_results
     review.block_kind = block_kind
@@ -704,14 +1231,17 @@ def _review_decision_policy_error(
         and review.deliverable_id is not None
         and review.review_profile_id is not None
     ):
-        profile = state.review_profiles.get(review.review_profile_id)
         deliverable = state.deliverables.get(review.deliverable_id)
-        if profile is not None and deliverable is not None:
+        if deliverable is not None:
             delivered_outcome_kinds = {
                 outcome.kind for outcome in deliverable.outcomes
             }
             missing_outcome_kinds = sorted(
-                set(profile.required_outcome_kinds) - delivered_outcome_kinds
+                {
+                    definition.kind
+                    for definition in review.required_outcome_kind_definitions
+                }
+                - delivered_outcome_kinds
             )
             if missing_outcome_kinds:
                 return (
@@ -911,6 +1441,12 @@ def _cascade_review_decision(
     the ``review_decisions`` agent action and the Admin API decision endpoint.
     """
 
+    if (
+        decision_state == TeamRecordState.ACCEPTED
+        and review.release_package_id is None
+        and review.deliverable_id is not None
+    ):
+        require_deliverable_acceptance(state, review.deliverable_id)
     review.state = decision_state
     review.findings = findings
     review.decision_at = utc_now()
@@ -942,28 +1478,12 @@ def _cascade_review_decision(
             finding.state == "resolved" for finding in deliverable.carried_findings
         )
         if all_accepted and no_open_findings:
-            deliverable.state = TeamRecordState.ACCEPTED
-            task_deliverables = _active_task_deliverables(state, task)
-            if task_deliverables and all(
-                item.state == TeamRecordState.ACCEPTED for item in task_deliverables
-            ):
-                if task.task_kind == TeamTaskKind.OUTCOME:
-                    outcome_reference_ids = [
-                        reference_id
-                        for item in task_deliverables
-                        for outcome in item.outcomes
-                        for reference_id in outcome.reference_ids
-                    ]
-                    task.completion = TaskCompletion(
-                        kind=TaskCompletionKind.DELIVERED,
-                        summary=(
-                            "Accepted deliverables satisfied the task outcome "
-                            "contract."
-                        ),
-                        outcome_reference_ids=outcome_reference_ids,
-                    )
-                _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
-                task.updated_at = now
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+            )
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
@@ -983,10 +1503,31 @@ def _cascade_review_decision(
                 "task_id": task.id,
                 "summary": "Review rejected; revise and resubmit.",
                 "findings": list(findings),
+                "open_findings": [
+                    finding.model_dump(mode="json")
+                    for finding in deliverable.carried_findings
+                    if finding.state == "open"
+                ],
+                "next_action": (
+                    "Submit a new deliverable with supersedes_deliverable_id set "
+                    f"to {deliverable.id}; its open findings carry forward."
+                ),
                 "artifact_refs": list(deliverable.artifact_refs),
             },
             result=result,
             now=now,
+        )
+        queue_parent_task_transition(
+            state,
+            child_task_id=task.id,
+            transition="rejection",
+            sender_agent_id=review.reviewer_agent_id,
+            result=result,
+            now=now,
+            references={
+                "deliverable_id": deliverable.id,
+                "review_request_id": review.id,
+            },
         )
     else:  # blocked
         deliverable.state = TeamRecordState.BLOCKED
@@ -998,7 +1539,11 @@ def _cascade_review_decision(
             source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
             source_id=review.id,
             summary=f"Review {review.id} is blocked",
-            details="; ".join(findings) or "Reviewer cannot complete the review.",
+            details=(
+                ("; ".join(findings) or "Reviewer cannot complete the review.")
+                + " Retry this valid review after recovery; a project lead or "
+                "team manager may retire it only if the attempt is erroneous."
+            ),
             reporter_agent_id=reviewer.id,
             team_id=reviewer.team_id,
             project_id=task.project_id,
@@ -1079,30 +1624,13 @@ def _cascade_release_review_decision(
         projects_to_recalc.add(release.project_id)
         return
 
-    from .release_gates import (
-        _release_promotion,
-        approve_release_candidate,
-        current_release_gates_passed,
-    )
+    from .release_gates import advance_release_gates
 
-    if current_release_gates_passed(state, release):
-        promotion = _release_promotion(state, release)
-        if promotion is None:
-            release.state = TeamRecordState.REJECTED
-            release.error = "release promotion record is missing"
-            release.gate_failure = ReleaseGateFailure(
-                stage="configuration",
-                kind="configuration",
-                source_id=review.id,
-                message=release.error,
-            )
-        else:
-            approve_release_candidate(
-                state,
-                release=release,
-                release_promotion=promotion,
-                result=result if result is not None else {"events": []},
-            )
+    advance_release_gates(
+        state,
+        release=release,
+        result=result if result is not None else {"events": []},
+    )
     release.updated_at = utc_now()
     projects_to_recalc.add(release.project_id)
 
@@ -1111,6 +1639,8 @@ __all__ = [
     "_review_profile_for_request",
     "_apply_review_request",
     "_reopen_accepted_deliverable_for_pending_review",
+    "withdraw_pending_review",
+    "retire_terminal_review",
     "_active_review_request_for_reviewer",
     "_review_request_was_created",
     "_apply_review_decision",

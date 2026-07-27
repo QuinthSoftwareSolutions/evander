@@ -75,6 +75,8 @@ The everyday question here is whether the agent received the intended code or fi
 | Guest push is denied | Attempted ref and session-scoped allowed prefix | Ref protection or stale scoped key | Push to `refs/heads/agents/<session-id>/<topic>` with the provisioned restricted key |
 | Published branch is not the reviewed commit | Review candidate SHA, approved SHA, lease expectation, and remote ref | Exact-SHA/lease gate | Stop publication; re-establish review evidence and promote the exact approved SHA through the managed effect |
 | Managed Git operation left a worktree | Operation manifest/lock under `runtime/git-worktrees/` and process liveness | Interrupted operation or stale process | Use the service's reconciliation/cleanup path; do not blindly delete an active worktree |
+| Resolved Team task worktree remains | `WorktreeCleanupCandidate` state, exact task/repository/path/branch, last safety check, and active dispatch/context references | Task-worktree cleanup safety or recovery | Preserve the checkout; repair the named state, commit, path, or dirty-file mismatch and retry the candidate through the reconciler |
+| Cleanup is safe in dry run but no bytes are reclaimed | Candidate state plus the live cleanup `dry_run` setting | Expected non-mutating rollout mode | Enable physical cleanup deliberately only after reviewing dry-run evidence; never substitute a recursive delete |
 | Artifact reference exists but reviewer cannot read it | Artifact-space ACL and latest published version | Visibility or version publication | Grant the intended reader at the space boundary or republish correctly; do not copy private blobs into a public path |
 | Review session lacks expected files | Review import list/errors in the lease wake context | Artifact publish/import effect | Resolve the reported import error and redispatch; reviewers should use imported `/artifacts` paths, not open `artifact-space:` refs directly |
 
@@ -100,6 +102,8 @@ The Team interface is a view of durable Team state. A stale screen and a failed 
 | Team view shows old data | Current Team state API revision and browser network response | UI refresh/projection | Reload the view; if API state is current, capture a UI defect without changing `state.db` |
 | Team mutation returns conflict | Current resource revision/token and submitted expected revision | Optimistic concurrency | Refresh, reassess intent against the current record, and resubmit with the new expected revision |
 | Command says success but derived work is missing | Command receipt, outbox rows, and projection rows in `state.db` | Command transaction, outbox dispatch, or projection | Trace the command ID through outbox processing; never manufacture the missing projection by hand |
+| Task looks terminal but project remains active or invalid | Recursive `TaskAssessment`, unresolved descendant IDs, active acceptance/review IDs, contribution coverage, and blocker IDs | Hierarchy or outcome-contract invariant | Repair the exact child, acceptance, contribution, or cancellation transition; do not overwrite project status |
+| A dependency or parent appears blocked twice | Canonical blocker source plus descendant/dependency assessment | Duplicate presentation rather than two domain blockers | Follow the source blocker and its route; waiting ancestors should reference it rather than receive copied blockers |
 | Role cannot be found in navigation | Teams view for the relevant team | UI mental model | Manage roles inside **Teams**; there is no top-level Roles view |
 | Mail appears inconsistent | Durable inbox rows and sent/received projections | Status/filter misunderstanding | Treat Mail as views over one Team inbox collection; compare direction, recipient, pending, and handled fields |
 | Team tool is unavailable to an agent | MCP tool catalog for that identity, session, and Team membership | Tool class, add-on registration, capability, or Team scope | Verify the add-on loaded and inspect the specific identity/capability decision |
@@ -113,11 +117,17 @@ The presence of a task, message, or deliverable does not by itself prove that th
 |---|---|---|---|
 | Pending Team inbox item does not wake an agent | Inbox priority/handled state, active lease/session, and wake decision payload | Eligibility or duplicate suppression | Current behavior treats non-low pending inbox work as wakeable; inspect the actual decision reason rather than assuming `response_requested` is required |
 | Agent wakes with irrelevant context | Runtime operations payload for that exact wake | Context compaction, scope, or stale related records | Fix the selector/relationship; do not expand every wake with the entire Team database |
-| Task remains queued | Task status, assignment, dependencies, team capacity, active leases | Planning/dispatch eligibility | Resolve the explicit blocker or assignment; confirm a dispatch was actually created |
+| Task remains queued | Task assessment, assignment, unresolved descendants/dependencies, canonical blockers, Team capacity, active dispatches | Planning/dispatch eligibility | Follow the assessment's exact next action and confirm a durable dispatch was actually prepared and leased |
+| Dispatch fails before prompt | Durable `TeamDispatch` scope/status/error plus every required repository/worktree/context | Multi-repository preparation | Fix the exact failed preparation and retry the complete immutable scope; do not omit a task or fabricate a lease |
+| Repeated empty wakes stop task dispatch | Open blocker with `source_kind=agent_execution_stall`, its events, exhausted dispatch, and affected task IDs | Agent-wide no-progress policy | Address the cause and resolve the canonical stall blocker through source-aware recovery; do not edit task states or counters |
 | Deliverable was submitted but no review begins | Deliverable, review request, reviewer assignment, and outbox/event state | Review cascade creation or reviewer capacity | Trace deliverable ID to review request and dispatch; requeue only if no idempotent equivalent exists |
 | Reviewer rejects but implementer is not reactivated | Review decision, cascade link, follow-up task/lease, inbox | Cascade transition or wake | Inspect the rejection's requested changes and generated follow-up relationship before manual reassignment |
 | Ephemeral delegate never exits | Delegation task, lease, child session, terminal result | Cleanup/finalization | Preserve result/artifacts, then run the supported terminal cleanup; do not silently convert it into a persistent agent |
 | Release is waiting | Release package, verification records, approved candidate SHA, and gate status | Missing evidence, failed job, or lease mismatch | Satisfy the named gate; only partial, not-run, unknown, or missing verification can receive an authorized reasoned waiver—failed verification is unwaivable and requires a corrected reviewed candidate |
+| Human release review is blocked with no assignee | Human request, assignment generation, snapshotted groups, current Admin membership/RBAC, and assignment-unavailable blocker | Human assignment reconciliation | Repair membership or use audited reassignment on the same request; never skip the gate or create a replacement attempt |
+| Human preview failed or expired | Human request candidate SHA/tree, preparation generation, safe target metadata, and blocker reason | Preview preparation | Repair the host-owned workflow target and resume the same request to create a new preparation generation |
+| Human requested changes but no publication follows | This is expected: predecessor decision/findings, correction case/root tasks, and successor link | Human correction lifecycle | Complete and accept correction work, propose finding resolutions, and create a changed successor that reruns every gate |
+| Successor is approved but publication is refused | Candidate/approved SHA, human approval, confirmed carried finding IDs, and linked canonical-push promotion | Successor closure or exact-SHA publication guard | Confirm every carried finding and prove one succeeded canonical push for the same SHA/tree and target |
 | Release reports success but remote ref differs | Remote ref readback and recorded published SHA | Publish/readback failure | Treat as failed publication, stop follow-on completion, and reconcile the remote with the exact approved SHA |
 
 ## 29.8 What to include when asking for help
@@ -141,6 +151,8 @@ Stop and obtain a deliberate operator decision before any action that would:
 
 - rewrite or discard live workflow-pack revisions;
 - delete a runtime database, audit journal, managed bare repository, or active worktree;
+- recursively delete a Team task worktree that has a pending or
+  <code>recovery_required</code> cleanup candidate;
 - reset a provider cursor that could replay external actions;
 - broaden guest internet access or place a host credential inside a guest;
 - bypass an approval, review, verification, or exact-SHA publication gate;

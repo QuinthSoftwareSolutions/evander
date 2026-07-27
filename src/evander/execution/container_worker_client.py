@@ -26,6 +26,8 @@ from evander.worker.models import (
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskWorktreeCleanupRecord,
+    WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRecord,
     WorkerTaskWorktreeRequest,
     WorkerTelemetryPayload,
@@ -142,6 +144,20 @@ class ContainerWorkerClient:
         )
         return WorkerTaskWorktreeRecord.model_validate(
             self._json_dict(response, operation="prepare task worktree")
+        )
+
+    def cleanup_task_worktree(
+        self,
+        session_id: str,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> WorkerTaskWorktreeCleanupRecord:
+        response = self._request(
+            "POST",
+            f"/v1/sessions/{session_id}/worktrees/cleanup",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerTaskWorktreeCleanupRecord.model_validate(
+            self._json_dict(response, operation="clean up task worktree")
         )
 
     def provision_git_write_key(

@@ -4,7 +4,7 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -355,6 +355,83 @@ class WorkerTaskWorktreeRecord(BaseModel):
     branch: str
     commit_sha: str
     created: bool
+
+
+class WorkerTaskWorktreeCleanupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo_name: str
+    worktree_name: str
+    branch: str
+    expected_commit_sha: str
+    expected_target_dir: str
+    dry_run: bool = False
+
+    @field_validator("repo_name", "worktree_name", mode="before")
+    @classmethod
+    def normalize_component(cls, value: object, info: ValidationInfo) -> str:
+        return str(validate_worker_component_id(value, field_name=info.field_name))
+
+    @field_validator("branch", mode="before")
+    @classmethod
+    def normalize_branch(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text or "\n" in text or "\r" in text:
+            raise ValueError("branch must be a non-empty single-line Git ref")
+        return text
+
+    @field_validator("expected_commit_sha", mode="before")
+    @classmethod
+    def normalize_expected_commit_sha(cls, value: object) -> str:
+        text = str(value or "").strip().casefold()
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text):
+            raise ValueError("expected_commit_sha must be a full Git object ID")
+        return text
+
+    @field_validator("expected_target_dir", mode="before")
+    @classmethod
+    def normalize_expected_target_dir(cls, value: object) -> str:
+        text = str(value or "").strip()
+        path = PurePosixPath(text)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("expected_target_dir must be an absolute contained path")
+        return str(path)
+
+    @model_validator(mode="after")
+    def validate_expected_target_dir(self) -> "WorkerTaskWorktreeCleanupRequest":
+        expected = f"/home/agent/worktrees/{self.repo_name}/{self.worktree_name}"
+        if self.expected_target_dir != expected:
+            raise ValueError(
+                "expected_target_dir does not match the deterministic task worktree path"
+            )
+        return self
+
+
+class WorkerTaskWorktreeCleanupRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    repo_name: str
+    worktree_name: str
+    target_dir: str
+    branch: str
+    expected_commit_sha: str
+    actual_branch: str | None = None
+    actual_commit_sha: str | None = None
+    state: Literal["removed", "dry_run", "already_absent", "refused"]
+    safe_to_remove: bool
+    removed: bool
+    pruned: bool
+    dry_run: bool
+    validation_count: int = Field(ge=0, le=3)
+    failed_check: str | None = None
+    message: str
+    tracked_paths: list[str] = Field(default_factory=list)
+    untracked_paths: list[str] = Field(default_factory=list)
+    ignored_paths: list[str] = Field(default_factory=list)
+    ignored_bytes: int = Field(default=0, ge=0)
+    worktree_bytes: int = Field(default=0, ge=0)
+    reclaimed_bytes: int = Field(default=0, ge=0)
 
 
 class WorkerGitWriteKeyRequest(BaseModel):

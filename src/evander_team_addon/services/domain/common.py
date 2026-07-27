@@ -56,7 +56,6 @@ _UNSET: Any = object()
 _MCP_TASK_UPDATE_STATE_VALUES = (
     TeamTaskState.PENDING.value,
     TeamTaskState.IN_PROGRESS.value,
-    TeamTaskState.BLOCKED.value,
     TeamTaskState.WAITING_FOR_REVIEW.value,
     TeamTaskState.FINISHED.value,
 )

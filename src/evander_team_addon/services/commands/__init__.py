@@ -13,6 +13,7 @@ from .governance_commands import TeamGovernanceCommandService
 from .memory_commands import TeamMemoryArtifactPublisher, TeamMemoryCommandService
 from .note_commands import TeamNoteCommandService
 from .operator_escalation_commands import TeamOperatorEscalationCommandService
+from .outcome_catalog_commands import TeamOutcomeCatalogCommandService
 from .review_commands import TeamReviewCommandService
 from .task_creation_commands import TeamTaskCreationCommandService
 from .task_update_commands import TeamTaskUpdateCommandService
@@ -43,6 +44,7 @@ __all__ = [
     "TeamMemoryCommandService",
     "TeamNoteCommandService",
     "TeamOperatorEscalationCommandService",
+    "TeamOutcomeCatalogCommandService",
     "TeamReviewCommandService",
     "TeamTaskCreationCommandService",
     "TeamTaskUpdateCommandService",

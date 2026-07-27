@@ -96,7 +96,20 @@ class VmAgentContainerSessionHelperMixin:
             status = str(outcome.get("status") or "").strip().casefold()
             if status == "failed":
                 return "failed"
-        return cls._container_agent_status(getattr(record, "last_status", None))
+        status = cls._container_agent_status(getattr(record, "last_status", None))
+        metadata = getattr(record, "metadata", None)
+        if status in {"destroyed", "stopped"} and isinstance(metadata, Mapping):
+            terminal_kind = str(metadata.get("worker_terminal_kind") or "").strip().casefold()
+            if terminal_kind == "infrastructure":
+                return "failed"
+            raw_exit_code = metadata.get("exit_code")
+            if raw_exit_code is not None:
+                try:
+                    if int(raw_exit_code) != 0:
+                        return "failed"
+                except (TypeError, ValueError):
+                    pass
+        return status
 
     @staticmethod
     def _agent_status_is_active(status: str | None) -> bool:
@@ -178,7 +191,14 @@ class VmAgentContainerSessionHelperMixin:
             metadata.get("thread_id"),
             metadata.get("agent_thread_id"),
             metadata.get("resume_thread_id"),
+            metadata.get("codex_subscription_thread_id"),
         ]
+        codex_outcome = metadata.get("codex_outcome")
+        if isinstance(codex_outcome, Mapping):
+            candidates.append(codex_outcome.get("thread_id"))
+            outcome_thread_ids = codex_outcome.get("thread_ids")
+            if isinstance(outcome_thread_ids, list | tuple):
+                candidates.extend(outcome_thread_ids)
         for nested_key in ("outputs", "result", "container_worker"):
             nested = metadata.get(nested_key)
             if isinstance(nested, Mapping):
@@ -195,6 +215,43 @@ class VmAgentContainerSessionHelperMixin:
             if thread_id and not thread_id.startswith("dispatch-"):
                 return thread_id
         return None
+
+    @staticmethod
+    def _container_execution_is_agent_run(execution: Any) -> bool:
+        metadata = getattr(execution, "metadata", None)
+        if isinstance(metadata, Mapping):
+            effect_type = str(metadata.get("effect_type") or "").strip()
+            if effect_type in {
+                "effect:agent:prompt",
+                "effect:agent:enqueue-prompt",
+            }:
+                return True
+            if any(
+                metadata.get(key)
+                for key in (
+                    "agent_provider",
+                    "codex_auth_mode",
+                    "codex_subscription_thread_id",
+                )
+            ):
+                return True
+        for candidate in (
+            getattr(execution, "execution_id", None),
+            getattr(execution, "target_name", None),
+        ):
+            if str(candidate or "").strip().startswith("agent-"):
+                return True
+        return False
+
+    @staticmethod
+    def _container_execution_artifact_metadata(execution: Any) -> Mapping[str, Any] | None:
+        metadata = getattr(execution, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            return None
+        operation_kind = str(metadata.get("operation_kind") or "").strip()
+        if not operation_kind.startswith("artifact_"):
+            return None
+        return metadata
 
     @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
@@ -268,6 +325,8 @@ class VmAgentContainerSessionHelperMixin:
     container_log_thread_id = _container_log_thread_id
     container_log_without_session_id_lines = _container_log_without_session_id_lines
     container_execution_stored_thread_id = _container_execution_stored_thread_id
+    container_execution_is_agent_run = _container_execution_is_agent_run
+    container_execution_artifact_metadata = _container_execution_artifact_metadata
     normalize_agent_backend_filter = _normalize_agent_backend_filter
     agent_optional_string = _agent_optional_string
     agent_string_list = _agent_string_list

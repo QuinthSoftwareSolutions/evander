@@ -2410,7 +2410,7 @@ export function SessionsScreen() {
             <article className="panel">
               <div className="panel-header">
                 <h3>Repository access</h3>
-                <span className="panel-meta">{detail?.git_grants.length ?? 0} grants</span>
+                <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
               </div>
               <div className="panel-body stack-layout">
                 {(detail?.git_grants ?? []).length > 0 ? (

@@ -78,6 +78,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
             config.container_worker_job_timeout_seconds
         )
         check = bool(payload.get("check", True))
+        execution_metadata = self._execution_metadata(payload.get("execution_metadata"))
 
         backend = container_backend(context, config)
         handle = backend.start(
@@ -89,7 +90,12 @@ class AgentExecEffectProvider(VmExecEffectProvider):
                     directory_path=getattr(session, "directory_path", directory_path),
                     image=container_worker_image_for_session(session, config),
                     command=command,
-                    metadata={"effect_type": "effect:agent:exec"},
+                    metadata={
+                        "effect_type": "effect:agent:exec",
+                        "effect_id": effect.id,
+                        "effect_display_name": effect.display_name,
+                        **execution_metadata,
+                    },
                 )
             )
         )
@@ -187,6 +193,19 @@ class AgentExecEffectProvider(VmExecEffectProvider):
                 continue
             environment[normalized_key] = "" if raw_value is None else str(raw_value)
         return environment
+
+    @staticmethod
+    def _execution_metadata(value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+        allowed_keys = {
+            "operation_kind",
+            "operation_label",
+            "artifact_key",
+            "artifact_destination_path",
+            "artifact_source_path",
+        }
+        return {key: raw_value for key in allowed_keys if (raw_value := value.get(key)) is not None}
 
     @staticmethod
     def _build_container_command(

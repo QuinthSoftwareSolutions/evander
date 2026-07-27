@@ -8,6 +8,7 @@ test("users and groups permission catalog has help copy", () => {
   const expectedPermissions = [
     ["admin.owner", "Full Admin Web ownership"],
     ["groups.manage", "reusable permission groups"],
+    ["team.human_reviews.decide", "Decide assigned human release reviews"],
     ["users.manage", "user records"],
     ["workflow_runs.control", "Resume, dismiss, or clear workflow runs"],
     ["workflow_runs.read", "workflow run snapshots"],

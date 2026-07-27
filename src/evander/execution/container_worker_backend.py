@@ -22,6 +22,8 @@ from evander.worker.models import (
     WorkerResourceLimits,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskWorktreeCleanupRecord,
+    WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRecord,
     WorkerTaskWorktreeRequest,
     now_utc,
@@ -295,6 +297,29 @@ class ContainerWorkerVmExecutionBackend:
                 worktree_name=worktree_name,
                 branch=branch,
                 base_ref=base_ref,
+            ),
+        )
+
+    def cleanup_task_worktree(
+        self,
+        *,
+        session_id: str,
+        repo_name: str,
+        worktree_name: str,
+        branch: str,
+        expected_commit_sha: str,
+        expected_target_dir: str,
+        dry_run: bool = False,
+    ) -> WorkerTaskWorktreeCleanupRecord:
+        return self.client.cleanup_task_worktree(
+            session_id,
+            WorkerTaskWorktreeCleanupRequest(
+                repo_name=repo_name,
+                worktree_name=worktree_name,
+                branch=branch,
+                expected_commit_sha=expected_commit_sha,
+                expected_target_dir=expected_target_dir,
+                dry_run=dry_run,
             ),
         )
 

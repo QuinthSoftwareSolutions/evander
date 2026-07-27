@@ -150,6 +150,11 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
         "max_no_progress_count",
         "low_priority_wake_after_cycles",
         "respect_wake_interval",
+        "worktree_cleanup_limit",
+        "worktree_cleanup_grace_seconds",
+        "worktree_cleanup_retry_seconds",
+        "worktree_cleanup_recovery_seconds",
+        "worktree_cleanup_dry_run",
         "resume_mode",
     ]
     assert all(field["description"] for field in wake["fields"])

@@ -11,6 +11,7 @@ const taskStates = [
   "finished",
   "accepted",
   "rejected",
+  "cancelled",
 ];
 const caseStatuses = [
   "open",
@@ -20,15 +21,46 @@ const caseStatuses = [
   "resolved",
   "closed",
 ];
+const activeCaseStatuses = new Set(["open", "triage", "in_progress", "waiting"]);
+const terminalCaseStatuses = new Set(["resolved", "closed"]);
+const casePageSize = 20;
 const taskBoardLanes = [
   { id: "planned", label: "Planned", states: ["pending"] },
   { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
   { id: "reviewing", label: "Acceptance / Review", states: ["waiting_for_review"] },
-  { id: "done", label: "Done", states: ["finished", "accepted"] },
+  { id: "done", label: "Done", states: ["finished", "accepted", "rejected", "cancelled"] },
 ];
 const taskBoardStateToLane = new Map(
   taskBoardLanes.flatMap((lane) => lane.states.map((state) => [state, lane.id])),
 );
+const taskBoardReadinessValues = [
+  "actionable",
+  "waiting_on_children",
+  "waiting_on_dependencies",
+  "waiting_for_acceptance",
+  "waiting_for_review",
+  "blocked",
+  "resolved",
+  "invalid",
+  "unknown",
+];
+const taskAssessmentResolutionReasonMessages = Object.freeze({
+  active_direct_acceptance: "A direct acceptance decision is still pending.",
+  active_formal_review: "A formal review is still in progress.",
+  cancelled_by_authorized_disposition:
+    "The task was cancelled by an authorized decision.",
+  intrinsic_blocker_open: "An active blocker is preventing this task from progressing.",
+  outcome_deliverable_accepted: "The outcome deliverable was accepted.",
+  outcome_evidenced_noop_accepted: "The evidenced no-op outcome was accepted.",
+  rejected_requires_recovery: "The rejected task needs recovery work.",
+  support_task_finished: "The support task has finished.",
+  task_actionable: "The task is ready for its next action.",
+  unresolved_descendants: "One or more descendant tasks are still unresolved.",
+  unsatisfied_dependencies: "One or more prerequisite tasks are still unresolved.",
+});
+const taskBoardViewModes = new Set(["board", "hierarchy"]);
+const taskBoardLanePageSize = 20;
+const taskBoardHierarchyPageSize = 20;
 const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
 const agentStatuses = ["active", "paused", "archived"];
 const contextClearingPolicies = [
@@ -72,7 +104,7 @@ const gitProviders = [
   ["github", "GitHub"],
   ["azure_devops", "Azure DevOps"],
 ];
-const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
+const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 const defaultPlanningTaskStates = new Set([
   "pending",
@@ -117,6 +149,7 @@ const teamStateCollectionKeys = [
   "tasks",
   "deliverables",
   "review_requests",
+  "outcome_kind_definitions",
   "review_profiles",
   "memories",
   "inbox",
@@ -124,6 +157,9 @@ const teamStateCollectionKeys = [
   "blocker_events",
   "action_records",
   "release_packages",
+  "dispatches",
+  "worktree_cleanup_candidates",
+  "git_work_contexts",
   "ephemeral_assignments",
   "git_promotions",
   "stand_downs",
@@ -166,8 +202,12 @@ let costBackfillRequestId = 0;
 let costBackfillLoading = false;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
-let activeTeamView = readStoredTeamView();
+const initialHumanReviewDeepLink = readHumanReviewDeepLink();
+let activeTeamView = initialHumanReviewDeepLink.enabled
+  ? "delivery"
+  : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
+const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
@@ -185,6 +225,25 @@ const openTeamInlineCreateForms = new Set();
 const teamRecordPageSize = 6;
 let selectedTaskBoardTeamId = "";
 let selectedTaskBoardProjectId = "";
+let taskBoardViewMode = "board";
+let selectedTaskBoardTaskId = "";
+let taskBoardShowCompleted = false;
+let taskBoardQuery = "";
+let taskBoardAssigneeId = "";
+let taskBoardStateFilter = "";
+let taskBoardReadinessFilter = "";
+let taskBoardRootTaskId = "";
+let taskBoardCompletedSince = "";
+let taskBoardCompletedThrough = "";
+const taskBoardLanePages = new Map();
+const expandedTaskBoardTaskIds = new Set();
+const taskBoardHierarchyChildLimits = new Map();
+let taskBoardHierarchyRootLimit = taskBoardHierarchyPageSize;
+let taskBoardHierarchyInitialized = false;
+let caseShowHistory = false;
+let caseQuery = "";
+let caseStatusFilter = "active";
+const caseTeamPages = new Map();
 let activeAgentVoiceCall = null;
 let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
@@ -218,6 +277,25 @@ const ephemeralWorkKinds = new Set([
   "failed_ephemeral_assignment",
   "cleanup_pending_ephemeral_assignment",
 ]);
+const failedAttentionKinds = new Set([
+  "failed_action_record",
+  "failed_git_promotion",
+  "failed_ephemeral_assignment",
+]);
+const runtimeAttentionGroups = new Set([
+  "active_obligation",
+  "failed_attempt",
+  "retained_history",
+]);
+const runtimeAttentionPageSize = 20;
+const runtimeAttentionAgeChoices = [
+  ["all", "Any age"],
+  ["under_24_hours", "Under 24 hours"],
+  ["1_to_7_days", "1–7 days"],
+  ["8_to_30_days", "8–30 days"],
+  ["over_30_days", "Over 30 days"],
+  ["unknown", "Age unavailable"],
+];
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 const timelinePageSize = 10;
 const projectRecordPageSize = 10;
@@ -319,10 +397,31 @@ const deliveryStatusLabels = {
 };
 
 let selectedDeliveryFilter = "all";
+let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
+let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
+let humanReviewQueue = {
+  loaded: false,
+  loading: false,
+  error: null,
+  requests: [],
+};
+const releaseDetailCache = new Map();
+const expandedReleaseDetailIds = new Set();
+const postReleaseReportResults = new Map();
+const runtimeAttentionFilters = {
+  kind: "all",
+  age: "all",
+  team: "all",
+  project: "all",
+  agent: "all",
+};
+let runtimeAttentionShowHistory = false;
+const runtimeAttentionGroupPages = new Map();
 let tooltipCounter = 0;
 
 const rolePermissionTooltips = {
   create_root_task: "Allows this role to create top-level project tasks instead of only subtasks inside existing work.",
+  manage_outcome_kinds: "Allows a team manager or project lead with this role to create, edit, and archive outcome-kind definitions within their authority scope.",
   prepare_bookkeeping_action: "Allows this role to prepare local Bokio bookkeeping actions for review and human approval.",
   request_payment_preparation: "Allows this role to prepare payment work for human approval and BankID signing in Bokio.",
   request_release: "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
@@ -351,7 +450,9 @@ const fieldTooltips = {
   "create-governance-group-form:name": "Human-readable portfolio or governance group name.",
   "create-governance-group-form:manager_agent_id": "Existing persistent agent that wakes for governance agenda, cost, and blocker signals.",
   "create-governance-group-form:member_team_ids": "Teams supervised by this governance group. Their internal reporting chains stay unchanged.",
-  "create-governance-group-form:goals": "Lightweight governance goals, one per line as id | description | state.",
+  "create-governance-group-form:governance_goal_name": "Required operator-facing name for this governance goal.",
+  "create-governance-group-form:governance_goal_description": "Required description of the intended outcome.",
+  "create-governance-group-form:governance_goal_state": "Current governance goal state.",
   "create-governance-group-form:max_cost_usd": "Optional advisory lifetime USD cap for the whole group. Per-team caps remain the hard wake guard.",
   "create-governance-agenda-form:governance_group_id": "Governance group whose manager should see this agenda item.",
   "create-governance-agenda-form:item_type": "Governance signal type that should drive the manager wake reason.",
@@ -452,9 +553,22 @@ const fieldTooltips = {
   "edit:team:escalate_to_governance": "Route manager escalations to governance instead of operator escalation when true.",
   "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
+  "edit:governance-group:name": "Rename the governance group without changing its immutable ID.",
+  "edit:governance-group:manager_agent_id": "Persistent agent responsible for governance agenda and portfolio signals. Options lead with display name and role.",
+  "edit:governance-group:governance_member_team_search": "Filter the named team checklist. Exact team IDs are also searchable.",
+  "edit:governance-group:governance_goal_name": "Required operator-facing name for this governance goal.",
+  "edit:governance-group:governance_goal_description": "Required description of the intended outcome.",
+  "edit:governance-group:governance_goal_state": "Current governance goal state.",
+  "edit:governance-group:max_cost_usd": "Optional advisory lifetime USD cap for the governed portfolio.",
+  "edit:governance-group:archived": "Archived governance groups remain retained but leave active views.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
   "edit:project:goals": "Replace project goals using id | description | state rows.",
+  "edit:project:human_review_enabled": "Require an authenticated, assigned Admin Web reviewer to decide the pinned release candidate.",
+  "edit:project:human_reviewer_group_ids": "Directory-scoped Admin Web groups whose current eligible users may receive this review.",
+  "edit:project:human_review_checklist": "Add, remove, and order the checks a human must complete before approving a release.",
+  "edit:project:human_review_test_instructions": "Stable manual test instructions snapshotted onto each release request.",
+  "edit:project:human_review_preparation_mode": "Manual uses these instructions directly; workflow requires a prepared preview target before review.",
   "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
   "edit:agent:role_id": "First-class role assigned to this persistent agent.",
   "edit:agent:session_id": "Session ID used when this agent is woken or resumed.",
@@ -502,6 +616,7 @@ const fieldTooltips = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  initializeGovernanceCreateGroupGoals();
   bindTopLevelTabs();
   bindForms();
   bindRecordEditing();
@@ -514,6 +629,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPlanningFilters();
   bindProjectFocus();
   bindTaskBoardSelectors();
+  bindCaseFilters();
   bindOrgFocusTabs();
   bindOrgFlowEvents();
   bindArchivedVisibilityToggle();
@@ -548,12 +664,16 @@ function emptyState() {
     tasks: {},
     deliverables: {},
     review_requests: {},
+    outcome_kind_definitions: {},
     review_profiles: {},
     inbox: {},
     blockers: {},
     blocker_events: {},
     action_records: {},
     release_packages: {},
+    dispatches: {},
+    worktree_cleanup_candidates: {},
+    git_work_contexts: {},
     ephemeral_assignments: {},
     git_promotions: {},
     stand_downs: {},
@@ -573,13 +693,18 @@ function emptyTimelineState() {
     derived: true,
     audit_log: false,
     source: "derived_from_current_team_state",
-    description: "Derived timeline from the current TeamState snapshot.",
+    description:
+      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
     filters: {},
     timestampless_count: 0,
     total_count: 0,
     limit: 10,
     offset: 0,
     has_more: false,
+    facets: {
+      types: [],
+      statuses: [],
+    },
     entries: [],
   };
 }
@@ -705,6 +830,27 @@ function readStoredTeamView() {
   } catch {
     return defaultTeamView;
   }
+}
+
+function readHumanReviewDeepLink() {
+  const params = new URLSearchParams(window.location.search);
+  const hash = String(window.location.hash || "");
+  const hashQueryIndex = hash.indexOf("?");
+  if (hashQueryIndex >= 0) {
+    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1));
+    hashParams.forEach((value, key) => {
+      if (!params.has(key)) {
+        params.set(key, value);
+      }
+    });
+  }
+  const enabled = params.get("view") === "my-human-reviews";
+  return {
+    enabled,
+    requestId: enabled
+      ? String(params.get("human_review_request_id") || "").trim()
+      : "",
+  };
 }
 
 function storeTeamView(view) {
@@ -913,8 +1059,20 @@ function closeGovernanceCreateGroupPanel({ reset = false } = {}) {
   governanceCreateGroupPanelOpen = false;
   if (reset) {
     elements.governanceCreateGroupForm?.reset();
+    initializeGovernanceCreateGroupGoals({ reset: true });
   }
   syncGovernanceCreateGroupPanel();
+}
+
+function initializeGovernanceCreateGroupGoals({ reset = false } = {}) {
+  const form = elements.governanceCreateGroupForm;
+  const host = form?.querySelector?.("[data-governance-create-goals]");
+  if (!host || (!reset && host.querySelector("[data-governance-goals-editor]"))) {
+    return;
+  }
+  host.innerHTML = renderGovernanceGoalsEditor([]);
+  decorateFieldTooltips(host);
+  syncGovernanceGoalEditor(host.querySelector("[data-governance-goals-editor]"));
 }
 
 function toggleGovernanceCreateGroupPanel() {
@@ -1521,6 +1679,80 @@ function bindForms() {
   });
 
   document.addEventListener("click", (event) => {
+    const governanceGoalAdd = event.target?.closest?.("[data-governance-goal-add]");
+    if (governanceGoalAdd) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit governance goals")) {
+        return;
+      }
+      addGovernanceGoalRow(
+        governanceGoalAdd.closest("[data-governance-goals-editor]"),
+      );
+      return;
+    }
+
+    const governanceGoalRemove = event.target?.closest?.("[data-governance-goal-remove]");
+    if (governanceGoalRemove) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit governance goals")) {
+        return;
+      }
+      removeGovernanceGoalRow(governanceGoalRemove);
+      return;
+    }
+
+    const governanceGoalMove = event.target?.closest?.("[data-governance-goal-move]");
+    if (governanceGoalMove) {
+      event.preventDefault();
+      if (!guardTeamMutation("reorder governance goals")) {
+        return;
+      }
+      moveGovernanceGoalRow(governanceGoalMove);
+      return;
+    }
+
+    const governanceMemberRemove = event.target?.closest?.("[data-governance-member-team-remove]");
+    if (governanceMemberRemove) {
+      event.preventDefault();
+      if (!guardTeamMutation("change governance member teams")) {
+        return;
+      }
+      removeGovernanceMemberTeam(governanceMemberRemove);
+      return;
+    }
+
+    const checklistAdd = event.target?.closest?.("[data-human-review-checklist-add]");
+    if (checklistAdd) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review checklist")) {
+        return;
+      }
+      addHumanReviewChecklistRow(
+        checklistAdd.closest("[data-human-review-checklist-editor]"),
+      );
+      return;
+    }
+
+    const checklistRemove = event.target?.closest?.("[data-human-review-checklist-remove]");
+    if (checklistRemove) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review checklist")) {
+        return;
+      }
+      removeHumanReviewChecklistRow(checklistRemove);
+      return;
+    }
+
+    const checklistMove = event.target?.closest?.("[data-human-review-checklist-move]");
+    if (checklistMove) {
+      event.preventDefault();
+      if (!guardTeamMutation("reorder human review checklist")) {
+        return;
+      }
+      moveHumanReviewChecklistRow(checklistMove);
+      return;
+    }
+
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
     if (addButton) {
       event.preventDefault();
@@ -1543,6 +1775,15 @@ function bindForms() {
   });
 
   document.addEventListener("change", (event) => {
+    const governanceMember = event.target?.closest?.("[data-governance-member-team-id]");
+    if (governanceMember instanceof HTMLInputElement) {
+      syncGovernanceMemberTeamEditor(
+        governanceMember.closest("[data-governance-member-teams-editor]"),
+      );
+      rememberFormDraft(governanceMember.form);
+      return;
+    }
+
     const soundToggle = event.target?.closest?.("[data-chat-notification-sound]");
     if (soundToggle instanceof HTMLInputElement) {
       chatNotificationSoundMuted = !soundToggle.checked;
@@ -1567,6 +1808,46 @@ function bindForms() {
     chatNewPickerOpen = false;
     closeChatStream();
     void loadConversations({ preserveSelection: false });
+  });
+
+  document.addEventListener("input", (event) => {
+    const governanceGoalField = event.target?.closest?.(
+      '[name="governance_goal_name"], [name="governance_goal_description"], [name="governance_goal_state"]',
+    );
+    if (
+      governanceGoalField instanceof HTMLInputElement ||
+      governanceGoalField instanceof HTMLTextAreaElement ||
+      governanceGoalField instanceof HTMLSelectElement
+    ) {
+      governanceGoalField.form
+        ?.querySelectorAll?.(
+          '[name="governance_goal_name"], [name="governance_goal_description"], [name="governance_goal_state"]',
+        )
+        .forEach((field) => field.setCustomValidity(""));
+    }
+    const checklistField = event.target?.closest?.(
+      '[name="human_review_checklist_id"], [name="human_review_checklist_label"], [name="human_review_checklist_description"]',
+    );
+    if (
+      checklistField instanceof HTMLInputElement ||
+      checklistField instanceof HTMLTextAreaElement
+    ) {
+      const editor = checklistField.closest("[data-human-review-checklist-editor]");
+      editor
+        ?.querySelectorAll?.(
+          '[name="human_review_checklist_id"], [name="human_review_checklist_label"]',
+        )
+        .forEach((field) => field.setCustomValidity(""));
+      syncHumanReviewChecklistEditor(editor);
+    }
+    const governanceTeamSearch = event.target?.closest?.("[data-governance-team-search]");
+    if (!(governanceTeamSearch instanceof HTMLInputElement)) {
+      return;
+    }
+    filterGovernanceMemberTeams(
+      governanceTeamSearch.closest("[data-governance-member-teams-editor]"),
+      governanceTeamSearch.value,
+    );
   });
 
   document.addEventListener("click", (event) => {
@@ -1807,6 +2088,12 @@ function bindRecordEditing() {
     const standDownRevokeButton = event.target.closest("[data-stand-down-revoke-agent-id]");
     if (standDownRevokeButton) {
       event.preventDefault();
+      if (
+        standDownRevokeButton.matches(":disabled")
+        || standDownRevokeButton.getAttribute("aria-disabled") === "true"
+      ) {
+        return;
+      }
       if (!guardTeamMutation("revoke stand-downs")) {
         return;
       }
@@ -2191,17 +2478,39 @@ function setTeamPrivilegedUnlocked(unlocked) {
   restoreFormDrafts(drafts);
 }
 
+function setTeamTheme(theme) {
+  const normalizedTheme = text(theme);
+  if (normalizedTheme !== "light" && normalizedTheme !== "dark") {
+    return;
+  }
+  document.documentElement.dataset.theme = normalizedTheme;
+  document.documentElement.style.colorScheme = normalizedTheme;
+}
+
 function bindPrivilegeMessages() {
   window.addEventListener("message", (event) => {
-    if (event.origin !== window.location.origin) {
+    if (
+      event.origin !== window.location.origin
+      || event.source !== window.parent
+    ) {
       return;
     }
     const data = event.data || {};
-    if (data.type !== "admin-privileged-operations") {
+    if (data.type === "admin-addon-context") {
+      setTeamTheme(data.theme);
+      setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
       return;
     }
-    setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+    if (data.type === "admin-privileged-operations") {
+      setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+    }
   });
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { type: "admin-addon-ready" },
+      window.location.origin,
+    );
+  }
 }
 
 function teamMutationLocked() {
@@ -2237,13 +2546,24 @@ const lockedMutationControlSelectors = [
   ["[data-team-inline-create-toggle]", "add Team records"],
   ["[data-core-agent-session-create]", "create a core agent session"],
   ["[data-git-import-button]", "import Git repositories"],
+  ["[data-governance-goal-add]", "edit governance goals"],
+  ["[data-governance-goal-remove]", "edit governance goals"],
+  ["[data-governance-goal-move]", "reorder governance goals"],
+  ["[data-governance-member-team-remove]", "change governance member teams"],
   ["[data-review-profile-criterion-add]", "edit review profile criteria"],
   ["[data-review-profile-criterion-remove]", "edit review profile criteria"],
+  ["[data-human-review-checklist-add]", "edit human review checklist"],
+  ["[data-human-review-checklist-remove]", "edit human review checklist"],
+  ["[data-human-review-checklist-move]", "reorder human review checklist"],
   ["[data-context-rotation-agent-id]", "clear agent context"],
   ["[data-stand-down-agent-id]", "stand down agents"],
-  ["[data-stand-down-revoke-agent-id]", "revoke stand-downs"],
+  ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
+  ["[data-release-gate-retry]", "retry release gates"],
+  ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
+  ["[data-human-review-resume-id]", "resume human reviews"],
+  ["[data-human-review-reassign-id]", "reassign human reviews"],
   ["[data-governance-agenda-handle-id]", "mark governance agenda handled"],
   ["[data-avatar-generate-agent-id]", "generate avatar previews"],
   ["[data-avatar-accept-agent-id]", "accept avatar previews"],
@@ -2260,6 +2580,7 @@ const lockedMutationControlSelectors = [
   ["form[data-delegated-create-form] button[type='submit']", "save changes"],
   ["form[data-org-action-form] button[type='submit']", "save changes"],
   ["form[data-review-decision-form] button[type='submit']", "record review decisions"],
+  ["form[data-human-review-decision-form] button[type='submit']", "record human review decisions"],
   ["#update-task-form button[type='submit']", "update tasks"],
   ["#decide-review-form button[type='submit']", "record review decisions"],
   ["#edit-record-form button[type='submit']", "save changes"],
@@ -2268,6 +2589,12 @@ const lockedMutationControlSelectors = [
 
 function applyLockedMutationControls(root = document) {
   if (!teamMutationLocked()) {
+    const controls = [];
+    if (root?.matches?.(".is-locked")) {
+      controls.push(root);
+    }
+    root?.querySelectorAll?.(".is-locked").forEach((control) => controls.push(control));
+    controls.forEach(unlockMutationControl);
     return;
   }
   for (const [selector, action] of lockedMutationControlSelectors) {
@@ -2284,6 +2611,19 @@ function lockMutationControl(control, action = "make changes") {
   if (!control) {
     return;
   }
+  if (!lockedMutationControlStates.has(control)) {
+    lockedMutationControlStates.set(control, {
+      disabled:
+        control instanceof HTMLButtonElement ||
+        control instanceof HTMLInputElement ||
+        control instanceof HTMLSelectElement ||
+        control instanceof HTMLTextAreaElement
+          ? control.disabled
+          : null,
+      ariaDisabled: control.getAttribute("aria-disabled"),
+      title: control.getAttribute("title"),
+    });
+  }
   const message = lockedMutationMessage(action);
   if (
     control instanceof HTMLButtonElement ||
@@ -2296,6 +2636,28 @@ function lockMutationControl(control, action = "make changes") {
   control.setAttribute("aria-disabled", "true");
   control.setAttribute("title", message);
   control.classList?.add?.("is-locked");
+}
+
+function unlockMutationControl(control) {
+  const previous = lockedMutationControlStates.get(control);
+  if (!control || !previous) {
+    return;
+  }
+  if (previous.disabled !== null) {
+    control.disabled = previous.disabled;
+  }
+  restoreOptionalAttribute(control, "aria-disabled", previous.ariaDisabled);
+  restoreOptionalAttribute(control, "title", previous.title);
+  control.classList?.remove?.("is-locked");
+  lockedMutationControlStates.delete(control);
+}
+
+function restoreOptionalAttribute(control, name, value) {
+  if (value === null) {
+    control.removeAttribute(name);
+  } else {
+    control.setAttribute(name, value);
+  }
 }
 
 function registeredTeamSessionIds() {
@@ -2589,10 +2951,87 @@ function bindWorkspaceReviewDecisionForms() {
 
 function bindDeliveryFilters() {
   document.querySelectorAll(".delivery-filter").forEach((button) => {
+    if (button.matches("[data-my-human-reviews]")) {
+      return;
+    }
     button.addEventListener("click", () => {
       const filter = button.dataset.filter || "all";
       setDeliveryFilter(filter);
     });
+  });
+  document.querySelector("[data-my-human-reviews]")?.addEventListener("click", () => {
+    myHumanReviewsOnly = !myHumanReviewsOnly;
+    if (!myHumanReviewsOnly) {
+      focusedHumanReviewRequestId = "";
+    }
+    updateMyHumanReviewsFilterButton();
+    if (myHumanReviewsOnly) {
+      void loadMyHumanReviews();
+      return;
+    }
+    renderReleases();
+  });
+  document.addEventListener("click", (event) => {
+    const copyButton = event.target?.closest?.("[data-copy-identifier]");
+    if (copyButton) {
+      event.preventDefault();
+      void copyTechnicalIdentifier(copyButton);
+      return;
+    }
+    const retryButton = event.target?.closest?.("[data-my-human-reviews-retry]");
+    if (retryButton) {
+      event.preventDefault();
+      void loadMyHumanReviews();
+      return;
+    }
+    const detailButton = event.target?.closest?.("[data-release-detail-id]");
+    if (detailButton) {
+      event.preventDefault();
+      void toggleReleaseDetail(text(detailButton.dataset.releaseDetailId));
+      return;
+    }
+    const resumeButton = event.target?.closest?.("[data-human-review-resume-id]");
+    if (resumeButton) {
+      event.preventDefault();
+      if (guardTeamMutation("resume human reviews")) {
+        void resumeHumanReview(resumeButton, text(resumeButton.dataset.humanReviewResumeId));
+      }
+      return;
+    }
+    const reassignButton = event.target?.closest?.("[data-human-review-reassign-id]");
+    if (!reassignButton) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("reassign human reviews")) {
+      return;
+    }
+    const userIds = window.prompt(
+      "Assign this human review to Admin Web user IDs (comma or newline separated).",
+      "",
+    );
+    if (userIds === null) {
+      return;
+    }
+    void reassignHumanReview(
+      reassignButton,
+      text(reassignButton.dataset.humanReviewReassignId),
+      splitList(userIds),
+    );
+  });
+  document.addEventListener("submit", (event) => {
+    const postReleaseReportForm = event.target?.closest?.("[data-post-release-report-form]");
+    if (postReleaseReportForm) {
+      event.preventDefault();
+      void submitPostReleaseReport(postReleaseReportForm, event.submitter);
+      return;
+    }
+    const humanReviewForm = event.target?.closest?.("[data-human-review-decision-form]");
+    if (!humanReviewForm) {
+      return;
+    }
+    event.preventDefault();
+    void submitHumanReviewDecision(humanReviewForm, event.submitter);
   });
 }
 
@@ -2728,18 +3167,188 @@ function bindTaskBoardSelectors() {
   const teamSelect = document.querySelector("[data-task-board-team]");
   const projectSelect = document.querySelector("[data-task-board-project]");
   const updateTeam = () => {
-    selectedTaskBoardTeamId = text(teamSelect.value);
+    const nextTeamId = text(teamSelect.value);
+    if (nextTeamId === selectedTaskBoardTeamId) {
+      return;
+    }
+    selectedTaskBoardTeamId = nextTeamId;
     selectedTaskBoardProjectId = "";
+    resetTaskBoardProjectState();
     renderTaskBoard();
   };
   const updateProject = () => {
-    selectedTaskBoardProjectId = text(projectSelect.value);
+    const nextProjectId = text(projectSelect.value);
+    if (nextProjectId === selectedTaskBoardProjectId) {
+      return;
+    }
+    selectedTaskBoardProjectId = nextProjectId;
+    resetTaskBoardProjectState();
     renderTaskBoard();
   };
   teamSelect?.addEventListener("input", updateTeam);
   teamSelect?.addEventListener("change", updateTeam);
   projectSelect?.addEventListener("input", updateProject);
   projectSelect?.addEventListener("change", updateProject);
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("[data-task-board-search-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    taskBoardQuery = text(new FormData(form).get("task_board_query"));
+    resetTaskBoardPagination();
+    renderTaskBoard();
+  });
+
+  document.addEventListener("change", (event) => {
+    const completedToggle = event.target?.closest?.("[data-task-board-show-completed]");
+    if (completedToggle instanceof HTMLInputElement) {
+      taskBoardShowCompleted = completedToggle.checked;
+      resetTaskBoardPagination();
+      renderTaskBoard();
+      return;
+    }
+    const filter = event.target?.closest?.("[data-task-board-filter]");
+    if (!filter) {
+      return;
+    }
+    const value = text(filter.value);
+    switch (filter.dataset.taskBoardFilter) {
+      case "assignee":
+        taskBoardAssigneeId = value;
+        break;
+      case "state":
+        taskBoardStateFilter = taskStates.includes(value) ? value : "";
+        if (terminalTaskStates.has(taskBoardStateFilter)) {
+          taskBoardShowCompleted = true;
+        }
+        break;
+      case "readiness":
+        taskBoardReadinessFilter = taskBoardReadinessValues.includes(value) ? value : "";
+        break;
+      case "root":
+        taskBoardRootTaskId = value;
+        break;
+      case "completed-since":
+        taskBoardCompletedSince = value;
+        break;
+      case "completed-through":
+        taskBoardCompletedThrough = value;
+        break;
+      default:
+        return;
+    }
+    resetTaskBoardPagination();
+    renderTaskBoard();
+  });
+
+  document.addEventListener("click", (event) => {
+    const modeButton = event.target?.closest?.("[data-task-board-mode]");
+    if (modeButton) {
+      event.preventDefault();
+      const nextMode = text(modeButton.dataset.taskBoardMode);
+      if (taskBoardViewModes.has(nextMode)) {
+        taskBoardViewMode = nextMode;
+        prepareSelectedTaskBoardTaskForDisplay();
+        renderTaskBoard();
+        focusSelectedTaskBoardTask();
+      }
+      return;
+    }
+    const selectButton = event.target?.closest?.("[data-task-board-select-task-id]");
+    if (selectButton) {
+      event.preventDefault();
+      selectTaskBoardTask(text(selectButton.dataset.taskBoardSelectTaskId), {
+        reveal: selectButton.hasAttribute("data-task-board-reveal-task"),
+      });
+      return;
+    }
+    if (event.target?.closest?.("[data-task-board-clear-focus]")) {
+      event.preventDefault();
+      selectedTaskBoardTaskId = "";
+      renderTaskBoard();
+      return;
+    }
+    if (event.target?.closest?.("[data-task-board-clear-filters]")) {
+      event.preventDefault();
+      resetTaskBoardFilters();
+      renderTaskBoard();
+      return;
+    }
+    if (event.target?.closest?.("[data-task-board-reveal-completed]")) {
+      event.preventDefault();
+      taskBoardShowCompleted = true;
+      resetTaskBoardPagination();
+      renderTaskBoard();
+      return;
+    }
+    const hierarchyToggle = event.target?.closest?.("[data-task-board-toggle-children-id]");
+    if (hierarchyToggle) {
+      event.preventDefault();
+      const taskId = text(hierarchyToggle.dataset.taskBoardToggleChildrenId);
+      if (expandedTaskBoardTaskIds.has(taskId)) {
+        expandedTaskBoardTaskIds.delete(taskId);
+      } else {
+        expandedTaskBoardTaskIds.add(taskId);
+      }
+      renderTaskBoard();
+      focusTaskBoardControl(taskId, "[data-task-board-toggle-children-id]");
+      return;
+    }
+    const lanePageButton = event.target?.closest?.("[data-task-board-lane-page]");
+    if (lanePageButton) {
+      event.preventDefault();
+      const laneId = text(lanePageButton.dataset.taskBoardLaneId);
+      const page = Math.max(1, Math.floor(Number(lanePageButton.dataset.taskBoardLanePage) || 1));
+      taskBoardLanePages.set(laneId, page);
+      renderTaskBoard();
+      focusTaskBoardControl(laneId, "[data-task-board-lane-id]");
+      return;
+    }
+    if (event.target?.closest?.("[data-task-board-more-roots]")) {
+      event.preventDefault();
+      taskBoardHierarchyRootLimit += taskBoardHierarchyPageSize;
+      renderTaskBoard();
+      return;
+    }
+    const moreChildrenButton = event.target?.closest?.("[data-task-board-more-children-id]");
+    if (moreChildrenButton) {
+      event.preventDefault();
+      const taskId = text(moreChildrenButton.dataset.taskBoardMoreChildrenId);
+      const currentLimit =
+        taskBoardHierarchyChildLimits.get(taskId) || taskBoardHierarchyPageSize;
+      taskBoardHierarchyChildLimits.set(taskId, currentLimit + taskBoardHierarchyPageSize);
+      renderTaskBoard();
+      focusTaskBoardControl(taskId, "[data-task-board-toggle-children-id]");
+    }
+  });
+}
+
+function resetTaskBoardProjectState() {
+  resetTaskBoardFilters();
+  selectedTaskBoardTaskId = "";
+  expandedTaskBoardTaskIds.clear();
+  taskBoardHierarchyChildLimits.clear();
+  taskBoardHierarchyInitialized = false;
+}
+
+function resetTaskBoardFilters() {
+  taskBoardShowCompleted = false;
+  taskBoardQuery = "";
+  taskBoardAssigneeId = "";
+  taskBoardStateFilter = "";
+  taskBoardReadinessFilter = "";
+  taskBoardRootTaskId = "";
+  taskBoardCompletedSince = "";
+  taskBoardCompletedThrough = "";
+  resetTaskBoardPagination();
+}
+
+function resetTaskBoardPagination() {
+  taskBoardLanePages.clear();
+  taskBoardHierarchyRootLimit = taskBoardHierarchyPageSize;
+  taskBoardHierarchyChildLimits.clear();
 }
 
 function bindOrgFocusTabs() {
@@ -2835,6 +3444,19 @@ async function bootTeamAddon() {
     const reason = rejection.reason;
     setStatus(reason instanceof Error ? reason.message : "Team view failed to load.", "error");
     return;
+  }
+  if (initialHumanReviewDeepLink.enabled) {
+    const focused = await openHumanReviewDeepLink(
+      initialHumanReviewDeepLink.requestId,
+    );
+    if (!focused && initialHumanReviewDeepLink.requestId) {
+      setStatus(
+        `Human review ${initialHumanReviewDeepLink.requestId} is not assigned or visible; showing your assigned reviews instead.`,
+        "warning",
+      );
+      scheduleIdleViewPrefetch();
+      return;
+    }
   }
   setStatus("", "");
   scheduleIdleViewPrefetch();
@@ -4039,10 +4661,26 @@ function setDeliveryFilter(filter) {
 
 function updateDeliveryFilterButtons() {
   document.querySelectorAll(".delivery-filter").forEach((button) => {
+    if (button.matches("[data-my-human-reviews]")) {
+      return;
+    }
     const active = (button.dataset.filter || "all") === selectedDeliveryFilter;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
+  updateMyHumanReviewsFilterButton();
+}
+
+function updateMyHumanReviewsFilterButton() {
+  const button = document.querySelector("[data-my-human-reviews]");
+  if (!button) {
+    return;
+  }
+  button.classList.toggle("is-active", myHumanReviewsOnly);
+  button.setAttribute("aria-pressed", myHumanReviewsOnly ? "true" : "false");
+  const count = humanReviewQueue.loaded ? humanReviewQueue.requests.length : null;
+  button.textContent =
+    count === null ? "My Human Reviews" : `My Human Reviews (${count})`;
 }
 
 function renderReviewDeliveryWorkspace() {
@@ -4261,8 +4899,13 @@ function buildWorkspaceDashboardModel() {
     .filter((task) => workspaceTaskIsVisible(task, visibleProjectIds))
     .sort(comparePlanningTasks);
   const blockedTasks = openTasks.filter(isTaskWaitingOrBlocked);
+  const runtime = state.runtime_operations || { agents: [], attention: [] };
+  const runtimeInboxIds = new Set(
+    (runtime.attention || []).map((row) => text(row.inbox_item_id)).filter(Boolean),
+  );
   const pendingInbox = values(state.inbox)
     .filter((item) => text(item.state) !== "handled")
+    .filter((item) => !runtimeInboxIds.has(text(item.id)))
     .filter((item) => visibleAgentIds.has(text(item.recipient_agent_id)))
     .sort(compareWorkspaceInboxItems);
   const pendingReviews = values(state.review_requests)
@@ -4273,9 +4916,9 @@ function buildWorkspaceDashboardModel() {
     .filter((item) => text(item.state || "pending") === "pending")
     .filter((item) => workspaceGovernanceAgendaIsVisible(item, visibleTeamIds, visibleProjectIds))
     .sort(compareWorkspaceGovernanceAgenda);
-  const runtime = state.runtime_operations || { agents: [], attention: [] };
   const runtimeAttention = (runtime.attention || [])
     .filter(isVisibleRuntimeRow)
+    .filter((row) => runtimeAttentionGroup(row) !== "retained_history")
     .sort(runtimeSortRows);
   const dueAgents = dueLeasedAgentsForFilter(runtime.agents || []);
   const deliveryRows = buildReviewDeliveryRows();
@@ -4366,7 +5009,7 @@ function renderWorkspaceMetricCards(model) {
     {
       label: "Cost alerts",
       value: model.costAttention.length,
-      detail: costState.error ? "cost data unavailable" : "estimated cap checks",
+      detail: costState.error ? "cost data unavailable" : "team caps and portfolio roll-ups",
       view: "governance",
       tone: model.costAttention.length || costState.error ? "warning" : "ok",
     },
@@ -4492,7 +5135,12 @@ function renderWorkspaceTeamStatusRow(team) {
   const blockedTasks = openTasks.filter(isTaskWaitingOrBlocked);
   const inboxCount = values(state.inbox).filter((item) => {
     const agent = state.agents[text(item.recipient_agent_id)];
-    return text(item.state) !== "handled" && agent && text(agent.team_id) === text(team.id);
+    return (
+      text(item.state) !== "handled" &&
+      pendingInboxItemIsCurrent(item) &&
+      agent &&
+      text(agent.team_id) === text(team.id)
+    );
   }).length;
   const dueCount = (state.runtime_operations?.agents || []).filter((row) => {
     return text(row.team_id) === text(team.id) && isDueOrLeasedAgent(row);
@@ -4516,7 +5164,11 @@ function renderWorkspaceTeamStatusRow(team) {
 }
 
 function renderWorkspaceWorkStatusPanel(model) {
-  const openCases = values(state.cases).filter((item) => isVisibleCase(item) && !["resolved", "closed"].includes(text(item.status)));
+  const openCases = values(state.cases).filter(
+    (item) =>
+      isVisibleCase(item) &&
+      activeCaseStatuses.has(text(item.status) || "open"),
+  );
   const pendingGovernance = model.pendingGovernanceAgenda.length;
   return `
     <section class="workspace-dashboard-panel" aria-labelledby="workspace-work-status-heading">
@@ -4544,7 +5196,7 @@ function renderWorkspaceNavigationPanel() {
     ["cases", "Cases", "Intake and ticket context"],
     ["governance", "Governance", "Groups, agenda, and oversight"],
     ["mail", "Agent Mail", "Internal messages and historical correspondence"],
-    ["timeline", "Timeline", "Derived audit view"],
+    ["timeline", "Activity timeline", "Retained-record activity history"],
     ["org", "Org chart", "Team graph"],
   ];
   return `
@@ -4671,10 +5323,11 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       return;
     }
     if (cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length) {
+      const memberTeamCount = governanceCostMemberTeamCount(cost);
       rows.push({
-        title: `${group.name || groupId} cost attention`,
+        title: `${group.name || groupId} portfolio cost attention`,
         meta: cost?.cost_limit_reached
-          ? `${formatUsd(cost.estimated_cost)} estimated`
+          ? `${formatUsd(cost.estimated_cost)} governed roll-up across ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}`
           : `${(cost.member_team_cap_reached_ids || []).length} member cap${(cost.member_team_cap_reached_ids || []).length === 1 ? "" : "s"} reached`,
         severity: "warning",
         view: "governance",
@@ -4703,6 +5356,14 @@ function workspaceAttentionItems({
   pendingGovernanceAgenda,
 }) {
   const items = [];
+  const runtimeTaskIds = new Set(
+    runtimeAttention.flatMap((row) =>
+      uniqueTextList([
+        row.task_id,
+        ...(row.links?.task_ids || []),
+      ]),
+    ),
+  );
   runtimeAttention.forEach((row) => {
     items.push({
       title: row.title || row.id,
@@ -4714,6 +5375,9 @@ function workspaceAttentionItems({
   });
   costAttention.forEach((row) => items.push(row));
   blockedTasks.forEach((task) => {
+    if (runtimeTaskIds.has(text(task.id))) {
+      return;
+    }
     const project = state.projects[text(task.project_id)];
     const owner = state.agents[text(task.owner_agent_id)];
     items.push({
@@ -4888,11 +5552,15 @@ function renderGovernanceGroup(group) {
           ${editButton("governance-group", group.id, "Edit")}
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(group.id)} - manager ${escapeHtml(manager ? agentLabel(manager) : group.manager_agent_id)}</div>
-      ${cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : ""}
+      <div class="meta-line">Manager ${escapeHtml(manager ? agentLabel(manager) : "Unavailable")} · ${escapeHtml(manager ? agentRoleLabel(manager) : "Role unavailable")}</div>
+      ${cost ? renderGovernanceCostCounter(cost) : ""}
       ${renderGovernanceGoals(group.goals || [])}
       ${renderGovernanceMemberTeams(memberTeams, cost)}
       ${renderGovernanceAgenda(group, visibleAgenda, pendingAgenda)}
+      ${renderTechnicalDetails([
+        ["Governance group ID", group.id],
+        ["Manager agent ID", group.manager_agent_id],
+      ])}
     </li>
   `;
 }
@@ -4910,7 +5578,7 @@ function renderGovernanceMemberTeams(memberTeams, cost) {
             const teamCost = cost?.member_team_costs?.[team.id] || teamCostForTeam(team.id);
             const costLabel = teamCost ? ` - ${formatUsd(teamCost.estimated_cost)}` : "";
             const cap = teamCost?.cost_limit_reached ? " - cap reached" : "";
-            return `<li><strong>${escapeHtml(team.name)}</strong> <span>${escapeHtml(team.id)}${escapeHtml(costLabel)}${escapeHtml(cap)}</span></li>`;
+            return `<li><strong>${escapeHtml(team.name)}</strong> <span>${escapeHtml(`${costLabel}${cap}`.replace(/^ - /, ""))}</span></li>`;
           })
           .join("")}
       </ul>
@@ -4927,7 +5595,18 @@ function renderGovernanceGoals(goals) {
       <div class="meta-line">Goals</div>
       <ul class="compact-record-list governance-goal-list">
         ${goals
-          .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong></li>`)
+          .map((goal) => {
+            const goalName =
+              text(goal.name) && text(goal.name) !== text(goal.id)
+                ? text(goal.name)
+                : text(goal.description) || humanizeToken(goal.id);
+            return `
+            <li>
+              <strong>${escapeHtml(goalName)}</strong>
+              ${text(goal.description) && text(goal.description) !== goalName ? `<span>${escapeHtml(goal.description)}</span>` : ""}
+            </li>
+          `;
+          })
           .join("")}
       </ul>
     </div>
@@ -4987,6 +5666,16 @@ function governanceCostForGroup(groupId) {
   return costState.governance_group_costs?.[groupId] || null;
 }
 
+function governanceCostMemberTeamCount(cost) {
+  const memberTeamIds = Array.isArray(cost?.member_team_ids)
+    ? cost.member_team_ids.map(text).filter(Boolean)
+    : [];
+  if (memberTeamIds.length) {
+    return new Set(memberTeamIds).size;
+  }
+  return Object.keys(cost?.member_team_costs || {}).length;
+}
+
 function prioritySortValue(priority) {
   const order = { high: 0, normal: 1, low: 2 };
   return order[text(priority)] ?? 1;
@@ -5000,10 +5689,23 @@ function renderProjectCostCounter(projectId) {
   return renderCostCounter(cost, { label: "Estimated project cost", compact: true });
 }
 
-function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
+function renderGovernanceCostCounter(cost) {
+  const memberTeamCount = governanceCostMemberTeamCount(cost);
+  return renderCostCounter(cost, {
+    label: "Governed portfolio roll-up",
+    compact: true,
+    aggregate: true,
+    context: `Sum of ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}; not governance manager spend.`,
+  });
+}
+
+function renderCostCounter(
+  cost,
+  { label, compact = false, aggregate = false, context = "", error = "" } = {},
+) {
   if (!cost) {
     return `
-      <div class="cost-counter cost-counter--warning${compact ? " cost-counter--compact" : ""}">
+      <div class="cost-counter cost-counter--warning${compact ? " cost-counter--compact" : ""}${aggregate ? " cost-counter--aggregate" : ""}">
         <strong>${escapeHtml(label || "Cost")}</strong>
         <span>${escapeHtml(error || "unavailable")}</span>
       </div>
@@ -5027,19 +5729,23 @@ function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
     );
   }
   if (events) {
-    parts.push(`${events} event${events === 1 ? "" : "s"}`);
+    parts.push(`${formatCount(events)} event${events === 1 ? "" : "s"}`);
   }
   if (unpriced) {
-    parts.push(`${unpriced} unpriced`);
+    parts.push(`${formatCount(unpriced)} unpriced`);
+  }
+  if (coverageStatus && coverageStatus !== "complete") {
+    parts.push("partial pricing coverage");
   }
   const sourceSummary = costSourceSummary(cost.source_counts || {});
   if (sourceSummary) {
     parts.push(sourceSummary);
   }
   return `
-    <div class="${className}${compact ? " cost-counter--compact" : ""}">
+    <div class="${className}${compact ? " cost-counter--compact" : ""}${aggregate ? " cost-counter--aggregate" : ""}">
       <span>${escapeHtml(label || "Cost")}</span>
       <strong>${escapeHtml(formatUsd(cost.estimated_cost))}</strong>
+      ${context ? `<small class="cost-counter-context">${escapeHtml(context)}</small>` : ""}
       ${parts.length ? `<small>${escapeHtml(parts.join(" - "))}</small>` : ""}
     </div>
   `;
@@ -5053,8 +5759,14 @@ function costSourceSummary(sourceCounts) {
     return "";
   }
   return entries
-    .map(([source, count]) => `${source}:${numberOrZero(count)}`)
+    .map(([source, count]) => `${source}:${formatCount(count)}`)
     .join(", ");
+}
+
+function formatCount(value) {
+  return numberOrZero(value).toLocaleString(undefined, {
+    maximumFractionDigits: 0,
+  });
 }
 
 function formatUsd(value) {
@@ -5182,10 +5894,158 @@ function isVisibleRuntimeRow(row) {
 
 function runtimeSortRows(left, right) {
   return (
+    runtimeAttentionGroupRank(runtimeAttentionGroup(left)) -
+      runtimeAttentionGroupRank(runtimeAttentionGroup(right)) ||
+    runtimeAttentionOccurredTime(right) - runtimeAttentionOccurredTime(left) ||
     runtimeSeverityRank(left.severity) - runtimeSeverityRank(right.severity) ||
     String(left.kind || "").localeCompare(String(right.kind || "")) ||
     String(left.id || "").localeCompare(String(right.id || ""))
   );
+}
+
+function runtimeAttentionIsPassiveCorrespondence(row) {
+  return (
+    ["pending_inbox_item", "pending_escalation"].includes(text(row?.kind)) &&
+    !row?.reconciliation_required &&
+    (
+      text(row?.attention_reason) === "pending_without_response_obligation" ||
+      row?.response_requested === false
+    )
+  );
+}
+
+function runtimeAttentionGroup(row) {
+  const explicit = text(row?.attention_group);
+  if (runtimeAttentionGroups.has(explicit)) {
+    return explicit;
+  }
+  if (explicit === "active") {
+    return "active_obligation";
+  }
+  if (explicit === "history") {
+    return "retained_history";
+  }
+  if (failedAttentionKinds.has(text(row?.kind))) {
+    return "failed_attempt";
+  }
+  if (
+    row?.reconciliation_required ||
+    (Array.isArray(row?.terminal_context) &&
+      row.terminal_context.length &&
+      ["pending_inbox_item", "pending_escalation"].includes(text(row.kind)))
+  ) {
+    return "retained_history";
+  }
+  if (runtimeAttentionIsPassiveCorrespondence(row)) {
+    return "retained_history";
+  }
+  return "active_obligation";
+}
+
+function runtimeAttentionGroupRank(group) {
+  return {
+    active_obligation: 0,
+    failed_attempt: 1,
+    retained_history: 2,
+  }[group] ?? 9;
+}
+
+function runtimeAttentionOccurredAt(row) {
+  const direct = text(row?.occurred_at);
+  if (direct) {
+    return direct;
+  }
+  const kind = text(row?.kind);
+  if (kind === "expired_agent_session") {
+    return text(row.session_expires_at);
+  }
+  if (kind === "team_blocker") {
+    return text(state.blockers?.[row.blocker_id || row.id]?.created_at);
+  }
+  if (["blocked_task", "waiting_dependency_task"].includes(kind)) {
+    const task = state.tasks?.[row.task_id || row.id];
+    return text(task?.state_entered_at || task?.updated_at || task?.created_at);
+  }
+  if (["pending_inbox_item", "pending_escalation"].includes(kind)) {
+    return text(state.inbox?.[row.inbox_item_id || row.id]?.created_at);
+  }
+  if (kind === "failed_action_record") {
+    return text(state.action_records?.[row.action_record_id || row.id]?.created_at);
+  }
+  if (kind === "failed_git_promotion") {
+    const promotion = state.git_promotions?.[row.promotion_id || row.id];
+    return text(promotion?.updated_at || promotion?.created_at);
+  }
+  if (kind === "blocked_release_package") {
+    const release = state.release_packages?.[row.release_package_id || row.id];
+    return text(release?.updated_at || release?.created_at);
+  }
+  if (["failed_ephemeral_assignment", "cleanup_pending_ephemeral_assignment"].includes(kind)) {
+    const assignment = state.ephemeral_assignments?.[row.assignment_id || row.id];
+    return text(assignment?.updated_at || assignment?.created_at);
+  }
+  return "";
+}
+
+function runtimeAttentionOccurredTime(row) {
+  const timestamp = runtimeAttentionOccurredAt(row);
+  const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function runtimeAttentionAgeSeconds(row) {
+  const provided = Number(row?.age_seconds);
+  if (Number.isFinite(provided) && provided >= 0) {
+    return provided;
+  }
+  const occurred = runtimeAttentionOccurredTime(row);
+  const generated = Date.parse(text(state.runtime_operations?.generated_at));
+  const reference = Number.isFinite(generated) ? generated : Date.now();
+  if (!Number.isFinite(occurred)) {
+    return null;
+  }
+  return Math.max(0, Math.floor((reference - occurred) / 1000));
+}
+
+function runtimeAttentionAgeBucket(row) {
+  const provided = text(row?.age_bucket);
+  if (runtimeAttentionAgeChoices.some(([value]) => value === provided)) {
+    return provided;
+  }
+  const seconds = runtimeAttentionAgeSeconds(row);
+  if (seconds === null) {
+    return "unknown";
+  }
+  if (seconds < 86400) {
+    return "under_24_hours";
+  }
+  if (seconds <= 7 * 86400) {
+    return "1_to_7_days";
+  }
+  if (seconds <= 30 * 86400) {
+    return "8_to_30_days";
+  }
+  return "over_30_days";
+}
+
+function runtimeAttentionAgeLabel(row) {
+  const seconds = runtimeAttentionAgeSeconds(row);
+  if (seconds === null) {
+    return "age unavailable";
+  }
+  if (seconds < 60) {
+    return "just now";
+  }
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  }
+  const days = Math.floor(seconds / 86400);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 function runtimeSeverityRank(severity) {
@@ -5216,6 +6076,205 @@ function runtimeAttentionForFilter(attention, filter) {
   return sorted;
 }
 
+function runtimeAttentionFacetValues(row, field) {
+  if (field === "age") {
+    return [runtimeAttentionAgeBucket(row)];
+  }
+  if (field === "agent") {
+    return uniqueTextList([row.agent_id, row.owner_agent_id, row.delegate_agent_id]);
+  }
+  if (field === "team" || field === "project") {
+    const linkedValues = row.links?.[`${field}_ids`];
+    return uniqueTextList([
+      row[`${field}_id`],
+      ...(Array.isArray(linkedValues) ? linkedValues : []),
+    ]);
+  }
+  return uniqueTextList([row[`${field}_id`], row[field]]);
+}
+
+function runtimeAttentionMatchesFacets(row) {
+  for (const field of ["kind", "age", "team", "project", "agent"]) {
+    const selected = runtimeAttentionFilters[field];
+    if (selected !== "all" && !runtimeAttentionFacetValues(row, field).includes(selected)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function runtimeAttentionFacetOptionRows(rows, field) {
+  const counts = new Map();
+  rows.forEach((row) => {
+    runtimeAttentionFacetValues(row, field).forEach((value) => {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    });
+  });
+  return [...counts.entries()].sort(([left], [right]) => {
+    if (field === "age") {
+      const order = runtimeAttentionAgeChoices.map(([value]) => value);
+      return order.indexOf(left) - order.indexOf(right);
+    }
+    return runtimeAttentionFacetLabel(field, left).localeCompare(runtimeAttentionFacetLabel(field, right));
+  });
+}
+
+function runtimeAttentionFacetLabel(field, value) {
+  if (field === "kind") {
+    return humanizeToken(value);
+  }
+  if (field === "age") {
+    return runtimeAttentionAgeChoices.find(([choice]) => choice === value)?.[1] || humanizeToken(value);
+  }
+  if (field === "team") {
+    return state.teams?.[value]?.name || value;
+  }
+  if (field === "project") {
+    return state.projects?.[value]?.name || value;
+  }
+  if (field === "agent") {
+    const agent = state.agents?.[value];
+    return agent ? agentLabel(agent) : value;
+  }
+  return value;
+}
+
+function renderRuntimeAttentionFacetSelect(rows, field, label) {
+  const options = runtimeAttentionFacetOptionRows(rows, field);
+  return `
+    <label>
+      <span>${escapeHtml(label)}</span>
+      <select data-runtime-attention-filter="${escapeAttr(field)}">
+        <option value="all">All ${escapeHtml(label.toLowerCase())} (${rows.length})</option>
+        ${options.map(([value, count]) => `<option value="${escapeAttr(value)}"${runtimeAttentionFilters[field] === value ? " selected" : ""}>${escapeHtml(runtimeAttentionFacetLabel(field, value))} (${count})</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function renderRuntimeAttentionControls(rows) {
+  const groupCounts = {
+    active_obligation: rows.filter((row) => runtimeAttentionGroup(row) === "active_obligation").length,
+    failed_attempt: rows.filter((row) => runtimeAttentionGroup(row) === "failed_attempt").length,
+    retained_history: rows.filter((row) => runtimeAttentionGroup(row) === "retained_history").length,
+  };
+  const reconciliationCount = rows.filter((row) => row.reconciliation_required).length;
+  const terminalCount = rows.filter((row) => Array.isArray(row.terminal_context) && row.terminal_context.length).length;
+  const hasFilters = Object.values(runtimeAttentionFilters).some((value) => value !== "all");
+  return `
+    <section class="runtime-attention-controls" aria-label="Attention filters">
+      <div class="runtime-attention-counts" data-runtime-attention-counts>
+        <span><strong>${groupCounts.active_obligation}</strong> active</span>
+        <span><strong>${groupCounts.failed_attempt}</strong> failed attempts</span>
+        <span><strong>${groupCounts.retained_history}</strong> retained history</span>
+        ${terminalCount ? `<span>${terminalCount} terminal-linked</span>` : ""}
+        ${reconciliationCount ? `<span class="runtime-reconciliation-count">${reconciliationCount} need reconciliation</span>` : ""}
+      </div>
+      <div class="runtime-attention-facets">
+        ${renderRuntimeAttentionFacetSelect(rows, "kind", "Kind")}
+        ${renderRuntimeAttentionFacetSelect(rows, "age", "Age")}
+        ${renderRuntimeAttentionFacetSelect(rows, "team", "Team")}
+        ${renderRuntimeAttentionFacetSelect(rows, "project", "Project")}
+        ${renderRuntimeAttentionFacetSelect(rows, "agent", "Agent")}
+      </div>
+      <div class="runtime-attention-filter-actions">
+        <p>Age provides context; linked lifecycle state determines whether work is still actionable.</p>
+        ${hasFilters ? `<button type="button" class="record-action secondary" data-runtime-attention-clear>Clear filters</button>` : ""}
+      </div>
+    </section>
+  `;
+}
+
+function renderRuntimeAttentionGroupedSections(attention) {
+  const groups = [
+    {
+      id: "active_obligation",
+      title: "Active blockers / awaiting response",
+      empty: "No active blockers or response obligations match these filters.",
+    },
+    {
+      id: "failed_attempt",
+      title: "Failed attempts",
+      empty: "No failed attempts match these filters.",
+    },
+  ];
+  const markup = groups.map((group) => {
+    const rows = attention.filter((row) => runtimeAttentionGroup(row) === group.id);
+    return renderRuntimeAttentionGroupSection(group, rows);
+  });
+  const historyRows = attention.filter((row) => runtimeAttentionGroup(row) === "retained_history");
+  markup.push(`
+    <section class="runtime-section runtime-attention-group runtime-attention-history">
+      <div class="runtime-section-header">
+        <div>
+          <p class="subheading">Retained context</p>
+          <h3>Retained history</h3>
+        </div>
+        <div class="record-actions">
+          <span class="runtime-count">${historyRows.length} visible</span>
+          <button
+            type="button"
+            class="record-action"
+            data-runtime-attention-history-toggle
+            aria-pressed="${runtimeAttentionShowHistory ? "true" : "false"}"
+          >${runtimeAttentionShowHistory ? "Hide retained history" : `Show retained history (${historyRows.length})`}</button>
+        </div>
+      </div>
+      ${runtimeAttentionShowHistory ? renderRuntimeAttentionGroupRows("retained_history", historyRows, "No retained history matches these filters.") : `<p class="empty-state">Historical and terminal-linked records remain durable without being presented as active obligations.</p>`}
+    </section>
+  `);
+  return markup.join("");
+}
+
+function renderRuntimeAttentionGroupSection(group, rows) {
+  return `
+    <section class="runtime-section runtime-attention-group" data-attention-group="${escapeAttr(group.id)}">
+      <div class="runtime-section-header">
+        <div>
+          <p class="subheading">${group.id === "failed_attempt" ? "Failure history" : "Operational obligations"}</p>
+          <h3>${escapeHtml(group.title)}</h3>
+        </div>
+        <div class="runtime-count">${rows.length} visible</div>
+      </div>
+      ${renderRuntimeAttentionGroupRows(group.id, rows, group.empty)}
+    </section>
+  `;
+}
+
+function renderRuntimeAttentionGroupRows(groupId, rows, emptyMessage) {
+  if (!rows.length) {
+    return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
+  }
+  const pageCount = Math.max(1, Math.ceil(rows.length / runtimeAttentionPageSize));
+  const requestedPage = runtimeAttentionGroupPages.get(groupId) || 1;
+  const page = Math.min(requestedPage, pageCount);
+  runtimeAttentionGroupPages.set(groupId, page);
+  const offset = (page - 1) * runtimeAttentionPageSize;
+  const pageRows = rows.slice(offset, offset + runtimeAttentionPageSize);
+  return `
+    ${renderRuntimeAttentionRows(pageRows, emptyMessage)}
+    ${renderRuntimeAttentionPagination(groupId, rows.length, page, pageCount)}
+  `;
+}
+
+function renderRuntimeAttentionPagination(groupId, total, page, pageCount) {
+  if (pageCount <= 1) {
+    return "";
+  }
+  const first = (page - 1) * runtimeAttentionPageSize + 1;
+  const last = Math.min(total, page * runtimeAttentionPageSize);
+  return `
+    <nav class="runtime-attention-pagination" aria-label="${escapeAttr(humanizeToken(groupId))} pages">
+      <span>Showing ${first}–${last} of ${total}</span>
+      <div class="record-actions">
+        <button type="button" class="record-action secondary" data-runtime-attention-page-group="${escapeAttr(groupId)}" data-runtime-attention-page="${page - 1}"${page <= 1 ? " disabled" : ""}>Previous</button>
+        <span>Page ${page} of ${pageCount}</span>
+        <button type="button" class="record-action secondary" data-runtime-attention-page-group="${escapeAttr(groupId)}" data-runtime-attention-page="${page + 1}"${page >= pageCount ? " disabled" : ""}>Next</button>
+      </div>
+    </nav>
+  `;
+}
+
 function renderRuntimeAttentionRows(attention, emptyMessage = "No current blockers.") {
   if (!attention.length) {
     return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
@@ -5227,107 +6286,359 @@ function renderRuntimeAttentionRows(attention, emptyMessage = "No current blocke
   `;
 }
 
+function runtimeAttentionCategory(row) {
+  const kind = text(row.kind);
+  if (["team_blocker", "blocked_task", "waiting_dependency_task", "blocked_release_package"].includes(kind)) {
+    return { id: "blocker", label: "Blocker", icon: "!" };
+  }
+  if (failedAttentionKinds.has(kind)) {
+    return { id: "failed-operation", label: "Failed operation", icon: "×" };
+  }
+  if (runtimeAttentionIsPassiveCorrespondence(row)) {
+    return { id: "passive-correspondence", label: "No response requested", icon: "•" };
+  }
+  if (["pending_inbox_item", "pending_escalation"].includes(kind)) {
+    return { id: "awaiting-response", label: "Awaiting agent response", icon: "↗" };
+  }
+  if (kind === "expired_agent_session") {
+    return { id: "session", label: "Session attention", icon: "◷" };
+  }
+  if (kind === "cleanup_pending_ephemeral_assignment") {
+    return { id: "cleanup", label: "Cleanup pending", icon: "↻" };
+  }
+  return { id: "other", label: humanizeToken(kind || "attention"), icon: "•" };
+}
+
+function runtimeAttentionOwner(row) {
+  const linkedAgentIds = Array.isArray(row.links?.agent_ids) ? row.links.agent_ids : [];
+  const agentId = text(
+    row.delegate_agent_id ||
+      row.owner_agent_id ||
+      row.agent_id ||
+      linkedAgentIds[0],
+  );
+  const agent = agentId ? state.agents?.[agentId] : null;
+  return {
+    id: agentId,
+    label: agent ? agentLabel(agent) : agentId || "Operator",
+  };
+}
+
+function runtimeAttentionWhere(row) {
+  const projectId = text(row.project_id || row.links?.project_ids?.[0]);
+  const taskId = text(row.task_id || row.links?.task_ids?.[0]);
+  const deliverableId = text(row.deliverable_id || row.links?.deliverable_ids?.[0]);
+  const project = projectId ? state.projects?.[projectId] : null;
+  const task = taskId ? state.tasks?.[taskId] : null;
+  const deliverable = deliverableId ? state.deliverables?.[deliverableId] : null;
+  return [
+    project?.name,
+    task?.title,
+    deliverable ? deliverableDisplaySubject(deliverable) : "",
+  ].filter(Boolean);
+}
+
+function runtimeAttentionTerminalRows(row) {
+  const rows = Array.isArray(row.terminal_context)
+    ? row.terminal_context
+    : Array.isArray(row.terminal_links)
+      ? row.terminal_links
+      : [];
+  return rows.filter((item) => item && typeof item === "object");
+}
+
+function renderRuntimeAttentionContextBadges(row) {
+  const terminalRows = runtimeAttentionTerminalRows(row);
+  if (!terminalRows.length && !row.reconciliation_required) {
+    return "";
+  }
+  return `
+    <div class="runtime-attention-context-badges">
+      ${terminalRows.map((item) => `<span class="state-pill neutral">Terminal ${escapeHtml(humanizeToken(item.kind || "work"))}: ${escapeHtml(humanizeToken(item.state || "terminal"))}</span>`).join("")}
+      ${row.reconciliation_required ? `<span class="state-pill warning">Reconciliation required</span>` : ""}
+    </div>
+  `;
+}
+
+function renderRuntimeAttentionTime(row) {
+  const timestamp = runtimeAttentionOccurredAt(row);
+  if (!timestamp) {
+    return `<span class="runtime-attention-age">Time unavailable · ${escapeHtml(runtimeAttentionAgeLabel(row))}</span>`;
+  }
+  return `
+    <span class="runtime-attention-age">
+      <time datetime="${escapeAttr(timestamp)}">${escapeHtml(formatTimelineTimestamp(timestamp))}</time>
+      · ${escapeHtml(runtimeAttentionAgeLabel(row))}
+    </span>
+  `;
+}
+
+function runtimeAttentionDisplayTitle(row) {
+  const kind = text(row.kind);
+  if (kind === "failed_action_record") {
+    const action = state.action_records?.[row.action_record_id || row.id]?.action || {};
+    const actionType = text(action.type || action.kind);
+    return actionType ? `${humanizeToken(actionType)} action failed` : "Agent action failed";
+  }
+  if (kind === "failed_git_promotion") {
+    const promotion = state.git_promotions?.[row.promotion_id || row.id];
+    return `${humanizeToken(promotion?.promotion_kind || row.promotion_kind || "Git")} promotion failed`;
+  }
+  if (kind === "expired_agent_session") {
+    return `Session expired for ${runtimeAttentionOwner(row).label}`;
+  }
+  if (kind === "blocked_release_package") {
+    const release = state.release_packages?.[row.release_package_id || row.id];
+    return release ? `${releaseDisplayLabel(release)} is blocked` : "Release is blocked";
+  }
+  if (["failed_ephemeral_assignment", "cleanup_pending_ephemeral_assignment"].includes(kind)) {
+    const assignment = state.ephemeral_assignments?.[row.assignment_id || row.id];
+    return assignment?.title
+      ? `${assignment.title}: ${humanizeToken(row.state || kind)}`
+      : humanizeToken(kind);
+  }
+  return text(row.title) || humanizeToken(kind || "attention record");
+}
+
+function runtimeAttentionProblem(row) {
+  if (row.error) {
+    return text(row.error);
+  }
+  const kind = text(row.kind);
+  if (["pending_inbox_item", "pending_escalation"].includes(kind)) {
+    const item = state.inbox?.[row.inbox_item_id || row.id];
+    return text(item ? inboxItemDetail(item) : row.detail) || runtimeAttentionDisplayTitle(row);
+  }
+  if (kind === "team_blocker") {
+    const blocker = state.blockers?.[row.blocker_id || row.id];
+    return text(blocker?.details || blocker?.summary) || runtimeAttentionDisplayTitle(row);
+  }
+  if (["blocked_task", "waiting_dependency_task"].includes(kind)) {
+    const task = state.tasks?.[row.task_id || row.id];
+    return text(task?.description) || runtimeAttentionDisplayTitle(row);
+  }
+  if (kind === "expired_agent_session") {
+    return "The agent session has expired and cannot safely receive new dispatch work.";
+  }
+  return runtimeAttentionDisplayTitle(row);
+}
+
+function runtimeAttentionImpact(row) {
+  const terminalRows = runtimeAttentionTerminalRows(row);
+  if (row.reconciliation_required) {
+    return "The correspondence is still pending even though linked work is terminal; reconcile it explicitly in Agent Mail.";
+  }
+  if (runtimeAttentionIsPassiveCorrespondence(row)) {
+    return "No response was requested. This pending correspondence is retained for context rather than presented as an active obligation.";
+  }
+  if (
+    terminalRows.length &&
+    runtimeAttentionGroup(row) === "retained_history"
+  ) {
+    return "Linked work is terminal. This retained record provides context but does not by itself prove an active operational issue.";
+  }
+  if (runtimeAttentionGroup(row) === "failed_attempt") {
+    return row.kind === "failed_action_record"
+      ? "The attempt failed and remains visible until it is retried or explicitly dismissed."
+      : "The attempt failed and remains visible as operational history. Recovery follows the owning workflow for this operation.";
+  }
+  if (runtimeAttentionCategory(row).id === "blocker") {
+    return "Current work cannot proceed normally until this blocker or dependency is resolved.";
+  }
+  if (runtimeAttentionCategory(row).id === "awaiting-response") {
+    return "An agent response or explicit inbox reconciliation is still outstanding.";
+  }
+  return "This record affects current runtime readiness or follow-up.";
+}
+
+function runtimeAttentionRecommendedAction(row) {
+  if (runtimeAttentionIsPassiveCorrespondence(row)) {
+    return "Review it in Agent Mail if more context is useful; no response is required.";
+  }
+  if (row.next_action_hint) {
+    return text(row.next_action_hint);
+  }
+  const category = runtimeAttentionCategory(row).id;
+  if (category === "awaiting-response") {
+    return row.reconciliation_required
+      ? "Open Agent Mail, review the terminal linked work, then reply or mark the message handled."
+      : "Open Agent Mail and respond or mark the correspondence handled.";
+  }
+  if (row.kind === "failed_action_record") {
+    return "Inspect the failed attempt, retry if it remains relevant, or dismiss it when no follow-up is needed.";
+  }
+  if (row.kind === "failed_git_promotion") {
+    return "Inspect the promotion target and candidate, then retry through the release recovery path.";
+  }
+  if (row.kind === "failed_ephemeral_assignment") {
+    return "Inspect the assignment error, then reconcile or clean up the assignment through its owning ephemeral workflow.";
+  }
+  if (category === "blocker") {
+    return "Resolve the underlying blocker, dependency, or release gate before continuing.";
+  }
+  if (row.kind === "expired_agent_session") {
+    return "Renew or replace the agent session before dispatching more work.";
+  }
+  return "Inspect the related work and choose the appropriate explicit follow-up.";
+}
+
+function renderRuntimeAttentionRelatedWork(row) {
+  const related = [];
+  uniqueTextList([row.project_id, ...(row.links?.project_ids || [])]).forEach((id) => {
+    const project = state.projects?.[id];
+    if (project) related.push(["Project", project.name]);
+  });
+  uniqueTextList([row.task_id, ...(row.links?.task_ids || [])]).forEach((id) => {
+    const task = state.tasks?.[id];
+    if (task) related.push(["Task", task.title]);
+  });
+  uniqueTextList([row.deliverable_id, ...(row.links?.deliverable_ids || [])]).forEach((id) => {
+    const deliverable = state.deliverables?.[id];
+    if (deliverable) related.push(["Deliverable", deliverableDisplaySubject(deliverable)]);
+  });
+  uniqueTextList([row.release_package_id, ...(row.links?.release_package_ids || [])]).forEach((id) => {
+    const release = state.release_packages?.[id];
+    if (release) related.push(["Release", releaseDisplayLabel(release)]);
+  });
+  if (!related.length) {
+    return `<p class="empty-state">No named work is linked.</p>`;
+  }
+  return `<dl class="runtime-related-work">${related.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+}
+
+function renderRuntimeAttentionTechnicalDetails(row) {
+  return renderTechnicalDetails([
+    ["Attention ID", row.id],
+    ["Team IDs", uniqueTextList([row.team_id, ...(row.links?.team_ids || [])])],
+    ["Agent IDs", uniqueTextList([
+      row.agent_id,
+      row.owner_agent_id,
+      row.delegate_agent_id,
+      ...(row.links?.agent_ids || []),
+    ])],
+    ["Project IDs", uniqueTextList([row.project_id, ...(row.links?.project_ids || [])])],
+    ["Task IDs", uniqueTextList([row.task_id, ...(row.links?.task_ids || [])])],
+    ["Deliverable IDs", uniqueTextList([row.deliverable_id, ...(row.links?.deliverable_ids || [])])],
+    ["Inbox IDs", uniqueTextList([row.inbox_item_id, ...(row.links?.inbox_item_ids || [])])],
+    ["Action ID", row.action_record_id],
+    ["Assignment IDs", uniqueTextList([row.assignment_id, ...(row.links?.assignment_ids || [])])],
+    ["Promotion IDs", uniqueTextList([row.promotion_id, ...(row.links?.promotion_ids || [])])],
+    ["Release IDs", uniqueTextList([row.release_package_id, ...(row.links?.release_package_ids || [])])],
+    ["Review IDs", uniqueTextList([row.review_request_id, ...(row.links?.review_request_ids || [])])],
+    ["Blocker IDs", uniqueTextList([row.blocker_id, ...(row.links?.blocker_ids || [])])],
+    ["Dispatch IDs", uniqueTextList([row.dispatch_id || row.active_dispatch_id, ...(row.links?.dispatch_ids || [])])],
+    ["Session IDs", uniqueTextList([row.session_id, ...(row.links?.session_ids || [])])],
+    ["Source branch", row.source_branch],
+    ["Target branch", row.target_branch],
+    ["Commit", row.commit_sha || row.candidate_commit_sha],
+  ], { summary: "Identifiers, branches, and hashes" });
+}
+
+function renderRuntimeAttentionActions(row) {
+  const actions = [];
+  let blockerAction = "";
+  if (["pending_inbox_item", "pending_escalation"].includes(text(row.kind))) {
+    actions.push(`<button type="button" class="record-action" data-team-link-view="mail">Open Agent Mail</button>`);
+  }
+  if (row.kind === "failed_action_record" && row.action_record_id) {
+    actions.push(`
+      <button
+        type="button"
+        class="record-action"
+        data-dismiss-action-id="${escapeAttr(row.action_record_id)}"
+      >Dismiss failed attempt</button>
+    `);
+  } else if (row.kind === "team_blocker" && row.blocker_id) {
+    blockerAction = renderTerminalBlockerResolveAction(
+      state.blockers?.[row.blocker_id],
+      "runtime-attention-actions",
+    );
+  }
+  return `${actions.length ? `<div class="record-actions runtime-attention-actions">${actions.join("")}</div>` : ""}${blockerAction}`;
+}
+
+function renderRuntimeAttentionDetailBody(row) {
+  const owner = runtimeAttentionOwner(row);
+  return `
+    <div class="runtime-attention-detail-grid">
+      <section>
+        <h4>Problem</h4>
+        <p>${escapeHtml(runtimeAttentionProblem(row))}</p>
+      </section>
+      <section>
+        <h4>Impact</h4>
+        <p>${escapeHtml(runtimeAttentionImpact(row))}</p>
+        ${renderRuntimeAttentionContextBadges(row)}
+      </section>
+      <section>
+        <h4>Owner</h4>
+        <p>${escapeHtml(owner.label)}</p>
+      </section>
+      <section>
+        <h4>Recommended next action</h4>
+        <p>${escapeHtml(runtimeAttentionRecommendedAction(row))}</p>
+        ${renderRuntimeAttentionActions(row)}
+      </section>
+      <section class="runtime-related-section">
+        <h4>Related work</h4>
+        ${renderRuntimeAttentionRelatedWork(row)}
+      </section>
+      <section class="runtime-technical-section">
+        <h4>Technical details</h4>
+        ${renderRuntimeAttentionTechnicalDetails(row)}
+      </section>
+    </div>
+  `;
+}
+
 function renderRuntimeAttentionRow(row) {
   if (activeTeamView === "operations") {
     return renderCompactRuntimeAttentionRow(row);
   }
-  const refs = runtimeReferenceParts(row);
-  const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
-  const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
-  const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
-  const nextActionLine = row.next_action_hint
-    ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
-    : "";
-  const actions =
-    row.kind === "failed_action_record" && row.action_record_id
-      ? `
-        <div class="record-actions runtime-attention-actions">
-          <button
-            type="button"
-            class="record-action"
-            data-dismiss-action-id="${escapeAttr(row.action_record_id)}"
-          >Dismiss</button>
-        </div>
-      `
-      : row.kind === "team_blocker" && row.blocker_id
-        ? renderTerminalBlockerResolveAction(
-            state.blockers?.[row.blocker_id],
-            "runtime-attention-actions",
-          )
-        : "";
+  const category = runtimeAttentionCategory(row);
+  const owner = runtimeAttentionOwner(row);
+  const where = runtimeAttentionWhere(row);
   return `
-    <li class="record-item runtime-item runtime-attention-item runtime-severity-${escapeHtml(row.severity || "info")}">
+    <li class="record-item runtime-item runtime-attention-item runtime-attention-kind-${escapeAttr(category.id)} runtime-severity-${escapeAttr(row.severity || "info")}">
       <div class="record-line">
-        <strong>${escapeHtml(row.title || row.id)}</strong>
-        <span class="state-pill ${escapeHtml(row.severity || "info")}">${escapeHtml(row.severity || "info")}</span>
+        <span class="runtime-attention-title">
+          <span class="runtime-attention-icon" aria-hidden="true">${escapeHtml(category.icon)}</span>
+          <strong>${escapeHtml(runtimeAttentionDisplayTitle(row))}</strong>
+        </span>
+        <span class="state-pill ${escapeAttr(row.severity || "info")}">${escapeHtml(humanizeToken(row.severity || "info"))} urgency</span>
       </div>
-      <div class="meta-line">${escapeHtml(row.kind || "attention")} - ${escapeHtml(row.id)}</div>
-      ${detail}
-      ${
-        stateLine || errorLine
-          ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
-          : ""
-      }
-      ${nextActionLine}
-      ${refs ? `<div class="meta-line">${refs}</div>` : ""}
-      ${actions}
+      <div class="runtime-attention-glance">
+        <span class="runtime-attention-kind-label">${escapeHtml(category.label)}</span>
+        ${where.length ? `<span>${escapeHtml(where.join(" · "))}</span>` : `<span>General runtime context</span>`}
+        <span>Owner: ${escapeHtml(owner.label)}</span>
+        ${renderRuntimeAttentionTime(row)}
+      </div>
+      ${renderRuntimeAttentionDetailBody(row)}
     </li>
   `;
 }
 
 function renderCompactRuntimeAttentionRow(row) {
-  const refs = runtimeReferenceParts(row);
-  const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
-  const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
-  const nextActionLine = row.next_action_hint
-    ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
-    : "";
-  const action =
-    row.kind === "failed_action_record" && row.action_record_id
-      ? `
-        <div class="record-actions runtime-attention-actions">
-          <button
-            type="button"
-            class="record-action"
-            data-dismiss-action-id="${escapeAttr(row.action_record_id)}"
-          >Dismiss</button>
-        </div>
-      `
-      : row.kind === "team_blocker" && row.blocker_id
-        ? renderTerminalBlockerResolveAction(
-            state.blockers?.[row.blocker_id],
-            "runtime-attention-actions",
-          )
-        : "";
-  const summaryParts = [
-    humanizeToken(row.kind || "attention"),
-    row.agent_id ? `agent ${row.agent_id}` : "",
-    row.project_id ? `project ${row.project_id}` : "",
-  ].filter(Boolean);
+  const category = runtimeAttentionCategory(row);
+  const owner = runtimeAttentionOwner(row);
+  const where = runtimeAttentionWhere(row);
   return `
-    <li class="record-item runtime-item runtime-item-compact runtime-severity-${escapeHtml(row.severity || "info")}">
+    <li class="record-item runtime-item runtime-item-compact runtime-attention-card runtime-attention-kind-${escapeAttr(category.id)} runtime-severity-${escapeAttr(row.severity || "info")}" data-attention-id="${escapeAttr(row.id)}">
       <details>
         <summary class="runtime-summary compact-record-summary">
-          <span class="compact-record-main">
-            <strong>${escapeHtml(row.title || row.id)}</strong>
-            <span>${escapeHtml(summaryParts.join(" - ") || row.id)}</span>
+          <span class="runtime-attention-summary-icon" aria-hidden="true">${escapeHtml(category.icon)}</span>
+          <span class="compact-record-main runtime-attention-summary-main">
+            <strong>${escapeHtml(runtimeAttentionDisplayTitle(row))}</strong>
+            <span>${escapeHtml(where.join(" · ") || "General runtime context")} · Owner: ${escapeHtml(owner.label)}</span>
+            ${renderRuntimeAttentionTime(row)}
           </span>
           <span class="runtime-summary-meta">
-            <span class="state-pill ${escapeHtml(row.severity || "info")}">${escapeHtml(row.severity || "info")}</span>
-            ${row.state ? `<span>${escapeHtml(humanizeToken(row.state))}</span>` : ""}
+            <span class="runtime-attention-kind-label">${escapeHtml(category.label)}</span>
+            <span class="state-pill ${escapeAttr(row.severity || "info")}">${escapeHtml(humanizeToken(row.severity || "info"))} urgency</span>
           </span>
         </summary>
         <div class="compact-record-body">
-          <div class="meta-line">${escapeHtml(row.kind || "attention")} - ${escapeHtml(row.id)}</div>
-          ${row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : ""}
-          ${
-            stateLine || errorLine
-              ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
-              : ""
-          }
-          ${nextActionLine}
-          ${refs ? `<div class="meta-line">${refs}</div>` : ""}
-          ${action}
+          ${renderRuntimeAttentionDetailBody(row)}
         </div>
       </details>
     </li>
@@ -5524,6 +6835,51 @@ function bindRuntimeFilters() {
       renderRuntimeOperations();
     });
   });
+  document.addEventListener("change", (event) => {
+    const field = event.target?.closest?.("[data-runtime-attention-filter]");
+    if (!field) {
+      return;
+    }
+    const facet = text(field.dataset.runtimeAttentionFilter);
+    if (!(facet in runtimeAttentionFilters)) {
+      return;
+    }
+    runtimeAttentionFilters[facet] = text(field.value) || "all";
+    runtimeAttentionGroupPages.clear();
+    renderRuntimeOperations();
+  });
+  document.addEventListener("click", (event) => {
+    const historyButton = event.target?.closest?.("[data-runtime-attention-history-toggle]");
+    if (historyButton) {
+      event.preventDefault();
+      runtimeAttentionShowHistory = !runtimeAttentionShowHistory;
+      runtimeAttentionGroupPages.delete("retained_history");
+      renderRuntimeOperations();
+      return;
+    }
+    const clearButton = event.target?.closest?.("[data-runtime-attention-clear]");
+    if (clearButton) {
+      event.preventDefault();
+      Object.keys(runtimeAttentionFilters).forEach((facet) => {
+        runtimeAttentionFilters[facet] = "all";
+      });
+      runtimeAttentionGroupPages.clear();
+      renderRuntimeOperations();
+      return;
+    }
+    const pageButton = event.target?.closest?.("[data-runtime-attention-page-group]");
+    if (!pageButton) {
+      return;
+    }
+    event.preventDefault();
+    const groupId = text(pageButton.dataset.runtimeAttentionPageGroup);
+    const page = Math.max(1, Number(pageButton.dataset.runtimeAttentionPage || 1));
+    runtimeAttentionGroupPages.set(groupId, page);
+    renderRuntimeOperations();
+    document
+      .querySelector(`[data-attention-group="${cssEscape(groupId)}"]`)
+      ?.scrollIntoView({ block: "start", behavior: "auto" });
+  });
 }
 
 function renderRuntimeOperations() {
@@ -5537,13 +6893,16 @@ function renderRuntimeOperations() {
     attention: [],
   };
   if (!runtimeFilterTouched || !runtimeFilterChoices.some(([value]) => value === runtimeFilter)) {
-    runtimeFilter = runtime.attention.length ? "needs_attention" : "all";
+    runtimeFilter = runtime.attention.some((row) => runtimeAttentionGroup(row) !== "retained_history")
+      ? "needs_attention"
+      : "all";
   }
 
   const agents = runtimeAgentsForFilter(runtime.agents || []);
   const dueLeasedAgents = dueLeasedAgentsForFilter(runtime.agents || []);
   const visibleRuntimeAttention = (runtime.attention || []).filter(isVisibleRuntimeRow);
-  const attention = runtimeAttentionForFilter(visibleRuntimeAttention, runtimeFilter);
+  const scopedAttention = runtimeAttentionForFilter(visibleRuntimeAttention, runtimeFilter);
+  const attention = scopedAttention.filter(runtimeAttentionMatchesFacets);
   const allAttention = [...(runtime.attention || [])].sort(runtimeSortRows);
   const attentionCount = allAttention.length;
   const visibleAttentionCount = attention.length;
@@ -5580,14 +6939,8 @@ function renderRuntimeOperations() {
   });
 
   if (runtimeFilter === "all" || runtimeFilter === "needs_attention") {
-    sections.push(
-      renderRuntimeSection({
-        title: "Blockers and wake-ups",
-        count: `${visibleAttentionCount} visible / ${attentionCount} total`,
-        emptyMessage: "No current blockers.",
-        body: renderRuntimeAttentionRows(attention, "No current blockers."),
-      }),
-    );
+    sections.push(renderRuntimeAttentionControls(visibleRuntimeAttention));
+    sections.push(renderRuntimeAttentionGroupedSections(attention));
   } else if (runtimeFilter === "blocked_waiting_work") {
     sections.push(
       renderRuntimeSection({
@@ -6002,7 +7355,7 @@ function orgGovernanceNodeData(group, visibleMemberTeamCount) {
     memberTeamCount: visibleMemberTeamCount,
     pendingAgendaCount: pendingAgenda.length,
     costAttention: Boolean(capReached),
-    costHtml: cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : "",
+    costHtml: cost ? renderGovernanceCostCounter(cost) : "",
   };
 }
 
@@ -6577,7 +7930,8 @@ function renderTeamInlineProjectForm(teamId) {
       </details>
       <details class="team-inline-create-advanced">
         <summary>Release gates</summary>
-        <label>Release policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
+        <label>Automated and agent-review policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
+        ${renderHumanReviewPolicyEditor()}
         <p class="field-help">Git releases fail closed until this policy defines disposable verification commands and/or release reviewers.</p>
       </details>
       ${renderTeamInlineCreateActions(teamId, "project", "Create project")}
@@ -8486,8 +9840,27 @@ function renderRoles() {
 
 function pendingInboxForAgent(agentId) {
   return values(state.inbox)
-    .filter((item) => item.recipient_agent_id === agentId && item.state !== "handled")
+    .filter(
+      (item) =>
+        item.recipient_agent_id === agentId &&
+        item.state !== "handled" &&
+        pendingInboxItemIsCurrent(item),
+    )
     .sort(byId);
+}
+
+function pendingInboxItemIsCurrent(item) {
+  const runtimeRow = (state.runtime_operations?.attention || []).find(
+    (row) => text(row.inbox_item_id) === text(item.id),
+  );
+  if (runtimeRow) {
+    return runtimeAttentionGroup(runtimeRow) === "active_obligation";
+  }
+  const task = item.task_id ? state.tasks?.[item.task_id] : null;
+  if (task && terminalTaskStates.has(text(task.state))) {
+    return false;
+  }
+  return item.response_requested !== false;
 }
 
 function agentTaskStats(agentId) {
@@ -8693,14 +10066,40 @@ function renderAgentStandDownControls(agentId, record) {
   }
   const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
   const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
+  const unavailableReason = standDownRevokeUnavailableReason(normalizedAgentId, standDowns);
   return `
     <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
     ${
       operatorRoot
-        ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke</button>`
-        : ""
+        ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke stand-down</button>`
+        : `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}" disabled aria-disabled="true" title="${escapeAttr(unavailableReason)}">Revoke stand-down</button>`
     }
   `;
+}
+
+function standDownRevokeUnavailableReason(agentId, standDowns) {
+  const primary = standDowns[standDowns.length - 1];
+  if (!primary) {
+    return "This stand-down cannot be revoked here because its source details are unavailable.";
+  }
+  const rootAgentId = text(primary.root_agent_id || primary.agent_id);
+  const rootAgent = state.agents?.[rootAgentId];
+  const rootLabel = rootAgent ? agentLabel(rootAgent) : rootAgentId || "another agent";
+  const inherited = Boolean(primary.inherited) || (rootAgentId && rootAgentId !== text(agentId));
+  if (text(primary.source) === "superior") {
+    const setterAgentId = text(primary.set_by);
+    const setterAgent = state.agents?.[setterAgentId];
+    const setterLabel = setterAgent
+      ? agentLabel(setterAgent)
+      : setterAgentId || "the superior who set it";
+    return inherited
+      ? `This stand-down is inherited from ${rootLabel}. Only ${setterLabel} can revoke it.`
+      : `Only ${setterLabel} can revoke this superior-issued stand-down.`;
+  }
+  if (inherited) {
+    return `This stand-down is inherited from ${rootLabel}. Revoke the stand-down on that agent.`;
+  }
+  return "This stand-down cannot be revoked here. Revoke it at its source.";
 }
 
 function agentStandDownSummary(record) {
@@ -9115,7 +10514,10 @@ function isTaskWaitingOrBlocked(task) {
 
 function agentRuntimeAttentionRows(agentId) {
   return (state.runtime_operations?.attention || []).filter((row) => {
-    return text(row.agent_id) === text(agentId);
+    return (
+      text(row.agent_id) === text(agentId) &&
+      runtimeAttentionGroup(row) === "active_obligation"
+    );
   });
 }
 
@@ -9502,6 +10904,17 @@ function renderProjectFocus() {
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
   }
+  const projectTargets = Array.from(
+    document.querySelectorAll(
+      "[data-projects-focus-list], [data-projects-focus-detail]",
+    ),
+  );
+  if (!projectTargets.some(targetIsActive)) {
+    projectTargets.forEach((target) => {
+      target.innerHTML = "";
+    });
+    return;
+  }
   syncProjectCreatePanel();
   const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter(isVisibleProject);
@@ -9539,12 +10952,12 @@ function renderProjectFocus() {
     decorateFieldTooltips(target);
   });
   syncProjectCreatePanel();
+  applyLockedMutationControls();
 }
 
 function renderProjectFocusListItem(project) {
   const active = project.id === selectedProjectFocusId;
   const team = state.teams[project.team_id];
-  const reviewProfiles = projectSpecificReviewProfiles(project);
   return `
     <button
       type="button"
@@ -9553,14 +10966,11 @@ function renderProjectFocusListItem(project) {
       data-project-focus-id="${escapeAttr(project.id)}"
       aria-selected="${active ? "true" : "false"}"
     >
-      <span class="projects-focus-row-main">
+      <span class="projects-focus-row-primary">
         <strong>${escapeHtml(project.name)}</strong>
-        <span>${escapeHtml(team ? `${team.name} (${team.id})` : project.team_id)}</span>
-      </span>
-      <span class="projects-focus-row-meta">
         <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
-        <span>${reviewProfiles.length} profiles</span>
       </span>
+      ${team ? `<span class="projects-focus-row-team">${escapeHtml(team.name)}</span>` : ""}
     </button>
   `;
 }
@@ -9580,6 +10990,7 @@ function renderProjectFocusDetail(project) {
     .sort(compareProjectReleasesLatest);
   const projectProfiles = projectSpecificReviewProfiles(project);
   const teamProfiles = teamWideReviewProfilesForProject(project);
+  const outcomeKinds = outcomeKindDefinitionsForProject(project);
   const projectAgents = values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => agentProjectIds(agent).includes(project.id))
@@ -9633,6 +11044,16 @@ function renderProjectFocusDetail(project) {
     <section class="project-review-profile-panel">
       <div class="projects-detail-section-header">
         <div>
+          <p class="section-label">Outcome catalog</p>
+          <h3>Defined project outcomes</h3>
+        </div>
+      </div>
+      ${renderProjectOutcomeKinds(outcomeKinds)}
+      ${renderProjectOutcomeKindCreateForm(project)}
+    </section>
+    <section class="project-review-profile-panel">
+      <div class="projects-detail-section-header">
+        <div>
           <p class="section-label">Review profile</p>
           <h3>Project review profiles</h3>
         </div>
@@ -9643,6 +11064,103 @@ function renderProjectFocusDetail(project) {
   `;
 }
 
+function effectiveOutcomeKindsForProject(project) {
+  const byKind = new Map();
+  values(state.outcome_kind_definitions)
+    .filter((definition) => definition.team_id === project.team_id && !definition.project_id)
+    .sort(byId)
+    .forEach((definition) => {
+      if (!definition.archived) byKind.set(definition.kind, { ...definition, inherited: true });
+    });
+  values(state.outcome_kind_definitions)
+    .filter((definition) => definition.project_id === project.id)
+    .sort(byId)
+    .forEach((definition) => {
+      if (definition.archived) byKind.delete(definition.kind);
+      else byKind.set(definition.kind, { ...definition, inherited: false });
+    });
+  return Array.from(byKind.values()).sort((left, right) =>
+    text(left.kind).localeCompare(text(right.kind)) || byId(left, right),
+  );
+}
+
+function outcomeKindDefinitionsForProject(project) {
+  const effectiveIds = new Set(
+    effectiveOutcomeKindsForProject(project).map((definition) => definition.id),
+  );
+  return values(state.outcome_kind_definitions)
+    .filter((definition) =>
+      definition.team_id === project.team_id
+      && (!definition.project_id || definition.project_id === project.id)
+    )
+    .map((definition) => ({
+      ...definition,
+      inherited: !definition.project_id,
+      effective: effectiveIds.has(definition.id),
+    }))
+    .sort((left, right) =>
+      text(left.kind).localeCompare(text(right.kind))
+      || Number(left.inherited) - Number(right.inherited)
+      || byId(left, right),
+    );
+}
+
+function renderProjectOutcomeKinds(definitions) {
+  if (!definitions.length) {
+    return `<p class="empty-state">No outcome kinds are defined for this project.</p>`;
+  }
+  return `
+    <ul class="review-list compact-record-list">
+      ${definitions.map((definition) => `
+        <li class="record-item compact-record-card">
+          <details>
+            <summary class="compact-record-summary">
+              <span class="compact-record-main">
+                <strong>${escapeHtml(definition.name)}</strong>
+                <span>
+                  ${escapeHtml(definition.kind)}
+                  - ${definition.inherited ? "team-wide" : "project"}
+                  - ${definition.archived ? "archived" : definition.effective ? "effective" : "overridden"}
+                </span>
+              </span>
+            </summary>
+            <div class="compact-record-body">
+              <div class="record-actions">${editButton("outcome-kind", definition.id)}</div>
+              ${definition.description ? `<div class="meta-line">${escapeHtml(definition.description)}</div>` : ""}
+              ${definition.reference_requirements ? `<div class="meta-line"><strong>References:</strong> ${escapeHtml(definition.reference_requirements)}</div>` : ""}
+              ${definition.evidence_requirements ? `<div class="meta-line"><strong>Evidence:</strong> ${escapeHtml(definition.evidence_requirements)}</div>` : ""}
+            </div>
+          </details>
+        </li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+function renderProjectOutcomeKindCreateForm(project) {
+  return `
+    <form
+      class="project-review-profile-form"
+      data-form-id="create-outcome-kind-form"
+      data-endpoint="/outcome-kinds"
+      data-method="POST"
+      data-delegated-create-form
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(project.team_id)}" />
+      <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
+      <div class="project-review-profile-fields">
+        <label>Kind <input name="kind" required placeholder="durable_result_kind" /></label>
+        <label>Name <input name="name" required /></label>
+        <label class="checkbox-label"><input type="checkbox" name="team_wide" /><span>Team-wide definition</span></label>
+        <label>Description <textarea name="description" rows="2" required></textarea></label>
+        <label>Reference requirements <textarea name="reference_requirements" rows="2" required></textarea></label>
+        <label>Evidence requirements <textarea name="evidence_requirements" rows="2"></textarea></label>
+      </div>
+      <button type="submit">Add outcome kind</button>
+    </form>
+  `;
+}
+
 function syncProjectCreatePanel({ reset = false } = {}) {
   const form = document.querySelector("[data-project-create-form]");
   const button = document.querySelector("[data-project-create-toggle]");
@@ -9650,10 +11168,14 @@ function syncProjectCreatePanel({ reset = false } = {}) {
     form.hidden = !projectCreateFormOpen;
     if (reset) {
       form.reset();
+      restoreHumanReviewChecklistDraft(form, []);
     }
     if (projectCreateFormOpen) {
       fillSelectsIn(form);
       decorateFieldTooltips(form);
+      syncHumanReviewChecklistEditor(
+        form.querySelector("[data-human-review-checklist-editor]"),
+      );
     }
   }
   if (button) {
@@ -9864,8 +11386,112 @@ function renderCases() {
   const grouped = groupCasesByTeam(visibleCases);
   renderIntoActiveTargets(
     "[data-cases-view]",
-    grouped.map(renderCaseTeamGroup).join(""),
+    `
+      ${renderCaseFilters(visibleCases)}
+      <div class="case-team-groups">
+        ${grouped.map(renderCaseTeamGroup).join("")}
+      </div>
+    `,
   );
+}
+
+function bindCaseFilters() {
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("[data-case-search-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    caseQuery = text(new FormData(form).get("query"));
+    caseTeamPages.clear();
+    renderCases();
+  });
+  document.addEventListener("change", (event) => {
+    const statusFilter = event.target?.closest?.("[data-case-status-filter]");
+    if (!statusFilter) {
+      return;
+    }
+    caseStatusFilter = text(statusFilter.value) || "active";
+    caseShowHistory =
+      caseStatusFilter === "all" ||
+      terminalCaseStatuses.has(caseStatusFilter);
+    caseTeamPages.clear();
+    renderCases();
+  });
+  document.addEventListener("click", (event) => {
+    const historyButton = event.target?.closest?.("[data-case-history-toggle]");
+    if (historyButton) {
+      event.preventDefault();
+      caseShowHistory = !caseShowHistory;
+      caseStatusFilter = caseShowHistory ? "all" : "active";
+      caseTeamPages.clear();
+      renderCases();
+      return;
+    }
+    const pageButton = event.target?.closest?.("[data-case-page-team]");
+    if (pageButton) {
+      event.preventDefault();
+      const teamId = text(pageButton.dataset.casePageTeam);
+      const page = Math.max(1, Number(pageButton.dataset.casePage || 1));
+      caseTeamPages.set(teamId, page);
+      renderCases();
+      document
+        .querySelector(`[data-case-team-id="${cssEscape(teamId)}"]`)
+        ?.scrollIntoView({ block: "start", behavior: "auto" });
+      return;
+    }
+    const clearButton = event.target?.closest?.("[data-case-filters-clear]");
+    if (!clearButton) {
+      return;
+    }
+    event.preventDefault();
+    caseQuery = "";
+    caseStatusFilter = caseShowHistory ? "all" : "active";
+    caseTeamPages.clear();
+    renderCases();
+  });
+}
+
+function renderCaseFilters(cases) {
+  const activeCount = cases.filter((item) => activeCaseStatuses.has(text(item.status) || "open")).length;
+  const resolvedCount = cases.filter((item) => text(item.status) === "resolved").length;
+  const closedCount = cases.filter((item) => text(item.status) === "closed").length;
+  const historyCount = resolvedCount + closedCount;
+  return `
+    <section class="case-history-toolbar" aria-label="Case filters">
+      <div class="case-history-summary">
+        <strong>${activeCount} active</strong>
+        <span>${resolvedCount} resolved</span>
+        <span>${closedCount} closed</span>
+      </div>
+      <form class="case-history-search" data-case-search-form>
+        <label>
+          <span>Search cases</span>
+          <input name="query" type="search" value="${escapeAttr(caseQuery)}" placeholder="Title, description, source, tag, or ID" />
+        </label>
+        <button type="submit" class="record-action">Search</button>
+      </form>
+      <label class="case-history-status">
+        <span>Status</span>
+        <select data-case-status-filter>
+          ${[
+            ["active", "Active cases"],
+            ["all", "All statuses"],
+            ...caseStatuses.map((status) => [status, humanizeToken(status)]),
+          ].map(([value, label]) => `<option value="${escapeAttr(value)}"${caseStatusFilter === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="record-actions">
+        <button
+          type="button"
+          class="record-action"
+          data-case-history-toggle
+          aria-pressed="${caseShowHistory ? "true" : "false"}"
+        >${caseShowHistory ? "Hide case history" : `Show case history (${historyCount})`}</button>
+        ${caseQuery || !["active", "all"].includes(caseStatusFilter) ? `<button type="button" class="record-action secondary" data-case-filters-clear>Clear filters</button>` : ""}
+      </div>
+    </section>
+  `;
 }
 
 function groupCasesByTeam(items) {
@@ -9887,19 +11513,94 @@ function groupCasesByTeam(items) {
 }
 
 function renderCaseTeamGroup(group) {
-  const openCount = group.cases.filter((item) => text(item.status) !== "closed").length;
+  const activeCount = group.cases.filter((item) => activeCaseStatuses.has(text(item.status) || "open")).length;
+  const resolvedCount = group.cases.filter((item) => text(item.status) === "resolved").length;
+  const closedCount = group.cases.filter((item) => text(item.status) === "closed").length;
+  const matchingCases = group.cases.filter(caseMatchesCurrentFilters);
+  const pageCount = Math.max(1, Math.ceil(matchingCases.length / casePageSize));
+  const requestedPage = caseTeamPages.get(group.teamId) || 1;
+  const page = Math.min(requestedPage, pageCount);
+  caseTeamPages.set(group.teamId, page);
+  const offset = (page - 1) * casePageSize;
+  const pageCases = matchingCases.slice(offset, offset + casePageSize);
+  const hiddenHistoryCount = resolvedCount + closedCount;
   return `
-    <article class="project-block">
+    <article class="project-block case-team-group" data-case-team-id="${escapeAttr(group.teamId)}">
       <div class="project-header">
         <div>
           <strong>${escapeHtml(group.team?.name || group.teamId || "Unknown team")}</strong>
-          <div class="meta-line">${escapeHtml(group.teamId || "team missing")} - ${openCount} open case${openCount === 1 ? "" : "s"}</div>
+          <div class="case-team-counts">
+            <span><strong>${activeCount}</strong> active</span>
+            <span>${resolvedCount} resolved</span>
+            <span>${closedCount} closed</span>
+          </div>
         </div>
       </div>
-      <ul class="task-list">
-        ${group.cases.map(renderCaseItem).join("")}
-      </ul>
+      ${
+        pageCases.length
+          ? `
+            <ul class="task-list" data-case-page-list>
+              ${pageCases.map(renderCaseItem).join("")}
+            </ul>
+            ${renderCasePagination(group.teamId, matchingCases.length, page, pageCount)}
+          `
+          : `<p class="empty-state">${caseShowHistory || caseQuery || caseStatusFilter !== "active" ? "No cases match these filters." : hiddenHistoryCount ? `${hiddenHistoryCount} resolved or closed case${hiddenHistoryCount === 1 ? " is" : "s are"} retained in case history.` : "No active cases."}</p>`
+      }
     </article>
+  `;
+}
+
+function caseMatchesCurrentFilters(item) {
+  const status = text(item.status) || "open";
+  if (!caseShowHistory && terminalCaseStatuses.has(status)) {
+    return false;
+  }
+  if (caseStatusFilter === "active" && !activeCaseStatuses.has(status)) {
+    return false;
+  }
+  if (caseStatusFilter !== "active" && caseStatusFilter !== "all" && status !== caseStatusFilter) {
+    return false;
+  }
+  if (!caseQuery) {
+    return true;
+  }
+  const query = caseQuery.toLowerCase();
+  const project = item.project_id ? state.projects[item.project_id] : null;
+  const owner = item.owner_agent_id ? state.agents[item.owner_agent_id] : null;
+  const taskLabels = uniqueTextList(item.task_ids).flatMap((taskId) => {
+    const task = state.tasks[taskId];
+    return [taskId, task?.title];
+  });
+  return [
+    item.id,
+    item.title,
+    item.description,
+    item.source,
+    item.source_ref,
+    item.status,
+    item.priority,
+    project?.name,
+    owner ? agentLabel(owner) : item.owner_agent_id,
+    ...uniqueTextList(item.tags),
+    ...taskLabels,
+  ].some((value) => text(value).toLowerCase().includes(query));
+}
+
+function renderCasePagination(teamId, total, page, pageCount) {
+  if (pageCount <= 1) {
+    return "";
+  }
+  const first = (page - 1) * casePageSize + 1;
+  const last = Math.min(total, page * casePageSize);
+  return `
+    <nav class="case-history-pagination" aria-label="Case pages">
+      <span>Showing ${first}–${last} of ${total}</span>
+      <div class="record-actions">
+        <button type="button" class="record-action secondary" data-case-page-team="${escapeAttr(teamId)}" data-case-page="${page - 1}"${page <= 1 ? " disabled" : ""}>Previous</button>
+        <span>Page ${page} of ${pageCount}</span>
+        <button type="button" class="record-action secondary" data-case-page-team="${escapeAttr(teamId)}" data-case-page="${page + 1}"${page >= pageCount ? " disabled" : ""}>Next</button>
+      </div>
+    </nav>
   `;
 }
 
@@ -9914,7 +11615,7 @@ function renderCaseItem(item) {
   ].filter(Boolean);
   const source = [item.source, item.source_ref].filter(Boolean).join(" ");
   return `
-    <li class="task-item">
+    <li class="task-item" data-case-id="${escapeAttr(item.id)}">
       <div class="task-line">
         <strong>${escapeHtml(item.title)}</strong>
         <div class="record-actions">
@@ -10033,6 +11734,7 @@ function renderProjectReviewProfileCreateForm(project) {
         <label>Name <input name="name" required /></label>
         <label>Description <textarea name="description" rows="2"></textarea></label>
         <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="project-review-roles"></select></label>
+        <label>Required outcome kinds <select name="required_outcome_kinds" multiple size="4" data-options="project-outcome-kinds"></select></label>
       </div>
       ${renderReviewProfileCriteriaEditor()}
       <button type="submit">Create profile</button>
@@ -10079,6 +11781,7 @@ function renderTaskBoard() {
   const selectedTeam = visibleTeams.find((team) => text(team.id) === text(selectedTaskBoardTeamId)) || null;
   if (selectedTaskBoardTeamId && !selectedTeam) {
     selectedTaskBoardTeamId = "";
+    resetTaskBoardProjectState();
   }
   const visibleProjectsForTeam = selectedTaskBoardTeamId
     ? values(state.projects)
@@ -10089,6 +11792,7 @@ function renderTaskBoard() {
     visibleProjectsForTeam.find((project) => text(project.id) === text(selectedTaskBoardProjectId)) || null;
   if (selectedTaskBoardProjectId && !selectedProject) {
     selectedTaskBoardProjectId = "";
+    resetTaskBoardProjectState();
   }
   syncTaskBoardSelectors(visibleTeams, visibleProjectsForTeam);
 
@@ -10121,15 +11825,25 @@ function renderTaskBoard() {
   const projectTasks = values(state.tasks)
     .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
     .filter((task) => taskBoardLaneForTask(task) !== null);
-  const lanes = taskBoardLanes.map((lane) => {
-    const tasks = projectTasks
-      .filter((task) => taskBoardLaneForTask(task) === lane.id)
-      .sort(compareTaskBoardTasks);
-    return { ...lane, tasks };
-  });
+  const hierarchy = buildTaskBoardHierarchyIndex(projectTasks);
+  if (taskBoardRootTaskId && !hierarchy.roots.some((task) => text(task.id) === taskBoardRootTaskId)) {
+    taskBoardRootTaskId = "";
+  }
+  if (selectedTaskBoardTaskId && !hierarchy.byId.has(selectedTaskBoardTaskId)) {
+    selectedTaskBoardTaskId = "";
+  }
+  const matchingTasks = projectTasks
+    .filter((task) => taskMatchesTaskBoardFilters(task, hierarchy))
+    .sort(compareTaskBoardTasks);
+  const focus = taskBoardFocusContext(hierarchy);
+  const activeCount = projectTasks.filter((task) => !terminalTaskStates.has(text(task.state))).length;
+  const terminalCount = projectTasks.length - activeCount;
+  const blockedCount = projectTasks.filter(isTaskBoardBlocked).length;
   const boardMeta = [
     `${projectTasks.length} task${projectTasks.length === 1 ? "" : "s"}`,
-    `${lanes.reduce((count, lane) => count + lane.tasks.filter(isTaskBoardBlocked).length, 0)} blocked`,
+    `${activeCount} active`,
+    `${terminalCount} completed`,
+    `${blockedCount} blocked`,
   ];
   renderIntoActiveTargets(
     "[data-task-board-view]",
@@ -10138,11 +11852,712 @@ function renderTaskBoard() {
         <strong>${escapeHtml(selectedProject.name || selectedProject.id)}</strong>
         <span>${escapeHtml(selectedTeam.name || selectedTeam.id)} - ${escapeHtml(boardMeta.join(" - "))}</span>
       </div>
-      <div class="task-board-lanes" aria-label="Task board lanes">
-        ${lanes.map(renderTaskBoardLane).join("")}
-      </div>
+      ${renderTaskBoardControls(projectTasks, hierarchy, terminalCount)}
+      ${renderTaskBoardFocusSummary(focus)}
+      ${
+        taskBoardViewMode === "hierarchy"
+          ? renderTaskBoardHierarchy(projectTasks, matchingTasks, hierarchy, focus)
+          : renderTaskBoardLanes(matchingTasks, focus)
+      }
     `,
   );
+}
+
+function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
+  const assignees = [
+    ...new Set(projectTasks.map((task) => text(task.owner_agent_id)).filter(Boolean)),
+  ]
+    .map((agentId) => {
+      const agent = state.agents[agentId] || null;
+      return [agentId, agent ? agentLabel(agent) : "Unavailable assignee"];
+    })
+    .sort((left, right) => left[1].localeCompare(right[1]) || left[0].localeCompare(right[0]));
+  const rootOptions = hierarchy.roots.map((task) => [
+    task.id,
+    `${taskBoardTaskReferenceLabel(task.id)} - ${taskStateLabel(task)}`,
+  ]);
+  const completionFiltersEnabled = taskBoardViewMode === "hierarchy" || taskBoardShowCompleted;
+  return `
+    <div class="task-board-toolbar">
+      <div class="task-board-mode-switch" role="tablist" aria-label="Task board view">
+        ${["board", "hierarchy"].map((mode) => `
+          <button
+            type="button"
+            class="runtime-filter-button${taskBoardViewMode === mode ? " active" : ""}"
+            role="tab"
+            aria-selected="${taskBoardViewMode === mode ? "true" : "false"}"
+            data-task-board-mode="${mode}"
+          >${mode === "board" ? "Board" : "Hierarchy"}</button>
+        `).join("")}
+      </div>
+      ${
+        taskBoardViewMode === "board"
+          ? `
+            <label class="task-board-completed-toggle">
+              <input type="checkbox" data-task-board-show-completed${taskBoardShowCompleted ? " checked" : ""} />
+              Show completed (${terminalCount})
+            </label>
+          `
+          : `<span class="task-board-history-note">${terminalCount} completed task${terminalCount === 1 ? "" : "s"} included in hierarchy</span>`
+      }
+    </div>
+    <form class="task-board-filters" data-task-board-search-form role="search">
+      <label class="task-board-search-filter">
+        Search
+        <span class="task-board-search-controls">
+          <input
+            type="search"
+            name="task_board_query"
+            value="${escapeAttr(taskBoardQuery)}"
+            placeholder="Title, description, assignee, task ID…"
+          />
+          <button type="submit">Search</button>
+        </span>
+      </label>
+      <label>
+        Assignee
+        <select data-task-board-filter="assignee">
+          ${renderSelectOptions(assignees, {
+            selectedValue: taskBoardAssigneeId,
+            placeholder: "Any assignee",
+          })}
+        </select>
+      </label>
+      <label>
+        State
+        <select data-task-board-filter="state">
+          ${renderSelectOptions(
+            taskStates.map((taskState) => [taskState, humanizeToken(taskState)]),
+            { selectedValue: taskBoardStateFilter, placeholder: "Any state" },
+          )}
+        </select>
+      </label>
+      <label>
+        Readiness
+        <select data-task-board-filter="readiness">
+          ${renderSelectOptions(
+            taskBoardReadinessValues.map((readiness) => [readiness, humanizeToken(readiness)]),
+            { selectedValue: taskBoardReadinessFilter, placeholder: "Any readiness" },
+          )}
+        </select>
+      </label>
+      <label>
+        Hierarchy root
+        <select data-task-board-filter="root">
+          ${renderSelectOptions(rootOptions, {
+            selectedValue: taskBoardRootTaskId,
+            placeholder: "Any hierarchy",
+          })}
+        </select>
+      </label>
+      <label>
+        Completed from
+        <input
+          type="date"
+          value="${escapeAttr(taskBoardCompletedSince)}"
+          data-task-board-filter="completed-since"
+          ${completionFiltersEnabled ? "" : "disabled"}
+        />
+      </label>
+      <label>
+        Completed through
+        <input
+          type="date"
+          value="${escapeAttr(taskBoardCompletedThrough)}"
+          data-task-board-filter="completed-through"
+          ${completionFiltersEnabled ? "" : "disabled"}
+        />
+      </label>
+      <button type="button" class="secondary task-board-clear-filters" data-task-board-clear-filters>
+        Clear filters
+      </button>
+    </form>
+  `;
+}
+
+function taskMatchesTaskBoardFilters(task, hierarchy) {
+  if (taskBoardAssigneeId && text(task.owner_agent_id) !== taskBoardAssigneeId) {
+    return false;
+  }
+  if (taskBoardStateFilter && text(task.state) !== taskBoardStateFilter) {
+    return false;
+  }
+  if (taskBoardReadinessFilter && taskBoardReadiness(task) !== taskBoardReadinessFilter) {
+    return false;
+  }
+  if (taskBoardRootTaskId && hierarchy.rootByTaskId.get(text(task.id)) !== taskBoardRootTaskId) {
+    return false;
+  }
+  if (taskBoardCompletedSince || taskBoardCompletedThrough) {
+    if (!terminalTaskStates.has(text(task.state))) {
+      return false;
+    }
+    const completedAt = taskBoardCompletionTime(task);
+    const from = taskBoardLocalDateBoundary(taskBoardCompletedSince, false);
+    const through = taskBoardLocalDateBoundary(taskBoardCompletedThrough, true);
+    if (!Number.isFinite(completedAt)) {
+      return false;
+    }
+    if (Number.isFinite(from) && completedAt < from) {
+      return false;
+    }
+    if (Number.isFinite(through) && completedAt > through) {
+      return false;
+    }
+  }
+  if (!taskBoardQuery) {
+    return true;
+  }
+  const owner = state.agents[text(task.owner_agent_id)] || null;
+  const parent = hierarchy.byId.get(hierarchy.parentById.get(text(task.id))) || null;
+  const root = hierarchy.byId.get(hierarchy.rootByTaskId.get(text(task.id))) || null;
+  const linkedCase = state.cases[text(task.case_id)] || null;
+  const relatedTaskTitles = [
+    ...(task.blocked_by_task_ids || []),
+    ...(task.dependency_task_ids || []),
+  ].map(taskBoardTaskReferenceLabel);
+  const haystack = [
+    task.id,
+    task.title,
+    task.description,
+    task.owner_agent_id,
+    owner ? agentLabel(owner) : "",
+    parent?.title,
+    root?.title,
+    linkedCase?.title,
+    ...relatedTaskTitles,
+  ]
+    .map(text)
+    .join("\n")
+    .toLocaleLowerCase();
+  return haystack.includes(taskBoardQuery.toLocaleLowerCase());
+}
+
+function taskBoardReadiness(task) {
+  return text(task?.readiness || task?.assessment?.readiness) || "unknown";
+}
+
+function taskBoardCompletionTime(task) {
+  const timestamp =
+    (text(task?.state) === "cancelled" ? task?.cancellation?.cancelled_at : null) ||
+    task?.state_entered_at ||
+    task?.updated_at ||
+    task?.created_at;
+  if (!timestamp) {
+    return Number.NaN;
+  }
+  const parsed = Date.parse(normalizeTimelineTimestampForSort(timestamp));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function taskBoardLocalDateBoundary(value, endOfDay) {
+  const parts = text(value).split("-").map(Number);
+  if (
+    parts.length !== 3 ||
+    !Number.isInteger(parts[0]) ||
+    !Number.isInteger(parts[1]) ||
+    !Number.isInteger(parts[2])
+  ) {
+    return Number.NaN;
+  }
+  return new Date(
+    parts[0],
+    parts[1] - 1,
+    parts[2],
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  ).getTime();
+}
+
+function taskBoardHasFilters() {
+  return Boolean(
+    taskBoardQuery ||
+      taskBoardAssigneeId ||
+      taskBoardStateFilter ||
+      taskBoardReadinessFilter ||
+      taskBoardRootTaskId ||
+      taskBoardCompletedSince ||
+      taskBoardCompletedThrough
+  );
+}
+
+function renderTaskBoardFocusSummary(focus) {
+  if (!focus.task) {
+    return "";
+  }
+  const parts = [
+    `${focus.ancestors.size} ancestor${focus.ancestors.size === 1 ? "" : "s"}`,
+    `${focus.directChildren.size} direct child${focus.directChildren.size === 1 ? "" : "ren"}`,
+    `${focus.descendants.size} descendant${focus.descendants.size === 1 ? "" : "s"}`,
+  ];
+  return `
+    <div class="task-board-focus-summary" role="status">
+      <span><strong>Focused:</strong> ${escapeHtml(taskBoardTaskReferenceLabel(focus.task.id))} - ${escapeHtml(parts.join(" - "))}</span>
+      <button type="button" class="secondary" data-task-board-clear-focus>Clear focus</button>
+    </div>
+  `;
+}
+
+function buildTaskBoardHierarchyIndex(tasks) {
+  const orderedTasks = [...tasks].sort(compareTaskBoardTasks);
+  const byId = new Map(orderedTasks.map((task) => [text(task.id), task]));
+  const parentById = new Map();
+  const warnings = new Map();
+  const addWarning = (taskId, warning) => {
+    const taskWarnings = warnings.get(taskId) || [];
+    if (!taskWarnings.includes(warning)) {
+      taskWarnings.push(warning);
+      warnings.set(taskId, taskWarnings);
+    }
+  };
+  orderedTasks.forEach((task) => {
+    const taskId = text(task.id);
+    const parentId = text(task.parent_task_id);
+    if (!parentId) {
+      parentById.set(taskId, "");
+      return;
+    }
+    if (parentId === taskId) {
+      parentById.set(taskId, "");
+      addWarning(taskId, "Task refers to itself as its parent.");
+      return;
+    }
+    if (!byId.has(parentId)) {
+      parentById.set(taskId, "");
+      addWarning(taskId, "Parent task is unavailable in this project.");
+      return;
+    }
+    parentById.set(taskId, parentId);
+  });
+
+  const resolved = new Set();
+  orderedTasks.forEach((task) => {
+    const startId = text(task.id);
+    if (resolved.has(startId)) {
+      return;
+    }
+    const path = [];
+    const positionById = new Map();
+    let currentId = startId;
+    while (currentId) {
+      if (positionById.has(currentId)) {
+        const cycleIds = path.slice(positionById.get(currentId));
+        cycleIds.forEach((taskId) => addWarning(taskId, "Task hierarchy contains a cycle."));
+        const breakId = [...cycleIds].sort()[0];
+        parentById.set(breakId, "");
+        break;
+      }
+      if (resolved.has(currentId)) {
+        break;
+      }
+      positionById.set(currentId, path.length);
+      path.push(currentId);
+      currentId = parentById.get(currentId) || "";
+    }
+    path.forEach((taskId) => resolved.add(taskId));
+  });
+
+  const childrenById = new Map(orderedTasks.map((task) => [text(task.id), []]));
+  orderedTasks.forEach((task) => {
+    const taskId = text(task.id);
+    const parentId = parentById.get(taskId);
+    if (parentId) {
+      childrenById.get(parentId).push(task);
+    }
+  });
+  childrenById.forEach((children) => children.sort(compareTaskBoardTasks));
+  const roots = orderedTasks.filter((task) => !parentById.get(text(task.id)));
+  const rootByTaskId = new Map();
+  const assignRoot = (taskId, rootId) => {
+    if (rootByTaskId.has(taskId)) {
+      return;
+    }
+    rootByTaskId.set(taskId, rootId);
+    (childrenById.get(taskId) || []).forEach((child) => assignRoot(text(child.id), rootId));
+  };
+  roots.forEach((task) => assignRoot(text(task.id), text(task.id)));
+  return { byId, parentById, childrenById, roots, rootByTaskId, warnings };
+}
+
+function taskBoardFocusContext(hierarchy) {
+  const task = hierarchy.byId.get(selectedTaskBoardTaskId) || null;
+  const ancestors = new Set();
+  const directChildren = new Set();
+  const descendants = new Set();
+  if (!task) {
+    return { task: null, ancestors, directChildren, descendants };
+  }
+  let parentId = hierarchy.parentById.get(text(task.id)) || "";
+  while (parentId && !ancestors.has(parentId)) {
+    ancestors.add(parentId);
+    parentId = hierarchy.parentById.get(parentId) || "";
+  }
+  (hierarchy.childrenById.get(text(task.id)) || []).forEach((child) => {
+    directChildren.add(text(child.id));
+  });
+  const visitDescendants = (taskId) => {
+    (hierarchy.childrenById.get(taskId) || []).forEach((child) => {
+      const childId = text(child.id);
+      if (descendants.has(childId)) {
+        return;
+      }
+      descendants.add(childId);
+      visitDescendants(childId);
+    });
+  };
+  visitDescendants(text(task.id));
+  return { task, ancestors, directChildren, descendants };
+}
+
+function taskBoardRelationClasses(taskId, focus) {
+  const normalizedTaskId = text(taskId);
+  const classes = [];
+  if (text(focus.task?.id) === normalizedTaskId) {
+    classes.push("task-board-task-selected");
+  } else if (focus.ancestors.has(normalizedTaskId)) {
+    classes.push("task-board-task-ancestor");
+  } else if (focus.directChildren.has(normalizedTaskId)) {
+    classes.push("task-board-task-direct-child");
+  } else if (focus.descendants.has(normalizedTaskId)) {
+    classes.push("task-board-task-descendant");
+  }
+  return classes.join(" ");
+}
+
+function taskBoardRelationLabel(taskId, focus) {
+  const normalizedTaskId = text(taskId);
+  if (text(focus.task?.id) === normalizedTaskId) {
+    return "Focused";
+  }
+  if (focus.ancestors.has(normalizedTaskId)) {
+    return "Ancestor";
+  }
+  if (focus.directChildren.has(normalizedTaskId)) {
+    return "Direct child";
+  }
+  if (focus.descendants.has(normalizedTaskId)) {
+    return "Descendant";
+  }
+  return "";
+}
+
+function renderTaskBoardLanes(matchingTasks, focus) {
+  const lanes = taskBoardLanes.map((lane) => {
+    const matchingLaneTasks = matchingTasks
+      .filter((task) => taskBoardLaneForTask(task) === lane.id)
+      .sort(compareTaskBoardTasks);
+    const hiddenCompleted = lane.id === "done" && !taskBoardShowCompleted;
+    return {
+      ...lane,
+      matchingTasks: matchingLaneTasks,
+      tasks: hiddenCompleted ? [] : matchingLaneTasks,
+      hiddenCompletedCount: hiddenCompleted ? matchingLaneTasks.length : 0,
+    };
+  });
+  return `
+    <div class="task-board-lanes" aria-label="Task board lanes">
+      ${lanes.map((lane) => renderTaskBoardLane(lane, focus)).join("")}
+    </div>
+  `;
+}
+
+function taskBoardHierarchyDisplayContext(projectTasks, matchingTasks, hierarchy, focus) {
+  const displayIds = taskBoardHasFilters()
+    ? new Set(matchingTasks.map((task) => text(task.id)))
+    : new Set(projectTasks.map((task) => text(task.id)));
+  const forceExpandedIds = new Set();
+  const includeAncestors = (taskId, forceExpanded) => {
+    let parentId = hierarchy.parentById.get(taskId) || "";
+    while (parentId) {
+      displayIds.add(parentId);
+      if (forceExpanded) {
+        forceExpandedIds.add(parentId);
+      }
+      parentId = hierarchy.parentById.get(parentId) || "";
+    }
+  };
+  if (taskBoardHasFilters()) {
+    matchingTasks.forEach((task) => includeAncestors(text(task.id), true));
+  }
+  if (focus.task) {
+    const focusedTaskId = text(focus.task.id);
+    displayIds.add(focusedTaskId);
+    includeAncestors(focusedTaskId, true);
+    focus.directChildren.forEach((taskId) => displayIds.add(taskId));
+  }
+  return { displayIds, forceExpandedIds };
+}
+
+function renderTaskBoardHierarchy(projectTasks, matchingTasks, hierarchy, focus) {
+  if (!taskBoardHierarchyInitialized) {
+    hierarchy.roots
+      .slice(0, taskBoardHierarchyRootLimit)
+      .forEach((task) => expandedTaskBoardTaskIds.add(text(task.id)));
+    taskBoardHierarchyInitialized = true;
+  }
+  const display = taskBoardHierarchyDisplayContext(projectTasks, matchingTasks, hierarchy, focus);
+  const roots = hierarchy.roots.filter((task) => display.displayIds.has(text(task.id)));
+  if (!roots.length) {
+    return `<p class="empty-state">No tasks match the current hierarchy filters.</p>`;
+  }
+  const visibleRoots = roots.slice(0, taskBoardHierarchyRootLimit);
+  return `
+    <section class="task-board-hierarchy" aria-label="Task hierarchy">
+      <div class="task-board-hierarchy-summary">
+        <span>${matchingTasks.length} matching task${matchingTasks.length === 1 ? "" : "s"} across ${roots.length} hierarchy root${roots.length === 1 ? "" : "s"}.</span>
+        <span>Completed history is included.</span>
+      </div>
+      <ol class="task-board-hierarchy-tree">
+        ${visibleRoots
+          .map((task) =>
+            renderTaskBoardHierarchyNode(task, hierarchy, focus, display, new Set()),
+          )
+          .join("")}
+      </ol>
+      ${
+        visibleRoots.length < roots.length
+          ? `<button type="button" class="secondary task-board-more-hierarchy" data-task-board-more-roots>Show ${Math.min(taskBoardHierarchyPageSize, roots.length - visibleRoots.length)} more roots</button>`
+          : ""
+      }
+    </section>
+  `;
+}
+
+function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
+  const taskId = text(task.id);
+  if (path.has(taskId)) {
+    return "";
+  }
+  const nextPath = new Set(path);
+  nextPath.add(taskId);
+  const childTasks = (hierarchy.childrenById.get(taskId) || []).filter((child) =>
+    display.displayIds.has(text(child.id)),
+  );
+  const expanded =
+    childTasks.length > 0 &&
+    (expandedTaskBoardTaskIds.has(taskId) || display.forceExpandedIds.has(taskId));
+  const childLimit = taskBoardHierarchyChildLimits.get(taskId) || taskBoardHierarchyPageSize;
+  const visibleChildren = expanded ? childTasks.slice(0, childLimit) : [];
+  const owner = state.agents[text(task.owner_agent_id)] || null;
+  const assignedTo = owner ? agentLabel(owner) : "Unavailable assignee";
+  const readiness = taskBoardReadiness(task);
+  const assessment = task.assessment || {};
+  const resolution = text(task.resolution_status || assessment.resolution_status) || "unknown";
+  const integrationReady = Boolean(task.integration_ready ?? assessment.integration_ready);
+  const blockerCount = taskBoardBlockerCount(task);
+  const relation = taskBoardRelationLabel(taskId, focus);
+  const relationClasses = taskBoardRelationClasses(taskId, focus);
+  const warnings = hierarchy.warnings.get(taskId) || [];
+  const worktreeContexts = taskGitWorkContexts(task);
+  const unresolvedIds = assessment.unresolved_descendant_ids || [];
+  return `
+    <li class="task-board-hierarchy-branch ${escapeAttr(relationClasses)}" data-task-board-task-id="${escapeAttr(taskId)}">
+      <article class="task-board-hierarchy-node ${escapeAttr(relationClasses)}">
+        <div class="task-board-hierarchy-node-header">
+          ${
+            childTasks.length
+              ? `
+                <button
+                  type="button"
+                  class="task-board-hierarchy-toggle"
+                  aria-expanded="${expanded ? "true" : "false"}"
+                  aria-label="${expanded ? "Collapse" : "Expand"} children of ${escapeAttr(taskBoardTaskReferenceLabel(taskId))}"
+                  data-task-board-toggle-children-id="${escapeAttr(taskId)}"
+                >${expanded ? "−" : "+"}</button>
+              `
+              : `<span class="task-board-hierarchy-toggle-spacer" aria-hidden="true"></span>`
+          }
+          <strong>
+            <button
+              type="button"
+              class="task-board-task-link task-board-task-title"
+              data-task-board-select-task-id="${escapeAttr(taskId)}"
+              data-task-board-primary-task-id="${escapeAttr(taskId)}"
+              ${text(focus.task?.id) === taskId ? 'aria-current="true"' : ""}
+            >${escapeHtml(taskBoardTaskReferenceLabel(taskId))}</button>
+          </strong>
+          <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
+        </div>
+        <div class="task-board-hierarchy-badges">
+          <span class="state-pill ${escapeAttr(taskReadinessPill(readiness))}">Readiness: ${escapeHtml(humanizeToken(readiness))}</span>
+          <span class="state-pill neutral">Assignee: ${escapeHtml(assignedTo)}</span>
+          <span class="state-pill ${escapeAttr(taskResolutionPill(resolution))}">Resolution: ${escapeHtml(humanizeToken(resolution))}</span>
+          <span class="state-pill ${integrationReady ? "accepted" : "neutral"}">Integration: ${integrationReady ? "ready" : "not ready"}</span>
+          ${blockerCount ? `<span class="state-pill blocked">${blockerCount} blocker${blockerCount === 1 ? "" : "s"}</span>` : ""}
+          ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
+        </div>
+        ${warnings.length ? `<div class="task-board-hierarchy-warning">${escapeHtml(warnings.join(" "))}</div>` : ""}
+        ${renderTaskBoardBlockerLine(task)}
+        ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
+      </article>
+      ${
+        visibleChildren.length
+          ? `
+            <ol class="task-board-hierarchy-children">
+              ${visibleChildren
+                .map((child) =>
+                  renderTaskBoardHierarchyNode(child, hierarchy, focus, display, nextPath),
+                )
+                .join("")}
+              ${
+                visibleChildren.length < childTasks.length
+                  ? `
+                    <li class="task-board-hierarchy-more">
+                      <button
+                        type="button"
+                        class="secondary"
+                        data-task-board-more-children-id="${escapeAttr(taskId)}"
+                      >Show ${Math.min(taskBoardHierarchyPageSize, childTasks.length - visibleChildren.length)} more children</button>
+                    </li>
+                  `
+                  : ""
+              }
+            </ol>
+          `
+          : ""
+      }
+    </li>
+  `;
+}
+
+function taskBoardBlockerCount(task) {
+  const blockerKeys = new Set();
+  (task.blocked_by_task_ids || []).forEach((taskId) => blockerKeys.add(`task:${text(taskId)}`));
+  activeBlockersForRecord("task", task.id, task.id).forEach((blocker) =>
+    blockerKeys.add(`blocker:${text(blocker.id)}`),
+  );
+  inheritedTaskBlockers(task).forEach((blocker) =>
+    blockerKeys.add(`blocker:${text(blocker.blocker_id)}`),
+  );
+  if (task.dependency_status === "blocked") {
+    blockerKeys.add("dependency:blocked");
+  }
+  if (text(task.state) === "blocked" && !blockerKeys.size) {
+    blockerKeys.add("state:blocked");
+  }
+  return blockerKeys.size;
+}
+
+function selectedTaskBoardProjectTasks() {
+  return values(state.tasks)
+    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
+    .filter((task) => taskBoardLaneForTask(task) !== null);
+}
+
+function selectTaskBoardTask(taskId, { reveal = false } = {}) {
+  const projectTasks = selectedTaskBoardProjectTasks();
+  let hierarchy = buildTaskBoardHierarchyIndex(projectTasks);
+  const task = hierarchy.byId.get(text(taskId)) || null;
+  if (!task) {
+    return;
+  }
+  if (reveal && !taskMatchesTaskBoardFilters(task, hierarchy)) {
+    resetTaskBoardFilters();
+    hierarchy = buildTaskBoardHierarchyIndex(projectTasks);
+  }
+  selectedTaskBoardTaskId = text(task.id);
+  revealTaskBoardHierarchyPath(task, hierarchy);
+  revealTaskBoardLanePage(task, projectTasks, hierarchy);
+  renderTaskBoard();
+  focusSelectedTaskBoardTask();
+}
+
+function prepareSelectedTaskBoardTaskForDisplay() {
+  if (!selectedTaskBoardTaskId) {
+    return;
+  }
+  const projectTasks = selectedTaskBoardProjectTasks();
+  const hierarchy = buildTaskBoardHierarchyIndex(projectTasks);
+  const task = hierarchy.byId.get(selectedTaskBoardTaskId) || null;
+  if (!task) {
+    selectedTaskBoardTaskId = "";
+    return;
+  }
+  revealTaskBoardHierarchyPath(task, hierarchy);
+  revealTaskBoardLanePage(task, projectTasks, hierarchy);
+}
+
+function revealTaskBoardHierarchyPath(task, hierarchy) {
+  const taskId = text(task.id);
+  expandedTaskBoardTaskIds.add(taskId);
+  const rootId = hierarchy.rootByTaskId.get(taskId);
+  if (rootId) {
+    const rootIndex = hierarchy.roots.findIndex((root) => text(root.id) === rootId);
+    if (rootIndex >= taskBoardHierarchyRootLimit) {
+      taskBoardHierarchyRootLimit =
+        (Math.floor(rootIndex / taskBoardHierarchyPageSize) + 1) *
+        taskBoardHierarchyPageSize;
+    }
+  }
+  let childId = taskId;
+  let parentId = hierarchy.parentById.get(childId) || "";
+  while (parentId) {
+    expandedTaskBoardTaskIds.add(parentId);
+    const siblings = hierarchy.childrenById.get(parentId) || [];
+    const childIndex = siblings.findIndex((child) => text(child.id) === childId);
+    const currentLimit =
+      taskBoardHierarchyChildLimits.get(parentId) || taskBoardHierarchyPageSize;
+    if (childIndex >= currentLimit) {
+      taskBoardHierarchyChildLimits.set(
+        parentId,
+        (Math.floor(childIndex / taskBoardHierarchyPageSize) + 1) *
+          taskBoardHierarchyPageSize,
+      );
+    }
+    childId = parentId;
+    parentId = hierarchy.parentById.get(parentId) || "";
+  }
+}
+
+function revealTaskBoardLanePage(task, projectTasks, hierarchy) {
+  if (terminalTaskStates.has(text(task.state))) {
+    taskBoardShowCompleted = true;
+  }
+  if (!taskMatchesTaskBoardFilters(task, hierarchy)) {
+    return;
+  }
+  const laneId = taskBoardLaneForTask(task);
+  if (!laneId) {
+    return;
+  }
+  const laneTasks = projectTasks
+    .filter((candidate) => taskMatchesTaskBoardFilters(candidate, hierarchy))
+    .filter((candidate) => taskBoardLaneForTask(candidate) === laneId)
+    .sort(compareTaskBoardTasks);
+  const taskIndex = laneTasks.findIndex((candidate) => text(candidate.id) === text(task.id));
+  if (taskIndex >= 0) {
+    taskBoardLanePages.set(laneId, Math.floor(taskIndex / taskBoardLanePageSize) + 1);
+  }
+}
+
+function focusSelectedTaskBoardTask() {
+  if (!selectedTaskBoardTaskId) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    const primary = [...document.querySelectorAll("[data-task-board-primary-task-id]")].find(
+      (element) => text(element.dataset.taskBoardPrimaryTaskId) === selectedTaskBoardTaskId,
+    );
+    const fallback = [...document.querySelectorAll("[data-task-board-select-task-id]")].find(
+      (element) => text(element.dataset.taskBoardSelectTaskId) === selectedTaskBoardTaskId,
+    );
+    const target = primary || fallback;
+    target?.focus({ preventScroll: true });
+    target
+      ?.closest("[data-task-board-task-id]")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+}
+
+function focusTaskBoardControl(value, selector) {
+  window.requestAnimationFrame(() => {
+    const target = [...document.querySelectorAll(selector)].find((element) =>
+      Object.values(element.dataset).some((candidate) => text(candidate) === text(value)),
+    );
+    target?.focus({ preventScroll: true });
+  });
 }
 
 function syncTaskBoardSelectors(teams, projects) {
@@ -10167,40 +12582,234 @@ function syncTaskBoardSelectors(teams, projects) {
   }
 }
 
-function renderTaskBoardLane(lane) {
+function renderTaskBoardLane(lane, focus) {
+  const total = lane.tasks.length;
+  const pageCount = Math.max(1, Math.ceil(total / taskBoardLanePageSize));
+  const requestedPage = taskBoardLanePages.get(lane.id) || 1;
+  const page = Math.min(pageCount, Math.max(1, requestedPage));
+  taskBoardLanePages.set(lane.id, page);
+  const startIndex = (page - 1) * taskBoardLanePageSize;
+  const pageTasks = lane.tasks.slice(startIndex, startIndex + taskBoardLanePageSize);
   return `
-    <section class="task-board-lane task-board-lane-${escapeAttr(lane.id)}" aria-label="${escapeAttr(lane.label)}">
+    <section
+      class="task-board-lane task-board-lane-${escapeAttr(lane.id)}"
+      aria-label="${escapeAttr(lane.label)}"
+      data-task-board-lane-id="${escapeAttr(lane.id)}"
+    >
       <div class="task-board-lane-header">
         <h3>${escapeHtml(lane.label)}</h3>
-        <span>${lane.tasks.length}</span>
+        <span>${lane.matchingTasks.length}</span>
       </div>
       ${
-        lane.tasks.length
-          ? `<ul class="task-board-card-list">${lane.tasks.map(renderTaskBoardCard).join("")}</ul>`
-          : `<p class="empty-state task-board-empty">No tasks.</p>`
+        lane.hiddenCompletedCount
+          ? `
+            <div class="task-board-completed-hidden">
+              <p>${lane.hiddenCompletedCount} completed task${lane.hiddenCompletedCount === 1 ? "" : "s"} hidden.</p>
+              <button type="button" class="secondary" data-task-board-reveal-completed>Show completed</button>
+            </div>
+          `
+          : pageTasks.length
+            ? `
+              <ul class="task-board-card-list">
+                ${pageTasks.map((task) => renderTaskBoardCard(task, focus)).join("")}
+              </ul>
+              ${renderTaskBoardLanePager(lane.id, page, pageCount, startIndex, total)}
+            `
+            : `<p class="empty-state task-board-empty">No tasks.</p>`
       }
     </section>
   `;
 }
 
-function renderTaskBoardCard(task) {
+function renderTaskBoardLanePager(laneId, page, pageCount, startIndex, total) {
+  if (!total) {
+    return "";
+  }
+  const endIndex = Math.min(total, startIndex + taskBoardLanePageSize);
+  return `
+    <nav class="task-board-lane-pagination" aria-label="${escapeAttr(humanizeToken(laneId))} lane pages">
+      <span>Showing ${startIndex + 1}–${endIndex} of ${total}</span>
+      <div>
+        <button
+          type="button"
+          class="secondary"
+          data-task-board-lane-id="${escapeAttr(laneId)}"
+          data-task-board-lane-page="${page - 1}"
+          ${page <= 1 ? "disabled" : ""}
+        >Previous</button>
+        <span>Page ${page} of ${pageCount}</span>
+        <button
+          type="button"
+          class="secondary"
+          data-task-board-lane-id="${escapeAttr(laneId)}"
+          data-task-board-lane-page="${page + 1}"
+          ${page >= pageCount ? "disabled" : ""}
+        >Next</button>
+      </div>
+    </nav>
+  `;
+}
+
+function renderTaskBoardCard(task, focus) {
   const owner = state.agents[task.owner_agent_id] || null;
   const assignedTo = owner ? agentLabel(owner) : text(task.owner_agent_id);
   const blocked = isTaskBoardBlocked(task);
-  const stateLabel = blocked ? "Blocked" : taskStateLabel(task);
+  const stateLabel = taskStateLabel(task);
   const laneEntered = taskBoardLaneEnteredText(task);
+  const depth = taskHierarchyDepth(task);
+  const assessment = task.assessment || {};
+  const unresolvedIds = assessment.unresolved_descendant_ids || [];
+  const worktreeContexts = taskGitWorkContexts(task);
+  const relation = taskBoardRelationLabel(task.id, focus);
+  const relationClasses = taskBoardRelationClasses(task.id, focus);
   return `
-    <li class="task-board-card${blocked ? " task-board-card-blocked" : ""}">
+    <li
+      class="task-board-card${blocked ? " task-board-card-blocked" : ""}${relationClasses ? ` ${escapeAttr(relationClasses)}` : ""}"
+      data-task-board-task-id="${escapeAttr(task.id)}"
+    >
       <div class="task-board-card-title-row">
-        <strong>${escapeHtml(task.title)}</strong>
-        <span class="state-pill ${blocked ? "blocked" : escapeAttr(task.state)}">${escapeHtml(stateLabel)}</span>
+        <strong>
+          <button
+            type="button"
+            class="task-board-task-link task-board-task-title"
+            data-task-board-select-task-id="${escapeAttr(task.id)}"
+            data-task-board-primary-task-id="${escapeAttr(task.id)}"
+            ${text(focus.task?.id) === text(task.id) ? 'aria-current="true"' : ""}
+          >${escapeHtml(task.title)}</button>
+        </strong>
+        <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(stateLabel)}</span>
       </div>
-      <div class="task-board-card-meta">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)}</div>
+      <div class="task-board-card-badges">
+        ${blocked && task.state !== "blocked" ? `<span class="state-pill blocked">Blocked</span>` : ""}
+        ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
+      </div>
+      <div class="task-board-card-meta">Priority ${Number(task.priority ?? 0)}</div>
+      ${task.parent_task_id ? `<div class="task-board-card-meta">Parent: ${renderTaskBoardTaskLink(task.parent_task_id, { reveal: true })}</div>` : ""}
+      ${task.originating_task_id ? `<div class="task-board-card-meta">Provenance: ${renderTaskBoardTaskLink(task.originating_task_id, { reveal: true })}</div>` : ""}
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
+      <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
+      ${renderTaskBoardUnresolvedDescendants(unresolvedIds)}
+      ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
+      ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
       ${renderTaskBoardBlockerLine(task)}
+      ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
     </li>
   `;
+}
+
+function renderTaskBoardTaskLink(taskId, { reveal = false } = {}) {
+  const normalizedTaskId = text(taskId);
+  const linkedTask = state.tasks[normalizedTaskId] || null;
+  if (!linkedTask) {
+    return `<span>Unavailable task</span>`;
+  }
+  return `
+    <button
+      type="button"
+      class="task-board-task-link task-board-relationship-link"
+      data-task-board-select-task-id="${escapeAttr(normalizedTaskId)}"
+      ${reveal ? "data-task-board-reveal-task" : ""}
+    >${escapeHtml(taskBoardTaskReferenceLabel(normalizedTaskId))}</button>
+  `;
+}
+
+function taskBoardTaskReferenceLabel(taskId) {
+  const linkedTask = state.tasks[text(taskId)];
+  return text(linkedTask?.title) || "Unavailable task";
+}
+
+function renderTaskBoardUnresolvedDescendants(unresolvedIds) {
+  const ids = [...new Set((unresolvedIds || []).map(text).filter(Boolean))];
+  if (!ids.length) {
+    return "";
+  }
+  const descendants = ids.map((id) => {
+    const task = state.tasks[id] || null;
+    return {
+      id,
+      label: text(task?.title) || "Unavailable descendant",
+      state: text(task?.state),
+      stateLabel: task ? taskStateLabel(task) : "Unavailable",
+    };
+  });
+  const previewLabels = descendants.slice(0, 3).map((descendant) => descendant.label);
+  if (descendants.length > previewLabels.length) {
+    previewLabels.push(`+${descendants.length - previewLabels.length} more`);
+  }
+  return `
+    <div class="task-board-card-descendants">
+      <div class="task-board-card-descendant-summary">
+        <strong>${descendants.length} unresolved descendant${descendants.length === 1 ? "" : "s"}</strong>
+        <span>${escapeHtml(previewLabels.join(", "))}</span>
+      </div>
+      <details class="task-board-descendant-details">
+        <summary>View all ${descendants.length} descendant${descendants.length === 1 ? "" : "s"}</summary>
+        <ul class="task-board-descendant-list">
+          ${descendants.map((descendant) => `
+            <li>
+              ${
+                state.tasks[descendant.id] && taskBoardLaneForTask(state.tasks[descendant.id])
+                  ? renderTaskBoardTaskLink(descendant.id, { reveal: true })
+                  : `<span>${escapeHtml(descendant.label)}</span>`
+              }
+              <span class="state-pill ${escapeAttr(descendant.state || "neutral")}">${escapeHtml(descendant.stateLabel)}</span>
+            </li>
+          `).join("")}
+        </ul>
+      </details>
+    </div>
+  `;
+}
+
+function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) {
+  const worktreeContextIds = worktreeContexts
+    .map((row) => text(row.id || row.branch_context_id))
+    .filter(Boolean);
+  const blockerIds = [
+    ...activeBlockersForRecord("task", task.id, task.id).map((blocker) => text(blocker.id)),
+    ...inheritedTaskBlockers(task).map((blocker) => text(blocker.blocker_id)),
+  ].filter(Boolean);
+  const rows = [
+    ["Task ID", text(task.id)],
+    ["Hierarchy depth", String(taskHierarchyDepth(task))],
+    ["Parent task ID", text(task.parent_task_id)],
+    ["Originating task ID", text(task.originating_task_id)],
+    ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
+    ["Blocking task IDs", (task.blocked_by_task_ids || []).map(text).filter(Boolean).join(", ")],
+    ["Blocker IDs", [...new Set(blockerIds)].join(", ")],
+    ["Worktree context IDs", worktreeContextIds.join(", ")],
+    ["Unresolved descendant IDs", (unresolvedIds || []).map(text).filter(Boolean).join(", ")],
+  ].filter(([, value]) => value);
+  return `
+    <details class="technical-details task-board-technical-details">
+      <summary>Technical details</summary>
+      <dl class="technical-details-list">
+        ${rows.map(([label, value]) => `
+          <div>
+            <dt>${escapeHtml(label)}</dt>
+            <dd>${escapeHtml(value)}</dd>
+          </div>
+        `).join("")}
+      </dl>
+    </details>
+  `;
+}
+
+function taskHierarchyDepth(task) {
+  let depth = 0;
+  let current = task;
+  const seen = new Set([text(task?.id)]);
+  while (current?.parent_task_id && depth < 32) {
+    const parentId = text(current.parent_task_id);
+    if (!parentId || seen.has(parentId) || !state.tasks[parentId]) {
+      break;
+    }
+    seen.add(parentId);
+    depth += 1;
+    current = state.tasks[parentId];
+  }
+  return depth;
 }
 
 function taskBoardLaneForTask(task) {
@@ -10241,6 +12850,8 @@ function taskBoardLaneEnteredText(task) {
 function isTaskBoardBlocked(task) {
   return (
     task.state === "blocked" ||
+    task.readiness === "blocked" ||
+    task.readiness === "invalid" ||
     task.dependency_status === "blocked" ||
     Boolean((task.blocked_by_task_ids || []).length)
   );
@@ -10249,17 +12860,55 @@ function isTaskBoardBlocked(task) {
 function renderTaskBoardBlockerLine(task) {
   const blockers = [];
   if ((task.blocked_by_task_ids || []).length) {
-    blockers.push(`blocked by ${task.blocked_by_task_ids.join(", ")}`);
+    blockers.push(
+      `<span><strong>Blocked by:</strong> ${task.blocked_by_task_ids
+        .map((taskId) => renderTaskBoardTaskLink(taskId, { reveal: true }))
+        .join(", ")}</span>`,
+    );
   }
   if (task.dependency_status === "blocked") {
-    blockers.push("dependency blocked");
+    blockers.push(`<span><strong>Dependency status:</strong> Blocked</span>`);
   }
   const routedBlockers = activeBlockersForRecord("task", task.id, task.id);
-  routedBlockers.forEach((blocker) => blockers.push(blockerRoutingLabel(blocker)));
+  routedBlockers.forEach((blocker) => {
+    const summary =
+      text(blocker.summary || blocker.reason || blocker.details) ||
+      humanizeToken(blocker.reason_code || "Open blocker");
+    const owner = state.agents[text(blocker.owner_agent_id)] || null;
+    const ownerLabel = owner ? agentLabel(owner) : "";
+    blockers.push(
+      `<span><strong>${escapeHtml(summary)}</strong>${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
+    );
+  });
+  inheritedTaskBlockers(task).forEach((blocker) => {
+    const relationship = humanizeToken(blocker.relationship || "upstream");
+    const reason = text(blocker.reason || blocker.summary) || "No reason supplied";
+    blockers.push(
+      `<span><strong>${escapeHtml(relationship)}:</strong> ${renderTaskBoardTaskLink(
+        blocker.upstream_task_id,
+        { reveal: true },
+      )} <span aria-hidden="true">—</span> <span class="task-board-blocker-reason">${escapeHtml(reason)}</span></span>`,
+    );
+  });
   if (!blockers.length) {
     return "";
   }
-  return `<div class="task-board-card-blockers">${escapeHtml(blockers.join(" - "))}</div>`;
+  return `<div class="task-board-card-blockers">${blockers.join("")}</div>`;
+}
+
+function inheritedTaskBlockers(task) {
+  return Array.isArray(task?.inherited_blockers)
+    ? task.inherited_blockers.filter((blocker) => blocker && blocker.blocker_id)
+    : [];
+}
+
+function inheritedTaskBlockerLabel(blocker) {
+  const relationship = text(blocker.relationship) || "upstream";
+  const upstreamTaskId = text(blocker.upstream_task_id) || "unknown task";
+  const blockerId = text(blocker.blocker_id) || "unknown blocker";
+  const reasonCode = text(blocker.reason_code) || "unspecified";
+  const reason = text(blocker.reason || blocker.summary) || "No reason supplied";
+  return `${relationship} ${upstreamTaskId}: blocker ${blockerId} [${reasonCode}] ${reason}`;
 }
 
 function activeBlockersForRecord(sourceKind, sourceId, taskId = null) {
@@ -10346,6 +12995,7 @@ function planningTaskStatusRank(status) {
     finished: 4,
     accepted: 5,
     rejected: 6,
+    cancelled: 7,
   };
   return order[status] ?? 99;
 }
@@ -10425,7 +13075,7 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
             </div>
             <div>
               <p class="subheading">Tasks</p>
-              ${renderTasks(visibleTasks, { compact: true })}
+              ${renderTasks(visibleTasks, { compact: true, structuredPlanning: true })}
             </div>
           </div>
         </div>
@@ -10449,7 +13099,11 @@ function renderProjectReleasePolicy(policy) {
   }
   const commands = (policy.verification_commands || []).map((command) => command.name);
   const reviewers = (policy.review_requirements || []).map((requirement) => requirement.reviewer_agent_id);
-  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
+  const human = policy.human_review_requirement;
+  const humanLabel = human
+    ? `human review via ${(human.reviewer_group_ids || []).join(", ")} (${human.preparation_mode || "manual"})`
+    : "no human review";
+  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")} - ${escapeHtml(humanLabel)}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
 }
 
 function renderGoals(goals, { compact = false } = {}) {
@@ -10502,66 +13156,624 @@ function renderGoals(goals, { compact = false } = {}) {
   `;
 }
 
-function renderTasks(tasks, { compact = false } = {}) {
+function renderTasks(tasks, { compact = false, structuredPlanning = false } = {}) {
   if (!tasks.length) {
     return `<p class="empty-state">No tasks.</p>`;
   }
-  if (compact) {
-    return `
-      <ul class="task-list compact-record-list">
-        ${tasks
-          .map((task) => {
-            return `
-              <li class="task-item compact-record-card">
-                <details>
-                  <summary class="compact-record-summary">
-                    <span class="compact-record-main">
-                      <strong>${escapeHtml(task.title)}</strong>
-                      <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - priority ${task.priority}</span>
-                    </span>
-                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
-                  </summary>
-                  <div class="compact-record-body">
-                    <div class="record-actions">
-                      ${editButton("task", task.id)}
-                    </div>
-                    <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
-                    ${renderTaskGraph(task)}
-                    <div class="meta-line">${escapeHtml(task.description)}</div>
-                  </div>
-                </details>
-              </li>
-            `;
-          })
-          .join("")}
-      </ul>
-    `;
-  }
+  const rows = taskHierarchyRows(tasks);
   return `
-    <ul class="task-list">
-      ${tasks
-        .map((task) => {
-          return `
-              <li class="task-item">
-                <div class="task-line">
-                  <strong>${escapeHtml(task.title)}</strong>
-                  <div class="record-actions">
-                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
-                    ${editButton("task", task.id)}
-                  </div>
-                </div>
-              <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
-              ${renderTaskGraph(task)}
-              <div class="meta-line">${escapeHtml(task.description)}</div>
-            </li>
-          `;
-        })
-        .join("")}
+    <ul class="task-list${compact ? " compact-record-list" : ""}">
+      ${rows.map((row) => renderTaskHierarchyRow(row, { compact, structuredPlanning })).join("")}
     </ul>
   `;
 }
 
+function taskHierarchyRows(tasks) {
+  const byTaskId = new Map(tasks.map((task) => [text(task.id), task]));
+  const children = new Map();
+  tasks.forEach((task) => {
+    const parentId = text(task.parent_task_id);
+    if (!parentId || !byTaskId.has(parentId) || parentId === text(task.id)) {
+      return;
+    }
+    const rows = children.get(parentId) || [];
+    rows.push(task);
+    children.set(parentId, rows);
+  });
+  children.forEach((rows) => rows.sort(byPriority));
+  const roots = tasks
+    .filter((task) => {
+      const parentId = text(task.parent_task_id);
+      return !parentId || !byTaskId.has(parentId) || parentId === text(task.id);
+    })
+    .sort(byPriority);
+  const rows = [];
+  const visited = new Set();
+  const visit = (task, depth, path) => {
+    const taskId = text(task.id);
+    if (visited.has(taskId)) {
+      return;
+    }
+    visited.add(taskId);
+    const cycle = path.has(taskId);
+    rows.push({ task, depth, hierarchyWarning: cycle ? "cycle" : "" });
+    if (cycle) {
+      return;
+    }
+    const nextPath = new Set(path);
+    nextPath.add(taskId);
+    (children.get(taskId) || []).forEach((child) => visit(child, depth + 1, nextPath));
+  };
+  roots.forEach((task) => visit(task, 0, new Set()));
+  tasks
+    .filter((task) => !visited.has(text(task.id)))
+    .sort(byPriority)
+    .forEach((task) => visit(task, 0, new Set([text(task.id)])));
+  return rows;
+}
+
+function renderTaskHierarchyRow(
+  { task, depth, hierarchyWarning },
+  { compact, structuredPlanning = false },
+) {
+  if (structuredPlanning) {
+    return renderStructuredPlanningTask(task, {
+      depth,
+      hierarchyWarning,
+    });
+  }
+  const invalid = Boolean(hierarchyWarning || (task.invalid_reason_codes || []).length);
+  const classes = [
+    "task-item",
+    compact ? "compact-record-card" : "",
+    depth ? "task-hierarchy-child" : "task-hierarchy-root",
+    invalid ? "task-hierarchy-invalid" : "",
+  ].filter(Boolean).join(" ");
+  const body = `
+    <div class="record-actions">
+      ${editButton("task", task.id)}
+    </div>
+    <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
+    ${renderTaskGraph(task)}
+    <div class="meta-line">${escapeHtml(task.description)}</div>
+  `;
+  if (compact) {
+    return `
+      <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}">
+        <details>
+          <summary class="compact-record-summary">
+            <span class="compact-record-main">
+              <strong>${escapeHtml(task.title)}</strong>
+              <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - depth ${depth}</span>
+            </span>
+            <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
+          </summary>
+          <div class="compact-record-body">${body}</div>
+        </details>
+      </li>
+    `;
+  }
+  return `
+    <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}">
+      <div class="task-line">
+        <strong>${escapeHtml(task.title)}</strong>
+        <div class="record-actions">
+          <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
+          ${editButton("task", task.id)}
+        </div>
+      </div>
+      <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
+      ${renderTaskGraph(task)}
+      <div class="meta-line">${escapeHtml(task.description)}</div>
+    </li>
+  `;
+}
+
+function taskRelativeAge(timestamp) {
+  const parsed = Date.parse(text(timestamp));
+  if (!Number.isFinite(parsed)) {
+    return "age unavailable";
+  }
+  const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  if (seconds < 60) {
+    return "just now";
+  }
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  const days = Math.floor(seconds / 86400);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+function taskAssessmentReasonCodePhrase(value) {
+  const words = text(value)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  return words ? `${words[0].toUpperCase()}${words.slice(1)}` : "";
+}
+
+function taskAssessmentResolutionReasonLabel(value) {
+  const reason = text(value);
+  if (!reason) {
+    return "";
+  }
+  if (taskAssessmentResolutionReasonMessages[reason]) {
+    return taskAssessmentResolutionReasonMessages[reason];
+  }
+  if (reason.startsWith("invalid:")) {
+    const invalidReasons = reason
+      .slice("invalid:".length)
+      .split(",")
+      .map(taskAssessmentReasonCodePhrase)
+      .filter(Boolean);
+    return invalidReasons.length
+      ? `Lifecycle data needs repair: ${invalidReasons.join("; ")}.`
+      : "Lifecycle data needs repair.";
+  }
+  if (/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(reason)) {
+    const fallback = taskAssessmentReasonCodePhrase(reason);
+    return fallback ? `${fallback}.` : "";
+  }
+  return reason;
+}
+
+function planningTaskLifecycleReason(task) {
+  const assessment = task.assessment || {};
+  if (assessment.resolution_reason) {
+    return taskAssessmentResolutionReasonLabel(assessment.resolution_reason);
+  }
+  if (task.waiting_reason) {
+    return `Waiting for ${humanizeToken(task.waiting_reason)}.`;
+  }
+  const blocker = activeBlockersForRecord("task", task.id, task.id)[0];
+  if (blocker?.summary) {
+    return blocker.summary;
+  }
+  if (task.dependency_status === "waiting") {
+    return "Waiting for prerequisite work.";
+  }
+  if (task.dependency_status === "blocked") {
+    return "A prerequisite is blocked.";
+  }
+  return terminalTaskStates.has(text(task.state))
+    ? `Task is ${taskStateLabel(task).toLowerCase()}.`
+    : "Task is ready for its next lifecycle step.";
+}
+
+function planningTaskLifecycleStages(task) {
+  const assessment = task.assessment || {};
+  const dependencyStatus = text(task.dependency_status || "satisfied");
+  const stateValue = text(task.state);
+  const resolution = text(task.resolution_status || assessment.resolution_status || "unresolved");
+  const executionComplete = ["finished", "waiting_for_review", "accepted", "rejected"].includes(stateValue);
+  const reviewComplete = ["accepted", "rejected"].includes(stateValue);
+  const reviewNotRequired =
+    text(assessment.resolution_reason) === "support_task_finished";
+  return [
+    {
+      label: "Created",
+      state: "complete",
+      detail: task.created_at ? formatTimelineTimestamp(task.created_at) : "Recorded",
+    },
+    {
+      label: "Dependencies",
+      state: dependencyStatus === "satisfied" ? "complete" : dependencyStatus === "blocked" ? "blocked" : "current",
+      detail: humanizeToken(dependencyStatus),
+    },
+    {
+      label: "Execution",
+      state: stateValue === "cancelled" ? "cancelled" : executionComplete ? "complete" : stateValue === "blocked" ? "blocked" : ["in_progress"].includes(stateValue) ? "current" : "pending",
+      detail: taskStateLabel(task),
+    },
+    {
+      label: "Review / acceptance",
+      state: stateValue === "cancelled" ? "skipped" : reviewNotRequired ? "skipped" : reviewComplete ? (stateValue === "rejected" ? "blocked" : "complete") : stateValue === "waiting_for_review" || stateValue === "finished" ? "current" : "pending",
+      detail: stateValue === "cancelled" ? "Skipped — task cancelled" : reviewNotRequired ? "Not required — support task finished" : stateValue === "waiting_for_review" ? humanizeToken(task.waiting_reason || "awaiting review") : reviewComplete ? taskStateLabel(task) : "Not reached",
+    },
+    {
+      label: "Resolved",
+      state: resolution === "resolved" ? "complete" : resolution === "invalid" ? "blocked" : "pending",
+      detail: humanizeToken(resolution),
+    },
+  ];
+}
+
+function renderPlanningTaskLifecycle(task) {
+  return `
+    <ol class="planning-task-lifecycle" aria-label="Task lifecycle">
+      ${planningTaskLifecycleStages(task).map((stage, index) => `
+        <li class="planning-lifecycle-stage planning-lifecycle-${escapeAttr(stage.state)}">
+          <span class="planning-lifecycle-marker" aria-hidden="true">${stage.state === "complete" ? "✓" : stage.state === "cancelled" ? "×" : stage.state === "skipped" ? "–" : index + 1}</span>
+          <span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></span>
+        </li>
+      `).join("")}
+    </ol>
+  `;
+}
+
+function planningTaskChildren(taskId) {
+  return values(state.tasks)
+    .filter((candidate) => text(candidate.parent_task_id) === text(taskId))
+    .sort(byPriority);
+}
+
+function renderPlanningTaskTree(taskId, unresolvedIds, path = new Set()) {
+  const normalizedTaskId = text(taskId);
+  if (!normalizedTaskId || path.has(normalizedTaskId)) {
+    return "";
+  }
+  const nextPath = new Set(path);
+  nextPath.add(normalizedTaskId);
+  const children = planningTaskChildren(normalizedTaskId);
+  if (!children.length) {
+    return "";
+  }
+  const unresolved = new Set((unresolvedIds || []).map(text));
+  return `
+    <ul class="planning-task-tree">
+      ${children.map((child) => `
+        <li class="${unresolved.has(text(child.id)) ? "planning-task-tree-unresolved" : ""}">
+          <span class="planning-task-tree-row">
+            <strong>${escapeHtml(child.title)}</strong>
+            <span class="state-pill ${escapeAttr(child.state)}">${escapeHtml(taskStateLabel(child))}</span>
+          </span>
+          ${renderPlanningTaskTree(child.id, unresolvedIds, nextPath)}
+        </li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+function renderPlanningTaskHierarchy(task) {
+  const assessment = task.assessment || {};
+  const childIds = uniqueTextList(task.child_task_ids || assessment.direct_child_ids || []);
+  const unresolvedIds = uniqueTextList(assessment.unresolved_descendant_ids || []);
+  const parent = task.parent_task_id ? state.tasks?.[task.parent_task_id] : null;
+  const dependencies = uniqueTextList(task.dependency_task_ids || [])
+    .map((id) => state.tasks?.[id])
+    .filter(Boolean);
+  const hasTree = childIds.length || unresolvedIds.length;
+  return `
+    <div class="planning-hierarchy-summary">
+      <span><strong>${childIds.length}</strong> direct child${childIds.length === 1 ? "" : "ren"}</span>
+      <span><strong>${unresolvedIds.length}</strong> unresolved descendant${unresolvedIds.length === 1 ? "" : "s"}</span>
+    </div>
+    ${parent ? `<div class="planning-named-relation"><span>Parent</span><strong>${escapeHtml(parent.title)}</strong><span class="state-pill ${escapeAttr(parent.state)}">${escapeHtml(taskStateLabel(parent))}</span></div>` : ""}
+    ${dependencies.length ? `<div class="planning-named-relations"><strong>Dependencies</strong>${dependencies.map((dependency) => `<span>${escapeHtml(dependency.title)} <span class="state-pill ${escapeAttr(dependency.state)}">${escapeHtml(taskStateLabel(dependency))}</span></span>`).join("")}</div>` : ""}
+    ${
+      hasTree
+        ? `
+          <details class="planning-hierarchy-details">
+            <summary>Show named hierarchy (${unresolvedIds.length} unresolved)</summary>
+            ${renderPlanningTaskTree(task.id, unresolvedIds)}
+          </details>
+        `
+        : `<p class="empty-state">No child tasks.</p>`
+    }
+  `;
+}
+
+function planningContributionState(deliverableId, contribution) {
+  const missing = new Set(contribution.missing_source_deliverable_ids || []);
+  if (missing.has(deliverableId)) {
+    return "missing";
+  }
+  const deliverable = state.deliverables?.[deliverableId];
+  if (!deliverable) {
+    return "missing";
+  }
+  if (text(deliverable.state) === "accepted") {
+    return "accepted";
+  }
+  const reviews = uniqueTextList(deliverable.review_request_ids || [])
+    .map((id) => state.review_requests?.[id])
+    .filter(Boolean);
+  if (reviews.some((review) => text(review.state) === "accepted")) {
+    return "reviewed";
+  }
+  if ((contribution.provided_source_deliverable_ids || []).includes(deliverableId)) {
+    return "submitted";
+  }
+  return "submitted";
+}
+
+function renderPlanningContributionChecklist(task) {
+  const assessment = task.assessment || {};
+  const contribution = assessment.contribution_coverage || {};
+  const requiredIds = uniqueTextList(contribution.required_source_deliverable_ids || []);
+  const currentDeliverables = values(state.deliverables)
+    .filter((deliverable) => text(deliverable.task_id) === text(task.id))
+    .filter((deliverable) => !deliverable.superseded_by_deliverable_id);
+  const unexpectedIds = uniqueTextList(contribution.unexpected_source_deliverable_ids || []);
+  const rows = requiredIds.map((deliverableId) => {
+    const deliverable = state.deliverables?.[deliverableId];
+    const sourceTask = deliverable ? deliverableTask(deliverable) : null;
+    const status = planningContributionState(deliverableId, contribution);
+    return `
+      <li class="planning-contribution-${escapeAttr(status)}">
+        <span class="planning-contribution-marker" aria-hidden="true">${status === "accepted" ? "✓" : status === "missing" ? "!" : "•"}</span>
+        <span><strong>${escapeHtml(sourceTask?.title || (deliverable ? deliverableDisplaySubject(deliverable) : "Required child contribution"))}</strong><small>${escapeHtml(humanizeToken(status))}</small></span>
+      </li>
+    `;
+  });
+  if (!rows.length && !currentDeliverables.length) {
+    return `<p class="empty-state">No contribution composition is required for this task.</p>`;
+  }
+  return `
+    <div class="planning-contribution-status">
+      <span class="state-pill ${contribution.complete ? "accepted" : contribution.status === "incomplete" ? "blocked" : "neutral"}">${escapeHtml(humanizeToken(contribution.status || "not applicable"))}</span>
+      ${currentDeliverables.length ? `<span>${currentDeliverables.length} submitted task deliverable${currentDeliverables.length === 1 ? "" : "s"}</span>` : ""}
+    </div>
+    ${rows.length ? `<ul class="planning-contribution-checklist">${rows.join("")}</ul>` : ""}
+    ${unexpectedIds.length ? `<div class="task-invalid-warning">${unexpectedIds.length} unexpected source contribution${unexpectedIds.length === 1 ? "" : "s"} require review.</div>` : ""}
+  `;
+}
+
+function renderPlanningReviewStatus(task) {
+  const assessment = task.assessment || {};
+  const reviewIds = uniqueTextList(assessment.active_review_request_ids || []);
+  const reviews = reviewIds.map((id) => state.review_requests?.[id]).filter(Boolean);
+  const acceptanceCount = uniqueTextList(assessment.active_acceptance_ids || []).length;
+  if (!reviews.length && !acceptanceCount) {
+    return "";
+  }
+  return `
+    <div class="planning-delivery-review">
+      ${acceptanceCount ? `<span>${acceptanceCount} direct acceptance${acceptanceCount === 1 ? "" : "s"} pending</span>` : ""}
+      ${reviews.map((review) => {
+        const reviewer = state.agents?.[review.reviewer_agent_id];
+        return `<span>Review by ${escapeHtml(reviewer ? agentLabel(reviewer) : "assigned reviewer")} <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span></span>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderPlanningTaskBlockers(task) {
+  const blockers = activeBlockersForRecord("task", task.id, task.id);
+  const inherited = inheritedTaskBlockers(task);
+  const rows = [
+    ...blockers.map((blocker) => ({
+      summary: blocker.summary || blocker.reason || "Task blocker",
+      ownerId: blocker.delegate_agent_id || blocker.owner_agent_id,
+      next: blockerNextAction(blocker),
+    })),
+    ...inherited.map((blocker) => ({
+      summary: blocker.summary || blocker.reason || "Upstream blocker",
+      ownerId: blocker.delegate_agent_id || blocker.owner_agent_id,
+      next: blocker.relationship ? `Resolve the ${humanizeToken(blocker.relationship)} blocker upstream.` : "Resolve the upstream blocker.",
+    })),
+  ];
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <ul class="planning-task-blockers">
+      ${rows.map((row) => {
+        const owner = row.ownerId ? state.agents?.[row.ownerId] : null;
+        return `<li><strong>${escapeHtml(row.summary)}</strong><span>Owner: ${escapeHtml(owner ? agentLabel(owner) : "Operator")}</span><span>Next: ${escapeHtml(row.next)}</span></li>`;
+      }).join("")}
+    </ul>
+  `;
+}
+
+function renderPlanningInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+}
+
+function planningBriefHeading(line) {
+  const markdown = line.match(/^(#{1,6})\s+(.+)$/);
+  if (markdown) {
+    return markdown[2].trim();
+  }
+  const framed = line.match(/^={2,}\s*(.+?)\s*={2,}$/);
+  if (framed) {
+    return framed[1].trim();
+  }
+  const normalized = line.trim();
+  if (
+    normalized.length >= 3 &&
+    normalized.length <= 90 &&
+    /[A-Z]/.test(normalized) &&
+    normalized === normalized.toUpperCase() &&
+    !/[.!?]$/.test(normalized)
+  ) {
+    return normalized;
+  }
+  return "";
+}
+
+function renderPlanningBriefMarkdown(value) {
+  const lines = text(value).split(/\r?\n/);
+  const output = [];
+  let paragraph = [];
+  let listType = "";
+  let listItems = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    output.push(`<p>${renderPlanningInlineMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!listItems.length) return;
+    output.push(`<${listType}>${listItems.map((item) => `<li>${renderPlanningInlineMarkdown(item)}</li>`).join("")}</${listType}>`);
+    listType = "";
+    listItems = [];
+  };
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim();
+    const heading = planningBriefHeading(line);
+    const unordered = line.match(/^[-*•]\s+(.+)$/);
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (!line) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+    if (heading) {
+      flushParagraph();
+      flushList();
+      output.push(`<h5>${renderPlanningInlineMarkdown(heading)}</h5>`);
+      return;
+    }
+    if (unordered || ordered) {
+      flushParagraph();
+      const nextType = unordered ? "ul" : "ol";
+      if (listType && listType !== nextType) {
+        flushList();
+      }
+      listType = nextType;
+      listItems.push((unordered || ordered)[1]);
+      return;
+    }
+    flushList();
+    paragraph.push(line);
+  });
+  flushParagraph();
+  flushList();
+  return output.join("");
+}
+
+function renderPlanningTaskBrief(task) {
+  const brief = text(task.description);
+  if (!brief) {
+    return `<p class="empty-state">No task brief.</p>`;
+  }
+  const isLong = brief.length > 320 || brief.split(/\r?\n/).length > 6;
+  const body = `<div class="planning-task-brief-content">${renderPlanningBriefMarkdown(brief)}</div>`;
+  if (!isLong) {
+    return body;
+  }
+  return `
+    <details class="planning-task-brief-details">
+      <summary>Show full brief</summary>
+      ${body}
+    </details>
+  `;
+}
+
+function renderPlanningTaskTechnicalDetails(task) {
+  const assessment = task.assessment || {};
+  const worktreeContexts = taskGitWorkContexts(task);
+  const blockerIds = [
+    ...activeBlockersForRecord("task", task.id, task.id).map((blocker) => blocker.id),
+    ...inheritedTaskBlockers(task).map((blocker) => blocker.blocker_id),
+  ];
+  return `
+    ${renderTechnicalDetails([
+      ["Task ID", task.id],
+      ["Project ID", task.project_id],
+      ["Owner ID", task.owner_agent_id],
+      ["Case ID", task.case_id],
+      ["Parent task ID", task.parent_task_id],
+      ["Originating task ID", task.originating_task_id],
+      ["Dependency task IDs", task.dependency_task_ids || []],
+      ["Child task IDs", task.child_task_ids || assessment.direct_child_ids || []],
+      ["Unresolved task IDs", assessment.unresolved_descendant_ids || []],
+      ["Deliverable IDs", task.deliverable_ids || []],
+      ["Acceptance IDs", assessment.active_acceptance_ids || []],
+      ["Review IDs", assessment.active_review_request_ids || []],
+      ["Blocker IDs", blockerIds],
+    ], { summary: "Identifiers and lifecycle references" })}
+    ${worktreeContexts.length ? `<details class="technical-details planning-worktree-details"><summary>Worktree mapping</summary>${renderTaskWorktreeMapping(task)}</details>` : ""}
+  `;
+}
+
+function renderPlanningTaskCancellation(cancellation) {
+  const successor = cancellation.successor_task_id
+    ? state.tasks?.[cancellation.successor_task_id]
+    : null;
+  const actor = cancellation.actor_id ? state.agents?.[cancellation.actor_id] : null;
+  const details = [
+    cancellation.reason,
+    cancellation.reason_code ? humanizeToken(cancellation.reason_code) : "",
+    successor ? `Successor: ${successor.title}` : "",
+    actor ? `By ${agentLabel(actor)}` : cancellation.actor_kind ? `By ${humanizeToken(cancellation.actor_kind)}` : "",
+    cancellation.cancelled_at ? `Cancelled ${formatTimelineTimestamp(cancellation.cancelled_at)}` : "",
+  ].filter(Boolean);
+  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(details.join(" · "))}</div>`;
+}
+
+function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" } = {}) {
+  const owner = state.agents?.[task.owner_agent_id];
+  const ownerName = owner ? agentLabel(owner) : "Unavailable owner";
+  const assessment = task.assessment || {};
+  const reason = planningTaskLifecycleReason(task);
+  const readiness = text(task.readiness || assessment.readiness || "unknown");
+  const resolution = text(task.resolution_status || assessment.resolution_status || "unknown");
+  const stateSince = task.state_entered_at || task.updated_at || task.created_at;
+  const invalidCodes = task.invalid_reason_codes || assessment.invalid_reason_codes || [];
+  const classes = [
+    "task-item",
+    "compact-record-card",
+    "planning-task-card",
+    depth ? "task-hierarchy-child" : "task-hierarchy-root",
+    hierarchyWarning || invalidCodes.length ? "task-hierarchy-invalid" : "",
+  ].filter(Boolean).join(" ");
+  return `
+    <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}" data-planning-task-id="${escapeAttr(task.id)}">
+      <details class="planning-task-details">
+        <summary class="compact-record-summary planning-task-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(task.title)}</strong>
+            <span>${escapeHtml(ownerName)} · state for ${escapeHtml(taskRelativeAge(stateSince))}</span>
+            <span class="planning-task-reason-preview">${escapeHtml(readablePreview(reason, 140))}</span>
+          </span>
+          <span class="planning-task-summary-meta">
+            <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
+            <span class="state-pill ${escapeAttr(taskReadinessPill(readiness))}">${escapeHtml(humanizeToken(readiness))}</span>
+          </span>
+        </summary>
+        <div class="compact-record-body planning-task-body">
+          <section class="planning-task-section">
+            <div class="planning-task-section-heading"><h4>Overview</h4><div class="record-actions">${editButton("task", task.id)}</div></div>
+            <div class="planning-task-overview">
+              <div><span>Owner</span><strong>${escapeHtml(ownerName)}</strong></div>
+              <div><span>State</span><strong>${escapeHtml(taskStateLabel(task))}</strong></div>
+              <div><span>State age</span><strong>${escapeHtml(taskRelativeAge(stateSince))}</strong></div>
+              <div><span>Priority</span><strong>${Number(task.priority ?? 0)}</strong></div>
+            </div>
+            <p class="planning-lifecycle-reason"><strong>Lifecycle reason:</strong> ${escapeHtml(reason)}</p>
+            ${renderPlanningTaskBlockers(task)}
+          </section>
+          <section class="planning-task-section">
+            <h4>Lifecycle</h4>
+            ${renderPlanningTaskLifecycle(task)}
+            ${task.cancellation ? renderPlanningTaskCancellation(task.cancellation) : ""}
+            ${invalidCodes.length ? `<div class="task-invalid-warning"><strong>Lifecycle repair required:</strong> ${escapeHtml(invalidCodes.map(humanizeToken).join(", "))} ${editButton("task", task.id, "Repair task")}</div>` : ""}
+          </section>
+          <section class="planning-task-section">
+            <h4>Hierarchy</h4>
+            ${renderPlanningTaskHierarchy(task)}
+          </section>
+          <section class="planning-task-section">
+            <h4>Delivery / contribution</h4>
+            ${renderPlanningContributionChecklist(task)}
+            ${renderPlanningReviewStatus(task)}
+          </section>
+          <section class="planning-task-section planning-task-brief-section">
+            <h4>Task brief</h4>
+            ${renderPlanningTaskBrief(task)}
+          </section>
+          <section class="planning-task-section planning-task-technical-section">
+            <h4>Technical details</h4>
+            ${renderPlanningTaskTechnicalDetails(task)}
+          </section>
+        </div>
+      </details>
+    </li>
+  `;
+}
+
 function renderTaskGraph(task) {
+  const assessment = task.assessment || {};
   const lines = [];
   if (task.case_id) {
     const item = state.cases[task.case_id];
@@ -10569,6 +13781,9 @@ function renderTaskGraph(task) {
   }
   if (task.parent_task_id) {
     lines.push(`parent ${task.parent_task_id}`);
+  }
+  if (task.originating_task_id) {
+    lines.push(`originating task ${task.originating_task_id}`);
   }
   if ((task.dependency_task_ids || []).length) {
     lines.push(`depends on ${task.dependency_task_ids.join(", ")}`);
@@ -10579,8 +13794,13 @@ function renderTaskGraph(task) {
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) => {
     lines.push(blockerRoutingLabel(blocker));
   });
-  if ((task.child_task_ids || []).length) {
-    lines.push(`children ${task.child_task_ids.join(", ")}`);
+  const childIds = task.child_task_ids || assessment.direct_child_ids || [];
+  if (childIds.length) {
+    lines.push(`children ${childIds.join(", ")}`);
+  }
+  const unresolvedIds = assessment.unresolved_descendant_ids || [];
+  if (unresolvedIds.length) {
+    lines.push(`unresolved descendants ${unresolvedIds.join(", ")}`);
   }
   const counts = task.subtask_counts || {};
   const subtaskLine = counts.total
@@ -10590,11 +13810,437 @@ function renderTaskGraph(task) {
     ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>`
     : "";
   const countLine = subtaskLine ? `<div class="meta-line">${escapeHtml(subtaskLine)}</div>` : "";
+  const readiness = text(task.readiness || assessment.readiness || "unknown");
+  const resolution = text(task.resolution_status || assessment.resolution_status || "unknown");
+  const integrationReady = Boolean(task.integration_ready ?? assessment.integration_ready);
+  const acceptanceIds = assessment.active_acceptance_ids || [];
+  const reviewIds = assessment.active_review_request_ids || [];
+  const contribution = assessment.contribution_coverage || {};
+  const coverageBits = [
+    text(contribution.status) ? `coverage ${text(contribution.status)}` : "",
+    (contribution.missing_source_deliverable_ids || []).length
+      ? `missing ${contribution.missing_source_deliverable_ids.join(", ")}`
+      : "",
+    (contribution.unexpected_source_deliverable_ids || []).length
+      ? `unexpected ${contribution.unexpected_source_deliverable_ids.join(", ")}`
+      : "",
+  ].filter(Boolean);
+  const invalidCodes = task.invalid_reason_codes || assessment.invalid_reason_codes || [];
+  const cancellation = task.cancellation || null;
   return `
-    <div class="meta-line">
-      Dependency status <span class="state-pill ${escapeHtml(task.dependency_status || "satisfied")}">${escapeHtml(task.dependency_status || "satisfied")}</span>
+    <div class="task-lifecycle-summary">
+      <span>Readiness <span class="state-pill ${escapeAttr(taskReadinessPill(readiness))}">${escapeHtml(readiness)}</span></span>
+      <span>Resolution <span class="state-pill ${escapeAttr(taskResolutionPill(resolution))}">${escapeHtml(resolution)}</span></span>
+      <span>Integration <span class="state-pill ${integrationReady ? "accepted" : "neutral"}">${integrationReady ? "ready" : "not ready"}</span></span>
+      <span>Dependencies <span class="state-pill ${escapeHtml(task.dependency_status || "satisfied")}">${escapeHtml(task.dependency_status || "satisfied")}</span></span>
     </div>
+    ${assessment.resolution_reason ? `<div class="meta-line">Lifecycle reason: ${escapeHtml(taskAssessmentResolutionReasonLabel(assessment.resolution_reason))}</div>` : ""}
     ${graphLines}${countLine}
+    ${acceptanceIds.length ? `<div class="meta-line">Direct acceptance: ${escapeHtml(acceptanceIds.join(", "))}</div>` : ""}
+    ${reviewIds.length ? `<div class="meta-line">Formal review: ${escapeHtml(reviewIds.join(", "))}</div>` : ""}
+    ${coverageBits.length ? `<div class="meta-line">Contribution composition: ${escapeHtml(coverageBits.join(" - "))}</div>` : ""}
+    ${cancellation ? renderTaskCancellation(cancellation) : ""}
+    ${renderTaskBlockerDetails(task)}
+    ${renderTaskWorktreeMapping(task)}
+    ${
+      invalidCodes.length
+        ? `<div class="task-invalid-warning"><strong>Legacy lifecycle repair required:</strong> ${escapeHtml(invalidCodes.join(", "))} ${editButton("task", task.id, "Repair task")}</div>`
+        : ""
+    }
+  `;
+}
+
+function taskReadinessPill(readiness) {
+  if (readiness === "actionable") return "accepted";
+  if (readiness === "blocked" || readiness === "invalid") return "blocked";
+  if (readiness === "resolved") return "neutral";
+  return "info";
+}
+
+function taskResolutionPill(resolution) {
+  if (resolution === "resolved") return "accepted";
+  if (resolution === "invalid") return "blocked";
+  return "info";
+}
+
+function renderTaskCancellation(cancellation) {
+  const parts = [
+    cancellation.reason_code ? `reason ${cancellation.reason_code}` : "",
+    cancellation.reason,
+    cancellation.actor_kind && cancellation.actor_id
+      ? `by ${cancellation.actor_kind} ${cancellation.actor_id}`
+      : "",
+    cancellation.successor_task_id ? `successor ${cancellation.successor_task_id}` : "",
+    cancellation.cancelled_at ? `at ${cancellation.cancelled_at}` : "",
+  ].filter(Boolean);
+  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(parts.join(" - "))}</div>`;
+}
+
+function renderTaskBlockerDetails(task) {
+  const blockers = activeBlockersForRecord("task", task.id, task.id);
+  const inheritedBlockers = inheritedTaskBlockers(task);
+  if (!blockers.length && !inheritedBlockers.length) {
+    return "";
+  }
+  return `
+    <div class="task-blocker-details">
+      ${blockers.map((blocker) => renderTaskBlockerDetail(blocker)).join("")}
+      ${inheritedBlockers.map((blocker) => renderInheritedTaskBlockerDetail(blocker)).join("")}
+    </div>
+  `;
+}
+
+function renderInheritedTaskBlockerDetail(blocker) {
+  const route = [
+    blocker.owner_agent_id ? `owner ${blocker.owner_agent_id}` : "no visible agent owner",
+    blocker.delegate_agent_id ? `delegate ${blocker.delegate_agent_id}` : "",
+    blocker.route ? `route ${blocker.route}` : "",
+    `escalation level ${Number(blocker.escalation_depth || 0)}`,
+  ].filter(Boolean).join(" - ");
+  const timing = [
+    blocker.created_at ? `blocked since ${blocker.created_at}` : "",
+    blocker.follow_up_at ? `follow up ${blocker.follow_up_at}` : "",
+    blocker.last_progress_at ? `last progress ${blocker.last_progress_at}` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <section class="task-blocker-card task-inherited-blocker-card">
+      <div><strong>Upstream ${escapeHtml(blocker.relationship || "task")} ${escapeHtml(blocker.upstream_task_id || "unknown")}</strong></div>
+      <div><strong>Blocker ${escapeHtml(blocker.blocker_id)}</strong> <span class="state-pill blocked">${escapeHtml(blocker.reason_code || "unspecified")}</span></div>
+      <div>${escapeHtml(blocker.reason || blocker.summary || "No reason supplied")}</div>
+      ${blocker.details ? `<div>${escapeHtml(blocker.details)}</div>` : ""}
+      <div class="meta-line">Source ${escapeHtml(`${blocker.source_kind || "unknown"} ${blocker.source_id || ""}`.trim())} - ${escapeHtml(route)}</div>
+      ${timing ? `<div class="meta-line">${escapeHtml(timing)}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderTaskBlockerDetail(blocker) {
+  const latestEvent = latestBlockerEvent(blocker.id);
+  const source = `${text(blocker.source_kind) || "unknown"} ${text(blocker.source_id) || ""}`.trim();
+  const accountable = [
+    blocker.owner_agent_id ? `owner ${blocker.owner_agent_id}` : "no agent owner",
+    blocker.delegate_agent_id ? `delegate ${blocker.delegate_agent_id}` : "",
+  ].filter(Boolean).join(" - ");
+  const timing = [
+    blocker.created_at ? `blocked since ${blocker.created_at}` : "",
+    blocker.follow_up_at ? `follow up ${blocker.follow_up_at}` : "",
+    blocker.last_progress_at ? `last progress ${blocker.last_progress_at}` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <section class="task-blocker-card">
+      <div><strong>Blocker ${escapeHtml(blocker.id)}</strong> <span class="state-pill blocked">${escapeHtml(blocker.reason_code || "unspecified")}</span></div>
+      <div>${escapeHtml(blocker.summary || "No summary")}</div>
+      ${blocker.details ? `<div>${escapeHtml(blocker.details)}</div>` : ""}
+      <div class="meta-line">Source ${escapeHtml(source)} - ${escapeHtml(accountable)} - route ${escapeHtml(blocker.route || "unknown")} - escalation level ${Number(blocker.escalation_depth || 0)}</div>
+      ${timing ? `<div class="meta-line">${escapeHtml(timing)}</div>` : ""}
+      ${
+        latestEvent
+          ? `<div class="meta-line">Latest event ${escapeHtml(latestEvent.event_type)}${latestEvent.note ? `: ${escapeHtml(latestEvent.note)}` : ""}</div>`
+          : ""
+      }
+      <div class="meta-line">Next action: ${escapeHtml(blockerNextAction(blocker))}</div>
+      ${renderTerminalBlockerResolveAction(blocker)}
+    </section>
+  `;
+}
+
+function latestBlockerEvent(blockerId) {
+  return values(state.blocker_events)
+    .filter((event) => text(event.blocker_id) === text(blockerId))
+    .sort((left, right) =>
+      String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+      String(right.id || "").localeCompare(String(left.id || "")),
+    )[0] || null;
+}
+
+function blockerNextAction(blocker) {
+  if (blocker.delegate_agent_id) {
+    return `delegate ${blocker.delegate_agent_id} reports progress; owner ${blocker.owner_agent_id || "unassigned"} remains accountable`;
+  }
+  if (blocker.follow_up_at) {
+    return `owner ${blocker.owner_agent_id || blocker.route || "operator"} follows up at ${blocker.follow_up_at}`;
+  }
+  if (["governance", "operator"].includes(text(blocker.route))) {
+    return `${humanizeToken(blocker.route)} verifies the blocking condition and resolves or escalates it`;
+  }
+  return `owner ${blocker.owner_agent_id || "unassigned"} records progress, delegates, resolves, or escalates`;
+}
+
+function taskGitWorkContexts(task) {
+  const rows = [
+    ...(task.git_work_contexts || []),
+    ...values(state.git_work_contexts).filter((context) => text(context.task_id) === text(task.id)),
+  ];
+  const unique = new Map();
+  rows.forEach((row) => {
+    const id = text(row.id || row.branch_context_id);
+    if (id) unique.set(id, row);
+  });
+  return [...unique.values()].sort(byId);
+}
+
+function renderTaskWorktreeMapping(task) {
+  const contexts = taskGitWorkContexts(task);
+  const cleanupRows = values(state.worktree_cleanup_candidates)
+    .filter((candidate) => text(candidate.task_id) === text(task.id))
+    .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")));
+  if (!contexts.length && !cleanupRows.length) {
+    return "";
+  }
+  const project = state.projects[task.project_id] || {};
+  const repository = project.git?.managed_repo_id || "not configured";
+  const rows = contexts.map((context) => {
+    const dispatch = state.dispatches?.[context.dispatch_id] || null;
+    return `
+      <tr>
+        <td>${escapeHtml(task.id)}</td>
+        <td>${escapeHtml(task.project_id)}</td>
+        <td>${escapeHtml(repository)}</td>
+        <td><code>${escapeHtml(context.worktree_path || "control checkout")}</code></td>
+        <td><code>${escapeHtml(context.agent_branch || context.branch || project.git?.base_branch || "")}</code></td>
+        <td>${escapeHtml(context.id || context.branch_context_id || "")}${dispatch ? ` - ${escapeHtml(dispatch.status)}` : ""}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="task-worktree-mapping">
+      <div class="meta-line">Repository base ${escapeHtml(project.git?.base_branch || "unknown")} is the control checkout; edit only in the task worktree below.</div>
+      ${
+        rows
+          ? `<div class="task-worktree-scroll"><table><thead><tr><th>Task</th><th>Project</th><th>Repository</th><th>Worktree</th><th>Branch</th><th>Context / dispatch</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : ""
+      }
+      ${cleanupRows.map(renderTaskCleanupCandidate).join("")}
+    </div>
+  `;
+}
+
+function renderTaskCleanupCandidate(candidate) {
+  const recovery = text(candidate.state) === "recovery_required";
+  const details = [
+    `cleanup ${candidate.state}`,
+    candidate.last_safety_check ? `check ${candidate.last_safety_check}` : "",
+    candidate.last_error,
+    candidate.worktree_path,
+    candidate.branch,
+    Number(candidate.reclaimed_bytes || 0) ? `reclaimed ${candidate.reclaimed_bytes} bytes` : "",
+  ].filter(Boolean).join(" - ");
+  return `<div class="${recovery ? "task-cleanup-recovery" : "meta-line"}">${escapeHtml(details)}</div>`;
+}
+
+function readablePreview(value, limit = 220) {
+  const normalized = text(value).replace(/\s+/g, " ");
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
+}
+
+function deliverableTask(deliverable) {
+  return state.tasks?.[text(deliverable?.task_id)] || null;
+}
+
+function deliverableDisplaySubject(deliverable) {
+  const task = deliverableTask(deliverable);
+  if (task?.title) {
+    return task.title;
+  }
+  const firstLine = text(deliverable?.summary)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  return readablePreview(firstLine || "Deliverable outcome", 90);
+}
+
+function deliverableProducerLabel(deliverable) {
+  const producer = state.agents?.[text(deliverable?.producer_agent_id)];
+  return producer ? agentLabel(producer) : text(deliverable?.producer_agent_id) || "Unassigned";
+}
+
+function renderRecordDate(timestamp, prefix = "") {
+  if (!timestamp) {
+    return "Date unavailable";
+  }
+  const label = formatTimelineTimestamp(timestamp);
+  return `${prefix ? `${prefix} ` : ""}<time datetime="${escapeAttr(timestamp)}">${escapeHtml(label)}</time>`;
+}
+
+function renderIdentifierCopy(value, { label = "Copy ID" } = {}) {
+  const normalized = text(value);
+  if (!normalized) {
+    return "";
+  }
+  return `
+    <span class="technical-identifier">
+      <code>${escapeHtml(normalized)}</code>
+      <button
+        type="button"
+        class="copy-identifier-button"
+        data-copy-identifier="${escapeAttr(normalized)}"
+        data-copy-label="${escapeAttr(label)}"
+        aria-label="${escapeAttr(`${label}: ${normalized}`)}"
+      >${escapeHtml(label)}</button>
+    </span>
+  `;
+}
+
+function renderTechnicalDetails(entries, { summary = "Technical details" } = {}) {
+  const rows = entries
+    .map(([label, value, copyLabel]) => {
+      const values = Array.isArray(value) ? uniqueTextList(value) : [text(value)].filter(Boolean);
+      if (!values.length) {
+        return "";
+      }
+      return `
+        <div>
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${values.map((item) => renderIdentifierCopy(item, { label: copyLabel || (label.toLowerCase().includes("id") ? "Copy ID" : "Copy") })).join("")}</dd>
+        </div>
+      `;
+    })
+    .filter(Boolean);
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <details class="technical-details">
+      <summary>${escapeHtml(summary)}</summary>
+      <dl class="technical-details-list">${rows.join("")}</dl>
+    </details>
+  `;
+}
+
+async function copyTechnicalIdentifier(button) {
+  const value = text(button.dataset.copyIdentifier);
+  if (!value) {
+    return;
+  }
+  const originalLabel = text(button.dataset.copyLabel) || "Copy";
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const field = document.createElement("textarea");
+      field.value = value;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.appendChild(field);
+      field.select();
+      if (!document.execCommand("copy")) {
+        throw new Error("Clipboard copy is unavailable.");
+      }
+      field.remove();
+    }
+    button.textContent = "Copied";
+    button.dataset.copyState = "copied";
+    window.setTimeout(() => {
+      button.textContent = originalLabel;
+      delete button.dataset.copyState;
+    }, 1600);
+  } catch {
+    setStatus(`Could not copy ${value}.`, "error");
+  }
+}
+
+function renderDeliverableOutcomes(deliverable) {
+  const outcomes = deliverable.outcomes || [];
+  if (!outcomes.length && !deliverable.completion) {
+    return "";
+  }
+  const outcomeRows = outcomes.map((outcome) => {
+    const name =
+      outcome.definition_snapshot?.name ||
+      values(state.outcome_kind_definitions).find((definition) => definition.kind === outcome.kind)?.name ||
+      humanizeToken(outcome.kind);
+    return `<li><strong>${escapeHtml(name)}</strong>${(outcome.reference_ids || []).length ? ` · ${outcome.reference_ids.length} reference${outcome.reference_ids.length === 1 ? "" : "s"}` : ""}${(outcome.evidence_refs || []).length ? ` · ${outcome.evidence_refs.length} evidence item${outcome.evidence_refs.length === 1 ? "" : "s"}` : ""}</li>`;
+  });
+  if (deliverable.completion) {
+    outcomeRows.push(`<li><strong>${escapeHtml(humanizeToken(deliverable.completion.kind || "completion"))}</strong></li>`);
+  }
+  return `<ul class="deliverable-outcome-list">${outcomeRows.join("")}</ul>`;
+}
+
+function renderDeliverableEvidence(deliverable) {
+  const refs = new Set(deliverable.artifact_refs || []);
+  (deliverable.outcomes || []).forEach((outcome) => {
+    (outcome.evidence_refs || []).forEach((ref) => refs.add(ref));
+  });
+  if (!refs.size) {
+    return `<p class="empty-state">No evidence or artifacts recorded.</p>`;
+  }
+  return `<ul class="deliverable-evidence-list">${[...refs].map((ref) => `<li><code>${escapeHtml(ref)}</code></li>`).join("")}</ul>`;
+}
+
+function renderDeliverableTechnicalDetails(deliverable) {
+  const gitRefs = deliverable.git_refs || {};
+  return renderTechnicalDetails([
+    ["Deliverable ID", deliverable.id],
+    ["Task ID", deliverable.task_id],
+    ["Producer ID", deliverable.producer_agent_id],
+    ["Supersedes deliverable ID", deliverable.supersedes_deliverable_id],
+    ["Superseded by deliverable ID", deliverable.superseded_by_deliverable_id],
+    ["Source deliverable IDs", deliverable.source_deliverable_ids || []],
+    ["Branch context ID", gitRefs.branch_context_id],
+    ["Agent branch", gitRefs.agent_branch],
+    ["Review branch", gitRefs.review_branch],
+    ["Feature branch", gitRefs.feature_branch],
+    ["Release branch", gitRefs.release_branch],
+    ["Commit", gitRefs.commit_sha],
+    ["Submitted commit", gitRefs.submitted_commit_sha],
+    ["Reviewed commit", gitRefs.reviewed_commit_sha],
+    ["Promotion IDs", gitRefs.promotion_record_ids || []],
+  ]);
+}
+
+function renderDeliverableCard(deliverable, { compact = false } = {}) {
+  const task = deliverableTask(deliverable);
+  const subject = deliverableDisplaySubject(deliverable);
+  const producer = deliverableProducerLabel(deliverable);
+  const preview = readablePreview(deliverable.summary);
+  const reviewIds = deliverable.review_request_ids || [];
+  return `
+    <li class="record-item compact-record-card deliverable-card${compact ? " deliverable-card-compact" : ""}" data-deliverable-id="${escapeAttr(deliverable.id)}">
+      <details class="deliverable-card-details">
+        <summary class="compact-record-summary deliverable-card-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(subject)}</strong>
+            <span>${escapeHtml(producer)} · ${renderRecordDate(deliverable.created_at)}</span>
+            ${preview && preview !== subject ? `<span class="deliverable-summary-preview">${escapeHtml(preview)}</span>` : ""}
+          </span>
+          <span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(humanizeToken(deliverable.state))}</span>
+        </summary>
+        <div class="compact-record-body deliverable-card-body">
+          <section class="deliverable-detail-group">
+            <h4>Summary / outcome</h4>
+            <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
+            ${renderDeliverableOutcomes(deliverable)}
+          </section>
+          <section class="deliverable-detail-group">
+            <h4>Task and producer</h4>
+            <div class="delivery-detail-grid">
+              <div><div class="delivery-detail-label">Task</div><div class="delivery-detail-value">${escapeHtml(task?.title || "Task unavailable")}${task ? ` <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(taskStateLabel(task))}</span>` : ""}</div></div>
+              <div><div class="delivery-detail-label">Producer</div><div class="delivery-detail-value">${escapeHtml(producer)}</div></div>
+              <div><div class="delivery-detail-label">Recorded</div><div class="delivery-detail-value">${renderRecordDate(deliverable.created_at)}</div></div>
+              <div><div class="delivery-detail-label">Decision</div><div class="delivery-detail-value">${escapeHtml(humanizeToken(deliverable.acceptance_decision?.decision || deliverable.state))}</div></div>
+            </div>
+          </section>
+          <section class="deliverable-detail-group">
+            <h4>Evidence and artifacts</h4>
+            ${renderDeliverableEvidence(deliverable)}
+          </section>
+          <section class="deliverable-detail-group">
+            <h4>Reviews and decision</h4>
+            ${reviewIds.length ? renderReviewSummary(reviewIds) : `<p class="empty-state">No reviews recorded.</p>`}
+            ${renderRecordBlockers("deliverable", deliverable.id, deliverable.task_id)}
+          </section>
+          <section class="deliverable-detail-group deliverable-lineage-group">
+            <h4>Lineage / technical details</h4>
+            ${renderDeliverableTechnicalDetails(deliverable)}
+          </section>
+        </div>
+      </details>
+    </li>
   `;
 }
 
@@ -10602,55 +14248,9 @@ function renderDeliverables(deliverables, { compact = false } = {}) {
   if (!deliverables.length) {
     return `<p class="empty-state">No deliverables.</p>`;
   }
-  if (compact) {
-    return `
-      <ul class="deliverable-list compact-record-list">
-        ${deliverables
-          .map((deliverable) => {
-            return `
-              <li class="record-item compact-record-card">
-                <details>
-                  <summary class="compact-record-summary">
-                    <span class="compact-record-main">
-                      <strong>${escapeHtml(deliverable.summary)}</strong>
-                      <span>${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</span>
-                    </span>
-                    <span class="state-pill ${escapeHtml(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
-                  </summary>
-                  <div class="compact-record-body">
-                    <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
-                    ${renderRecordBlockers("deliverable", deliverable.id, deliverable.task_id)}
-                    ${renderReviewSummary(deliverable.review_request_ids || [])}
-                    ${renderArtifactRefs(deliverable.artifact_refs || [])}
-                    ${renderGitRefs(deliverable.git_refs)}
-                  </div>
-                </details>
-              </li>
-            `;
-          })
-          .join("")}
-      </ul>
-    `;
-  }
   return `
-    <ul class="deliverable-list">
-      ${deliverables
-        .map((deliverable) => {
-          return `
-            <li class="record-item">
-              <div class="record-line">
-                <strong>${escapeHtml(deliverable.summary)}</strong>
-                <span class="state-pill ${escapeHtml(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
-              </div>
-              <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
-              ${renderRecordBlockers("deliverable", deliverable.id, deliverable.task_id)}
-              ${renderReviewSummary(deliverable.review_request_ids || [])}
-              ${renderArtifactRefs(deliverable.artifact_refs || [])}
-              ${renderGitRefs(deliverable.git_refs)}
-            </li>
-          `;
-        })
-        .join("")}
+    <ul class="deliverable-list${compact ? " compact-record-list" : ""}">
+      ${deliverables.map((deliverable) => renderDeliverableCard(deliverable, { compact })).join("")}
     </ul>
   `;
 }
@@ -10674,19 +14274,29 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
           const carriedFindings = (deliverable?.carried_findings || []).filter(
             (finding) => finding.state === "open",
           );
+          const reviewer = state.agents[review.reviewer_agent_id] || null;
+          const reviewerName = reviewer ? agentLabel(reviewer) : review.reviewer_agent_id;
           return `
             <li class="record-item">
               <div class="record-line">
-                <strong>${escapeHtml(review.id)}</strong>
+                <strong>Review by ${escapeHtml(reviewerName)}</strong>
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
-              <div class="meta-line">Reviewer id ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}${profile?.name ? ` (${escapeHtml(profile.name)})` : ""}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
+              <div class="meta-line">${profile?.name ? `Profile ${escapeHtml(profile.name)}` : "No review profile"}${review.decision_at ? ` · decided ${renderRecordDate(review.decision_at)}` : review.created_at ? ` · requested ${renderRecordDate(review.created_at)}` : ""}</div>
               ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
               ${renderRecordBlockers("review_request", review.id)}
               ${renderCriterionResults(review.criteria || [])}
               ${renderCarriedFindings(carriedFindings)}
               ${interactive ? renderReviewDecisionForm(review, profile, carriedFindings) : ""}
+              ${renderTechnicalDetails([
+                ["Review ID", review.id],
+                ["Reviewer ID", review.reviewer_agent_id],
+                ["Review profile ID", review.review_profile_id],
+                ["Deliverable ID", review.deliverable_id],
+                ["Release ID", review.release_package_id],
+                ["Reviewed commit", review.reviewed_commit_sha],
+              ])}
             </li>
           `;
         })
@@ -10874,86 +14484,539 @@ function renderReviewProfiles() {
     renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No visible review profiles.</p>`);
     return;
   }
-  if (activeTeamView === "delivery") {
-    renderIntoActiveTargets("[data-review-profiles-view]", `
-      <ul class="review-list compact-record-list">
-        ${profiles.map((profile) => renderCompactReviewProfile(profile)).join("")}
-      </ul>
-    `);
-    return;
-  }
   renderIntoActiveTargets("[data-review-profiles-view]", `
-    <ul class="review-list">
-      ${profiles
-        .map((profile) => {
-          const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
-          const roles = (profile.applicable_role_ids || []).length
-            ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
-            : "all reviewer roles";
-          return `
-              <li class="record-item">
-                <div class="record-line">
-                  <strong>${escapeHtml(profile.name)}</strong>
-                  <div class="record-actions">
-                    <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
-                    ${editButton("review-profile", profile.id)}
-                  </div>
-                </div>
-              <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
-              ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
-              ${renderProfileCriteria(profile.criteria || [])}
-            </li>
-          `;
-        })
-        .join("")}
+    <ul class="review-list compact-record-list">
+      ${profiles.map((profile) => renderCompactReviewProfile(profile)).join("")}
     </ul>
   `);
 }
 
 function renderCompactReviewProfile(profile) {
-  const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
-  const roles = (profile.applicable_role_ids || []).length
-    ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
-    : "all reviewer roles";
   const criteria = profile.criteria || [];
+  const scope = reviewProfileScope(profile);
+  const reviewerLabels = reviewProfileReviewerLabels(profile);
+  const outcomeKinds = profile.required_outcome_kinds || [];
+  const outcomeLabels = outcomeKinds.map((kind) => reviewProfileOutcomeLabel(profile, kind));
   return `
-    <li class="record-item compact-record-card">
-      <details>
-        <summary class="compact-record-summary">
-          <span class="compact-record-main">
-            <strong>${escapeHtml(profile.name)}</strong>
-            <span>${escapeHtml(scope)} - ${criteria.length} criteria</span>
-          </span>
+    <li class="record-item compact-record-card review-profile-card">
+      <div class="review-profile-card-header">
+        <span class="review-profile-card-title">
+          <strong>${escapeHtml(profile.name)}</strong>
+          <span>${escapeHtml(scope.summary)} · ${criteria.length} ${criteria.length === 1 ? "criterion" : "criteria"}</span>
+        </span>
+        <div class="record-actions">
           <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
-        </summary>
-        <div class="compact-record-body">
-          <div class="record-actions">
-            ${editButton("review-profile", profile.id)}
+          ${editButton("review-profile", profile.id)}
+        </div>
+      </div>
+      <details class="review-profile-card-details">
+        <summary class="review-profile-detail-toggle">View profile</summary>
+        <div class="review-profile-card-body">
+          <div class="review-profile-section-grid">
+            <section class="review-profile-section">
+              <h4>Purpose</h4>
+              <p>${escapeHtml(profile.description || "No purpose description provided.")}</p>
+            </section>
+            <section class="review-profile-section">
+              <h4>Reviewers</h4>
+              ${renderReviewProfileChips(reviewerLabels, "All reviewer roles")}
+            </section>
+            <section class="review-profile-section">
+              <h4>Required outcomes</h4>
+              ${renderReviewProfileChips(outcomeLabels, "No required outcomes")}
+            </section>
+            <section class="review-profile-section review-profile-criteria-section">
+              <h4>Criteria</h4>
+              ${renderProfileCriteria(criteria)}
+            </section>
           </div>
-          <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
-          ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
-          ${renderProfileCriteria(criteria)}
+          ${renderReviewProfileTechnicalDetails(profile, scope, outcomeKinds)}
         </div>
       </details>
     </li>
   `;
 }
 
-function renderProfileCriteria(criteria) {
-  if (!criteria.length) {
+function reviewProfileScope(profile) {
+  if (profile.project_id) {
+    const project = state.projects[text(profile.project_id)];
+    return {
+      idLabel: "Project ID",
+      id: text(profile.project_id),
+      summary: `Project · ${text(project?.name) || "Unavailable project"}`,
+    };
+  }
+  const team = state.teams[text(profile.team_id)];
+  return {
+    idLabel: "Team ID",
+    id: text(profile.team_id),
+    summary: `Team-wide · ${text(team?.name) || "Unavailable team"}`,
+  };
+}
+
+function reviewProfileReviewerLabels(profile) {
+  return (profile.applicable_role_ids || []).map((roleId) => {
+    const role = state.roles[text(roleId)];
+    if (role) {
+      return roleLabel(role);
+    }
+    const roleKey = text(roleId).split("__").pop() || "";
+    return roleKey ? humanizeToken(roleKey.replace(/-/g, "_")) : "Unavailable role";
+  });
+}
+
+function reviewProfileOutcomeLabel(profile, kind) {
+  const normalizedKind = text(kind);
+  if (!normalizedKind) {
     return "";
   }
+  const project = state.projects[text(profile.project_id)];
+  const definition = project
+    ? effectiveOutcomeKindsForProject(project).find((candidate) => text(candidate.kind) === normalizedKind)
+    : values(state.outcome_kind_definitions)
+        .filter((candidate) =>
+          text(candidate.team_id) === text(profile.team_id)
+          && !candidate.project_id
+          && !candidate.archived
+          && text(candidate.kind) === normalizedKind
+        )
+        .sort(byId)
+        .at(-1);
+  return text(definition?.name) || humanizeToken(normalizedKind);
+}
+
+function renderReviewProfileChips(labels, emptyLabel) {
+  const visibleLabels = labels.map(text).filter(Boolean);
+  if (!visibleLabels.length) {
+    return `<p class="review-profile-empty">${escapeHtml(emptyLabel)}</p>`;
+  }
   return `
-    <ul class="inline-list">
+    <ul class="review-profile-chip-list">
+      ${visibleLabels.map((label) => `<li class="review-profile-chip">${escapeHtml(label)}</li>`).join("")}
+    </ul>
+  `;
+}
+
+function renderProfileCriteria(criteria) {
+  if (!criteria.length) {
+    return `<p class="review-profile-empty">No criteria defined.</p>`;
+  }
+  return `
+    <ul class="review-profile-criteria-list">
       ${criteria
         .map((criterion) => {
-          const required = criterion.required === false ? "optional" : "required";
-          const description = criterion.description ? ` - ${escapeHtml(criterion.description)}` : "";
-          return `<li>${escapeHtml(criterion.id)}: ${escapeHtml(criterion.label)} (${required})${description}</li>`;
+          const required = criterion.required !== false;
+          return `
+            <li class="review-profile-criterion">
+              <div class="review-profile-criterion-header">
+                <strong>${escapeHtml(criterion.label || "Unnamed criterion")}</strong>
+                <span class="criterion-requirement-badge ${required ? "required" : "optional"}">${required ? "Required" : "Optional"}</span>
+              </div>
+              ${criterion.description ? `<p>${escapeHtml(criterion.description)}</p>` : ""}
+            </li>
+          `;
         })
         .join("")}
     </ul>
   `;
+}
+
+function renderReviewProfileTechnicalDetails(profile, scope, outcomeKinds) {
+  const criteria = profile.criteria || [];
+  return `
+    <details class="technical-details review-profile-technical-details">
+      <summary>Technical details</summary>
+      <dl class="technical-details-list">
+        <div>
+          <dt>Profile ID</dt>
+          <dd><code>${escapeHtml(profile.id)}</code></dd>
+        </div>
+        <div>
+          <dt>${escapeHtml(scope.idLabel)}</dt>
+          <dd><code>${escapeHtml(scope.id)}</code></dd>
+        </div>
+        ${(profile.applicable_role_ids || []).length ? `
+          <div>
+            <dt>Reviewer role IDs</dt>
+            <dd>${profile.applicable_role_ids.map((roleId) => `<code>${escapeHtml(roleId)}</code>`).join(" ")}</dd>
+          </div>
+        ` : ""}
+        ${outcomeKinds.length ? `
+          <div>
+            <dt>Outcome kinds</dt>
+            <dd>${outcomeKinds.map((kind) => `<code>${escapeHtml(kind)}</code>`).join(" ")}</dd>
+          </div>
+        ` : ""}
+        ${criteria.length ? `
+          <div>
+            <dt>Criterion IDs</dt>
+            <dd>${criteria.map((criterion) => `<code>${escapeHtml(criterion.id)}</code>`).join(" ")}</dd>
+          </div>
+        ` : ""}
+      </dl>
+    </details>
+  `;
+}
+
+function governanceTeamEditorRows(selectedIds = []) {
+  const selected = new Set((selectedIds || []).map(text));
+  const teamsById = new Map(values(state.teams).map((team) => [text(team.id), team]));
+  selected.forEach((teamId) => {
+    if (teamId && !teamsById.has(teamId)) {
+      teamsById.set(teamId, { id: teamId, name: "Unavailable team", archived: true });
+    }
+  });
+  return Array.from(teamsById.values())
+    .sort(
+      (left, right) =>
+        text(left.name).localeCompare(text(right.name)) ||
+        text(left.id).localeCompare(text(right.id)),
+    )
+    .map((team) => {
+      const teamId = text(team.id);
+      const searchText = `${text(team.name)} ${teamId}`.toLowerCase();
+      return `
+        <label
+          class="governance-team-choice"
+          data-governance-team-choice
+          data-governance-team-search-text="${escapeAttr(searchText)}"
+        >
+          <input
+            type="checkbox"
+            name="governance_member_team__${escapeAttr(teamId)}"
+            value="${escapeAttr(teamId)}"
+            data-governance-member-team-id="${escapeAttr(teamId)}"
+            ${selected.has(teamId) ? "checked" : ""}
+          />
+          <span>
+            <strong>${escapeHtml(team.name || "Unnamed team")}</strong>
+            ${team.archived ? `<small>Archived or unavailable</small>` : ""}
+          </span>
+        </label>
+      `;
+    })
+    .join("");
+}
+
+function renderGovernanceMemberTeamsEditor(selectedIds = []) {
+  return `
+    <fieldset class="governance-member-teams-editor" data-governance-member-teams-editor>
+      <legend>Member teams</legend>
+      <label class="governance-team-search-label">
+        <span>Search teams</span>
+        <input
+          type="search"
+          name="governance_member_team_search"
+          data-governance-team-search
+          placeholder="Search by team name"
+          autocomplete="off"
+        />
+      </label>
+      <div class="governance-selected-teams" data-governance-selected-teams aria-live="polite"></div>
+      <div class="governance-team-choices" data-governance-team-choices>
+        ${governanceTeamEditorRows(selectedIds)}
+      </div>
+      <p class="field-help">Choose the teams supervised by this group. Team reporting lines are unchanged.</p>
+    </fieldset>
+  `;
+}
+
+function governanceMemberTeamIdsFromForm(form) {
+  return Array.from(
+    form.querySelectorAll("[data-governance-member-team-id]:checked"),
+  )
+    .map((input) => text(input.value))
+    .filter(Boolean);
+}
+
+function syncGovernanceMemberTeamEditor(editor) {
+  if (!editor) {
+    return;
+  }
+  const selected = Array.from(
+    editor.querySelectorAll("[data-governance-member-team-id]:checked"),
+  );
+  const summary = editor.querySelector("[data-governance-selected-teams]");
+  if (summary) {
+    summary.innerHTML = selected.length
+      ? selected
+          .map((input) => {
+            const teamId = text(input.value);
+            const team = state.teams?.[teamId];
+            const label = team?.name || "Unavailable team";
+            const attrs = lockedAttrs("change governance member teams");
+            return `
+              <span class="governance-team-chip">
+                <span>${escapeHtml(label)}</span>
+                <button
+                  type="button"
+                  data-governance-member-team-remove="${escapeAttr(teamId)}"
+                  aria-label="${escapeAttr(`Remove ${label}`)}"
+                  ${attrs}
+                >×</button>
+              </span>
+            `;
+          })
+          .join("")
+      : `<span class="empty-state">No member teams selected.</span>`;
+  }
+  const search = editor.querySelector("[data-governance-team-search]");
+  filterGovernanceMemberTeams(editor, search?.value || "");
+}
+
+function filterGovernanceMemberTeams(editor, value) {
+  if (!editor) {
+    return;
+  }
+  const query = text(value).toLowerCase();
+  editor.querySelectorAll("[data-governance-team-choice]").forEach((row) => {
+    const checkbox = row.querySelector("[data-governance-member-team-id]");
+    const matches =
+      !query ||
+      text(row.dataset.governanceTeamSearchText).includes(query) ||
+      Boolean(checkbox?.checked);
+    row.hidden = !matches;
+  });
+}
+
+function removeGovernanceMemberTeam(button) {
+  const editor = button.closest("[data-governance-member-teams-editor]");
+  const teamId = text(button.dataset.governanceMemberTeamRemove);
+  const checkbox = Array.from(
+    editor?.querySelectorAll?.("[data-governance-member-team-id]") || [],
+  ).find((candidate) => text(candidate.value) === teamId);
+  if (!checkbox) {
+    return;
+  }
+  checkbox.checked = false;
+  syncGovernanceMemberTeamEditor(editor);
+  rememberFormDraft(checkbox.form);
+}
+
+function renderGovernanceGoalsEditor(goals = []) {
+  return `
+    <fieldset class="governance-goals-editor" data-governance-goals-editor>
+      <legend>Goals</legend>
+      <div class="governance-goal-rows" data-governance-goal-rows>
+        ${(goals || []).map((goal) => renderGovernanceGoalEditorRow(goal)).join("")}
+      </div>
+      <p class="governance-goals-empty" data-governance-goals-empty>No goals yet.</p>
+      <button
+        class="record-action governance-goal-add"
+        type="button"
+        data-governance-goal-add
+      >Add goal</button>
+      <p class="field-help">Each goal has its own name and description. Its stable ID is managed as technical metadata.</p>
+    </fieldset>
+  `;
+}
+
+function renderGovernanceGoalEditorRow(goal = {}) {
+  const goalName =
+    text(goal.name) || text(goal.description) || humanizeToken(goal.id) || "";
+  const stateValue = text(goal.state) || "pending";
+  return `
+    <div class="governance-goal-row" data-governance-goal-row>
+      <input type="hidden" name="governance_goal_id" value="${escapeAttr(goal.id || "")}" />
+      <label>
+        <span>Name</span>
+        <input
+          name="governance_goal_name"
+          value="${escapeAttr(goalName)}"
+          placeholder="Improve delivery predictability"
+          required
+        />
+      </label>
+      <label>
+        <span>Description</span>
+        <textarea
+          name="governance_goal_description"
+          rows="2"
+          placeholder="Describe the intended outcome and how operators recognize it."
+          required
+        >${escapeHtml(goal.description || "")}</textarea>
+      </label>
+      <label>
+        <span>State</span>
+        <select name="governance_goal_state" required>
+          ${recordStates.map((value) => `
+            <option value="${escapeAttr(value)}"${stateValue === value ? " selected" : ""}>${escapeHtml(humanizeToken(value))}</option>
+          `).join("")}
+        </select>
+      </label>
+      <div class="governance-goal-row-actions" aria-label="Goal order and removal">
+        <button
+          class="record-action"
+          type="button"
+          data-governance-goal-move="up"
+          aria-label="Move goal up"
+        >Move up</button>
+        <button
+          class="record-action"
+          type="button"
+          data-governance-goal-move="down"
+          aria-label="Move goal down"
+        >Move down</button>
+        <button
+          class="record-action governance-goal-remove"
+          type="button"
+          data-governance-goal-remove
+        >Remove</button>
+      </div>
+    </div>
+  `;
+}
+
+function syncGovernanceGoalEditor(editor) {
+  if (!editor) {
+    return;
+  }
+  const rows = Array.from(editor.querySelectorAll("[data-governance-goal-row]"));
+  const mutationLocked = teamMutationLocked();
+  rows.forEach((row, index) => {
+    const up = row.querySelector('[data-governance-goal-move="up"]');
+    const down = row.querySelector('[data-governance-goal-move="down"]');
+    if (up) {
+      up.disabled = mutationLocked || index === 0;
+      up.setAttribute("aria-disabled", String(up.disabled));
+    }
+    if (down) {
+      down.disabled = mutationLocked || index === rows.length - 1;
+      down.setAttribute("aria-disabled", String(down.disabled));
+    }
+  });
+  const empty = editor.querySelector("[data-governance-goals-empty]");
+  if (empty) {
+    empty.hidden = rows.length > 0;
+  }
+}
+
+function addGovernanceGoalRow(editor) {
+  const rows = editor?.querySelector?.("[data-governance-goal-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderGovernanceGoalEditorRow({});
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  syncGovernanceGoalEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  row.querySelector('[name="governance_goal_name"]')?.focus();
+}
+
+function removeGovernanceGoalRow(button) {
+  const editor = button.closest("[data-governance-goals-editor]");
+  button.closest("[data-governance-goal-row]")?.remove();
+  syncGovernanceGoalEditor(editor);
+  rememberFormDraft(editor?.closest("form"));
+}
+
+function moveGovernanceGoalRow(button) {
+  const editor = button.closest("[data-governance-goals-editor]");
+  const row = button.closest("[data-governance-goal-row]");
+  const direction = text(button.dataset.governanceGoalMove);
+  if (!editor || !row) {
+    return;
+  }
+  if (direction === "up" && row.previousElementSibling) {
+    row.parentElement.insertBefore(row, row.previousElementSibling);
+  } else if (direction === "down" && row.nextElementSibling) {
+    row.parentElement.insertBefore(row.nextElementSibling, row);
+  }
+  syncGovernanceGoalEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  button.focus();
+}
+
+function governanceGoalsDraftFromForm(form) {
+  return Array.from(form.querySelectorAll("[data-governance-goal-row]")).map(
+    (row) => ({
+      id: text(row.querySelector('[name="governance_goal_id"]')?.value),
+      name: text(row.querySelector('[name="governance_goal_name"]')?.value),
+      description: text(
+        row.querySelector('[name="governance_goal_description"]')?.value,
+      ),
+      state:
+        text(row.querySelector('[name="governance_goal_state"]')?.value) ||
+        "pending",
+    }),
+  );
+}
+
+function restoreGovernanceGoalsDraft(form, goals) {
+  const editor = form.querySelector("[data-governance-goals-editor]");
+  const rows = editor?.querySelector?.("[data-governance-goal-rows]");
+  if (!rows || !Array.isArray(goals)) {
+    return;
+  }
+  rows.innerHTML = goals.map((goal) => renderGovernanceGoalEditorRow(goal)).join("");
+  decorateFieldTooltips(rows);
+  syncGovernanceGoalEditor(editor);
+}
+
+function validateGovernanceGroupEditor(form) {
+  const rows = Array.from(form.querySelectorAll("[data-governance-goal-row]"));
+  const names = new Map();
+  let valid = true;
+  rows.forEach((row) => {
+    const name = row.querySelector('[name="governance_goal_name"]');
+    const description = row.querySelector('[name="governance_goal_description"]');
+    const stateField = row.querySelector('[name="governance_goal_state"]');
+    name?.setCustomValidity("");
+    description?.setCustomValidity("");
+    stateField?.setCustomValidity("");
+    if (!text(name?.value)) {
+      name?.setCustomValidity("Give this governance goal a name.");
+      valid = false;
+    }
+    if (!text(description?.value)) {
+      description?.setCustomValidity("Describe the intended governance outcome.");
+      valid = false;
+    }
+    if (!recordStates.includes(text(stateField?.value))) {
+      stateField?.setCustomValidity("Choose a valid governance goal state.");
+      valid = false;
+    }
+    const normalizedName = text(name?.value).toLowerCase();
+    if (normalizedName) {
+      if (names.has(normalizedName)) {
+        name?.setCustomValidity("Goal names must be unique within the group.");
+        names.get(normalizedName)?.setCustomValidity(
+          "Goal names must be unique within the group.",
+        );
+        valid = false;
+      } else {
+        names.set(normalizedName, name);
+      }
+    }
+  });
+  if (!form.checkValidity()) {
+    valid = false;
+  }
+  if (!valid) {
+    form.reportValidity();
+    setStatus("Fix the highlighted governance goal before saving.", "error");
+  }
+  return valid;
+}
+
+function governanceGoalsFromForm(form) {
+  return governanceGoalsDraftFromForm(form).map((goal) => {
+    const payload = {
+      name: goal.name,
+      description: goal.description,
+      state: goal.state,
+    };
+    if (goal.id) {
+      payload.id = goal.id;
+    }
+    return payload;
+  });
 }
 
 function renderReviewProfileCriteriaEditor(criteria = []) {
@@ -11081,81 +15144,1094 @@ function uniqueCriterionId(baseId, usedIds) {
   return `${normalized}-${suffix}`;
 }
 
+function releaseIncludedWork(release) {
+  const names = [];
+  const deliverableIds = uniqueTextList([
+    ...(release.deliverable_ids || []),
+    ...((release.manifest?.deliverables || []).map((row) => row.deliverable_id)),
+  ]);
+  deliverableIds.forEach((deliverableId) => {
+    const deliverable = state.deliverables?.[deliverableId];
+    if (!deliverable) {
+      return;
+    }
+    const task = deliverableTask(deliverable);
+    names.push(task?.title || deliverableDisplaySubject(deliverable));
+  });
+  return uniqueTextList(names);
+}
+
+function releaseDisplayLabel(release) {
+  const work = releaseIncludedWork(release);
+  if (work.length) {
+    return `Release: ${work[0]}${work.length > 1 ? ` + ${work.length - 1} more` : ""}`;
+  }
+  const timestamp = release.published_at || release.updated_at || release.created_at;
+  if (timestamp) {
+    return `${release.published_at ? "Published" : "Release prepared"} ${formatTimelineTimestamp(timestamp)}`;
+  }
+  return "Project release";
+}
+
+function releaseProjectLabel(release) {
+  return state.projects?.[text(release.project_id)]?.name || text(release.project_id) || "Unknown project";
+}
+
+function releaseAgentReviews(release) {
+  const embedded = release.release_reviews || [];
+  if (embedded.length) {
+    return embedded.filter((review) => !review.superseded_by_review_request_id);
+  }
+  return uniqueTextList(release.review_request_ids || [])
+    .map((reviewId) => state.review_requests?.[reviewId])
+    .filter((review) => review && !review.superseded_by_review_request_id);
+}
+
+function releaseProgressStages(release) {
+  const manifest = release.manifest || null;
+  const modern = Number(release.policy_version || 1) >= 2 || Boolean(manifest);
+  const candidateSha = text(release.candidate_commit_sha || manifest?.candidate_commit_sha);
+  const verificationCommands = manifest?.verification_commands || [];
+  const verificationRuns = (release.verification_runs || []).filter(
+    (run) => !run.superseded_by_verification_run_id,
+  );
+  const reviews = releaseAgentReviews(release);
+  const reviewRequirements = manifest?.review_requirements || [];
+  const humanSummary = release.human_review || null;
+  const humanRequired = Boolean(manifest?.human_review_requirement || humanSummary);
+
+  const stages = [];
+  stages.push(
+    !modern
+      ? { label: "Candidate prepared", state: "legacy", detail: "Not recorded (legacy release)" }
+      : candidateSha
+        ? { label: "Candidate prepared", state: "complete", detail: "Pinned candidate ready" }
+        : { label: "Candidate prepared", state: release.state === "blocked" ? "blocked" : "pending", detail: "Waiting for a pinned candidate" },
+  );
+
+  if (!modern) {
+    stages.push({ label: "Automated verification", state: "legacy", detail: "Not recorded (legacy release)" });
+  } else if (!verificationCommands.length && !verificationRuns.length) {
+    stages.push({ label: "Automated verification", state: "not-applicable", detail: "No automated checks required" });
+  } else {
+    const runStates = verificationRuns.map((run) => text(run.state));
+    const failed = runStates.some((stateValue) => ["failed", "blocked", "rejected"].includes(stateValue));
+    const completed = runStates.length && runStates.every((stateValue) => ["passed", "succeeded", "accepted"].includes(stateValue));
+    stages.push({
+      label: "Automated verification",
+      state: failed ? "blocked" : completed ? "complete" : "pending",
+      detail: failed ? "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
+    });
+  }
+
+  if (!modern && !reviews.length) {
+    stages.push({ label: "Agent review", state: "legacy", detail: "Not recorded (legacy release)" });
+  } else if (!reviewRequirements.length && !reviews.length) {
+    stages.push({ label: "Agent review", state: "not-applicable", detail: "No agent review required" });
+  } else {
+    const reviewStates = reviews.map((review) => text(review.state));
+    const failed = reviewStates.some((stateValue) => ["blocked", "rejected"].includes(stateValue));
+    const completed = reviewStates.length && reviewStates.every((stateValue) => stateValue === "accepted");
+    stages.push({
+      label: "Agent review",
+      state: failed ? "blocked" : completed ? "complete" : "pending",
+      detail: failed ? "Review needs attention" : completed ? `${reviews.length} review${reviews.length === 1 ? "" : "s"} accepted` : "Awaiting agent review",
+    });
+  }
+
+  if (!humanRequired) {
+    stages.push({ label: "Human review", state: "not-applicable", detail: "Not required" });
+  } else {
+    const humanState = text(humanSummary?.state || "required");
+    const complete = ["approved", "accepted"].includes(humanState);
+    const failed = ["blocked", "changes_requested", "rejected"].includes(humanState);
+    stages.push({
+      label: "Human review",
+      state: complete ? "complete" : failed ? "blocked" : "pending",
+      detail: complete ? "Approved" : failed ? humanizeToken(humanState) : "Awaiting human decision",
+    });
+  }
+
+  const published = Boolean(release.published_at);
+  stages.push({
+    label: "Publication",
+    state: published ? "complete" : ["blocked", "rejected"].includes(text(release.state)) ? "blocked" : "pending",
+    detail: published ? `Published ${formatTimelineTimestamp(release.published_at)}` : release.error ? "Publication needs attention" : "Not published",
+  });
+  return stages;
+}
+
+function renderReleaseProgress(release) {
+  const stages = releaseProgressStages(release);
+  return `
+    <ol class="release-progress" aria-label="Release progress">
+      ${stages.map((stage, index) => `
+        <li class="release-progress-stage release-progress-${escapeAttr(stage.state)}">
+          <span class="release-progress-marker" aria-hidden="true">${stage.state === "complete" ? "✓" : index + 1}</span>
+          <span class="release-progress-copy">
+            <strong>${escapeHtml(stage.label)}</strong>
+            <span>${escapeHtml(stage.detail)}</span>
+          </span>
+        </li>
+      `).join("")}
+    </ol>
+  `;
+}
+
+function renderReleaseIncludedWork(release) {
+  const deliverableIds = uniqueTextList([
+    ...(release.deliverable_ids || []),
+    ...((release.manifest?.deliverables || []).map((row) => row.deliverable_id)),
+  ]);
+  if (!deliverableIds.length) {
+    return `<p class="empty-state">No included work recorded.</p>`;
+  }
+  return `
+    <ul class="release-included-work">
+      ${deliverableIds.map((deliverableId) => {
+        const deliverable = state.deliverables?.[deliverableId];
+        const task = deliverable ? deliverableTask(deliverable) : null;
+        return `
+          <li>
+            <strong>${escapeHtml(task?.title || (deliverable ? deliverableDisplaySubject(deliverable) : "Included deliverable"))}</strong>
+            ${deliverable?.summary ? `<p>${escapeHtml(readablePreview(deliverable.summary, 260))}</p>` : ""}
+            ${deliverable ? `<span>${escapeHtml(deliverableProducerLabel(deliverable))} · ${escapeHtml(humanizeToken(deliverable.state))}</span>` : ""}
+          </li>
+        `;
+      }).join("")}
+    </ul>
+  `;
+}
+
+function renderReleaseNotes(release) {
+  const summary = text(release.summary);
+  if (!summary) {
+    return `<p class="empty-state release-notes-empty">No release notes were recorded for this package.</p>`;
+  }
+  return `<div class="release-notes">${escapeHtml(summary)}</div>`;
+}
+
+function renderReleaseTechnicalDetails(release) {
+  const manifest = release.manifest || {};
+  return renderTechnicalDetails([
+    ["Release ID", release.id],
+    ["Project ID", release.project_id],
+    ["Deliverable IDs", release.deliverable_ids || []],
+    ["Supersedes release ID", release.supersedes_release_package_id],
+    ["Predecessor release ID", manifest.predecessor_release_package_id],
+    ["Release branch", release.release_branch],
+    ["Canonical branch", release.canonical_branch],
+    ["Feature branches", release.feature_branches || []],
+    ["Base commit", release.base_commit_sha],
+    ["Candidate commit", release.candidate_commit_sha || manifest.candidate_commit_sha],
+    ["Candidate tree", release.candidate_tree_hash || manifest.candidate_tree_hash],
+    ["Approved commit", release.approved_commit_sha],
+    ["Published commit", release.published_commit_sha],
+    ["Review IDs", release.review_request_ids || []],
+    ["Verification run IDs", release.verification_run_ids || []],
+    ["Promotion IDs", release.git_promotion_record_ids || []],
+  ]);
+}
+
+function renderReleaseCardBody(release) {
+  return `
+    <div class="release-card-body">
+      <section class="release-card-section">
+        <h4>Release progress</h4>
+        ${renderReleaseProgress(release)}
+      </section>
+      <section class="release-card-section">
+        <h4>Release notes</h4>
+        ${renderReleaseNotes(release)}
+      </section>
+      <section class="release-card-section">
+        <h4>Included work</h4>
+        ${renderReleaseIncludedWork(release)}
+      </section>
+      ${release.error ? `<div class="task-invalid-warning"><strong>Release needs attention:</strong> ${escapeHtml(release.error)}</div>` : ""}
+      ${renderRecordBlockers("release_package", release.id)}
+      ${renderReleaseGateAction(release)}
+      ${renderPostReleaseReportControl(release)}
+      ${renderReleaseDetailControl(release)}
+      ${renderCachedReleaseDetail(release.id)}
+      ${renderReleasePolicyDetails(release) ? `<details class="technical-details release-policy-details"><summary>Policy and gate details</summary><div class="release-policy-body">${renderReleasePolicyDetails(release)}</div></details>` : ""}
+      ${renderReleaseTechnicalDetails(release)}
+    </div>
+  `;
+}
+
+function renderReleaseCard(release, { compact = false } = {}) {
+  const work = releaseIncludedWork(release);
+  const scope = [
+    releaseProjectLabel(release),
+    work.length ? `${work.length} included work item${work.length === 1 ? "" : "s"}` : "No included work named",
+    release.published_at ? `Published ${formatTimelineTimestamp(release.published_at)}` : release.created_at ? `Prepared ${formatTimelineTimestamp(release.created_at)}` : "",
+  ].filter(Boolean);
+  return `
+    <li class="record-item compact-record-card release-card${compact ? " release-card-compact" : ""}" data-release-id="${escapeAttr(release.id)}">
+      <details${expandedReleaseDetailIds.has(text(release.id)) || postReleaseReportResults.has(text(release.id)) ? " open" : ""}>
+        <summary class="compact-record-summary release-card-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(releaseDisplayLabel(release))}</strong>
+            <span>${escapeHtml(scope.join(" · "))}</span>
+          </span>
+          <span class="state-pill ${escapeAttr(release.state)}">${escapeHtml(humanizeToken(release.state))}</span>
+        </summary>
+        <div class="compact-record-body">${renderReleaseCardBody(release)}</div>
+      </details>
+    </li>
+  `;
+}
+
 function renderReleases() {
   if (!document.querySelector("[data-releases-view]")) {
     return;
   }
-  const releases = values(state.release_packages).sort(byId);
+  updateMyHumanReviewsFilterButton();
+  const allReleases = values(state.release_packages).sort(byId);
+  const focusedRequest = focusedHumanReviewRequestId
+    ? humanReviewQueue.requests.find(
+        (request) => text(request.id) === focusedHumanReviewRequestId,
+      )
+    : null;
+  const assignedReleaseIds = new Set(
+    (focusedRequest ? [focusedRequest] : humanReviewQueue.requests)
+      .map((request) => text(request.release_package_id))
+      .filter(Boolean),
+  );
+  const releases = myHumanReviewsOnly
+    ? allReleases.filter((release) => assignedReleaseIds.has(text(release.id)))
+    : allReleases;
+  if (
+    myHumanReviewsOnly &&
+    (humanReviewQueue.loading ||
+      (!humanReviewQueue.loaded && !humanReviewQueue.error))
+  ) {
+    renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">Loading your human reviews.</p>`);
+    return;
+  }
+  if (myHumanReviewsOnly && humanReviewQueue.error) {
+    renderIntoActiveTargets(
+      "[data-releases-view]",
+      `<div class="task-invalid-warning">${escapeHtml(humanReviewQueue.error)} <button type="button" class="record-action" data-my-human-reviews-retry>Retry</button></div>`,
+    );
+    return;
+  }
   if (!releases.length) {
-    renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">No release packages.</p>`);
+    renderIntoActiveTargets(
+      "[data-releases-view]",
+      `<p class="empty-state">${myHumanReviewsOnly ? "No human reviews are assigned to you." : "No release packages."}</p>`,
+    );
     return;
   }
   if (activeTeamView === "delivery") {
     renderIntoActiveTargets("[data-releases-view]", `
       <ul class="release-list compact-record-list">
-        ${releases.map((release) => renderCompactRelease(release)).join("")}
+        ${releases.map((release) => renderReleaseCard(release, { compact: true })).join("")}
       </ul>
     `);
     return;
   }
   renderIntoActiveTargets("[data-releases-view]", `
-    <ul class="release-list">
-      ${releases
-        .map((release) => {
-          const deliverables = (release.deliverable_ids || []).join(", ");
-          const lines = [];
-          if (release.release_branch) lines.push(`release ${release.release_branch}`);
-          if (release.canonical_branch) lines.push(`canonical ${release.canonical_branch}`);
-          if (release.published_commit_sha) lines.push(`commit ${release.published_commit_sha}`);
-          return `
-            <li class="record-item">
-              <div class="record-line">
-                <strong>${escapeHtml(release.id)}</strong>
-                <span class="state-pill ${escapeHtml(release.state)}">${escapeHtml(release.state)}</span>
-              </div>
-              <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
-              ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
-              ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
-              ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
-              ${renderRecordBlockers("release_package", release.id)}
-              ${renderReleasePolicyDetails(release)}
-              ${renderReleaseGateAction(release)}
-            </li>
-          `;
-        })
-        .join("")}
+    <ul class="release-list compact-record-list">
+      ${releases.map((release) => renderReleaseCard(release)).join("")}
     </ul>
   `);
 }
 
 function renderCompactRelease(release) {
-  const deliverables = (release.deliverable_ids || []).join(", ");
-  const lines = [];
-  if (release.release_branch) lines.push(`release ${release.release_branch}`);
-  if (release.canonical_branch) lines.push(`canonical ${release.canonical_branch}`);
-  if (release.published_commit_sha) lines.push(`commit ${release.published_commit_sha}`);
+  return renderReleaseCard(release, { compact: true });
+}
+
+function renderReleaseHumanSummary(release) {
+  const summary = release.human_review;
+  if (!summary) {
+    return `<div class="meta-line">Human release review: not required</div>`;
+  }
+  const bits = [
+    `state ${summary.state || "required"}`,
+    summary.request_id ? `request ${summary.request_id}` : "",
+    Number(summary.request_count || 0) ? `${summary.request_count} attempt${Number(summary.request_count) === 1 ? "" : "s"}` : "",
+    (summary.open_finding_ids || []).length ? `open findings ${summary.open_finding_ids.join(", ")}` : "",
+    summary.next_action ? `next ${humanizeToken(summary.next_action)}` : "",
+  ].filter(Boolean);
+  return `<div class="release-human-summary"><strong>Human review:</strong> ${escapeHtml(bits.join(" - "))}</div>`;
+}
+
+function renderPostReleaseReportControl(release) {
+  if (
+    text(release.state) !== "accepted" ||
+    (!text(release.published_at) || !text(release.published_commit_sha))
+  ) {
+    return "";
+  }
+  const priorResult = postReleaseReportResults.get(text(release.id));
+  const caseRecord = priorResult?.case || null;
+  const triageTaskId = text(priorResult?.triageTaskId);
+  const triageTask = triageTaskId ? state.tasks?.[triageTaskId] : null;
+  const resultMarkup = caseRecord
+    ? `
+      <div class="post-release-report-result" role="status">
+        <strong>Follow-up recorded.</strong>
+        <div>Case <code>${escapeHtml(caseRecord.id)}</code>${caseRecord.title ? ` - ${escapeHtml(caseRecord.title)}` : ""}${caseRecord.status ? ` - ${escapeHtml(caseRecord.status)}` : ""}</div>
+        ${
+          triageTaskId
+            ? `<div>Triage task <code>${escapeHtml(triageTaskId)}</code>${triageTask?.title ? ` - ${escapeHtml(triageTask.title)}` : ""}${triageTask?.state ? ` - ${escapeHtml(triageTask.state)}` : ""}</div>`
+            : ""
+        }
+      </div>
+    `
+    : "";
   return `
-    <li class="record-item compact-record-card">
+    <div class="post-release-report-control">
+      ${resultMarkup}
       <details>
-        <summary class="compact-record-summary">
-          <span class="compact-record-main">
-            <strong>${escapeHtml(release.id)}</strong>
-            <span>Project ${escapeHtml(release.project_id)}${deliverables ? ` - ${escapeHtml(deliverables)}` : ""}</span>
-          </span>
-          <span class="state-pill ${escapeHtml(release.state)}">${escapeHtml(release.state)}</span>
-        </summary>
-        <div class="compact-record-body">
-          <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
-          ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
-          ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
-          ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
-          ${renderRecordBlockers("release_package", release.id)}
-          ${renderReleasePolicyDetails(release)}
-          ${renderReleaseGateAction(release)}
-        </div>
+        <summary>Report regression or adjustment</summary>
+        <form
+          class="post-release-report-form"
+          data-post-release-report-form
+          data-release-id="${escapeAttr(release.id)}"
+        >
+          <p class="post-release-report-boundary">
+            Reporting creates a follow-up case and triage task. It does not roll back this published release and does not automatically create or authorize a successor.
+          </p>
+          <label>
+            Reason or adjustment needed
+            <textarea
+              name="report"
+              rows="3"
+              required
+              aria-required="true"
+              placeholder="Describe the regression, operational issue, or adjustment that needs triage"
+            ></textarea>
+          </label>
+          <label>
+            Evidence references
+            <textarea
+              name="evidence_refs"
+              rows="2"
+              required
+              aria-required="true"
+              placeholder="artifact-space:..., one per line"
+            ></textarea>
+          </label>
+          <div class="record-actions">
+            <button type="submit" class="record-action">Create follow-up case and triage task</button>
+          </div>
+        </form>
       </details>
-    </li>
+    </div>
   `;
+}
+
+function renderReleaseDetailControl(release) {
+  const expanded = expandedReleaseDetailIds.has(text(release.id));
+  return `
+    <div class="record-actions release-detail-actions">
+      <button
+        type="button"
+        class="record-action"
+        data-release-detail-id="${escapeAttr(release.id)}"
+        aria-expanded="${expanded ? "true" : "false"}"
+      >${expanded ? "Close release detail" : "Open release detail"}</button>
+    </div>
+  `;
+}
+
+function renderCachedReleaseDetail(releaseId) {
+  if (!expandedReleaseDetailIds.has(text(releaseId))) {
+    return "";
+  }
+  const cached = releaseDetailCache.get(text(releaseId));
+  if (!cached || cached.loading) {
+    return `<div class="release-review-detail"><p class="empty-state">Loading release detail.</p></div>`;
+  }
+  if (cached.error) {
+    return `<div class="release-review-detail task-invalid-warning">${escapeHtml(cached.error)}</div>`;
+  }
+  return renderReleaseDetail(cached.release);
+}
+
+async function toggleReleaseDetail(releaseId) {
+  if (!releaseId) {
+    return;
+  }
+  if (expandedReleaseDetailIds.has(releaseId)) {
+    expandedReleaseDetailIds.delete(releaseId);
+    renderReleaseDetailSurfaces();
+    return;
+  }
+  expandedReleaseDetailIds.add(releaseId);
+  renderReleaseDetailSurfaces();
+  const cached = releaseDetailCache.get(releaseId);
+  if (!cached?.release) {
+    await loadReleaseDetail(releaseId);
+  }
+}
+
+function renderReleaseDetailSurfaces() {
+  renderReleases();
+  renderProjectFocus();
+}
+
+async function loadReleaseDetail(releaseId) {
+  releaseDetailCache.set(releaseId, { loading: true, error: null, release: null });
+  renderReleaseDetailSurfaces();
+  try {
+    const response = await teamFetch(`${API_BASE}/release-packages/${encodeURIComponent(releaseId)}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const release = await response.json();
+    releaseDetailCache.set(releaseId, { loading: false, error: null, release });
+  } catch (error) {
+    releaseDetailCache.set(releaseId, {
+      loading: false,
+      error: error instanceof Error ? error.message : "Release detail could not be loaded.",
+      release: null,
+    });
+  }
+  renderReleaseDetailSurfaces();
+}
+
+async function loadMyHumanReviews() {
+  if (humanReviewQueue.loading) {
+    return;
+  }
+  humanReviewQueue = { ...humanReviewQueue, loading: true, error: null };
+  renderReleases();
+  try {
+    const query = new URLSearchParams({ assigned_to: "me" });
+    const response = await teamFetch(`${API_BASE}/human-review-requests?${query.toString()}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    humanReviewQueue = {
+      loaded: true,
+      loading: false,
+      error: null,
+      requests: payload.human_review_requests || [],
+    };
+    state.revision = payload.revision ?? state.revision;
+  } catch (error) {
+    humanReviewQueue = {
+      ...humanReviewQueue,
+      loaded: false,
+      loading: false,
+      error: error instanceof Error ? error.message : "Human reviews could not be loaded.",
+    };
+  }
+  renderShell();
+  renderReleases();
+}
+
+async function openHumanReviewDeepLink(requestId) {
+  myHumanReviewsOnly = true;
+  focusedHumanReviewRequestId = text(requestId);
+  await loadMyHumanReviews();
+  if (!focusedHumanReviewRequestId) {
+    return true;
+  }
+  const request = humanReviewQueue.requests.find(
+    (item) => text(item.id) === focusedHumanReviewRequestId,
+  );
+  const releaseId = text(request?.release_package_id);
+  if (!request || !releaseId || !state.release_packages?.[releaseId]) {
+    focusedHumanReviewRequestId = "";
+    renderReleases();
+    return false;
+  }
+  expandedReleaseDetailIds.add(releaseId);
+  renderReleases();
+  await loadReleaseDetail(releaseId);
+  focusHumanReviewRequestElement(focusedHumanReviewRequestId);
+  return true;
+}
+
+function focusHumanReviewRequestElement(requestId) {
+  const element = document.getElementById(`human-review-${text(requestId)}`);
+  if (!element) {
+    return;
+  }
+  element.focus({ preventScroll: true });
+  element.scrollIntoView({ block: "center", behavior: "auto" });
+}
+
+function renderReleaseDetail(release) {
+  if (!release) {
+    return "";
+  }
+  const manifest = release.manifest || {};
+  const project = state.projects[release.project_id] || {};
+  const contributionGraph = manifest.contribution_graph || {};
+  const deliverableRows = manifest.deliverables || [];
+  const verificationRuns = release.verification_runs || [];
+  const releaseReviews = release.release_reviews || [];
+  const humanRequests = release.human_review?.requests || [];
+  const includedWork = releaseIncludedWork(release);
+  return `
+    <section class="release-review-detail" id="release-detail-${escapeAttr(release.id)}">
+      <div class="release-review-heading">
+        <div>
+          <p class="section-label">Release detail</p>
+          <h3>${escapeHtml(releaseDisplayLabel(release))}</h3>
+        </div>
+        <span class="state-pill ${escapeAttr(release.state)}">${escapeHtml(release.state)}</span>
+      </div>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Project</div><div class="delivery-detail-value">${escapeHtml(project.name || "Unknown project")}</div></div>
+        <div><div class="delivery-detail-label">Included work</div><div class="delivery-detail-value">${escapeHtml(includedWork.join(", ") || "No named work")}</div></div>
+        <div><div class="delivery-detail-label">Release lineage</div><div class="delivery-detail-value">${release.supersedes_release_package_id || manifest.predecessor_release_package_id ? "Successor release attempt" : "Initial release attempt"}</div></div>
+        <div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value">${release.candidate_commit_sha || manifest.candidate_commit_sha ? "Pinned candidate prepared" : Number(release.policy_version || 1) < 2 ? "Not recorded (legacy release)" : "Not prepared"}</div></div>
+        <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${release.published_at ? renderRecordDate(release.published_at, "Published") : escapeHtml(release.next_action_hint || release.next_action || "Not published")}</div></div>
+        <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
+      </div>
+      ${renderReleaseDeliverableEvidence(deliverableRows, release)}
+      ${renderReleaseContributionGraph(contributionGraph)}
+      ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [])}
+      ${renderReleaseAgentReviews(releaseReviews)}
+      ${renderReleaseHumanRequests(humanRequests, manifest)}
+      ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
+    </section>
+  `;
+}
+
+function renderReleaseDeliverableEvidence(rows, release) {
+  if (!rows.length) {
+    const deliverableIds = release.deliverable_ids || [];
+    return deliverableIds.length
+      ? `<div class="release-detail-section"><h4>Included work evidence</h4><ul class="delivery-detail-list">${deliverableIds.map((id) => {
+          const deliverable = state.deliverables[id] || {};
+          const task = deliverableTask(deliverable);
+          return `<li><strong>${escapeHtml(task?.title || deliverableDisplaySubject(deliverable))}</strong>${deliverable.summary ? `<div>${escapeHtml(readablePreview(deliverable.summary, 320))}</div>` : ""}${renderTechnicalDetails([["Deliverable ID", id], ["Task ID", deliverable.task_id]])}</li>`;
+        }).join("")}</ul></div>`
+      : "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Included work evidence</h4>
+      <ul class="delivery-detail-list">
+        ${rows.map((row) => {
+          const deliverable = state.deliverables[row.deliverable_id] || {};
+          const task = deliverableTask(deliverable);
+          const reviews = row.accepted_reviews || [];
+          const verification = row.verification || {};
+          return `<li>
+            <strong>${escapeHtml(task?.title || deliverableDisplaySubject(deliverable))}</strong>
+            ${deliverable.summary ? `<div>${escapeHtml(readablePreview(deliverable.summary, 320))}</div>` : ""}
+            <div class="meta-line">Verification ${escapeHtml(humanizeToken(verification.status || "not recorded"))}${reviews.length ? ` · ${reviews.length} accepted agent review${reviews.length === 1 ? "" : "s"}` : ""}</div>
+            ${renderTechnicalDetails([
+              ["Deliverable ID", row.deliverable_id],
+              ["Task ID", deliverable.task_id],
+              ["Feature branch", row.feature_branch],
+              ["Feature commit", row.feature_commit_sha],
+              ["Review IDs", reviews.map((review) => review.review_request_id)],
+            ])}
+          </li>`;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderReleaseContributionGraph(graph) {
+  const rows = Object.entries(graph || {});
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Contribution lineage</h4>
+      <ul class="delivery-detail-list">
+        ${rows.map(([deliverableId, sourceIds]) => {
+          const deliverable = state.deliverables?.[deliverableId];
+          const sources = (sourceIds || []).map((sourceId) => state.deliverables?.[sourceId]).filter(Boolean);
+          return `<li>
+            <strong>${escapeHtml(deliverable ? deliverableDisplaySubject(deliverable) : "Included work")}</strong>
+            <div class="meta-line">${sources.length ? `Built from ${escapeHtml(sources.map(deliverableDisplaySubject).join(", "))}` : "Direct contribution"}</div>
+            ${renderTechnicalDetails([["Deliverable ID", deliverableId], ["Source deliverable IDs", sourceIds || []]])}
+          </li>`;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderReleaseVerificationRuns(runs, commands) {
+  if (!runs.length && !commands.length) {
+    return "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Automated verification</h4>
+      ${
+        runs.length
+          ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
+              <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
+              ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
+              ${(run.command_results || []).length ? `<ul class="inline-list">${run.command_results.map((result) => `<li>${escapeHtml(result.name)}: ${escapeHtml(result.state)}${result.log_excerpt ? ` - ${escapeHtml(result.log_excerpt)}` : ""}</li>`).join("")}</ul>` : ""}
+              ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]])}
+            </li>`).join("")}</ul>`
+          : `<div class="meta-line">Configured commands: ${escapeHtml(commands.map((command) => command.name).join(", "))}</div>`
+      }
+    </div>
+  `;
+}
+
+function renderReleaseAgentReviews(reviews) {
+  if (!reviews.length) {
+    return "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Agent review decisions</h4>
+      <ul class="delivery-detail-list">
+        ${reviews.map((review) => {
+          const reviewer = state.agents?.[review.reviewer_agent_id];
+          return `<li>
+          <strong>Review by ${escapeHtml(reviewer ? agentLabel(reviewer) : "Assigned reviewer")}</strong> <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span>
+          ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
+          ${renderReleaseReviewCriteria(review)}
+          ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
+          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]])}
+        </li>`;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderReleaseReviewCriteria(review) {
+  const snapshots = review.criteria_snapshot || [];
+  const results = review.criteria || [];
+  const resultsById = new Map(
+    results.map((result) => [text(result.criterion_id || result.id), result]),
+  );
+  const rows = snapshots.length
+    ? snapshots.map((criterion) => {
+        const result = resultsById.get(text(criterion.id || criterion.criterion_id));
+        return {
+          label: criterion.label || criterion.criterion_id || criterion.id,
+          state:
+            result?.state ||
+            criterion.state ||
+            (criterion.required === false ? "optional" : "required"),
+          finding: result?.finding || criterion.finding || "",
+        };
+      })
+    : results.map((result) => ({
+        label: result.label || result.criterion_id || result.id,
+        state: result.state || "not recorded",
+        finding: result.finding || "",
+      }));
+  if (!rows.length) {
+    return "";
+  }
+  return `<ul class="inline-list">${rows.map((row) => `<li>${escapeHtml(row.label)}: ${escapeHtml(row.state)}${row.finding ? ` - ${escapeHtml(row.finding)}` : ""}</li>`).join("")}</ul>`;
+}
+
+function renderReleaseHumanRequests(requests, manifest) {
+  const carriedFindings = manifest.carried_human_findings || [];
+  if (!requests.length) {
+    return manifest.human_review_requirement
+      ? `<div class="release-detail-section"><h4>Human acceptance</h4><p class="empty-state">Human review is required, but detailed requests are unavailable to this user or have not been created yet.</p></div>`
+      : "";
+  }
+  return `
+    <div class="release-detail-section">
+      <h4>Human request and decision history</h4>
+      ${carriedFindings.length ? `<div class="release-carried-findings"><strong>Carried findings requiring explicit confirmation:</strong> ${escapeHtml(carriedFindings.map((finding) => finding.finding_id || finding.id).join(", "))}</div>` : ""}
+      <div class="human-review-request-list">
+        ${requests.map((request) => renderHumanReviewRequest(request, carriedFindings)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderHumanReviewRequest(request, carriedFindings) {
+  const assignment = request.current_assignment || {};
+  const target = request.test_target || null;
+  const checklist = request.requirement_snapshot?.checklist || [];
+  const decisions = request.decisions || [];
+  const findings = request.findings || [];
+  return `
+    <article class="human-review-request${text(request.id) === focusedHumanReviewRequestId ? " human-review-request-focused" : ""}" id="human-review-${escapeAttr(request.id)}" tabindex="-1">
+      <div class="record-line">
+        <strong>Human acceptance request</strong>
+        <span class="state-pill ${escapeAttr(request.state)}">${escapeHtml(request.state)}</span>
+      </div>
+      <div class="meta-line">${request.ready_at ? `Ready ${renderRecordDate(request.ready_at)}` : "Preparation pending"} · request revision ${Number(request.revision || 0)}</div>
+      <div class="meta-line">Assigned reviewers: ${escapeHtml([...(assignment.explicitly_assigned_user_ids || []), ...(assignment.eligible_user_ids || [])].filter((value, index, values_) => values_.indexOf(value) === index).length || "none")}</div>
+      <div class="meta-line">Preparation mode ${escapeHtml(humanizeToken(request.requirement_snapshot?.preparation_mode || "manual"))} · ${checklist.length} checklist item${checklist.length === 1 ? "" : "s"}</div>
+      ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${escapeHtml(request.requirement_snapshot.test_instructions)}</div>` : ""}
+      ${renderHumanReviewTarget(target)}
+      ${renderHumanChecklistHistory(checklist)}
+      ${renderHumanDecisionHistory(decisions)}
+      ${renderHumanFindingHistory(findings, request.correction_tasks || [])}
+      ${request.state === "pending" ? renderHumanReviewDecisionForm(request, checklist, carriedFindings) : ""}
+      ${renderHumanReviewOwnerActions(request)}
+      ${renderTechnicalDetails([
+        ["Human review request ID", request.id],
+        ["Release ID", request.release_package_id],
+        ["Candidate commit", request.candidate_commit_sha],
+        ["Candidate tree", request.candidate_tree_hash],
+      ])}
+    </article>
+  `;
+}
+
+function renderHumanReviewTarget(target) {
+  if (!target) {
+    return `<div class="meta-line">Preview/test target: manual instructions only or preparation still pending.</div>`;
+  }
+  const targetName = target.url || target.alias || "prepared target";
+  return `
+    <div class="human-review-target">
+      <strong>Prepared test target:</strong> <code>${escapeHtml(targetName)}</code>
+      ${target.expires_at ? `<div class="meta-line">Expires ${escapeHtml(target.expires_at)}</div>` : ""}
+      ${target.instructions ? `<div>${escapeHtml(target.instructions)}</div>` : ""}
+      ${(target.evidence_refs || []).length ? `<div class="meta-line">Target evidence: ${escapeHtml(target.evidence_refs.join(", "))}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderHumanChecklistHistory(checklist) {
+  if (!checklist.length) {
+    return `<div class="meta-line">Human checklist: no configured items.</div>`;
+  }
+  return `<ul class="human-review-checklist">${checklist.map((item) => `<li><strong>${escapeHtml(item.label)}</strong> (${item.required === false ? "optional" : "required"})${item.description ? ` - ${escapeHtml(item.description)}` : ""}</li>`).join("")}</ul>`;
+}
+
+function renderHumanDecisionHistory(decisions) {
+  if (!decisions.length) {
+    return "";
+  }
+  return `<ul class="delivery-detail-list">${decisions.map((decision) => `<li>
+    <strong>${escapeHtml(decision.decision)}</strong> by ${escapeHtml(decision.reviewer_display_name_snapshot || decision.reviewer_user_id)} at ${escapeHtml(decision.decided_at || "")}
+    ${decision.summary ? `<div>${escapeHtml(decision.summary)}</div>` : ""}
+    ${(decision.evidence_refs || []).length ? `<div class="meta-line">Evidence: ${escapeHtml(decision.evidence_refs.join(", "))}</div>` : ""}
+  </li>`).join("")}</ul>`;
+}
+
+function renderHumanFindingHistory(findings, correctionTasks) {
+  if (!findings.length && !correctionTasks.length) {
+    return "";
+  }
+  return `
+    <div class="human-finding-history">
+      <strong>Findings and correction work</strong>
+      <ul class="delivery-detail-list">
+        ${findings.map((finding) => `<li>
+          <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
+          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` - targets ${escapeHtml(finding.target_deliverable_ids.join(", "))}` : ""}</div>
+          ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
+          ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
+        </li>`).join("")}
+        ${correctionTasks.map((task) => `<li><strong>${escapeHtml(task.id)}</strong> - ${escapeHtml(task.title)} <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(task.state)}</span>${task.originating_task_id ? ` - origin ${escapeHtml(task.originating_task_id)}` : ""}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
+  return `
+    <form class="human-review-decision-form" data-human-review-decision-form data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
+      <fieldset>
+        <legend>Human acceptance checklist</legend>
+        ${checklist.map((item) => `<label class="checkbox-label"><input type="checkbox" data-human-checklist-id="${escapeAttr(item.id)}"${item.required === false ? "" : " required"} /> ${escapeHtml(item.label)}${item.required === false ? " (optional)" : ""}</label>`).join("") || `<p class="empty-state">No checklist items.</p>`}
+      </fieldset>
+      ${
+        carriedFindings.length
+          ? `<fieldset><legend>Confirm carried findings</legend>${carriedFindings.map((finding) => `<label class="checkbox-label"><input type="checkbox" data-confirm-finding-id="${escapeAttr(finding.finding_id || finding.id)}" /> ${escapeHtml(finding.finding_id || finding.id)} - ${escapeHtml(finding.text || "")}</label>`).join("")}</fieldset>`
+          : ""
+      }
+      <label>Decision summary<textarea name="summary" rows="3" placeholder="What was tested and why this decision is appropriate"></textarea></label>
+      <label>Evidence references<textarea name="evidence_refs" rows="2" placeholder="artifact-space:..., one per line"></textarea></label>
+      <details>
+        <summary>Changes requested fields</summary>
+        <label>Actionable findings<textarea name="findings" rows="4" placeholder="One actionable finding per line"></textarea></label>
+        <label>Target deliverable IDs<textarea name="target_deliverable_ids" rows="2" placeholder="One per line"></textarea></label>
+      </details>
+      <div class="record-actions">
+        <button type="submit" class="record-action human-review-approve" data-human-review-decision="approved">Approve</button>
+        <button type="submit" class="record-action" data-human-review-decision="changes_requested" formnovalidate>Request changes</button>
+        <button type="submit" class="record-action" data-human-review-decision="blocked" formnovalidate>Blocked</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderHumanReviewOwnerActions(request) {
+  if (["approved", "changes_requested"].includes(text(request.state))) {
+    return "";
+  }
+  return `
+    <div class="record-actions human-review-owner-actions">
+      ${request.state === "blocked" ? `<button type="button" class="record-action" data-human-review-resume-id="${escapeAttr(request.id)}">Resume unchanged candidate</button>` : ""}
+      <button type="button" class="record-action" data-human-review-reassign-id="${escapeAttr(request.id)}">Reassign</button>
+    </div>
+  `;
+}
+
+function renderReleaseEvidence(release, deliverableRows, humanRequests) {
+  const refs = new Set(release.artifact_refs || []);
+  deliverableRows.forEach((row) => (row.artifact_refs || []).forEach((ref) => refs.add(ref)));
+  humanRequests.forEach((request) => {
+    (request.test_target?.evidence_refs || []).forEach((ref) => refs.add(ref));
+    (request.decisions || []).forEach((decision) =>
+      (decision.evidence_refs || []).forEach((ref) => refs.add(ref)),
+    );
+    (request.findings || []).forEach((finding) => {
+      (finding.evidence_refs || []).forEach((ref) => refs.add(ref));
+      (finding.resolution_evidence_refs || []).forEach((ref) => refs.add(ref));
+    });
+  });
+  if (!refs.size) {
+    return "";
+  }
+  return `<div class="release-detail-section"><h4>Evidence and attachments</h4><ul class="delivery-detail-list">${[...refs].sort().map((ref) => `<li><code>${escapeHtml(ref)}</code></li>`).join("")}</ul></div>`;
+}
+
+function humanReviewRequestById(requestId) {
+  const queued = humanReviewQueue.requests.find((request) => text(request.id) === text(requestId));
+  if (queued) {
+    return queued;
+  }
+  for (const cached of releaseDetailCache.values()) {
+    const request = cached.release?.human_review?.requests?.find(
+      (item) => text(item.id) === text(requestId),
+    );
+    if (request) {
+      return request;
+    }
+  }
+  return null;
+}
+
+async function submitPostReleaseReport(form, submitter) {
+  if (!guardTeamMutation("report post-release issues")) {
+    return;
+  }
+  const releaseId = text(form.dataset.releaseId);
+  const release = state.release_packages?.[releaseId];
+  if (
+    !releaseId ||
+    text(release?.state) !== "accepted" ||
+    (!text(release?.published_at) || !text(release?.published_commit_sha))
+  ) {
+    setStatus("Post-release reporting is only available for a published release.", "error");
+    return;
+  }
+  const data = formData(form);
+  const report = text(data.report);
+  const evidenceRefs = splitList(data.evidence_refs);
+  if (!report) {
+    setStatus("A reason for the regression or adjustment is required.", "error");
+    form.elements.report?.focus();
+    return;
+  }
+  if (!evidenceRefs.length) {
+    setStatus("At least one evidence reference is required.", "error");
+    form.elements.evidence_refs?.focus();
+    return;
+  }
+  if (submitter) {
+    submitter.disabled = true;
+  }
+  setStatus(`Reporting follow-up for published release ${releaseId}.`, "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/report-issue`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          report,
+          evidence_refs: evidenceRefs,
+          request_id: teamUiMutationRequestId(releaseId, "report-issue"),
+          expected_revision: Number(state.revision || 0),
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    state.revision = payload.revision ?? state.revision;
+    postReleaseReportResults.set(releaseId, {
+      case: payload.case || null,
+      triageTaskId: text(payload.result?.triage_task_id),
+    });
+    releaseDetailCache.delete(releaseId);
+    await loadView("delivery", { force: true, preserveForms: false });
+    if (expandedReleaseDetailIds.has(releaseId)) {
+      await loadReleaseDetail(releaseId);
+    }
+    renderReleases();
+    setStatus(
+      "Post-release follow-up recorded. The published release remains unchanged pending triage.",
+      "success",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Post-release follow-up could not be recorded.",
+      "error",
+    );
+  } finally {
+    if (submitter) {
+      submitter.disabled = false;
+    }
+  }
+}
+
+async function submitHumanReviewDecision(form, submitter) {
+  if (!guardTeamMutation("record human review decisions")) {
+    return;
+  }
+  const requestId = text(form.dataset.humanReviewRequestId);
+  const releaseId = text(form.dataset.releaseId);
+  const decision = text(submitter?.dataset?.humanReviewDecision);
+  if (!requestId || !decision) {
+    setStatus("Human review decision context is incomplete.", "error");
+    return;
+  }
+  const checklistResults = {};
+  form.querySelectorAll("[data-human-checklist-id]").forEach((input) => {
+    checklistResults[text(input.dataset.humanChecklistId)] = Boolean(input.checked);
+  });
+  const confirmedFindingIds = [...form.querySelectorAll("[data-confirm-finding-id]:checked")]
+    .map((input) => text(input.dataset.confirmFindingId))
+    .filter(Boolean);
+  const data = formData(form);
+  const findings = splitList(data.findings).map((findingText) => ({
+    text: findingText,
+    target_deliverable_ids: splitList(data.target_deliverable_ids),
+    evidence_refs: splitList(data.evidence_refs),
+  }));
+  if (decision === "changes_requested" && !findings.length) {
+    setStatus("Request changes requires at least one actionable finding.", "error");
+    return;
+  }
+  const payload = {
+    decision,
+    request_id: humanReviewMutationRequestId(requestId, decision),
+    expected_revision: Number(form.dataset.requestRevision || 0),
+    checklist_results: checklistResults,
+    confirmed_finding_ids: confirmedFindingIds,
+    summary: text(data.summary),
+    evidence_refs: splitList(data.evidence_refs),
+    findings,
+  };
+  await mutateHumanReview(
+    submitter,
+    `/human-review-requests/${encodeURIComponent(requestId)}/decisions`,
+    payload,
+    { requestId, releaseId, successMessage: `Human review ${decision.replaceAll("_", " ")} recorded.` },
+  );
+}
+
+async function resumeHumanReview(button, requestId) {
+  const request = humanReviewRequestById(requestId);
+  if (!request) {
+    setStatus("Human review request is no longer available.", "error");
+    return;
+  }
+  await mutateHumanReview(
+    button,
+    `/human-review-requests/${encodeURIComponent(requestId)}/resume`,
+    {
+      request_id: humanReviewMutationRequestId(requestId, "resume"),
+      expected_revision: Number(request.revision || 0),
+    },
+    {
+      requestId,
+      releaseId: request.release_package_id,
+      successMessage: "Human review resumed against the unchanged candidate.",
+    },
+  );
+}
+
+async function reassignHumanReview(button, requestId, userIds) {
+  const request = humanReviewRequestById(requestId);
+  if (!request) {
+    setStatus("Human review request is no longer available.", "error");
+    return;
+  }
+  if (!userIds.length) {
+    setStatus("Reassignment requires at least one Admin Web user ID.", "error");
+    return;
+  }
+  await mutateHumanReview(
+    button,
+    `/human-review-requests/${encodeURIComponent(requestId)}/reassign`,
+    {
+      request_id: humanReviewMutationRequestId(requestId, "reassign"),
+      expected_revision: Number(request.revision || 0),
+      user_ids: userIds,
+    },
+    {
+      requestId,
+      releaseId: request.release_package_id,
+      successMessage: "Human review reassigned.",
+    },
+  );
+}
+
+async function mutateHumanReview(control, endpoint, payload, { requestId, releaseId, successMessage }) {
+  if (control) {
+    control.disabled = true;
+  }
+  setStatus("Saving human review action.", "loading");
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const result = await response.json();
+    state.revision = result.revision ?? state.revision;
+    const updatedRequest = result.human_review_request;
+    if (updatedRequest) {
+      humanReviewQueue.requests = humanReviewQueue.requests.map((request) =>
+        text(request.id) === text(requestId) ? updatedRequest : request,
+      );
+    }
+    releaseDetailCache.delete(text(releaseId));
+    await Promise.all([
+      loadView("delivery", { force: true, preserveForms: false }),
+      loadMyHumanReviews(),
+    ]);
+    if (expandedReleaseDetailIds.has(text(releaseId))) {
+      await loadReleaseDetail(text(releaseId));
+    }
+    setStatus(successMessage, "success");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Human review action failed.", "error");
+  } finally {
+    if (control) {
+      control.disabled = false;
+    }
+  }
+}
+
+function teamUiMutationRequestId(scopeId, action) {
+  const randomPart =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `team-ui:${scopeId}:${action}:${randomPart}`;
+}
+
+function humanReviewMutationRequestId(requestId, action) {
+  return teamUiMutationRequestId(requestId, action);
 }
 
 function renderReleasePolicyDetails(release) {
@@ -11169,7 +16245,11 @@ function renderReleasePolicyDetails(release) {
   const scopeMarkup = scope
     ? `<div class="meta-line">Scope validation: ${escapeHtml(scope.state)}${(scope.unexpected_commit_shas || []).length ? ` - unexpected commits ${escapeHtml(scope.unexpected_commit_shas.join(", "))}` : ""}${(scope.unexpected_paths || []).length ? ` - unexpected paths ${escapeHtml(scope.unexpected_paths.join(", "))}` : ""}</div>`
     : "";
-  return `${waiverMarkup}${scopeMarkup}`;
+  const humanRequirement = release.manifest?.human_review_requirement;
+  const humanMarkup = humanRequirement
+    ? `<div class="meta-line">Human gate: ${escapeHtml(humanRequirement.preparation_mode || "manual")} - groups ${escapeHtml((humanRequirement.configured_group_ids || []).join(", ") || "redacted")} - ${(humanRequirement.checklist || []).length} checklist item${(humanRequirement.checklist || []).length === 1 ? "" : "s"}</div>`
+    : "";
+  return `${waiverMarkup}${scopeMarkup}${humanMarkup}`;
 }
 
 function renderReleaseGateAction(release) {
@@ -11548,7 +16628,7 @@ async function loadTimeline() {
   const search = timelineSearchParams();
 
   timelineLoading = true;
-  setTimelineStatus("Loading derived timeline.", "loading");
+  setTimelineStatus("Loading activity timeline.", "loading");
 
   try {
     const response = await teamFetch(
@@ -11724,7 +16804,7 @@ function refetchTimelineAfterPageClamp({ pageWasClamped, totalCount, entries }) 
     return;
   }
   timelineLoading = true;
-  setTimelineStatus("Loading derived timeline.", "loading");
+  setTimelineStatus("Loading activity timeline.", "loading");
   void loadTimeline();
 }
 
@@ -11757,7 +16837,7 @@ function renderTimelinePagination(pageCount, start, pageLength, total) {
   const first = start + 1;
   const last = start + pageLength;
   return `
-    <div class="timeline-pagination" aria-label="Timeline pages">
+    <div class="timeline-pagination" aria-label="Activity timeline pages">
       <button
         type="button"
         data-timeline-page-action="previous"
@@ -11916,7 +16996,7 @@ function groupReviewDeliveryRows(rows) {
 
 function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
   const teamLabel = teamGroup.team
-    ? `${escapeHtml(teamGroup.team.name)} (${escapeHtml(teamGroup.team.id)})`
+    ? escapeHtml(teamGroup.team.name)
     : "Unknown team";
   const visibleRowCount = teamGroup.projects.reduce((count, projectGroup) => {
     return count + projectGroup.rows.length;
@@ -11942,7 +17022,7 @@ function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
 function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
   const project = projectGroup.project;
   const projectLabel = project
-    ? `${escapeHtml(project.name)} (${escapeHtml(project.id)})`
+    ? escapeHtml(project.name)
     : "Unknown project";
   const projectCount = projectGroup.rows.length;
   const bucketMarkup = bucketStatuses
@@ -11965,7 +17045,7 @@ function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
           <p class="section-label">Project</p>
           <h4>${projectLabel}</h4>
           ${project ? renderProjectCostCounter(project.id) : ""}
-          ${project ? `<div class="meta-line">Team ${escapeHtml(project.team_id)}</div>` : ""}
+          ${project ? `<div class="meta-line">Team ${escapeHtml(state.teams?.[project.team_id]?.name || "Unknown team")}</div>` : ""}
         </div>
         <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"}</span>
       </div>
@@ -12000,9 +17080,9 @@ function renderDeliveryRow(row) {
   const project = row.project;
   const team = row.team;
   const projectLabel = project
-    ? `${escapeHtml(project.name)} (${escapeHtml(project.id)})`
+    ? project.name
     : "Unknown project";
-  const teamLabel = team ? `${escapeHtml(team.name)} (${escapeHtml(team.id)})` : "Unknown team";
+  const teamLabel = team ? team.name : "Unknown team";
   const reviewIds = row.reviewRequests.map((review) => review.id);
   const releaseSummaries = renderReleaseSummary(row.releasePackages);
   const gitPromotionIds = uniqueTextList([
@@ -12013,34 +17093,12 @@ function renderDeliveryRow(row) {
     <article class="delivery-row" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
       <div class="delivery-row-header">
         <div class="delivery-row-title">
-          <strong>${escapeHtml(deliverable.id)}</strong>
+          <strong>${escapeHtml(deliverableDisplaySubject(deliverable))}</strong>
           <span class="state-pill ${escapeAttr(row.effectiveStatus)}">${escapeHtml(row.effectiveStatus)}</span>
         </div>
         <span class="delivery-bucket-count">${escapeHtml(teamLabel)} - ${escapeHtml(projectLabel)}</span>
       </div>
       <div class="delivery-row-body">
-        <div class="delivery-detail-grid">
-          <div>
-            <div class="delivery-detail-label">Deliverable</div>
-            <div class="delivery-detail-value">${escapeHtml(deliverable.id)}</div>
-          </div>
-          <div>
-            <div class="delivery-detail-label">Task</div>
-            <div class="delivery-detail-value">
-              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(taskStateLabel(task))}` : "missing"}
-            </div>
-          </div>
-          <div>
-            <div class="delivery-detail-label">Producer</div>
-            <div class="delivery-detail-value">${escapeHtml(deliverable.producer_agent_id)}</div>
-          </div>
-          <div>
-            <div class="delivery-detail-label">Deliverable state</div>
-            <div class="delivery-detail-value">
-              <span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
-            </div>
-          </div>
-        </div>
         ${renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds })}
       </div>
     </article>
@@ -12068,8 +17126,9 @@ function renderCompactDeliveryRow(row) {
     <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
       <summary class="delivery-row-summary">
         <span class="delivery-summary-main">
-          <strong>${escapeHtml(deliverable.summary || deliverable.id)}</strong>
-          <span>${escapeHtml(deliverable.id)}${task ? ` - ${escapeHtml(task.title)}` : ""}</span>
+          <strong>${escapeHtml(deliverableDisplaySubject(deliverable))}</strong>
+          <span>${escapeHtml(deliverableProducerLabel(deliverable))} · ${renderRecordDate(deliverable.created_at)}</span>
+          ${deliverable.summary ? `<span class="deliverable-summary-preview">${escapeHtml(readablePreview(deliverable.summary))}</span>` : ""}
         </span>
         <span class="delivery-summary-meta">
           <span class="state-pill ${escapeAttr(row.effectiveStatus)}">${escapeHtml(row.effectiveStatus)}</span>
@@ -12079,28 +17138,6 @@ function renderCompactDeliveryRow(row) {
       </summary>
       <div class="delivery-row-body">
         <div class="meta-line">${escapeHtml(scope)}</div>
-        <div class="delivery-detail-grid">
-          <div>
-            <div class="delivery-detail-label">Deliverable</div>
-            <div class="delivery-detail-value">${escapeHtml(deliverable.id)}</div>
-          </div>
-          <div>
-            <div class="delivery-detail-label">Task</div>
-            <div class="delivery-detail-value">
-              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(taskStateLabel(task))}` : "missing"}
-            </div>
-          </div>
-          <div>
-            <div class="delivery-detail-label">Producer</div>
-            <div class="delivery-detail-value">${escapeHtml(deliverable.producer_agent_id)}</div>
-          </div>
-          <div>
-            <div class="delivery-detail-label">Deliverable state</div>
-            <div class="delivery-detail-value">
-              <span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
-            </div>
-          </div>
-        </div>
         ${renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds })}
       </div>
     </details>
@@ -12109,16 +17146,44 @@ function renderCompactDeliveryRow(row) {
 
 function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds }) {
   const deliverable = row.deliverable;
+  const task = row.task;
   return `
-    <div class="delivery-row-meta">${escapeHtml(deliverable.summary)}</div>
-    ${renderArtifactRefs(deliverable.artifact_refs || [])}
-    ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
-    ${
-      reviewIds.length
-        ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
-        : ""
-    }
+    <section class="deliverable-detail-group">
+      <h4>Summary / outcome</h4>
+      <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
+      ${renderDeliverableOutcomes(deliverable)}
+    </section>
+    <section class="deliverable-detail-group">
+      <h4>Task and producer</h4>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Task</div><div class="delivery-detail-value">${escapeHtml(task?.title || "Task unavailable")}${task ? ` <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(taskStateLabel(task))}</span>` : ""}</div></div>
+        <div><div class="delivery-detail-label">Producer</div><div class="delivery-detail-value">${escapeHtml(deliverableProducerLabel(deliverable))}</div></div>
+        <div><div class="delivery-detail-label">Recorded</div><div class="delivery-detail-value">${renderRecordDate(deliverable.created_at)}</div></div>
+        <div><div class="delivery-detail-label">Deliverable state</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(humanizeToken(deliverable.state))}</span></div></div>
+      </div>
+    </section>
+    <section class="deliverable-detail-group">
+      <h4>Evidence and artifacts</h4>
+      ${renderDeliverableEvidence(deliverable)}
+    </section>
+    <section class="deliverable-detail-group delivery-row-reviews">
+      <h4>Reviews and decision</h4>
+      ${reviewIds.length ? renderReviewSummary(reviewIds, { interactive: true }) : `<p class="empty-state">No reviews recorded.</p>`}
+    </section>
     ${releaseSummaries}
+    <section class="deliverable-detail-group">
+      <h4>Lineage / technical details</h4>
+      ${renderDeliverableTechnicalDetails({
+        ...deliverable,
+        git_refs: {
+          ...(deliverable.git_refs || {}),
+          promotion_record_ids: uniqueTextList([
+            ...(deliverable.git_refs?.promotion_record_ids || []),
+            ...gitPromotionIds,
+          ]),
+        },
+      })}
+    </section>
   `;
 }
 
@@ -12127,45 +17192,32 @@ function renderReleaseSummary(releasePackages) {
     return "";
   }
   return `
-    <div class="delivery-row-releases">
-      <div class="meta-line">Release packages:</div>
-      <ul class="release-list">
+    <section class="deliverable-detail-group delivery-row-releases">
+      <h4>Related releases</h4>
+      <ul class="release-list release-related-list">
         ${releasePackages
           .map((release) => {
-            const deliverables = (release.deliverable_ids || []).join(", ");
-            const promotionIds = uniqueTextList(release.git_promotion_record_ids || []);
-            const promotionText = promotionIds.length ? promotionIds.join(", ") : "";
-            const artifactText = (release.artifact_refs || []).length
-              ? release.artifact_refs.map((ref) => escapeHtml(ref)).join(", ")
-              : "";
-            const verificationText = (release.verification_runs || []).map((run) => `${run.id}: ${run.state || "pending"}`).join(", ");
-            const releaseReviewText = (release.release_reviews || []).map((review) => `${review.id}: ${review.state || "pending"}`).join(", ");
             return `
-              <li class="record-item">
+              <li class="record-item release-related-card" data-release-id="${escapeAttr(release.id)}">
                 <div class="record-line">
-                  <strong>${escapeHtml(release.id)}</strong>
-                  <span class="state-pill ${escapeAttr(release.state)}">${escapeHtml(release.state)}</span>
+                  <strong>${escapeHtml(releaseDisplayLabel(release))}</strong>
+                  <span class="state-pill ${escapeAttr(release.state)}">${escapeHtml(humanizeToken(release.state))}</span>
                 </div>
-                <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
-                ${release.release_branch ? `<div class="meta-line">Release ${escapeHtml(release.release_branch)}</div>` : ""}
-                ${release.canonical_branch ? `<div class="meta-line">Canonical ${escapeHtml(release.canonical_branch)}</div>` : ""}
-                ${release.candidate_commit_sha ? `<div class="meta-line">Candidate ${escapeHtml(release.candidate_commit_sha)}</div>` : ""}
-                ${release.approved_commit_sha ? `<div class="meta-line">Approved ${escapeHtml(release.approved_commit_sha)}</div>` : ""}
-                ${release.published_commit_sha ? `<div class="meta-line">Commit ${escapeHtml(release.published_commit_sha)}</div>` : ""}
-                ${verificationText ? `<div class="meta-line">Verification: ${escapeHtml(verificationText)}</div>` : ""}
-                ${releaseReviewText ? `<div class="meta-line">Release reviews: ${escapeHtml(releaseReviewText)}</div>` : ""}
-                ${promotionText ? `<div class="meta-line">Git promotions: ${escapeHtml(promotionText)}</div>` : ""}
-                ${artifactText ? `<div class="meta-line">Artifact refs: ${artifactText}</div>` : ""}
-                ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
-                ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+                <div class="meta-line">${escapeHtml(releaseProjectLabel(release))}${release.published_at ? ` · ${renderRecordDate(release.published_at, "published")}` : ""}</div>
+                ${renderReleaseProgress(release)}
+                <details class="release-related-details">
+                  <summary>Release notes, included work, and technical details</summary>
+                  ${renderReleaseNotes(release)}
+                  ${renderReleaseIncludedWork(release)}
+                  ${renderReleaseTechnicalDetails(release)}
+                </details>
                 ${renderRecordBlockers("release_package", release.id)}
-                ${renderReleasePolicyDetails(release)}
               </li>
             `;
           })
           .join("")}
       </ul>
-    </div>
+    </section>
   `;
 }
 
@@ -12208,21 +17260,7 @@ function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPr
 
 function renderTimelineEntry(entry) {
   const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
-  const actorSubject = text(entry.actor_subject || entry.actor_agent_id);
-  const actorLine = [
-    actorSubject ? `Actor ${actorSubject}` : "Actor unknown",
-    entry.team_id ? `team ${entry.team_id}` : "",
-    entry.project_id ? `project ${entry.project_id}` : "",
-  ]
-    .filter(Boolean)
-    .join(" - ");
-  const relatedAgents = [
-    entry.actor_agent_id ? `actor agent ${entry.actor_agent_id}` : actorSubject ? `actor ${actorSubject}` : null,
-    (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
-  ]
-    .filter(Boolean)
-    .join(" - ");
-  const relatedIds = renderTimelineRelatedIds(entry);
+  const headline = timelineEntryHeadline(entry);
   return `
     <li class="timeline-entry">
       <article>
@@ -12234,14 +17272,10 @@ function renderTimelineEntry(entry) {
               <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.category))}</span>
             </div>
           </div>
-          <span class="state-pill ${escapeHtml(entry.status || "pending")}">${escapeHtml(entry.status || "pending")}</span>
+          <span class="state-pill ${escapeAttr(entry.status || "pending")}">${escapeHtml(humanizeToken(entry.status || "pending"))}</span>
         </div>
-        <div class="timeline-meta">
-          <div class="meta-line">${escapeHtml(actorLine)}</div>
-          ${relatedAgents ? `<div class="meta-line">${escapeHtml(relatedAgents)}</div>` : ""}
-        </div>
-        <p class="timeline-summary-text">${escapeHtml(entry.summary)}</p>
-        ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
+        <p class="timeline-summary-text">${escapeHtml(headline)}</p>
+        ${renderTimelineEntryDetails(entry)}
       </article>
     </li>
   `;
@@ -12249,31 +17283,18 @@ function renderTimelineEntry(entry) {
 
 function renderCompactTimelineEntry(entry) {
   const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
-  const actorSubject = text(entry.actor_subject || entry.actor_agent_id);
-  const relatedIds = renderTimelineRelatedIds(entry);
-  const relatedAgents = [
-    entry.actor_agent_id ? `actor agent ${entry.actor_agent_id}` : actorSubject ? `actor ${actorSubject}` : null,
-    (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
-  ]
-    .filter(Boolean)
-    .join(" - ");
-  const scope = [
-    entry.team_id ? `team ${entry.team_id}` : "",
-    entry.project_id ? `project ${entry.project_id}` : "",
-  ]
-    .filter(Boolean)
-    .join(" - ");
+  const headline = timelineEntryHeadline(entry);
   return `
     <li class="timeline-entry timeline-entry-compact">
       <details>
         <summary class="timeline-entry-summary">
           <span class="timeline-summary-main">
             <span class="timeline-timestamp">${escapeHtml(timestamp)}</span>
-            <span class="timeline-summary-text">${escapeHtml(entry.summary)}</span>
+            <span class="timeline-summary-text">${escapeHtml(headline)}</span>
           </span>
           <span class="timeline-summary-pills">
             <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.type))}</span>
-            <span class="state-pill ${escapeHtml(entry.status || "pending")}">${escapeHtml(entry.status || "pending")}</span>
+            <span class="state-pill ${escapeAttr(entry.status || "pending")}">${escapeHtml(humanizeToken(entry.status || "pending"))}</span>
           </span>
         </summary>
         <div class="timeline-entry-details">
@@ -12281,21 +17302,312 @@ function renderCompactTimelineEntry(entry) {
             <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.category))}</span>
             ${entry.attention_needed ? `<span class="state-pill blocked">attention needed</span>` : ""}
           </div>
-          <div class="timeline-meta">
-            <div class="meta-line">${escapeHtml(actorSubject ? `Actor ${actorSubject}` : "Actor unknown")}</div>
-            ${scope ? `<div class="meta-line">${escapeHtml(scope)}</div>` : ""}
-            ${relatedAgents ? `<div class="meta-line">${escapeHtml(relatedAgents)}</div>` : ""}
-          </div>
-          ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
+          ${renderTimelineEntryDetails(entry)}
         </div>
       </details>
     </li>
   `;
 }
 
-function renderTimelineRelatedIds(entry) {
-  const parts = [];
-  const idLabels = [
+function timelineEntryRecord(entry) {
+  if (entry.task_id && state.tasks?.[entry.task_id]) {
+    return state.tasks[entry.task_id];
+  }
+  if (entry.deliverable_id && state.deliverables?.[entry.deliverable_id]) {
+    return state.deliverables[entry.deliverable_id];
+  }
+  if (entry.review_request_id && state.review_requests?.[entry.review_request_id]) {
+    return state.review_requests[entry.review_request_id];
+  }
+  if (entry.inbox_item_id && state.inbox?.[entry.inbox_item_id]) {
+    return state.inbox[entry.inbox_item_id];
+  }
+  if (entry.action_record_id && state.action_records?.[entry.action_record_id]) {
+    return state.action_records[entry.action_record_id];
+  }
+  if (
+    entry.ephemeral_assignment_id &&
+    state.ephemeral_assignments?.[entry.ephemeral_assignment_id]
+  ) {
+    return state.ephemeral_assignments[entry.ephemeral_assignment_id];
+  }
+  if (entry.git_promotion_id && state.git_promotions?.[entry.git_promotion_id]) {
+    return state.git_promotions[entry.git_promotion_id];
+  }
+  if (
+    entry.release_package_id &&
+    state.release_packages?.[entry.release_package_id]
+  ) {
+    return state.release_packages[entry.release_package_id];
+  }
+  return null;
+}
+
+function timelineEntrySubject(entry) {
+  if (text(entry.subject)) {
+    return text(entry.subject);
+  }
+  const task = entry.task_id ? state.tasks?.[entry.task_id] : null;
+  const deliverable = entry.deliverable_id
+    ? state.deliverables?.[entry.deliverable_id]
+    : null;
+  const review = entry.review_request_id
+    ? state.review_requests?.[entry.review_request_id]
+    : null;
+  const inbox = entry.inbox_item_id ? state.inbox?.[entry.inbox_item_id] : null;
+  const action = entry.action_record_id
+    ? state.action_records?.[entry.action_record_id]
+    : null;
+  const assignment = entry.ephemeral_assignment_id
+    ? state.ephemeral_assignments?.[entry.ephemeral_assignment_id]
+    : null;
+  const promotion = entry.git_promotion_id
+    ? state.git_promotions?.[entry.git_promotion_id]
+    : null;
+  const releaseId =
+    entry.release_package_id || review?.release_package_id || promotion?.release_package_id;
+  const release = releaseId ? state.release_packages?.[releaseId] : null;
+  if (entry.type === "task" && task) {
+    return task.title;
+  }
+  if (entry.type === "deliverable" && deliverable) {
+    return deliverableDisplaySubject(deliverable);
+  }
+  if (entry.type === "review") {
+    if (release) {
+      return releaseDisplayLabel(release);
+    }
+    if (deliverable) {
+      return deliverableDisplaySubject(deliverable);
+    }
+    return task?.title || "Review";
+  }
+  if (entry.type === "inbox_item" && inbox) {
+    return readablePreview(
+      inboxItemDetail(inbox) ||
+        `Message for ${agentLabel(state.agents?.[inbox.recipient_agent_id]) || "an agent"}`,
+      120,
+    );
+  }
+  if (entry.type === "action" && action) {
+    return (
+      text(action.action?.summary) ||
+      humanizeToken(action.action?.type || "Agent action")
+    );
+  }
+  if (entry.type === "ephemeral_assignment") {
+    const assignmentTask = assignment?.task_id
+      ? state.tasks?.[assignment.task_id]
+      : task;
+    return assignmentTask?.title || "Temporary assignment";
+  }
+  if (entry.type === "git_promotion") {
+    return (
+      task?.title ||
+      (deliverable ? deliverableDisplaySubject(deliverable) : "") ||
+      state.projects?.[promotion?.project_id]?.name ||
+      "Git publication"
+    );
+  }
+  if (entry.type === "release_package" && release) {
+    return releaseDisplayLabel(release);
+  }
+  return humanizeToken(entry.type || "Activity");
+}
+
+function timelineEntryHeadline(entry) {
+  if (text(entry.event)) {
+    return text(entry.event);
+  }
+  if (text(entry.subject) && text(entry.summary)) {
+    return text(entry.summary);
+  }
+  const subject = timelineEntrySubject(entry);
+  const status = humanizeToken(entry.status || "");
+  const eventLabels = {
+    "task:created": "Created task",
+    "task:updated": "Updated task",
+    "inbox_item:created": "Sent message",
+    "inbox_item:updated": "Updated message",
+    "inbox_item:handled": "Marked message handled",
+    "deliverable:created": "Submitted deliverable",
+    "review:requested": "Requested review",
+    "review:decision": status ? `Review decided ${status.toLowerCase()}` : "Recorded review decision",
+    "action:created": status ? `Agent action ${status.toLowerCase()}` : "Recorded agent action",
+    "ephemeral_assignment:requested": "Requested temporary assignment",
+    "ephemeral_assignment:state": status ? `Temporary assignment changed to ${status.toLowerCase()}` : "Updated temporary assignment",
+    "git_promotion:requested": "Requested Git publication",
+    "git_promotion:result": status ? `Git publication ${status.toLowerCase()}` : "Recorded Git publication result",
+    "release_package:created": "Prepared release",
+    "release_package:published": "Published release",
+    "release_package:blocked": "Blocked release",
+  };
+  const key = `${text(entry.type)}:${text(entry.category)}`;
+  return `${eventLabels[key] || `${humanizeToken(entry.category)} ${humanizeToken(entry.type)}`} — ${subject}`;
+}
+
+function timelineActorLabel(entry) {
+  const actor = entry.actor_agent_id
+    ? state.agents?.[entry.actor_agent_id]
+    : null;
+  if (actor) {
+    return `${agentLabel(actor)} · ${agentRoleLabel(actor)}`;
+  }
+  const process = text(entry.process);
+  if (process) {
+    return `${humanizeToken(process)} process`;
+  }
+  const actorSubject = text(entry.actor_subject);
+  if (actorSubject && actorSubject !== text(entry.actor_agent_id)) {
+    return actorSubject;
+  }
+  return "Initiator not retained";
+}
+
+function timelineScopeLabel(entry) {
+  const team = entry.team_id ? state.teams?.[entry.team_id] : null;
+  const project = entry.project_id ? state.projects?.[entry.project_id] : null;
+  return [
+    team?.name || "",
+    project?.name || "",
+  ]
+    .filter(Boolean)
+    .join(" · ") || "Scope not retained";
+}
+
+function timelineCurrentValue(entry) {
+  const record = timelineEntryRecord(entry);
+  if (entry.after && typeof entry.after !== "object") {
+    return text(entry.after);
+  }
+  if (entry.after && typeof entry.after === "object") {
+    return Object.entries(entry.after)
+      .map(([key, value]) => `${humanizeToken(key)}: ${humanizeToken(value)}`)
+      .join(" · ");
+  }
+  if (record?.state) {
+    return humanizeToken(record.state);
+  }
+  if (record?.status) {
+    return humanizeToken(record.status);
+  }
+  if (typeof record?.success === "boolean") {
+    return record.success ? "Succeeded" : "Failed";
+  }
+  return humanizeToken(entry.status || "Recorded");
+}
+
+function timelineChangeDescription(entry) {
+  if (entry.change && typeof entry.change === "object") {
+    const beforeKnown = entry.change.before_known === true;
+    return {
+      before:
+        beforeKnown && text(entry.change.before)
+          ? text(entry.change.before)
+          : "Earlier value not retained",
+      after: text(entry.change.after) || timelineCurrentValue(entry),
+      field: text(entry.change.field) || "State",
+    };
+  }
+  if (text(entry.change)) {
+    return {
+      label: "Change",
+      value: text(entry.change),
+    };
+  }
+  const current = timelineCurrentValue(entry);
+  if (entry.category === "handled") {
+    return { before: "Pending", after: "Handled" };
+  }
+  if (entry.type === "git_promotion" && entry.category === "result") {
+    return { before: "Pending", after: current };
+  }
+  if (["created", "requested"].includes(text(entry.category))) {
+    return {
+      label: "Operation",
+      value: `${humanizeToken(entry.category)}; no earlier record is implied.`,
+    };
+  }
+  if (
+    text(entry.category) === "updated" &&
+    !entry.change &&
+    !text(entry.before)
+  ) {
+    return {
+      label: "Operation",
+      value: "Snapshot updated; no state transition is implied.",
+    };
+  }
+  return {
+    before: text(entry.before) || "Earlier value not retained",
+    after: current,
+  };
+}
+
+function timelineReason(entry) {
+  if (text(entry.reason)) {
+    return text(entry.reason);
+  }
+  const task = entry.task_id ? state.tasks?.[entry.task_id] : null;
+  const review = entry.review_request_id
+    ? state.review_requests?.[entry.review_request_id]
+    : null;
+  const action = entry.action_record_id
+    ? state.action_records?.[entry.action_record_id]
+    : null;
+  const assignment = entry.ephemeral_assignment_id
+    ? state.ephemeral_assignments?.[entry.ephemeral_assignment_id]
+    : null;
+  const promotion = entry.git_promotion_id
+    ? state.git_promotions?.[entry.git_promotion_id]
+    : null;
+  const release = entry.release_package_id
+    ? state.release_packages?.[entry.release_package_id]
+    : null;
+  const deliverable = entry.deliverable_id
+    ? state.deliverables?.[entry.deliverable_id]
+    : null;
+  return text(
+    task?.cancellation?.reason ||
+      task?.waiting_reason ||
+      review?.finding ||
+      review?.block_kind ||
+      action?.error ||
+      action?.dismiss_reason ||
+      assignment?.error ||
+      promotion?.error ||
+      release?.error ||
+      release?.block_reason ||
+      deliverable?.supersession_reason,
+  );
+}
+
+function timelineRelatedLabels(entry) {
+  const labels = [];
+  const actorId = text(entry.actor_agent_id);
+  uniqueTextList(entry.related_agent_ids || [])
+    .filter((agentId) => text(agentId) !== actorId)
+    .forEach((agentId) => {
+      const agent = state.agents?.[agentId];
+      labels.push(agent ? `${agentLabel(agent)} · ${agentRoleLabel(agent)}` : "Unavailable agent");
+    });
+  const task = entry.task_id ? state.tasks?.[entry.task_id] : null;
+  const subject = timelineEntrySubject(entry);
+  if (task?.title && task.title !== subject) {
+    labels.push(`Task: ${task.title}`);
+  }
+  return uniqueTextList(labels);
+}
+
+function renderTimelineTechnicalDetails(entry) {
+  const relatedAgentIds = uniqueTextList(entry.related_agent_ids || []).filter(
+    (agentId) => text(agentId) !== text(entry.actor_agent_id),
+  );
+  return renderTechnicalDetails([
+    ["Team ID", entry.team_id],
+    ["Project ID", entry.project_id],
+    ["Actor agent ID", entry.actor_agent_id],
+    ["Related agent IDs", relatedAgentIds],
     ["task_id", "Task"],
     ["deliverable_id", "Deliverable"],
     ["review_request_id", "Review"],
@@ -12304,26 +17616,69 @@ function renderTimelineRelatedIds(entry) {
     ["ephemeral_assignment_id", "Ephemeral"],
     ["git_promotion_id", "Git promotion"],
     ["release_package_id", "Release"],
-  ];
-  idLabels.forEach(([key, label]) => {
-    if (entry[key]) {
-      parts.push(`${label} ${entry[key]}`);
+  ].map(([key, label]) => {
+    if (key.endsWith("_id")) {
+      return [`${label} ID`, entry[key]];
     }
-  });
-  return parts.length ? `Related IDs: ${parts.map((part) => escapeHtml(part)).join(" · ")}` : "";
+    return [key, label];
+  }));
+}
+
+function renderTimelineEntryDetails(entry) {
+  const change = timelineChangeDescription(entry);
+  const reason = timelineReason(entry);
+  const related = timelineRelatedLabels(entry);
+  return `
+    <div class="timeline-domain-grid">
+      <div><span>Event</span><strong>${escapeHtml(timelineEntryHeadline(entry))}</strong></div>
+      <div><span>Initiated by</span><strong>${escapeHtml(timelineActorLabel(entry))}</strong></div>
+      <div><span>Subject</span><strong>${escapeHtml(timelineEntrySubject(entry))}</strong></div>
+      <div><span>Scope</span><strong>${escapeHtml(timelineScopeLabel(entry))}</strong></div>
+    </div>
+    <section class="timeline-change-section">
+      <h4>Change${change.field ? ` · ${escapeHtml(change.field)}` : ""}</h4>
+      ${
+        change.before !== undefined
+          ? `
+            <div class="timeline-change-flow">
+              <div><span>Before</span><strong>${escapeHtml(change.before)}</strong></div>
+              <span aria-hidden="true">→</span>
+              <div><span>After</span><strong>${escapeHtml(change.after)}</strong></div>
+            </div>
+          `
+          : `<p><strong>${escapeHtml(change.label)}:</strong> ${escapeHtml(change.value)}</p>`
+      }
+      ${reason ? `<p class="timeline-reason"><strong>Reason:</strong> ${escapeHtml(reason)}</p>` : ""}
+      ${
+        !entry.before &&
+        !entry.change &&
+        !["created", "requested", "handled"].includes(text(entry.category)) &&
+        !(entry.type === "git_promotion" && entry.category === "result")
+          ? `<p class="timeline-retention-note">This snapshot does not retain the earlier field values or a complete transition diff.</p>`
+          : ""
+      }
+    </section>
+    ${
+      related.length
+        ? `<section class="timeline-related-work"><h4>Related people and work</h4><ul>${related.map((label) => `<li>${escapeHtml(label)}</li>`).join("")}</ul></section>`
+        : ""
+    }
+    ${renderTimelineTechnicalDetails(entry)}
+  `;
 }
 
 function describeTimelineStatus(timeline) {
   const filters = timeline.filters || {};
   const filterParts = [];
   if (filters.team_id) {
-    filterParts.push(`team ${filters.team_id}`);
+    filterParts.push(`team ${state.teams?.[filters.team_id]?.name || "unavailable"}`);
   }
   if (filters.project_id) {
-    filterParts.push(`project ${filters.project_id}`);
+    filterParts.push(`project ${state.projects?.[filters.project_id]?.name || "unavailable"}`);
   }
   if (filters.agent_id) {
-    filterParts.push(`agent ${filters.agent_id}`);
+    const agent = state.agents?.[filters.agent_id];
+    filterParts.push(`agent ${agent ? agentLabel(agent) : "unavailable"}`);
   }
   if (filters.type) {
     filterParts.push(`type ${filters.type}`);
@@ -12338,7 +17693,7 @@ function describeTimelineStatus(timeline) {
   if (!(timeline.entries || []).length) {
     return `No timeline entries matched the current filters${filterSuffix}.`;
   }
-  return `Derived timeline loaded${filterSuffix}.`;
+  return `Activity timeline loaded${filterSuffix}.`;
 }
 
 function readTimelineFilters() {
@@ -12390,6 +17745,17 @@ function buildSelectOptionSets() {
     .filter(isVisibleAgent)
     .map((agent) => [agent.id, text(agent.display_name) || text(agent.id)])
     .sort((left, right) => text(left[1]).localeCompare(text(right[1])) || text(left[0]).localeCompare(text(right[0])));
+  const governanceManagerAgents = values(state.agents)
+    .filter(isVisibleAgent)
+    .map((agent) => [
+      agent.id,
+      `${agentLabel(agent)} — ${agentRoleLabel(agent)} · ${agent.id}`,
+    ])
+    .sort(
+      (left, right) =>
+        text(left[1]).localeCompare(text(right[1])) ||
+        text(left[0]).localeCompare(text(right[0])),
+    );
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const cases = values(state.cases).filter(isVisibleCase).sort(compareCases).map((item) => [item.id, caseLabel(item)]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
@@ -12400,6 +17766,26 @@ function buildSelectOptionSets() {
     .filter(isVisibleReviewProfile)
     .sort(byId)
     .map((profile) => [profile.id, `${profile.name} (${profile.id})`]);
+  const selectedProject = state.projects[selectedProjectFocusId] || null;
+  const projectOutcomeKinds = selectedProject
+    ? effectiveOutcomeKindsForProject(selectedProject).map((definition) => [
+        definition.kind,
+        `${definition.name} (${definition.kind})`,
+      ])
+    : [];
+  const teamOutcomeKinds = selectedProject
+    ? values(state.outcome_kind_definitions)
+        .filter((definition) =>
+          definition.team_id === selectedProject.team_id
+          && !definition.project_id
+          && !definition.archived
+        )
+        .sort((left, right) => text(left.kind).localeCompare(text(right.kind)) || byId(left, right))
+        .map((definition) => [
+          definition.kind,
+          `${definition.name} (${definition.kind})`,
+        ])
+    : [];
   const releasePackages = values(state.release_packages)
     .sort(byId)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
@@ -12409,8 +17795,11 @@ function buildSelectOptionSets() {
     projects,
     roles,
     "project-review-roles": projectReviewRoleOptionsForProject(selectedProjectFocusId),
+    "project-outcome-kinds": projectOutcomeKinds,
+    "team-outcome-kinds": teamOutcomeKinds,
     agents,
     "agents-by-display-name": agentsByDisplayName,
+    "governance-manager-agents": governanceManagerAgents,
     cases,
     tasks,
     deliverables,
@@ -12443,6 +17832,9 @@ function buildSelectOptionSets() {
 }
 
 function optionsForSelect(select, optionSets) {
+  if (select.dataset.options === "review-profile-edit-outcome-kinds") {
+    return reviewProfileEditOutcomeOptions(select);
+  }
   if (select.dataset.options === "project-lead-agents") {
     return projectLeadAgentOptions(select);
   }
@@ -12456,6 +17848,44 @@ function optionsForSelect(select, optionSets) {
     return agentEditSuperiorOptions(select);
   }
   return optionSets[select.dataset.options] || [];
+}
+
+function reviewProfileEditOutcomeOptions(select) {
+  const profileId = text(select.form?.dataset.editId);
+  const profile = state.review_profiles?.[profileId];
+  if (!profile) {
+    return [];
+  }
+  const project = state.projects[text(profile.project_id)] || null;
+  const definitions = project
+    ? effectiveOutcomeKindsForProject(project)
+    : values(state.outcome_kind_definitions)
+        .filter((definition) =>
+          text(definition.team_id) === text(profile.team_id)
+          && !definition.project_id
+          && !definition.archived
+        )
+        .sort((left, right) => text(left.kind).localeCompare(text(right.kind)) || byId(left, right));
+  const definitionsByKind = new Map(
+    definitions.map((definition) => [text(definition.kind), definition]),
+  );
+  (profile.required_outcome_kinds || []).forEach((kind) => {
+    const normalizedKind = text(kind);
+    if (!normalizedKind || definitionsByKind.has(normalizedKind)) {
+      return;
+    }
+    definitionsByKind.set(normalizedKind, {
+      kind: normalizedKind,
+      name: normalizedKind,
+      archived: true,
+    });
+  });
+  return Array.from(definitionsByKind.values())
+    .sort((left, right) => text(left.kind).localeCompare(text(right.kind)) || byId(left, right))
+    .map((definition) => [
+      definition.kind,
+      `${definition.name} (${definition.kind})${definition.archived ? " - archived" : ""}`,
+    ]);
 }
 
 function agentEditTeamId(select) {
@@ -12601,6 +18031,18 @@ async function submitCreateForm(form, { detailedResult = false } = {}) {
     return submitMutationResult(false, "validation", detailedResult);
   }
   const formId = formSemanticIdentifier(form);
+  if (
+    formId === "create-governance-group-form" &&
+    !validateGovernanceGroupEditor(form)
+  ) {
+    return submitMutationResult(false, "validation", detailedResult);
+  }
+  if (
+    formId === "create-project-form" &&
+    !validateHumanReviewPolicyEditor(form)
+  ) {
+    return submitMutationResult(false, "validation", detailedResult);
+  }
   const existingProjectIds =
     formId === "create-project-form"
       ? new Set(values(state.projects).map((project) => project.id))
@@ -12917,6 +18359,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     [/^\/review-requests\/([^/]+)\/decision$/, "review_requests"],
     [/^\/action-records\/([^/]+)\/dismiss$/, "action_records"],
     [/^\/review-profiles\/([^/]+)$/, "review_profiles"],
+    [/^\/outcome-kinds\/([^/]+)$/, "outcome_kind_definitions"],
   ];
   for (const [pattern, collection] of directTargets) {
     const match = path.match(pattern);
@@ -12939,6 +18382,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     "/deliverables": ["deliverables", payload.id || payload.deliverable_id],
     "/review-requests": ["review_requests", payload.id || payload.review_request_id],
     "/review-profiles": ["review_profiles", payload.id || payload.review_profile_id],
+    "/outcome-kinds": ["outcome_kind_definitions", payload.id || payload.definition_id],
   };
   const create = createCollections[path];
   if (!create) {
@@ -14250,7 +19694,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       member_team_ids: splitList(data.member_team_ids),
-      goals: parseGovernanceGoals(data.goals),
+      goals: governanceGoalsFromForm(form),
     };
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
@@ -14292,7 +19736,7 @@ function payloadForForm(form, data = formData(form)) {
     if (git) {
       payload.git = git;
     }
-    const releasePolicy = releasePolicyForForm(data);
+    const releasePolicy = releasePolicyForForm(data, form);
     if (releasePolicy) {
       payload.release_policy = releasePolicy;
     }
@@ -14386,6 +19830,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
+      required_outcome_kinds: splitList(data.required_outcome_kinds),
       criteria: reviewProfileCriteriaFromForm(form),
     };
     const projectId = text(data.project_id);
@@ -14393,6 +19838,17 @@ function payloadForForm(form, data = formData(form)) {
       payload.project_id = projectId;
     }
     return payload;
+  }
+  if (formId === "create-outcome-kind-form") {
+    return {
+      team_id: text(data.team_id),
+      project_id: form.elements.team_wide?.checked ? null : text(data.project_id) || null,
+      kind: text(data.kind),
+      name: text(data.name),
+      description: text(data.description),
+      reference_requirements: text(data.reference_requirements),
+      evidence_requirements: text(data.evidence_requirements),
+    };
   }
   if (formId === "record-deliverable-form") {
     const payload = {
@@ -14451,16 +19907,341 @@ function gitConfigForForm(data) {
   return git;
 }
 
-function releasePolicyForForm(data) {
+function releasePolicyForForm(data, form = null) {
   const raw = text(data.release_policy_json);
-  if (!raw) {
+  if (!raw && !form?.elements?.human_review_enabled?.checked) {
     return null;
   }
-  const policy = JSON.parse(raw);
+  const policy = raw ? JSON.parse(raw) : {};
   if (!policy || Array.isArray(policy) || typeof policy !== "object") {
     throw new Error("Release policy must be a JSON object.");
   }
+  if (form?.elements?.human_review_enabled) {
+    delete policy.human_review_requirement;
+    if (form.elements.human_review_enabled.checked) {
+      const reviewerGroupIds = splitList(data.human_reviewer_group_ids);
+      if (!reviewerGroupIds.length) {
+        throw new Error("Human review requires at least one reviewer group ID.");
+      }
+      policy.human_review_requirement = {
+        reviewer_group_ids: reviewerGroupIds,
+        checklist: humanReviewChecklistFromForm(form),
+        test_instructions: text(data.human_review_test_instructions),
+        preparation_mode: text(data.human_review_preparation_mode) || "manual",
+      };
+    }
+  }
+  if (!Object.keys(policy).length) {
+    return null;
+  }
   return policy;
+}
+
+function releasePolicyWithoutHumanJson(policy) {
+  if (!policy) {
+    return "";
+  }
+  const bounded = { ...policy };
+  delete bounded.human_review_requirement;
+  return JSON.stringify(bounded, null, 2);
+}
+
+function renderHumanReviewPolicyEditor(requirement = null) {
+  return `
+    <fieldset class="human-review-policy-editor">
+      <legend>Human release review</legend>
+      ${checkboxField("Require authenticated human approval", "human_review_enabled", Boolean(requirement))}
+      ${textareaField("Reviewer group IDs", "human_reviewer_group_ids", (requirement?.reviewer_group_ids || []).join("\n"), {
+        rows: 3,
+        placeholder: "release-approvers",
+      })}
+      ${renderHumanReviewChecklistEditor(requirement?.checklist || [])}
+      ${textareaField("Test instructions", "human_review_test_instructions", requirement?.test_instructions || "", {
+        rows: 4,
+        placeholder: "Open the preview, execute the release scenario, and attach evidence.",
+      })}
+      <label>Preparation mode
+        <select name="human_review_preparation_mode">
+          <option value="manual"${requirement?.preparation_mode !== "workflow" ? " selected" : ""}>Manual</option>
+          <option value="workflow"${requirement?.preparation_mode === "workflow" ? " selected" : ""}>Workflow-prepared preview</option>
+        </select>
+      </label>
+      <p class="field-help">Reviewer identity and eligible users are resolved by the Admin Web directory. This editor cannot set users, identity snapshots, quorums, or bypasses.</p>
+    </fieldset>
+  `;
+}
+
+function renderHumanReviewChecklistEditor(checklist = []) {
+  return `
+    <fieldset class="human-review-checklist-editor" data-human-review-checklist-editor>
+      <legend>Acceptance checklist</legend>
+      <div class="human-review-checklist-editor-rows" data-human-review-checklist-rows>
+        ${(checklist || []).map((item) => renderHumanReviewChecklistRow(item)).join("")}
+      </div>
+      <p class="human-review-checklist-empty" data-human-review-checklist-empty>No acceptance checks configured.</p>
+      <button
+        class="record-action human-review-checklist-add"
+        type="button"
+        data-human-review-checklist-add
+      >Add check</button>
+      <p class="field-help">Each release snapshots these checks in this order. Stable keys are generated from labels unless you set one explicitly.</p>
+    </fieldset>
+  `;
+}
+
+function renderHumanReviewChecklistRow(item = {}) {
+  return `
+    <div class="human-review-checklist-editor-row" data-human-review-checklist-row>
+      <label>
+        <span>Label</span>
+        <input
+          name="human_review_checklist_label"
+          value="${escapeAttr(item.label || "")}"
+          placeholder="Primary operator flow works"
+        />
+      </label>
+      <label class="human-review-checklist-description">
+        <span>Description</span>
+        <textarea
+          name="human_review_checklist_description"
+          rows="2"
+          placeholder="Explain what the reviewer should verify."
+        >${escapeHtml(item.description || "")}</textarea>
+      </label>
+      <label>
+        <span>Stable key</span>
+        <input
+          name="human_review_checklist_id"
+          value="${escapeAttr(item.id || "")}"
+          placeholder="Auto from label"
+        />
+        <small data-human-review-checklist-key-preview></small>
+      </label>
+      <label class="checkbox-label human-review-checklist-required">
+        <input
+          name="human_review_checklist_required"
+          type="checkbox"
+          ${item.required === false ? "" : "checked"}
+        />
+        Required
+      </label>
+      <div class="human-review-checklist-row-actions" aria-label="Checklist order and removal">
+        <button
+          class="record-action"
+          type="button"
+          data-human-review-checklist-move="up"
+          aria-label="Move checklist item up"
+        >Move up</button>
+        <button
+          class="record-action"
+          type="button"
+          data-human-review-checklist-move="down"
+          aria-label="Move checklist item down"
+        >Move down</button>
+        <button
+          class="record-action human-review-checklist-remove"
+          type="button"
+          data-human-review-checklist-remove
+        >Remove</button>
+      </div>
+    </div>
+  `;
+}
+
+function syncHumanReviewChecklistEditor(editor) {
+  if (!editor) {
+    return;
+  }
+  const rows = Array.from(editor.querySelectorAll("[data-human-review-checklist-row]"));
+  const mutationLocked = teamMutationLocked();
+  rows.forEach((row, index) => {
+    const up = row.querySelector('[data-human-review-checklist-move="up"]');
+    const down = row.querySelector('[data-human-review-checklist-move="down"]');
+    if (up) {
+      up.disabled = mutationLocked || index === 0;
+      up.setAttribute("aria-disabled", String(up.disabled));
+    }
+    if (down) {
+      down.disabled = mutationLocked || index === rows.length - 1;
+      down.setAttribute("aria-disabled", String(down.disabled));
+    }
+    const explicitId = text(
+      row.querySelector('[name="human_review_checklist_id"]')?.value,
+    );
+    const preview = row.querySelector("[data-human-review-checklist-key-preview]");
+    if (preview) {
+      preview.textContent = explicitId
+        ? "Using the stored key."
+        : `Generated key: ${humanReviewChecklistItemId(row, index)}`;
+    }
+  });
+  const empty = editor.querySelector("[data-human-review-checklist-empty]");
+  if (empty) {
+    empty.hidden = rows.length > 0;
+  }
+}
+
+function addHumanReviewChecklistRow(editor) {
+  const rows = editor?.querySelector?.("[data-human-review-checklist-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderHumanReviewChecklistRow({});
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  syncHumanReviewChecklistEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  row.querySelector('[name="human_review_checklist_label"]')?.focus();
+}
+
+function removeHumanReviewChecklistRow(button) {
+  const editor = button.closest("[data-human-review-checklist-editor]");
+  button.closest("[data-human-review-checklist-row]")?.remove();
+  syncHumanReviewChecklistEditor(editor);
+  rememberFormDraft(editor?.closest("form"));
+}
+
+function moveHumanReviewChecklistRow(button) {
+  const editor = button.closest("[data-human-review-checklist-editor]");
+  const row = button.closest("[data-human-review-checklist-row]");
+  const direction = text(button.dataset.humanReviewChecklistMove);
+  if (!editor || !row) {
+    return;
+  }
+  if (direction === "up" && row.previousElementSibling) {
+    row.parentElement.insertBefore(row, row.previousElementSibling);
+  } else if (direction === "down" && row.nextElementSibling) {
+    row.parentElement.insertBefore(row.nextElementSibling, row);
+  }
+  syncHumanReviewChecklistEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  button.focus();
+}
+
+function humanReviewChecklistItemId(row, index) {
+  const explicitId = text(
+    row.querySelector('[name="human_review_checklist_id"]')?.value,
+  );
+  const label = text(
+    row.querySelector('[name="human_review_checklist_label"]')?.value,
+  );
+  return explicitId || criterionIdFromText(label || `check ${index + 1}`);
+}
+
+function humanReviewChecklistFromForm(form) {
+  return Array.from(form.querySelectorAll("[data-human-review-checklist-row]")).map(
+    (row, index) => ({
+      id: humanReviewChecklistItemId(row, index),
+      label: text(
+        row.querySelector('[name="human_review_checklist_label"]')?.value,
+      ),
+      description:
+        text(
+          row.querySelector('[name="human_review_checklist_description"]')?.value,
+        ) || null,
+      required:
+        row.querySelector('[name="human_review_checklist_required"]')?.checked !==
+        false,
+    }),
+  );
+}
+
+function humanReviewChecklistDraftFromForm(form) {
+  const editor = form.querySelector("[data-human-review-checklist-editor]");
+  if (!editor) {
+    return null;
+  }
+  return Array.from(editor.querySelectorAll("[data-human-review-checklist-row]")).map(
+    (row) => ({
+      id: text(row.querySelector('[name="human_review_checklist_id"]')?.value),
+      label: text(
+        row.querySelector('[name="human_review_checklist_label"]')?.value,
+      ),
+      description: text(
+        row.querySelector('[name="human_review_checklist_description"]')?.value,
+      ),
+      required:
+        row.querySelector('[name="human_review_checklist_required"]')?.checked !==
+        false,
+    }),
+  );
+}
+
+function restoreHumanReviewChecklistDraft(form, checklist) {
+  const editor = form.querySelector("[data-human-review-checklist-editor]");
+  const rows = editor?.querySelector?.("[data-human-review-checklist-rows]");
+  if (!rows || !Array.isArray(checklist)) {
+    return;
+  }
+  rows.innerHTML = checklist
+    .map((item) => renderHumanReviewChecklistRow(item))
+    .join("");
+  decorateFieldTooltips(rows);
+  syncHumanReviewChecklistEditor(editor);
+}
+
+function validateHumanReviewPolicyEditor(form) {
+  const enabled = Boolean(form.elements.human_review_enabled?.checked);
+  const groupField = form.elements.human_reviewer_group_ids;
+  groupField?.setCustomValidity("");
+  const rows = Array.from(
+    form.querySelectorAll("[data-human-review-checklist-row]"),
+  );
+  rows.forEach((row) => {
+    row
+      .querySelector('[name="human_review_checklist_id"]')
+      ?.setCustomValidity("");
+    row
+      .querySelector('[name="human_review_checklist_label"]')
+      ?.setCustomValidity("");
+  });
+  if (!enabled) {
+    return true;
+  }
+
+  let valid = true;
+  if (!splitList(groupField?.value).length) {
+    groupField?.setCustomValidity(
+      "Choose at least one Admin reviewer group for human approval.",
+    );
+    valid = false;
+  }
+
+  const usedIds = new Map();
+  rows.forEach((row, index) => {
+    const labelField = row.querySelector(
+      '[name="human_review_checklist_label"]',
+    );
+    const idField = row.querySelector('[name="human_review_checklist_id"]');
+    const label = text(labelField?.value);
+    if (!label) {
+      labelField?.setCustomValidity("Give this acceptance check a label.");
+      valid = false;
+    }
+    const id = humanReviewChecklistItemId(row, index);
+    const earlierIdField = usedIds.get(id);
+    if (earlierIdField) {
+      const message = `Checklist keys must be unique. "${id}" is used more than once.`;
+      earlierIdField.setCustomValidity(message);
+      idField?.setCustomValidity(message);
+      valid = false;
+    } else {
+      usedIds.set(id, idField);
+    }
+  });
+  if (!form.checkValidity()) {
+    valid = false;
+  }
+  if (!valid) {
+    form.reportValidity();
+    setStatus("Fix the highlighted human review requirement before saving.", "error");
+  }
+  return valid;
 }
 
 async function submitReviewDecision(form) {
@@ -14538,6 +20319,19 @@ function openEditDialog(type, id) {
   elements.editFormBody.innerHTML = renderEditFields(type, record);
   fillSelectsIn(elements.editFormBody);
   decorateFieldTooltips(elements.editFormBody);
+  if (type === "governance-group") {
+    syncGovernanceMemberTeamEditor(
+      elements.editFormBody.querySelector("[data-governance-member-teams-editor]"),
+    );
+    syncGovernanceGoalEditor(
+      elements.editFormBody.querySelector("[data-governance-goals-editor]"),
+    );
+  }
+  if (type === "project") {
+    syncHumanReviewChecklistEditor(
+      elements.editFormBody.querySelector("[data-human-review-checklist-editor]"),
+    );
+  }
   elements.editModal.hidden = false;
   const firstEditableField = elements.editFormBody.querySelector(
     "input:not([readonly]), select, textarea",
@@ -14566,6 +20360,12 @@ async function submitEditForm(form) {
     return;
   }
   const endpoint = editEndpoint(type, id);
+  if (type === "governance-group" && !validateGovernanceGroupEditor(form)) {
+    return;
+  }
+  if (type === "project" && !validateHumanReviewPolicyEditor(form)) {
+    return;
+  }
   const payload = editPayloadForForm(type, form);
   const saved = await submitMutation(form, endpoint, "PATCH", payload, {
     resetOnSuccess: false,
@@ -14573,6 +20373,10 @@ async function submitEditForm(form) {
   if (saved) {
     clearFormDraft(form);
     closeEditDialog();
+  } else if (type === "governance-group") {
+    syncGovernanceGoalEditor(
+      form.querySelector("[data-governance-goals-editor]"),
+    );
   }
 }
 
@@ -14585,6 +20389,7 @@ function recordForEdit(type, id) {
   if (type === "case") return state.cases[id] || null;
   if (type === "task") return state.tasks[id] || null;
   if (type === "review-profile") return state.review_profiles[id] || null;
+  if (type === "outcome-kind") return state.outcome_kind_definitions[id] || null;
   return null;
 }
 
@@ -14597,6 +20402,7 @@ function editEndpoint(type, id) {
   if (type === "case") return `/cases/${encodeURIComponent(id)}`;
   if (type === "task") return `/tasks/${encodeURIComponent(id)}`;
   if (type === "review-profile") return `/review-profiles/${encodeURIComponent(id)}`;
+  if (type === "outcome-kind") return `/outcome-kinds/${encodeURIComponent(id)}`;
   throw new Error(`Unknown edit type ${type}`);
 }
 
@@ -14610,7 +20416,11 @@ function editDialogTitle(type, record) {
     case: "case",
     task: "task",
     "review-profile": "review profile",
+    "outcome-kind": "outcome kind",
   };
+  if (type === "governance-group") {
+    return `Edit ${text(record.name) || "governance group"}`;
+  }
   return `Edit ${labels[type] || "record"} ${record.id || ""}`.trim();
 }
 
@@ -14628,16 +20438,16 @@ function renderEditFields(type, record) {
   }
   if (type === "governance-group") {
     return `
-      ${readonlyField("Governance group ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
-      ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
-      ${multiSelectField("Member teams", "member_team_ids", "teams", record.member_team_ids || [], { size: 5 })}
-      ${textareaField("Goals", "goals", governanceGoalsToText(record.goals || []), {
-        rows: 4,
-        placeholder: "id | description",
-      })}
+      ${selectField("Manager", "manager_agent_id", "governance-manager-agents", record.manager_agent_id || "", { required: true })}
+      ${renderGovernanceMemberTeamsEditor(record.member_team_ids || [])}
+      ${renderGovernanceGoalsEditor(record.goals || [])}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
+      ${renderTechnicalDetails([
+        ["Governance group ID", record.id],
+        ["Manager agent ID", record.manager_agent_id],
+      ])}
     `;
   }
   if (type === "project") {
@@ -14662,10 +20472,12 @@ function renderEditFields(type, record) {
       ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
       <p class="subheading">Release gates</p>
-      ${textareaField("Release policy JSON", "release_policy_json", record.release_policy ? JSON.stringify(record.release_policy, null, 2) : "", {
+      ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
         rows: 12,
-        placeholder: '{"verification_commands": [...], "review_requirements": [...]}',
+        placeholder: '{"verification_commands": [...], "review_requirements": [...], "allow_ungated": false}',
       })}
+      <p class="field-help">Human review fields are intentionally excluded from the JSON editor and configured only through the bounded controls below.</p>
+      ${renderHumanReviewPolicyEditor(record.release_policy?.human_review_requirement)}
     `;
   }
   if (type === "agent") {
@@ -14736,7 +20548,21 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
       ${multiSelectField("Applicable roles", "applicable_role_ids", "roles", record.applicable_role_ids || [], { size: 4 })}
+      ${multiSelectField("Required outcome kinds", "required_outcome_kinds", "review-profile-edit-outcome-kinds", record.required_outcome_kinds || [], { size: 4 })}
       ${renderReviewProfileCriteriaEditor(record.criteria || [])}
+      ${checkboxField("Archived", "archived", Boolean(record.archived))}
+    `;
+  }
+  if (type === "outcome-kind") {
+    return `
+      ${readonlyField("Definition ID", record.id)}
+      ${readonlyField("Kind", record.kind)}
+      ${readonlyField("Team", record.team_id)}
+      ${readonlyField("Project", record.project_id || "Team-wide")}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${textareaField("Description", "description", record.description || "", { rows: 3 })}
+      ${textareaField("Reference requirements", "reference_requirements", record.reference_requirements || "", { rows: 3 })}
+      ${textareaField("Evidence requirements", "evidence_requirements", record.evidence_requirements || "", { rows: 3 })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -14809,8 +20635,8 @@ function editPayloadForForm(type, form) {
     return {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
-      member_team_ids: splitList(data.member_team_ids),
-      goals: parseGovernanceGoals(data.goals),
+      member_team_ids: governanceMemberTeamIdsFromForm(form),
+      goals: governanceGoalsFromForm(form),
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };
@@ -14821,7 +20647,7 @@ function editPayloadForForm(type, form) {
       status: text(data.status),
       goals: parseGoals(data.goals),
       git: gitConfigForForm(data),
-      release_policy: releasePolicyForForm(data),
+      release_policy: releasePolicyForForm(data, form),
     };
   }
   if (type === "agent") {
@@ -14890,7 +20716,17 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
+      required_outcome_kinds: splitList(data.required_outcome_kinds),
       criteria: reviewProfileCriteriaFromForm(form),
+      archived: Boolean(form.elements.archived?.checked),
+    };
+  }
+  if (type === "outcome-kind") {
+    return {
+      name: text(data.name),
+      description: text(data.description),
+      reference_requirements: text(data.reference_requirements),
+      evidence_requirements: text(data.evidence_requirements),
       archived: Boolean(form.elements.archived?.checked),
     };
   }
@@ -15048,6 +20884,13 @@ function formValuesForDraft(form) {
   if (criteriaDraft) {
     values.__review_profile_criteria = criteriaDraft;
   }
+  if (form.querySelector("[data-governance-goals-editor]")) {
+    values.__governance_goals = governanceGoalsDraftFromForm(form);
+  }
+  const humanReviewChecklistDraft = humanReviewChecklistDraftFromForm(form);
+  if (humanReviewChecklistDraft) {
+    values.__human_review_checklist = humanReviewChecklistDraft;
+  }
   return values;
 }
 
@@ -15073,6 +20916,8 @@ function restoreFormDrafts(drafts) {
       return;
     }
     restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
+    restoreGovernanceGoalsDraft(form, values.__governance_goals);
+    restoreHumanReviewChecklistDraft(form, values.__human_review_checklist);
     if (formSemanticIdentifier(form) === "setup-template-form") {
       const templateField = form.elements.template_id;
       if (templateField && values.template_id) {
@@ -15081,7 +20926,14 @@ function restoreFormDrafts(drafts) {
       renderTemplateSetupFields({ preserveValues: false });
     }
     Object.entries(values).forEach(([name, value]) => {
-      if (name === "__review_profile_criteria" || name.startsWith("criterion_")) {
+      if (
+        name === "__review_profile_criteria" ||
+        name === "__governance_goals" ||
+        name === "__human_review_checklist" ||
+        name.startsWith("criterion_") ||
+        name.startsWith("governance_goal_") ||
+        name.startsWith("human_review_checklist_")
+      ) {
         return;
       }
       const field = form.elements[name];
@@ -15122,6 +20974,15 @@ function restoreFormDrafts(drafts) {
       leadSelect.dataset.currentValue = text(values.lead_agent_id);
       refreshProjectLeadSelect(form);
     }
+    syncGovernanceMemberTeamEditor(
+      form.querySelector("[data-governance-member-teams-editor]"),
+    );
+    syncGovernanceGoalEditor(
+      form.querySelector("[data-governance-goals-editor]"),
+    );
+    syncHumanReviewChecklistEditor(
+      form.querySelector("[data-human-review-checklist-editor]"),
+    );
     rememberFormDraft(form);
   });
   const updateTaskForm = document.querySelector("#update-task-form");
@@ -15224,17 +21085,35 @@ function buildTimelineSelectOptions() {
   values(state.teams)
     .sort(byId)
     .forEach((team) => {
-      teamLabels.set(team.id, `${team.name} (${team.id})`);
+      teamLabels.set(team.id, team.name || team.id);
     });
   values(state.projects)
     .sort(byId)
     .forEach((project) => {
-      projectLabels.set(project.id, `${project.name} (${project.id})`);
+      projectLabels.set(project.id, project.name || project.id);
     });
   values(state.agents)
     .sort(byId)
     .forEach((agent) => {
-      agentLabels.set(agent.id, `${agent.id} - ${agentRoleLabel(agent)}`);
+      agentLabels.set(
+        agent.id,
+        `${agentLabel(agent)} · ${agentRoleLabel(agent)}`,
+      );
+    });
+
+  (Array.isArray(timelineState.facets?.types) ? timelineState.facets.types : [])
+    .forEach((type) => {
+      const normalizedType = text(type);
+      if (normalizedType) {
+        typeLabels.set(normalizedType, humanizeToken(normalizedType));
+      }
+    });
+  (Array.isArray(timelineState.facets?.statuses) ? timelineState.facets.statuses : [])
+    .forEach((status) => {
+      const normalizedStatus = text(status);
+      if (normalizedStatus) {
+        statusLabels.set(normalizedStatus, humanizeToken(normalizedStatus));
+      }
     });
 
   timelineState.entries.forEach((entry) => {
@@ -15473,24 +21352,9 @@ function parseGoals(value) {
     });
 }
 
-function parseGovernanceGoals(value) {
-  return parseGoals(value);
-}
-
 function goalsToText(goals) {
   return (goals || [])
     .map((goal) => [goal.id, goal.description, goal.state || "pending"].join(" | "))
-    .join("\n");
-}
-
-function governanceGoalsToText(goals) {
-  return (goals || [])
-    .map((goal) => {
-      const state = text(goal.state);
-      return state && state !== "pending"
-        ? [goal.id, goal.description, state].join(" | ")
-        : [goal.id, goal.description].join(" | ");
-    })
     .join("\n");
 }
 

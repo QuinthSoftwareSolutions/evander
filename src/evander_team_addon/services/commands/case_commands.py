@@ -20,10 +20,21 @@ from .work_item_helpers import (
     _team_create_case_normalized_payload,
 )
 from ...models import (
+    RolePermission,
+    TeamCase,
     TeamCaseStatus,
+    HumanReviewFinding,
+    HumanReviewRequest,
     TeamInboxPriority,
+    Project,
+    ReleasePackage,
     TeamState,
     _unique_text_list,
+)
+from ..domain.agent_access import (
+    _agent_has_role_permission_for_project,
+    _is_project_lead_for,
+    _is_team_manager,
 )
 from ..domain.case_task import (
     _apply_case_update,
@@ -34,6 +45,11 @@ from ..domain.common import (
     _UNSET,
     _optional_text,
     _required_text,
+)
+from ..domain.human_reviews import (
+    close_post_release_feedback_case,
+    create_human_finding_correction_root,
+    record_human_finding_resolution_proposal,
 )
 
 from .executor import TeamCommandExecutor
@@ -285,6 +301,427 @@ class TeamCaseCommandService(TeamCommandExecutor):
             apply_command=_apply,
             require_active_dispatch=True,
         )
+
+    def propose_human_finding_resolution_command(
+        self,
+        *,
+        session_id: str,
+        finding_id: str,
+        proposed_resolution: str,
+        evidence_refs: Sequence[str],
+        proposed_by_deliverable_ids: Sequence[str],
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_finding_id = _required_text(finding_id, "finding_id")
+        normalized_resolution = _required_text(
+            proposed_resolution,
+            "proposed_resolution",
+        )
+        normalized_evidence_refs = _unique_text_list(
+            evidence_refs,
+            "evidence_refs",
+        )
+        normalized_deliverable_ids = _unique_text_list(
+            proposed_by_deliverable_ids,
+            "proposed_by_deliverable_ids",
+        )
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_propose_human_finding_resolution",
+            request_id=normalized_request_id,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="progress",
+        )
+        normalized_payload = {
+            "finding_id": normalized_finding_id,
+            "proposed_resolution": normalized_resolution,
+            "evidence_refs": sorted(normalized_evidence_refs),
+            "proposed_by_deliverable_ids": sorted(normalized_deliverable_ids),
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            actor = _require_command_agent(
+                resolved,
+                "team_propose_human_finding_resolution",
+            )
+            finding, _request, _release, project, _case = (
+                _human_finding_command_context(
+                    state,
+                    finding_id=normalized_finding_id,
+                )
+            )
+            correction_task = state.tasks.get(finding.correction_task_id)
+            if correction_task is None:
+                raise TeamCommandValidationError(
+                    code="human_finding_correction_task_missing",
+                    message=(
+                        f"human review finding {finding.id} references missing "
+                        f"correction task {finding.correction_task_id}"
+                    ),
+                )
+            if not (
+                correction_task.owner_agent_id == actor.id
+                or _is_project_lead_for(state, actor.id, project.id)
+                or _is_team_manager(state, actor)
+            ):
+                raise TeamCommandValidationError(
+                    code="human_finding_resolution_not_permitted",
+                    message=(
+                        f"agent {actor.id} cannot propose a resolution for "
+                        f"human review finding {finding.id}"
+                    ),
+                    correction_context={
+                        "finding_id": finding.id,
+                        "correction_task_id": correction_task.id,
+                        "correction_task_owner_agent_id": (
+                            correction_task.owner_agent_id
+                        ),
+                    },
+                )
+            try:
+                updated = record_human_finding_resolution_proposal(
+                    state,
+                    finding_id=finding.id,
+                    proposed_resolution=normalized_resolution,
+                    evidence_refs=normalized_evidence_refs,
+                    proposed_by_deliverable_ids=normalized_deliverable_ids,
+                )
+            except ValueError as exc:
+                raise _team_command_validation_error_from_exception(
+                    exc,
+                    code="human_finding_resolution_invalid",
+                    correction_context={"finding_id": finding.id},
+                ) from exc
+            return TeamCommandApplyResult(
+                response_payload={
+                    "human_review_finding_id": updated.id,
+                    "correction_task_id": updated.correction_task_id,
+                    "proposed_by_deliverable_ids": list(
+                        updated.proposed_by_deliverable_ids
+                    ),
+                    "progress_made": True,
+                },
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
+    def create_human_finding_correction_root_command(
+        self,
+        *,
+        session_id: str,
+        finding_id: str,
+        owner_agent_id: str,
+        title: str,
+        description: str,
+        request_id: str,
+        task_id: str | None = None,
+        originating_task_id: str | None = None,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_finding_id = _required_text(finding_id, "finding_id")
+        normalized_owner_id = _required_text(owner_agent_id, "owner_agent_id")
+        normalized_title = _required_text(title, "title")
+        normalized_description = _required_text(description, "description")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_task_id = _optional_text(task_id)
+        normalized_origin_id = _optional_text(originating_task_id)
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_create_human_finding_correction_root",
+            request_id=normalized_request_id,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="progress",
+        )
+        normalized_payload = {
+            "finding_id": normalized_finding_id,
+            "owner_agent_id": normalized_owner_id,
+            "title": normalized_title,
+            "description": normalized_description,
+            "task_id": normalized_task_id,
+            "originating_task_id": normalized_origin_id,
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            actor = _require_command_agent(
+                resolved,
+                "team_create_human_finding_correction_root",
+            )
+            finding, _request, _release, project, case = (
+                _human_finding_command_context(
+                    state,
+                    finding_id=normalized_finding_id,
+                )
+            )
+            authorized_triage_actor = (
+                case.owner_agent_id == actor.id
+                or _is_project_lead_for(state, actor.id, project.id)
+                or _is_team_manager(state, actor)
+            )
+            has_root_authority = _agent_has_role_permission_for_project(
+                state,
+                actor,
+                RolePermission.CREATE_ROOT_TASK,
+                project.id,
+            )
+            if not authorized_triage_actor or not has_root_authority:
+                raise TeamCommandValidationError(
+                    code="human_finding_retarget_not_permitted",
+                    message=(
+                        f"agent {actor.id} cannot create an independent correction "
+                        f"root for human review finding {finding.id}"
+                    ),
+                    correction_context={
+                        "finding_id": finding.id,
+                        "case_id": case.id,
+                        "required_permission": (
+                            RolePermission.CREATE_ROOT_TASK.value
+                        ),
+                    },
+                )
+            result: dict[str, Any] = {"events": []}
+            try:
+                correction_task = create_human_finding_correction_root(
+                    state,
+                    finding_id=finding.id,
+                    owner_agent_id=normalized_owner_id,
+                    title=normalized_title,
+                    description=normalized_description,
+                    request_id=normalized_request_id,
+                    result=result,
+                    task_id=normalized_task_id,
+                    originating_task_id=normalized_origin_id,
+                    created_by_agent_id=actor.id,
+                )
+            except ValueError as exc:
+                raise _team_command_validation_error_from_exception(
+                    exc,
+                    code="human_finding_retarget_invalid",
+                    correction_context={
+                        "finding_id": finding.id,
+                        "case_id": case.id,
+                    },
+                ) from exc
+            return TeamCommandApplyResult(
+                response_payload={
+                    **result,
+                    "human_review_finding_id": finding.id,
+                    "correction_task_id": correction_task.id,
+                    "progress_made": True,
+                },
+                created_domain_ids=[
+                    correction_task.id,
+                    *result.get("created_inbox_item_ids", []),
+                ],
+                created_event_ids=[
+                    str(event.get("id"))
+                    for event in result.get("events", [])
+                    if isinstance(event, dict) and event.get("id")
+                ],
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
+    def close_post_release_feedback_case_command(
+        self,
+        *,
+        session_id: str,
+        case_id: str,
+        reason: str,
+        evidence_refs: Sequence[str],
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_case_id = _required_text(case_id, "case_id")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_evidence_refs = _unique_text_list(
+            evidence_refs,
+            "evidence_refs",
+        )
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_close_post_release_case",
+            request_id=normalized_request_id,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="progress",
+        )
+        normalized_payload = {
+            "case_id": normalized_case_id,
+            "reason": normalized_reason,
+            "evidence_refs": sorted(normalized_evidence_refs),
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            actor = _require_command_agent(
+                resolved,
+                "team_close_post_release_case",
+            )
+            case = state.cases.get(normalized_case_id)
+            project = (
+                state.projects.get(case.project_id)
+                if case is not None and case.project_id is not None
+                else None
+            )
+            if case is None or project is None:
+                raise TeamCommandValidationError(
+                    code="post_release_case_not_found",
+                    message=(
+                        f"post-release feedback case {normalized_case_id} "
+                        "does not exist"
+                    ),
+                )
+            if not (
+                case.owner_agent_id == actor.id
+                or _is_project_lead_for(state, actor.id, project.id)
+                or _is_team_manager(state, actor)
+            ):
+                raise TeamCommandValidationError(
+                    code="post_release_case_close_not_permitted",
+                    message=(
+                        f"agent {actor.id} cannot close post-release feedback "
+                        f"case {case.id}"
+                    ),
+                    correction_context={
+                        "case_id": case.id,
+                        "owner_agent_id": case.owner_agent_id,
+                    },
+                )
+            result: dict[str, Any] = {}
+            try:
+                closed = close_post_release_feedback_case(
+                    state,
+                    case_id=case.id,
+                    reason=normalized_reason,
+                    evidence_refs=normalized_evidence_refs,
+                    actor_kind="agent",
+                    actor_id=actor.id,
+                    result=result,
+                )
+            except ValueError as exc:
+                raise _team_command_validation_error_from_exception(
+                    exc,
+                    code="post_release_case_close_invalid",
+                    correction_context={"case_id": case.id},
+                ) from exc
+            return TeamCommandApplyResult(
+                response_payload={
+                    **result,
+                    "case": closed.model_dump(mode="json"),
+                    "progress_made": True,
+                },
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
+
+def _human_finding_command_context(
+    state: TeamState,
+    *,
+    finding_id: str,
+) -> tuple[
+    HumanReviewFinding,
+    HumanReviewRequest,
+    ReleasePackage,
+    Project,
+    TeamCase,
+]:
+    finding = state.human_review_findings.get(finding_id)
+    if finding is None:
+        raise TeamCommandValidationError(
+            code="human_finding_not_found",
+            message=f"human review finding {finding_id} does not exist",
+        )
+    request = state.human_review_requests.get(
+        finding.source_human_review_request_id
+    )
+    release = (
+        state.release_packages.get(request.release_package_id)
+        if request is not None
+        else None
+    )
+    project = (
+        state.projects.get(release.project_id)
+        if release is not None
+        else None
+    )
+    correction_task = state.tasks.get(finding.correction_task_id)
+    case = (
+        state.cases.get(correction_task.case_id)
+        if correction_task is not None and correction_task.case_id is not None
+        else None
+    )
+    if request is None or release is None or project is None or case is None:
+        raise TeamCommandValidationError(
+            code="human_finding_context_invalid",
+            message=f"human review finding {finding.id} has incomplete lineage",
+            correction_context={"finding_id": finding.id},
+        )
+    return finding, request, release, project, case
 
 
 __all__ = ["TeamCaseCommandService"]

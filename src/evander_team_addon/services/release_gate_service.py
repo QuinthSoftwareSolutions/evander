@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from ..models import ReleaseVerificationCommandResult, TeamState
 from ..repository import TeamStateRepository
+from .commands.outbox import _team_event_outbox_records
 from .domain.release_gates import record_release_verification_result
+from .domain.human_reviews import (
+    HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+    HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+    HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+)
 
 
 class TeamReleaseGateService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+    ) -> None:
         self._repository = repository
+        self._human_review_eligibility_resolver = (
+            human_review_eligibility_resolver
+        )
 
     def record_verification_result(
         self,
@@ -35,6 +50,10 @@ class TeamReleaseGateService:
             "events": [],
             "error": error,
         }
+        if self._human_review_eligibility_resolver is not None:
+            result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                self._human_review_eligibility_resolver
+            )
 
         def _mutate(state: TeamState) -> TeamState:
             record_release_verification_result(
@@ -51,7 +70,21 @@ class TeamReleaseGateService:
             result["success"] = True
             return state
 
-        state = self._repository.update(_mutate)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                [
+                    event
+                    for event in result["events"]
+                    if event.get("event_type")
+                    in {
+                        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+                        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                    }
+                ]
+            ),
+        )
+        result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         return state, result
 

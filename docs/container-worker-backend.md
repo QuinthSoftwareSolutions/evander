@@ -672,6 +672,7 @@ Routes:
 - `POST /v1/sessions/{session_id}/repo`
 - `POST /v1/sessions/{session_id}/files`
 - `POST /v1/sessions/{session_id}/worktrees`
+- `POST /v1/sessions/{session_id}/worktrees/cleanup`
 - `POST /v1/sessions/{session_id}/git/write-key`
 - `DELETE /v1/sessions/{session_id}/git/keys/{key_name}`
 - `DELETE /v1/sessions/{session_id}`
@@ -688,6 +689,13 @@ subscription execution; it never contains credentials. Raw `env`, `environment`,
 `environment_variables` request fields are rejected. If `repo_source` is present, it must match a
 configured allowed Git source prefix. Repository-specific managed Git SSH aliases are accepted
 only for their corresponding managed repository beneath that prefix.
+
+Task-worktree cleanup requires the deterministic target path, branch, and full expected commit.
+The worker serializes preparation and cleanup for the session repository, rejects tracked changes,
+non-ignored untracked files, unexpected branches, commits, paths, or registrations, then repeats
+the safety inspection immediately before removal. Ignored files are inventoried with reclaimed
+bytes and may be force-removed only after both inspections prove they are the only remaining
+non-Git files. Dry-run and already-absent results use the same structured response.
 
 This route list is an operational inventory, not a frozen wire schema. The authoritative request and response models are [`src/evander/worker/models.py`](../src/evander/worker/models.py), and route registration is authoritative in [`src/evander/worker/api.py`](../src/evander/worker/api.py). Client implementations should use those sources so route-specific models and newly added fields are not silently omitted.
 

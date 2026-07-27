@@ -4,6 +4,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from datetime import datetime
 from typing import Any
 from ...git_naming import validate_branch_name
 from ...models import (
@@ -12,16 +13,25 @@ from ...models import (
     DeliverableGitRefs,
     DeliverableOutcome,
     DeliverableVerification,
+    TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamRecordState,
     TeamState,
+    TeamTaskKind,
+    TeamTaskState,
+    TaskCompletion,
+    TaskCompletionKind,
 )
 
 from .common import (
     _optional_mapping,
     _optional_text,
     _required_text,
+    _set_task_state,
     _string_list,
 )
+from .git_work_contexts import finalize_active_git_work_contexts_for_task
+from .task_supervision import queue_parent_resolution_transitions
 
 
 _DELIVERABLE_VERIFICATION_STATUSES = frozenset(
@@ -125,13 +135,35 @@ def _deliverable_submission_next_action_hints(
 def _validate_deliverable_outcomes_against_task_contract(
     task: AgentTask,
     outcomes: Sequence[DeliverableOutcome],
+    *,
+    completion: TaskCompletion | None = None,
 ) -> None:
     contract = task.outcome_contract
+    if completion is not None:
+        if task.task_kind != TeamTaskKind.OUTCOME or contract is None:
+            raise ValueError(
+                "evidenced-noop completion is only valid for an outcome task"
+            )
+        if completion.kind != TaskCompletionKind.EVIDENCED_NOOP:
+            raise ValueError(
+                "deliverable completion currently supports evidenced_noop only"
+            )
+        if not contract.allow_evidenced_noop:
+            raise ValueError(
+                f"outcome task {task.id} does not allow an evidenced no-op"
+            )
+        if outcomes:
+            raise ValueError(
+                "evidenced-noop deliverable cannot also declare delivered outcomes"
+            )
+        return
     if contract is None:
         return
 
     outcome_kinds = {outcome.kind for outcome in outcomes}
-    forbidden = sorted(outcome_kinds.intersection(contract.forbidden_effect_kinds))
+    forbidden = sorted(
+        outcome_kinds.intersection(contract.forbidden_outcome_kinds)
+    )
     if forbidden:
         raise ValueError("deliverable includes forbidden outcome kinds: " + ", ".join(forbidden))
 
@@ -215,6 +247,88 @@ def _active_task_deliverables(
     ]
 
 
+def _active_deliverable_acceptance_blocker_ids(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+) -> list[str]:
+    """Return blockers that prevent accepting a deliverable and its task."""
+
+    return sorted(
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and (
+            blocker.task_id == task.id
+            or (
+                blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+                and blocker.source_id == deliverable.id
+            )
+        )
+    )
+
+
+def _accept_deliverable_and_maybe_task(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+    now: datetime,
+) -> bool:
+    """Accept one deliverable and close its task when every active product is accepted."""
+
+    deliverable.state = TeamRecordState.ACCEPTED
+    task_deliverables = _active_task_deliverables(state, task)
+    if not task_deliverables or not all(
+        item.state == TeamRecordState.ACCEPTED for item in task_deliverables
+    ):
+        return False
+    if task.task_kind == TeamTaskKind.OUTCOME:
+        noop_completions = [
+            item.completion
+            for item in task_deliverables
+            if item.completion is not None
+        ]
+        if noop_completions:
+            if len(noop_completions) != len(task_deliverables):
+                raise ValueError(
+                    "an outcome task cannot mix evidenced-noop and delivered "
+                    "products in one accepted lifecycle"
+                )
+            task.completion = noop_completions[0].model_copy(deep=True)
+        else:
+            outcome_reference_ids = [
+                reference_id
+                for item in task_deliverables
+                for outcome in item.outcomes
+                for reference_id in outcome.reference_ids
+            ]
+            task.completion = TaskCompletion(
+                kind=TaskCompletionKind.DELIVERED,
+                summary="Accepted deliverables satisfied the task outcome contract.",
+                outcome_reference_ids=outcome_reference_ids,
+            )
+        next_state = TeamTaskState.ACCEPTED
+    else:
+        next_state = TeamTaskState.FINISHED
+    _set_task_state(task, next_state, now=now)
+    finalize_active_git_work_contexts_for_task(
+        state,
+        task_id=task.id,
+        now=now,
+    )
+    task.updated_at = now
+    queue_parent_resolution_transitions(
+        state,
+        child_task_id=task.id,
+        sender_agent_id=deliverable.producer_agent_id,
+        now=now,
+        references={"deliverable_id": deliverable.id},
+    )
+    return True
+
+
 __all__ = [
     "_DELIVERABLE_VERIFICATION_STATUSES",
     "_deliverable_git_refs_from_payload",
@@ -225,4 +339,6 @@ __all__ = [
     "_validate_deliverable_outcomes_against_task_contract",
     "_superseded_deliverable_for_rework",
     "_active_task_deliverables",
+    "_active_deliverable_acceptance_blocker_ids",
+    "_accept_deliverable_and_maybe_task",
 ]

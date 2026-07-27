@@ -65,6 +65,12 @@ A host-owned Git repository under `runtime/managed-git/` used as the controlled 
 **Base VM**<br>
 The minimal reusable VM image from which disposable overlays are created. Optional language, browser, and package tooling is added by post-launch bootstraps.
 
+**Blocker (Team)**<br>
+The canonical durable record for a condition that prevents task, review,
+release, human-review, or agent execution progress. It keeps a stable reason
+code, source record, affected tasks, owner/delegate, escalation route, events,
+and source-aware recovery.
+
 **Bootstrap**<br>
 An idempotent or reconciling host script that installs/configures a particular guest capability, such as Codex, .NET, NuGet, Python, or Playwright.
 
@@ -79,6 +85,11 @@ An explicit permission associated with an identity/session that is evaluated bef
 **Case**<br>
 A Team domain object for structured operational work that benefits from its own lifecycle and context rather than being represented only as a task or message.
 
+**Cancellation (task)**<br>
+An authorized terminal disposition with reason code, explanation, actor, time,
+and optional same-project successor. It resolves an obsolete task but does not
+claim that its outcome was accepted.
+
 **Chat tool**<br>
 A Team MCP operation classified for interactive communication behavior. Classification matters to exposure and wake semantics; `team_reply_to_chat` is a chat tool, not an ordinary mutation.
 
@@ -90,6 +101,11 @@ A directory-scoped, host-owned description of a communication endpoint and its s
 
 **Consultation**<br>
 A bounded request to another agent/session for analysis or advice, persisted independently from the caller so lifecycle and cleanup can be tracked.
+
+**Contribution graph**<br>
+The recursively derived lineage from an aggregate deliverable to its exact
+accepted direct-child `source_deliverable_ids`. It proves composition without
+copying child state or relisting every leaf on the root.
 
 **Container worker VM**<br>
 An execution backend in which a dedicated worker VM runs disposable Docker containers through `evander-worker-daemon`. It is additive to, not a replacement for, the libvirt VM backend.
@@ -137,6 +153,11 @@ A temporary Team agent/session created for a bounded subtask. It must return a r
 **Event**<br>
 A typed fact offered to orchestration. An event does nothing by itself until a trigger/provider and active workflow revision match it.
 
+**Evidenced no-op**<br>
+An outcome-task completion used when no new external effect is the correct
+result. The task contract must allow it, evidence refs are mandatory, and the
+submitted completion must be accepted through the normal deliverable path.
+
 **Exact-SHA publication**<br>
 The rule that Git publication must use the precise commit that passed review and verification, protected by lease/readback checks rather than a movable branch assumption.
 
@@ -166,6 +187,16 @@ A Team grouping that oversees member teams, goals, agenda, and aggregate cost/op
 An untrusted or less-trusted VM/container execution environment. It receives session-scoped configuration and narrow host URLs, never the host's general secret set.
 
 ## H
+
+**Human review finding**<br>
+An immutable actionable issue from a human changes-requested decision, linked
+to correction or triage work. It stays open through successor lineage until a
+later approved human decision explicitly confirms its carried resolution.
+
+**Human review request**<br>
+A release-gate record pinned to one candidate SHA/tree, reviewer assignment,
+checklist, and manual or prepared test target. Only a real eligible Admin user
+with scoped permission and privileged confirmation can decide it.
 
 **Host config**<br>
 The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains; legacy gateway YAML is import input, not the current baseline.
@@ -229,6 +260,11 @@ The host service on the OpenAI relay surface that holds upstream credentials and
 **Optimistic concurrency**<br>
 The pattern in which a client submits an expected revision/token and a mutation fails on mismatch. The safe response is refresh, reassess, and resubmit—not overwrite.
 
+**Originating task**<br>
+A provenance-only link recording that one task caused independent work to be
+created. It grants no root-creation authority and creates no ownership,
+containment, dependency, or completion edge.
+
 **Org chart**<br>
 The Team visual projection of teams, agents, reporting, and governance relationships. It is derived from domain records and is not a separate source of truth.
 
@@ -239,6 +275,11 @@ Rows written in the same transaction as a Team command so downstream events/acti
 
 **Pack revision**<br>
 An immutable/versioned view of an operator workflow pack used for validation, concurrency control, and run provenance.
+
+**Parent task**<br>
+The aggregate task for which a child is a constituent contribution. Every
+descendant recursively gates the parent's submission, acceptance, resolution,
+and release.
 
 **Policy**<br>
 Rules resolving whether a subject can invoke a tool in a directory/session context and whether the invocation needs approval. Policy denial is itself audited.
@@ -317,11 +358,21 @@ The end section of each manual chapter identifying the authoritative implementat
 **Task**<br>
 A Team unit of planned work with status, ownership/assignment, dependencies, project context, and possible dispatch/deliverable/review relationships.
 
+**Task assessment**<br>
+The non-persisted recursive Team value that gives one task's resolution status,
+readiness, unresolved descendants, dependencies, acceptances, reviews,
+blockers, integration readiness, contribution coverage, and invalid reasons.
+
 **Team**<br>
 An organizational domain object containing agents, responsibilities, roles, leadership/reporting context, and project participation. “Team” may also refer to the add-on when capitalized as **Team Add-on**.
 
 **Team Add-on**<br>
 The `evander_team_addon` package whose manifest ID is `team-addon` (its Python entry-point name is `team`). It contributes Team state, commands, providers, MCP tools, and an Admin Web area while preserving the core/add-on boundary.
+
+**Team dispatch**<br>
+The immutable scheduler-computed task, blocker, review, inbox, project, and
+repository scope for one persistent-agent wake. It moves from preparation to a
+leased or terminal status; Team commands cannot widen it.
 
 **TOCTOU race**<br>
 A time-of-check/time-of-use race: state validated during one step changes before a later action uses it.
@@ -358,7 +409,17 @@ A revisioned graph connecting triggers, gates, queries, and effects. It coordina
 An operator-managed JSON document containing one or more workflows and provider configuration references, edited through revision/lock-aware surfaces.
 
 **Worktree**<br>
-A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<operation-id>/` used for a managed Git operation and removed/reconciled by its owner.
+Either a short-lived detached core managed-Git operation checkout below
+`runtime/git-worktrees/<managed-repo-id>/<operation-id>/`, or a stable
+task/repository checkout inside a Team execution environment. The first is
+operation-scoped; the second is mapped to fresh dispatch-bound authorization
+contexts and has its own safety-checked cleanup lifecycle.
+
+**Worktree cleanup candidate**<br>
+A durable Team record proposing reclamation of one resolved or reassigned task
+checkout. It stores exact path/branch/commit safety evidence, attempts,
+inventoried ignored files, bytes reclaimed, and any
+`recovery_required` refusal before context metadata is pruned.
 
 ## Source trail
 

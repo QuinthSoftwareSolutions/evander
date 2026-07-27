@@ -20,19 +20,27 @@ from evander.models import ApprovalStatus, SessionManifest, ToolName, tool_name_
 from evander.runtime import build_runtime
 from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
+    TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_CASE_TOOL,
+    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
+    TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
+    TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_RETRY_REVIEW_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
@@ -40,6 +48,7 @@ from evander_team_addon.mcp import (
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
@@ -59,6 +68,11 @@ from evander_team_addon.models import (
     ProjectGoal,
     ProjectReleasePolicy,
     ReviewRequest,
+    TeamBlockerRoute,
+    TeamBlockerState,
+    TeamDispatch,
+    TeamDispatchStatus,
+    TeamInboxItemState,
     TeamRecordState,
     TeamTaskState,
 )
@@ -220,11 +234,10 @@ def _seed_planning_state(runtime_dir: Path) -> TeamStateRepository:
 def _lease_planning_agents(repo: TeamStateRepository) -> None:
     def _lease(state):
         for agent_id in ("manager", "lead", "backend"):
-            state.agent_runtimes[agent_id] = AgentRuntime(
+            _install_leased_dispatch(
+                state,
                 agent_id=agent_id,
-                active_dispatch_id=f"dispatch-{agent_id}",
-                wake_leased_until=datetime(2099, 1, 1, 0, 15, tzinfo=UTC),
-                wake_reason="scheduled",
+                dispatch_id=f"dispatch-{agent_id}",
             )
         return state
 
@@ -323,15 +336,132 @@ def _lease_agent(
     dispatch_id: str,
 ) -> None:
     def _lease(state):
-        state.agent_runtimes[agent_id] = AgentRuntime(
+        _install_leased_dispatch(
+            state,
             agent_id=agent_id,
-            active_dispatch_id=dispatch_id,
-            wake_leased_until=datetime(2099, 1, 1, 0, 15, tzinfo=UTC),
-            wake_reason="scheduled",
+            dispatch_id=dispatch_id,
         )
         return state
 
     repo.update(_lease)
+
+
+def _install_leased_dispatch(
+    state,
+    *,
+    agent_id: str,
+    dispatch_id: str,
+) -> None:
+    agent = state.agents[agent_id]
+    existing_runtime = state.agent_runtimes.get(agent_id)
+    previous_dispatch = (
+        state.dispatches.get(existing_runtime.active_dispatch_id)
+        if existing_runtime is not None
+        and existing_runtime.active_dispatch_id is not None
+        else None
+    )
+    if (
+        previous_dispatch is not None
+        and previous_dispatch.id != dispatch_id
+        and previous_dispatch.status
+        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
+    ):
+        previous_dispatch.status = TeamDispatchStatus.COMPLETED
+        previous_dispatch.completed_at = datetime(
+            2098,
+            12,
+            31,
+            23,
+            59,
+            tzinfo=UTC,
+        )
+    task_ids = sorted(
+        task.id
+        for task in state.tasks.values()
+        if task.owner_agent_id == agent_id
+        and task.state
+        not in {
+            TeamTaskState.ACCEPTED,
+            TeamTaskState.CANCELLED,
+            TeamTaskState.FINISHED,
+        }
+    )
+    project_ids = {
+        assignment.project_id
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == agent_id
+    }
+    project_ids.update(
+        project.id
+        for project in state.projects.values()
+        if project.lead_agent_id == agent_id
+        or state.teams[project.team_id].manager_agent_id == agent_id
+    )
+    project_ids.update(state.tasks[task_id].project_id for task_id in task_ids)
+    review_request_ids = sorted(
+        review.id
+        for review in state.review_requests.values()
+        if review.reviewer_agent_id == agent_id
+        and review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+        and review.retired_at is None
+        and review.superseded_by_review_request_id is None
+    )
+    blocker_ids = sorted(
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and (
+            (
+                blocker.route == TeamBlockerRoute.DELEGATED
+                and blocker.delegate_agent_id == agent_id
+            )
+            or (
+                blocker.route
+                in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                and blocker.owner_agent_id == agent_id
+            )
+        )
+    )
+    inbox_item_ids = sorted(
+        item.id
+        for item in state.inbox.values()
+        if item.recipient_agent_id == agent_id
+        and item.state == TeamInboxItemState.PENDING
+    )
+    managed_repo_ids = sorted(
+        {
+            project.git.managed_repo_id
+            for project_id in project_ids
+            if (project := state.projects.get(project_id)) is not None
+            and project.git is not None
+            and project.git.managed_repo_id is not None
+        }
+    )
+    prepared_at = datetime(2098, 12, 31, 23, 59, tzinfo=UTC)
+    lease_expires_at = datetime(2099, 1, 1, 0, 15, tzinfo=UTC)
+    state.dispatches[dispatch_id] = TeamDispatch(
+        id=dispatch_id,
+        agent_id=agent_id,
+        session_id=agent.session_id,
+        cause_kind="scheduled",
+        task_ids=task_ids,
+        blocker_ids=blocker_ids,
+        review_request_ids=review_request_ids,
+        inbox_item_ids=inbox_item_ids,
+        project_ids=sorted(project_ids),
+        managed_repo_ids=managed_repo_ids,
+        status=TeamDispatchStatus.LEASED,
+        created_at=prepared_at,
+        prepared_at=prepared_at,
+        leased_at=prepared_at,
+        lease_expires_at=lease_expires_at,
+    )
+    state.agent_runtimes[agent_id] = AgentRuntime(
+        agent_id=agent_id,
+        active_dispatch_id=dispatch_id,
+        wake_leased_until=lease_expires_at,
+        wake_reason="scheduled",
+    )
 
 
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
@@ -353,15 +483,46 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert set(MCP_TOOL_NAMES).issubset(visible)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
+    decide_deliverable_description = (
+        tools[TEAM_DECIDE_DELIVERABLE_TOOL].description or ""
+    )
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
+    decide_review_description = tools[TEAM_DECIDE_REVIEW_TOOL].description or ""
+    retry_review_description = tools[TEAM_RETRY_REVIEW_TOOL].description or ""
+    withdraw_review_description = tools[TEAM_WITHDRAW_REVIEW_TOOL].description or ""
+    retire_review_description = tools[TEAM_RETIRE_REVIEW_TOOL].description or ""
+    replacement_description = (
+        tools[TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL].description or ""
+    )
+    finding_resolution_description = (
+        tools[TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL].description or ""
+    )
+    correction_root_description = (
+        tools[TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL].description or ""
+    )
+    post_release_close_description = (
+        tools[TEAM_CLOSE_POST_RELEASE_CASE_TOOL].description or ""
+    )
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
+    assert "does not make the human decision" in finding_resolution_description
+    assert "independent correction root" in correction_root_description
+    assert "does not roll back" in post_release_close_description
+    assert "Only the superior recorded on that handoff" in decide_deliverable_description
+    assert "rejection requires a concrete reason" in decide_deliverable_description
+    assert "team_decide_review" in decide_deliverable_description
     assert "not required merely because team_submit_deliverable included git_refs" in (
         publish_description
     )
     assert "infrastructure-failed or timed-out verification" in retry_release_description
     assert "process-blocked reviews" in retry_release_description
+    assert "all current reviews are accepted" in decide_review_description
+    assert "supersedes a current blocked" in retry_review_description
+    assert "pending non-release review" in withdraw_review_description
+    assert "project lead or team manager" in retire_review_description
+    assert "open findings are not resolved or waived" in retire_review_description
+    assert "accepted replacement in the same project" in replacement_description
 
 
 def test_teamless_governance_agent_can_reply_to_active_team_chat(
@@ -980,16 +1141,11 @@ def test_team_addon_mcp_record_note_uses_command_implementation(
     )
     repo = _seed_governance_state(context.config.runtime_dir)
 
-    def _lease_manager(state):
-        state.agent_runtimes["manager"] = AgentRuntime(
-            agent_id="manager",
-            active_dispatch_id="dispatch-mcp-note",
-            wake_leased_until=datetime(2099, 1, 1, 0, 15, tzinfo=UTC),
-            wake_reason="scheduled",
-        )
-        return state
-
-    repo.update(_lease_manager)
+    _lease_agent(
+        repo,
+        agent_id="manager",
+        dispatch_id="dispatch-mcp-note",
+    )
     server = create_server(context)
 
     result = _call_tool_with_context(
@@ -1092,6 +1248,11 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
             "request_id": "request-mcp-task-batch",
         },
         _make_request_context(session_id="session-lead"),
+    )
+    _lease_agent(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-backend-after-task-create",
     )
     updated_task = _call_tool_with_context(
         server,
@@ -1233,6 +1394,10 @@ def test_team_addon_mcp_slice8_git_intent_tools_smoke(tmp_path: Path) -> None:
         },
         _make_request_context(session_id="session-backend"),
     )
+    _team_admin_service(repo).update_task(
+        task_id="task",
+        state=TeamTaskState.FINISHED,
+    )
     release_result = _call_tool_with_context(
         server,
         TEAM_REQUEST_RELEASE_TOOL,
@@ -1244,6 +1409,7 @@ def test_team_addon_mcp_slice8_git_intent_tools_smoke(tmp_path: Path) -> None:
         },
         _make_request_context(session_id="session-lead"),
     )
+    assert release_result["success"] is True
     _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_result["promotion_event_ids"][0],
         success=False,

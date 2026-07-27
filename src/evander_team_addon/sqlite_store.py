@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 29
+SQLITE_SCHEMA_VERSION = 36
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -189,9 +189,7 @@ class TeamStateSqliteStore:
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += (
-            " ORDER BY created_at DESC, id DESC"
-            if newest_first
-            else " ORDER BY created_at, id"
+            " ORDER BY created_at DESC, id DESC" if newest_first else " ORDER BY created_at, id"
         )
         if limit is not None:
             query += " LIMIT ?"
@@ -812,6 +810,22 @@ class TeamStateSqliteStore:
         with self._lock:
             with self._connect() as connection:
                 connection.executescript(_SCHEMA_SQL)
+                schema_version_row = connection.execute(
+                    """
+                    SELECT value
+                    FROM team_state_metadata
+                    WHERE key = 'sqlite_schema_version'
+                    """
+                ).fetchone()
+                previous_schema_version = (
+                    int(schema_version_row["value"]) if schema_version_row is not None else 0
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_group_goals",
+                    column_name="goal_name",
+                    definition="TEXT NOT NULL DEFAULT ''",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_action_records",
@@ -835,6 +849,12 @@ class TeamStateSqliteStore:
                     table_name="team_inbox",
                     column_name="response_requested",
                     definition="INTEGER NOT NULL DEFAULT 1",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="review_routing_authorities_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
                     connection,
@@ -930,6 +950,8 @@ class TeamStateSqliteStore:
                     ("task_kind", "TEXT NOT NULL DEFAULT 'support'"),
                     ("outcome_contract_json", "TEXT"),
                     ("completion_json", "TEXT"),
+                    ("originating_task_id", "TEXT"),
+                    ("cancellation_json", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -1004,6 +1026,34 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_deliverables",
+                    column_name="acceptance_recipient_agent_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="acceptance_decision_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="completion_json",
+                    definition="TEXT",
+                )
+                for column_name, definition in (
+                    ("reason_code", "TEXT NOT NULL DEFAULT 'unspecified'"),
+                    ("reporter_actor", "TEXT"),
+                ):
+                    _ensure_column(
+                        connection,
+                        table_name="team_blockers",
+                        column_name=column_name,
+                        definition=definition,
+                    )
+                _ensure_column(
+                    connection,
                     table_name="team_review_requests",
                     column_name="reviewed_commit_sha",
                     definition="TEXT",
@@ -1032,7 +1082,15 @@ class TeamStateSqliteStore:
                     column_name="criteria_snapshot_json",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="required_outcome_kind_definitions_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 for column_name in (
+                    "requested_by_agent_id",
+                    "requested_by_actor",
                     "supersedes_review_request_id",
                     "superseded_by_review_request_id",
                     "retry_reason",
@@ -1052,6 +1110,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_projects",
                     column_name="release_policy_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="summary",
                     definition="TEXT",
                 )
                 _ensure_column(
@@ -1110,6 +1174,34 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_release_packages",
+                    column_name="supersedes_release_package_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_human_review_findings",
+                    column_name="resolved_by_human_review_request_id",
+                    definition="TEXT",
+                )
+                _migrate_human_review_relationships(connection)
+                _ensure_column(
+                    connection,
+                    table_name="team_worktree_cleanup_candidates",
+                    column_name="worktree_path",
+                    definition="TEXT",
+                )
+                connection.execute("DROP INDEX IF EXISTS idx_team_worktree_cleanup_identity")
+                connection.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_team_worktree_cleanup_identity_v2
+                    ON team_worktree_cleanup_candidates(
+                        task_id, managed_repo_id, session_id, worktree_path
+                    )
+                    """
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_git_promotions",
                     column_name="sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
@@ -1123,6 +1215,13 @@ class TeamStateSqliteStore:
                 )
                 connection.execute(
                     """
+                    UPDATE team_governance_group_goals
+                    SET goal_name = goal_id
+                    WHERE goal_name IS NULL OR goal_name = ''
+                    """
+                )
+                connection.execute(
+                    """
                     UPDATE team_release_packages
                     SET state = 'rejected',
                         error = 'legacy_unpinned_release: recreate this nonterminal release under the current immutable candidate policy',
@@ -1131,6 +1230,8 @@ class TeamStateSqliteStore:
                       AND state NOT IN ('accepted', 'rejected')
                     """
                 )
+                if previous_schema_version < 31:
+                    _migrate_legacy_outcome_kind_definitions(connection)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -1169,7 +1270,9 @@ class TeamStateSqliteStore:
                 connection.execute("BEGIN IMMEDIATE")
                 if self.legacy_json_path.is_file():
                     text = self.legacy_json_path.read_text(encoding="utf-8")
-                    state = TeamState.model_validate(json.loads(text))
+                    payload = json.loads(text)
+                    _migrate_legacy_json_outcome_kind_records(payload)
+                    state = TeamState.model_validate(payload)
                     self._write_state(connection, state)
                     now = utc_now().isoformat()
                     connection.executemany(
@@ -1222,6 +1325,7 @@ class TeamStateSqliteStore:
             "tasks": {},
             "deliverables": {},
             "review_requests": {},
+            "outcome_kind_definitions": {},
             "review_profiles": {},
             "inbox": {},
             "blockers": {},
@@ -1234,6 +1338,11 @@ class TeamStateSqliteStore:
             "chat_attachment_policies": {},
             "release_packages": {},
             "release_verification_runs": {},
+            "human_review_requests": {},
+            "human_review_decisions": {},
+            "human_review_findings": {},
+            "dispatches": {},
+            "worktree_cleanup_candidates": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
             "git_work_contexts": {},
@@ -1252,6 +1361,7 @@ class TeamStateSqliteStore:
         self._read_cases(connection, payload)
         self._read_tasks(connection, payload)
         self._read_deliverables(connection, payload)
+        self._read_outcome_kind_definitions(connection, payload)
         self._read_review_profiles(connection, payload)
         self._read_review_requests(connection, payload)
         self._read_inbox(connection, payload)
@@ -1265,6 +1375,9 @@ class TeamStateSqliteStore:
         self._read_chat_attachment_policies(connection, payload)
         self._read_release_packages(connection, payload)
         self._read_release_verification_runs(connection, payload)
+        self._read_human_reviews(connection, payload)
+        self._read_dispatches(connection, payload)
+        self._read_worktree_cleanup_candidates(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
         self._read_git_work_contexts(connection, payload)
@@ -1286,6 +1399,10 @@ class TeamStateSqliteStore:
         self._write_cases(connection, payload["cases"])
         self._write_tasks(connection, payload["tasks"])
         self._write_deliverables(connection, payload["deliverables"])
+        self._write_outcome_kind_definitions(
+            connection,
+            payload["outcome_kind_definitions"],
+        )
         self._write_review_profiles(connection, payload["review_profiles"])
         self._write_review_requests(connection, payload["review_requests"])
         self._write_inbox(connection, payload["inbox"])
@@ -1299,6 +1416,17 @@ class TeamStateSqliteStore:
         self._write_chat_attachment_policies(connection, payload["chat_attachment_policies"])
         self._write_release_packages(connection, payload["release_packages"])
         self._write_release_verification_runs(connection, payload["release_verification_runs"])
+        self._write_human_reviews(
+            connection,
+            requests=payload["human_review_requests"],
+            decisions=payload["human_review_decisions"],
+            findings=payload["human_review_findings"],
+        )
+        self._write_dispatches(connection, payload["dispatches"])
+        self._write_worktree_cleanup_candidates(
+            connection,
+            payload["worktree_cleanup_candidates"],
+        )
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
         self._write_git_promotions(connection, payload["git_promotions"])
         self._write_git_work_contexts(connection, payload["git_work_contexts"])
@@ -1389,12 +1517,13 @@ class TeamStateSqliteStore:
         goals = _grouped_rows(
             connection,
             """
-            SELECT governance_group_id AS owner_id, goal_id, description, state
+            SELECT governance_group_id AS owner_id, goal_id, goal_name, description, state
             FROM team_governance_group_goals
             ORDER BY governance_group_id, position
             """,
             lambda row: {
                 "id": row["goal_id"],
+                "name": row["goal_name"] or row["goal_id"],
                 "description": row["description"],
                 "state": row["state"],
             },
@@ -1448,14 +1577,15 @@ class TeamStateSqliteStore:
                 connection.execute(
                     """
                     INSERT INTO team_governance_group_goals(
-                        governance_group_id, position, goal_id, description, state
+                        governance_group_id, position, goal_id, goal_name, description, state
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         group["id"],
                         position,
                         goal["id"],
+                        goal["name"],
                         goal["description"],
                         goal.get("state", "pending"),
                     ),
@@ -2011,6 +2141,12 @@ class TeamStateSqliteStore:
                 "created_by_agent_id": row["created_by_agent_id"],
                 "created_by_actor": row["created_by_actor"],
                 "parent_task_id": row["parent_task_id"],
+                "originating_task_id": row["originating_task_id"],
+                "cancellation": (
+                    _json_loads(row["cancellation_json"])
+                    if row["cancellation_json"] is not None
+                    else None
+                ),
                 "dependency_task_ids": dependencies.get(row["id"], []),
                 "deliverable_ids": deliverables.get(row["id"], []),
                 "created_at": row["created_at"],
@@ -2025,9 +2161,10 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    task_kind, outcome_contract_json, completion_json, created_at, updated_at
+                    originating_task_id, cancellation_json, task_kind,
+                    outcome_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2042,6 +2179,12 @@ class TeamStateSqliteStore:
                     task.get("created_by_agent_id"),
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
+                    task.get("originating_task_id"),
+                    (
+                        _json_dumps(task.get("cancellation"))
+                        if task.get("cancellation") is not None
+                        else None
+                    ),
                     task.get("task_kind", "support"),
                     (
                         _json_dumps(task.get("outcome_contract"))
@@ -2088,6 +2231,11 @@ class TeamStateSqliteStore:
             connection,
             "SELECT deliverable_id AS owner_id, promotion_record_id AS value FROM team_deliverable_promotion_records ORDER BY deliverable_id, position",
         )
+        sources = _grouped_values(
+            connection,
+            "SELECT deliverable_id AS owner_id, source_deliverable_id AS value "
+            "FROM team_deliverable_sources ORDER BY deliverable_id, position",
+        )
         for row in connection.execute("SELECT * FROM team_deliverables ORDER BY id"):
             payload["deliverables"][row["id"]] = {
                 "id": row["id"],
@@ -2116,10 +2264,22 @@ class TeamStateSqliteStore:
                     else None
                 ),
                 "outcomes": _json_loads(row["outcomes_json"]),
+                "source_deliverable_ids": sources.get(row["id"], []),
+                "completion": (
+                    _json_loads(row["completion_json"])
+                    if row["completion_json"] is not None
+                    else None
+                ),
                 "carried_findings": _json_loads(row["carried_findings_json"]),
                 "review_manifest": (
                     _json_loads(row["review_manifest_json"])
                     if row["review_manifest_json"] is not None
+                    else None
+                ),
+                "acceptance_recipient_agent_id": row["acceptance_recipient_agent_id"],
+                "acceptance_decision": (
+                    _json_loads(row["acceptance_decision_json"])
+                    if row["acceptance_decision_json"] is not None
                     else None
                 ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
@@ -2142,10 +2302,11 @@ class TeamStateSqliteStore:
                     submitted_commit_sha, reviewed_commit_sha, feature_commit_sha,
                     release_commit_sha, verification_json, supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
-                    review_manifest_json, supersession_reason, superseded_at,
-                    superseded_by_actor, outcomes_json, created_at
+                    review_manifest_json, acceptance_recipient_agent_id,
+                    acceptance_decision_json, supersession_reason, superseded_at,
+                    superseded_by_actor, outcomes_json, completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2176,10 +2337,21 @@ class TeamStateSqliteStore:
                         if deliverable.get("review_manifest") is not None
                         else None
                     ),
+                    deliverable.get("acceptance_recipient_agent_id"),
+                    (
+                        _json_dumps(deliverable.get("acceptance_decision"))
+                        if deliverable.get("acceptance_decision") is not None
+                        else None
+                    ),
                     deliverable.get("supersession_reason"),
                     deliverable.get("superseded_at"),
                     deliverable.get("superseded_by_actor"),
                     _json_dumps(deliverable.get("outcomes", [])),
+                    (
+                        _json_dumps(deliverable.get("completion"))
+                        if deliverable.get("completion") is not None
+                        else None
+                    ),
                     deliverable["created_at"],
                 ),
             )
@@ -2206,6 +2378,14 @@ class TeamStateSqliteStore:
                 deliverable["id"],
                 "promotion_record_id",
                 git_refs.get("promotion_record_ids", []),
+            )
+            _insert_position_values(
+                connection,
+                "team_deliverable_sources",
+                "deliverable_id",
+                deliverable["id"],
+                "source_deliverable_id",
+                deliverable.get("source_deliverable_ids", []),
             )
 
     @staticmethod
@@ -2237,13 +2417,61 @@ class TeamStateSqliteStore:
                 "description": row["description"],
                 "applicable_role_ids": roles.get(row["id"], []),
                 "criteria": criteria.get(row["id"], []),
-                "required_outcome_kinds": _json_loads(
-                    row["required_outcome_kinds_json"]
-                ),
+                "required_outcome_kinds": _json_loads(row["required_outcome_kinds_json"]),
                 "archived": _bool(row["archived"]),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
+
+    @staticmethod
+    def _read_outcome_kind_definitions(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_outcome_kind_definitions ORDER BY id"):
+            payload["outcome_kind_definitions"][row["id"]] = {
+                "id": row["id"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "kind": row["kind"],
+                "name": row["name"],
+                "description": row["description"],
+                "reference_requirements": row["reference_requirements"],
+                "evidence_requirements": row["evidence_requirements"],
+                "archived": _bool(row["archived"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_outcome_kind_definitions(
+        connection: sqlite3.Connection,
+        definitions: dict[str, Any],
+    ) -> None:
+        for definition in definitions.values():
+            connection.execute(
+                """
+                INSERT INTO team_outcome_kind_definitions(
+                    id, team_id, project_id, kind, name, description,
+                    reference_requirements, evidence_requirements, archived,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    definition["id"],
+                    definition["team_id"],
+                    definition.get("project_id"),
+                    definition["kind"],
+                    definition["name"],
+                    definition.get("description", ""),
+                    definition.get("reference_requirements", ""),
+                    definition.get("evidence_requirements", ""),
+                    _int_bool(definition.get("archived")),
+                    definition["created_at"],
+                    definition["updated_at"],
+                ),
+            )
 
     @staticmethod
     def _write_review_profiles(connection: sqlite3.Connection, profiles: dict[str, Any]) -> None:
@@ -2320,6 +2548,8 @@ class TeamStateSqliteStore:
                 "release_package_id": row["release_package_id"],
                 "candidate_commit_sha": row["candidate_commit_sha"],
                 "reviewer_agent_id": row["reviewer_agent_id"],
+                "requested_by_agent_id": row["requested_by_agent_id"],
+                "requested_by_actor": row["requested_by_actor"],
                 "state": row["state"],
                 "findings": findings.get(row["id"], []),
                 "review_profile_id": row["review_profile_id"],
@@ -2327,6 +2557,9 @@ class TeamStateSqliteStore:
                     _json_loads(row["criteria_snapshot_json"])
                     if row["criteria_snapshot_json"] is not None
                     else None
+                ),
+                "required_outcome_kind_definitions": _json_loads(
+                    row["required_outcome_kind_definitions_json"]
                 ),
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
@@ -2350,14 +2583,15 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_review_requests(
                     id, deliverable_id, release_package_id, candidate_commit_sha,
-                    reviewer_agent_id, state, review_profile_id, criteria_snapshot_json,
-                    instructions,
+                    reviewer_agent_id, requested_by_agent_id, requested_by_actor,
+                    state, review_profile_id, criteria_snapshot_json,
+                    required_outcome_kind_definitions_json, instructions,
                     reviewed_commit_sha, supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
                     retry_requested_by, block_kind, retired_at, retired_by,
                     retirement_reason, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2365,6 +2599,8 @@ class TeamStateSqliteStore:
                     request.get("release_package_id"),
                     request.get("candidate_commit_sha"),
                     request["reviewer_agent_id"],
+                    request.get("requested_by_agent_id"),
+                    request.get("requested_by_actor"),
                     request.get("state", "pending"),
                     request.get("review_profile_id"),
                     (
@@ -2372,6 +2608,7 @@ class TeamStateSqliteStore:
                         if request.get("criteria_snapshot") is not None
                         else None
                     ),
+                    _json_dumps(request.get("required_outcome_kind_definitions", [])),
                     request.get("instructions"),
                     request.get("reviewed_commit_sha"),
                     request.get("supersedes_review_request_id"),
@@ -2458,6 +2695,11 @@ class TeamStateSqliteStore:
 
     @staticmethod
     def _read_blockers(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        affected_tasks = _grouped_values(
+            connection,
+            "SELECT blocker_id AS owner_id, task_id AS value "
+            "FROM team_blocker_affected_tasks ORDER BY blocker_id, position",
+        )
         for row in connection.execute("SELECT * FROM team_blockers ORDER BY id"):
             payload["blockers"][row["id"]] = {
                 "id": row["id"],
@@ -2467,6 +2709,9 @@ class TeamStateSqliteStore:
                 "source_kind": row["source_kind"],
                 "source_id": row["source_id"],
                 "reporter_agent_id": row["reporter_agent_id"],
+                "reporter_actor": row["reporter_actor"],
+                "reason_code": row["reason_code"],
+                "affected_task_ids": affected_tasks.get(row["id"], []),
                 "owner_agent_id": row["owner_agent_id"],
                 "delegate_agent_id": row["delegate_agent_id"],
                 "state": row["state"],
@@ -2491,12 +2736,13 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_blockers(
                     id, team_id, project_id, task_id, source_kind, source_id,
-                    reporter_agent_id, owner_agent_id, delegate_agent_id, state, route,
+                    reporter_agent_id, reporter_actor, reason_code,
+                    owner_agent_id, delegate_agent_id, state, route,
                     summary, details, priority, escalation_depth, active_dispatch_id,
                     follow_up_at, last_progress_at, terminal_reference_ids_json,
                     created_at, updated_at, resolved_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     blocker["id"],
@@ -2506,6 +2752,8 @@ class TeamStateSqliteStore:
                     blocker["source_kind"],
                     blocker["source_id"],
                     blocker.get("reporter_agent_id"),
+                    blocker.get("reporter_actor"),
+                    blocker.get("reason_code", "unspecified"),
                     blocker.get("owner_agent_id"),
                     blocker.get("delegate_agent_id"),
                     blocker.get("state", "open"),
@@ -2523,12 +2771,18 @@ class TeamStateSqliteStore:
                     blocker.get("resolved_at"),
                 ),
             )
+            _insert_position_values(
+                connection,
+                "team_blocker_affected_tasks",
+                "blocker_id",
+                blocker["id"],
+                "task_id",
+                blocker.get("affected_task_ids", []),
+            )
 
     @staticmethod
     def _read_blocker_events(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
-        for row in connection.execute(
-            "SELECT * FROM team_blocker_events ORDER BY created_at, id"
-        ):
+        for row in connection.execute("SELECT * FROM team_blocker_events ORDER BY created_at, id"):
             payload["blocker_events"][row["id"]] = {
                 "id": row["id"],
                 "blocker_id": row["blocker_id"],
@@ -2950,6 +3204,8 @@ class TeamStateSqliteStore:
             payload["release_packages"][row["id"]] = {
                 "id": row["id"],
                 "project_id": row["project_id"],
+                "summary": row["summary"],
+                "supersedes_release_package_id": row["supersedes_release_package_id"],
                 "deliverable_ids": deliverables.get(row["id"], []),
                 "artifact_refs": artifacts.get(row["id"], []),
                 "feature_branches": branches.get(row["id"], []),
@@ -2989,18 +3245,21 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_release_packages(
-                    id, project_id, release_branch, canonical_branch, published_commit_sha,
+                    id, project_id, summary, supersedes_release_package_id,
+                    release_branch, canonical_branch, published_commit_sha,
                     base_commit_sha, candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, verification_run_ids_json, review_request_ids_json,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
                     package["project_id"],
+                    package.get("summary"),
+                    package.get("supersedes_release_package_id"),
                     package.get("release_branch"),
                     package.get("canonical_branch"),
                     package.get("published_commit_sha"),
@@ -3080,6 +3339,380 @@ class TeamStateSqliteStore:
             connection.execute(
                 "INSERT INTO team_release_verification_runs(id, payload_json) VALUES (?, ?)",
                 (run["id"], _json_dumps(run)),
+            )
+
+    @staticmethod
+    def _read_human_reviews(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        request_configured_groups = _grouped_values(
+            connection,
+            (
+                "SELECT human_review_request_id AS owner_id, group_id AS value "
+                "FROM team_human_review_request_configured_groups "
+                "ORDER BY human_review_request_id, position"
+            ),
+        )
+        request_initial_users = _grouped_values(
+            connection,
+            (
+                "SELECT human_review_request_id AS owner_id, user_id AS value "
+                "FROM team_human_review_request_initial_users "
+                "ORDER BY human_review_request_id, position"
+            ),
+        )
+        request_current_users = _grouped_values(
+            connection,
+            (
+                "SELECT human_review_request_id AS owner_id, user_id AS value "
+                "FROM team_human_review_request_current_users "
+                "ORDER BY human_review_request_id, position"
+            ),
+        )
+        request_explicit_users = _grouped_values(
+            connection,
+            (
+                "SELECT human_review_request_id AS owner_id, user_id AS value "
+                "FROM team_human_review_request_explicit_users "
+                "ORDER BY human_review_request_id, position"
+            ),
+        )
+        for row in connection.execute("SELECT * FROM team_human_review_requests ORDER BY id"):
+            request = _json_loads(row["payload_json"])
+            requirement = dict(request.get("requirement_snapshot") or {})
+            requirement["configured_group_ids"] = request_configured_groups.get(row["id"], [])
+            requirement["initially_eligible_user_ids"] = request_initial_users.get(row["id"], [])
+            request["requirement_snapshot"] = requirement
+            assignment = dict(request.get("current_assignment") or {})
+            assignment["eligible_user_ids"] = request_current_users.get(row["id"], [])
+            assignment["explicitly_assigned_user_ids"] = request_explicit_users.get(row["id"], [])
+            request["current_assignment"] = assignment
+            request.update(
+                {
+                    "release_package_id": row["release_package_id"],
+                    "state": row["state"],
+                    "candidate_commit_sha": row["candidate_commit_sha"],
+                    "candidate_tree_hash": row["candidate_tree_hash"],
+                    "assignment_generation": row["assignment_generation"],
+                    "preparation_generation": row["preparation_generation"],
+                }
+            )
+            payload["human_review_requests"][row["id"]] = request
+
+        decision_confirmed_findings = _grouped_values(
+            connection,
+            (
+                "SELECT human_review_decision_id AS owner_id, finding_id AS value "
+                "FROM team_human_review_decision_confirmed_findings "
+                "ORDER BY human_review_decision_id, position"
+            ),
+        )
+        for row in connection.execute("SELECT * FROM team_human_review_decisions ORDER BY id"):
+            decision = _json_loads(row["payload_json"])
+            decision.update(
+                {
+                    "human_review_request_id": row["human_review_request_id"],
+                    "reviewer_user_id": row["reviewer_user_id"],
+                    "decision": row["decision"],
+                    "request_id": row["request_id"],
+                    "decided_at": row["decided_at"],
+                    "confirmed_finding_ids": decision_confirmed_findings.get(row["id"], []),
+                }
+            )
+            payload["human_review_decisions"][row["id"]] = decision
+
+        finding_targets = _grouped_values(
+            connection,
+            (
+                "SELECT finding_id AS owner_id, deliverable_id AS value "
+                "FROM team_human_review_finding_targets "
+                "ORDER BY finding_id, position"
+            ),
+        )
+        finding_proposals = _grouped_values(
+            connection,
+            (
+                "SELECT finding_id AS owner_id, deliverable_id AS value "
+                "FROM team_human_review_finding_proposals "
+                "ORDER BY finding_id, position"
+            ),
+        )
+        for row in connection.execute("SELECT * FROM team_human_review_findings ORDER BY id"):
+            finding = _json_loads(row["payload_json"])
+            finding.update(
+                {
+                    "source_human_review_request_id": row["source_human_review_request_id"],
+                    "correction_task_id": row["correction_task_id"],
+                    "state": row["state"],
+                    "resolved_by_human_review_request_id": row[
+                        "resolved_by_human_review_request_id"
+                    ],
+                }
+            )
+            finding["target_deliverable_ids"] = finding_targets.get(row["id"], [])
+            finding["proposed_by_deliverable_ids"] = finding_proposals.get(
+                row["id"],
+                [],
+            )
+            payload["human_review_findings"][row["id"]] = finding
+
+    @staticmethod
+    def _write_human_reviews(
+        connection: sqlite3.Connection,
+        *,
+        requests: dict[str, Any],
+        decisions: dict[str, Any],
+        findings: dict[str, Any],
+    ) -> None:
+        for request in requests.values():
+            connection.execute(
+                """
+                INSERT INTO team_human_review_requests(
+                    id, release_package_id, state, candidate_commit_sha,
+                    candidate_tree_hash, assignment_generation,
+                    preparation_generation, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request["id"],
+                    request["release_package_id"],
+                    request["state"],
+                    request["candidate_commit_sha"],
+                    request["candidate_tree_hash"],
+                    request.get("assignment_generation", 1),
+                    request.get("preparation_generation", 1),
+                    _json_dumps(request),
+                ),
+            )
+            requirement = request["requirement_snapshot"]
+            assignment = request.get("current_assignment") or {}
+            for table_name, value_column, values in (
+                (
+                    "team_human_review_request_configured_groups",
+                    "group_id",
+                    requirement.get("configured_group_ids", []),
+                ),
+                (
+                    "team_human_review_request_initial_users",
+                    "user_id",
+                    requirement.get("initially_eligible_user_ids", []),
+                ),
+                (
+                    "team_human_review_request_current_users",
+                    "user_id",
+                    assignment.get("eligible_user_ids", []),
+                ),
+                (
+                    "team_human_review_request_explicit_users",
+                    "user_id",
+                    assignment.get("explicitly_assigned_user_ids", []),
+                ),
+            ):
+                _insert_position_values(
+                    connection,
+                    table_name,
+                    "human_review_request_id",
+                    request["id"],
+                    value_column,
+                    values,
+                )
+        for decision in decisions.values():
+            connection.execute(
+                """
+                INSERT INTO team_human_review_decisions(
+                    id, human_review_request_id, reviewer_user_id,
+                    decision, request_id, decided_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision["id"],
+                    decision["human_review_request_id"],
+                    decision["reviewer_user_id"],
+                    decision["decision"],
+                    decision["request_id"],
+                    decision["decided_at"],
+                    _json_dumps(decision),
+                ),
+            )
+            _insert_position_values(
+                connection,
+                "team_human_review_decision_confirmed_findings",
+                "human_review_decision_id",
+                decision["id"],
+                "finding_id",
+                decision.get("confirmed_finding_ids", []),
+            )
+        for finding in findings.values():
+            connection.execute(
+                """
+                INSERT INTO team_human_review_findings(
+                    id, source_human_review_request_id, correction_task_id,
+                    state, resolved_by_human_review_request_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    finding["id"],
+                    finding["source_human_review_request_id"],
+                    finding["correction_task_id"],
+                    finding["state"],
+                    finding.get("resolved_by_human_review_request_id"),
+                    _json_dumps(finding),
+                ),
+            )
+            _insert_position_values(
+                connection,
+                "team_human_review_finding_targets",
+                "finding_id",
+                finding["id"],
+                "deliverable_id",
+                finding.get("target_deliverable_ids", []),
+            )
+            _insert_position_values(
+                connection,
+                "team_human_review_finding_proposals",
+                "finding_id",
+                finding["id"],
+                "deliverable_id",
+                finding.get("proposed_by_deliverable_ids", []),
+            )
+
+    @staticmethod
+    def _read_dispatches(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        scope_values: dict[str, dict[str, list[str]]] = {}
+        for field_name, table_name, value_column in (
+            ("task_ids", "team_dispatch_tasks", "task_id"),
+            ("blocker_ids", "team_dispatch_blockers", "blocker_id"),
+            ("review_request_ids", "team_dispatch_reviews", "review_request_id"),
+            ("inbox_item_ids", "team_dispatch_inbox", "inbox_item_id"),
+            ("project_ids", "team_dispatch_projects", "project_id"),
+            ("managed_repo_ids", "team_dispatch_repositories", "managed_repo_id"),
+        ):
+            scope_values[field_name] = _grouped_values(
+                connection,
+                (
+                    f"SELECT dispatch_id AS owner_id, {value_column} AS value "
+                    f"FROM {table_name} ORDER BY dispatch_id, position"
+                ),
+            )
+        for row in connection.execute("SELECT * FROM team_dispatches ORDER BY id"):
+            dispatch_id = row["id"]
+            payload["dispatches"][dispatch_id] = {
+                "id": dispatch_id,
+                "agent_id": row["agent_id"],
+                "session_id": row["session_id"],
+                "cause_kind": row["cause_kind"],
+                "cause_id": row["cause_id"],
+                "task_ids": scope_values["task_ids"].get(dispatch_id, []),
+                "blocker_ids": scope_values["blocker_ids"].get(dispatch_id, []),
+                "review_request_ids": scope_values["review_request_ids"].get(dispatch_id, []),
+                "inbox_item_ids": scope_values["inbox_item_ids"].get(dispatch_id, []),
+                "project_ids": scope_values["project_ids"].get(dispatch_id, []),
+                "managed_repo_ids": scope_values["managed_repo_ids"].get(dispatch_id, []),
+                "review_routing_authorities": _json_loads(
+                    row["review_routing_authorities_json"] or "[]"
+                ),
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "prepared_at": row["prepared_at"],
+                "leased_at": row["leased_at"],
+                "lease_expires_at": row["lease_expires_at"],
+                "completed_at": row["completed_at"],
+                "error": row["error"],
+            }
+
+    @staticmethod
+    def _write_dispatches(
+        connection: sqlite3.Connection,
+        dispatches: dict[str, Any],
+    ) -> None:
+        for dispatch in dispatches.values():
+            connection.execute(
+                """
+                INSERT INTO team_dispatches(
+                    id, agent_id, session_id, cause_kind, cause_id,
+                    review_routing_authorities_json, status,
+                    created_at, prepared_at, leased_at, lease_expires_at,
+                    completed_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dispatch["id"],
+                    dispatch["agent_id"],
+                    dispatch["session_id"],
+                    dispatch["cause_kind"],
+                    dispatch.get("cause_id"),
+                    _json_dumps(
+                        dispatch.get("review_routing_authorities", [])
+                    ),
+                    dispatch["status"],
+                    dispatch["created_at"],
+                    dispatch.get("prepared_at"),
+                    dispatch.get("leased_at"),
+                    dispatch.get("lease_expires_at"),
+                    dispatch.get("completed_at"),
+                    dispatch.get("error"),
+                ),
+            )
+            for field_name, table_name, value_column in (
+                ("task_ids", "team_dispatch_tasks", "task_id"),
+                ("blocker_ids", "team_dispatch_blockers", "blocker_id"),
+                ("review_request_ids", "team_dispatch_reviews", "review_request_id"),
+                ("inbox_item_ids", "team_dispatch_inbox", "inbox_item_id"),
+                ("project_ids", "team_dispatch_projects", "project_id"),
+                (
+                    "managed_repo_ids",
+                    "team_dispatch_repositories",
+                    "managed_repo_id",
+                ),
+            ):
+                _insert_position_values(
+                    connection,
+                    table_name,
+                    "dispatch_id",
+                    dispatch["id"],
+                    value_column,
+                    dispatch.get(field_name, []),
+                )
+
+    @staticmethod
+    def _read_worktree_cleanup_candidates(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute(
+            "SELECT id, payload_json FROM team_worktree_cleanup_candidates ORDER BY id"
+        ):
+            payload["worktree_cleanup_candidates"][row["id"]] = _json_loads(row["payload_json"])
+
+    @staticmethod
+    def _write_worktree_cleanup_candidates(
+        connection: sqlite3.Connection,
+        candidates: dict[str, Any],
+    ) -> None:
+        for candidate in candidates.values():
+            connection.execute(
+                """
+                INSERT INTO team_worktree_cleanup_candidates(
+                    id, agent_id, session_id, task_id, project_id,
+                    managed_repo_id, worktree_path, state, eligible_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate["id"],
+                    candidate["agent_id"],
+                    candidate["session_id"],
+                    candidate["task_id"],
+                    candidate["project_id"],
+                    candidate["managed_repo_id"],
+                    candidate["worktree_path"],
+                    candidate["state"],
+                    candidate["eligible_at"],
+                    _json_dumps(candidate),
+                ),
             )
 
     @staticmethod
@@ -3701,6 +4334,821 @@ def _team_conversations_has_agent_unique_index(connection: sqlite3.Connection) -
     return False
 
 
+def _migrate_human_review_relationships(connection: sqlite3.Connection) -> None:
+    """Backfill normalized human-review relationships from the v33 payload rows."""
+
+    for row in connection.execute(
+        "SELECT id, payload_json FROM team_human_review_requests ORDER BY id"
+    ):
+        request = _json_loads(row["payload_json"])
+        requirement = request.get("requirement_snapshot") or {}
+        assignment = request.get("current_assignment") or {}
+        for table_name, value_column, values in (
+            (
+                "team_human_review_request_configured_groups",
+                "group_id",
+                requirement.get("configured_group_ids", []),
+            ),
+            (
+                "team_human_review_request_initial_users",
+                "user_id",
+                requirement.get("initially_eligible_user_ids", []),
+            ),
+            (
+                "team_human_review_request_current_users",
+                "user_id",
+                assignment.get("eligible_user_ids", []),
+            ),
+            (
+                "team_human_review_request_explicit_users",
+                "user_id",
+                assignment.get("explicitly_assigned_user_ids", []),
+            ),
+        ):
+            _backfill_position_values(
+                connection,
+                table_name=table_name,
+                owner_column="human_review_request_id",
+                owner_id=row["id"],
+                value_column=value_column,
+                values=values,
+            )
+
+    for row in connection.execute(
+        "SELECT id, payload_json FROM team_human_review_decisions ORDER BY id"
+    ):
+        decision = _json_loads(row["payload_json"])
+        _backfill_position_values(
+            connection,
+            table_name="team_human_review_decision_confirmed_findings",
+            owner_column="human_review_decision_id",
+            owner_id=row["id"],
+            value_column="finding_id",
+            values=decision.get("confirmed_finding_ids", []),
+        )
+
+    for row in connection.execute(
+        """
+        SELECT id, resolved_by_human_review_request_id, payload_json
+        FROM team_human_review_findings
+        ORDER BY id
+        """
+    ):
+        finding = _json_loads(row["payload_json"])
+        if row["resolved_by_human_review_request_id"] is None:
+            resolved_by_request_id = finding.get("resolved_by_human_review_request_id")
+            if resolved_by_request_id:
+                connection.execute(
+                    """
+                    UPDATE team_human_review_findings
+                    SET resolved_by_human_review_request_id = ?
+                    WHERE id = ?
+                    """,
+                    (resolved_by_request_id, row["id"]),
+                )
+        for table_name, values in (
+            (
+                "team_human_review_finding_targets",
+                finding.get("target_deliverable_ids", []),
+            ),
+            (
+                "team_human_review_finding_proposals",
+                finding.get("proposed_by_deliverable_ids", []),
+            ),
+        ):
+            _backfill_position_values(
+                connection,
+                table_name=table_name,
+                owner_column="finding_id",
+                owner_id=row["id"],
+                value_column="deliverable_id",
+                values=values,
+            )
+
+
+def _backfill_position_values(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    owner_column: str,
+    owner_id: str,
+    value_column: str,
+    values: Sequence[object],
+) -> None:
+    existing = connection.execute(
+        f"SELECT 1 FROM {table_name} WHERE {owner_column} = ? LIMIT 1",
+        (owner_id,),
+    ).fetchone()
+    if existing is not None:
+        return
+    for position, value in enumerate(values):
+        text = str(value).strip()
+        if text:
+            connection.execute(
+                (
+                    f"INSERT INTO {table_name}("
+                    f"{owner_column}, position, {value_column}"
+                    ") VALUES (?, ?, ?)"
+                ),
+                (owner_id, position, text),
+            )
+
+
+_KNOWN_OUTCOME_KIND_MIGRATIONS: dict[str, dict[str, str]] = {
+    "evidence_match": {
+        "name": "Evidence Match",
+        "description": (
+            "A durable source-to-Bokio match or an explicit unmatched or blocked disposition."
+        ),
+        "reference_requirements": (
+            "Reference the source record identifiers and matching Bokio "
+            "transaction or evidence identifiers. Unmatched work must reference "
+            "its durable case or blocker."
+        ),
+        "evidence_requirements": (
+            "Cite the amount, date, currency, counterparty, and account match "
+            "basis together with durable Bokio duplicate-check evidence."
+        ),
+    },
+    "bokio_prepared_action": {
+        "name": "Bokio Prepared Action",
+        "description": (
+            "A prepared-only Bokio bookkeeping action ready for independent "
+            "review and human approval; it does not assert that the action was "
+            "approved or posted."
+        ),
+        "reference_requirements": (
+            "Reference the prepared Bokio supplier invoice, journal entry, or "
+            "bank payment identifier."
+        ),
+        "evidence_requirements": (
+            "Cite supporting documents, Bokio account and counterparty mapping, "
+            "tax treatment, and the applicable human approval boundary."
+        ),
+    },
+}
+
+
+def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
+    if not isinstance(payload, dict):
+        return
+    raw_definitions = payload.get("outcome_kind_definitions")
+    if raw_definitions is None:
+        definitions: dict[str, Any] = {}
+        payload["outcome_kind_definitions"] = definitions
+    elif isinstance(raw_definitions, dict):
+        definitions = raw_definitions
+    else:
+        return
+
+    def records(name: str) -> dict[str, Any]:
+        value = payload.get(name)
+        return value if isinstance(value, dict) else {}
+
+    projects = records("projects")
+    tasks = records("tasks")
+    deliverables = records("deliverables")
+    profiles = records("review_profiles")
+    reviews = records("review_requests")
+    releases = records("release_packages")
+
+    def text(value: object) -> str:
+        return str(value or "").strip()
+
+    def optional_text(value: object) -> str | None:
+        normalized = text(value)
+        return normalized or None
+
+    def kind_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            kind = text(item)
+            if kind and kind not in result:
+                result.append(kind)
+        return result
+
+    def project_team_id(project_id: str | None) -> str | None:
+        project = projects.get(project_id) if project_id is not None else None
+        return (
+            optional_text(project.get("team_id"))
+            if isinstance(project, Mapping)
+            else None
+        )
+
+    def definition_for(
+        *,
+        team_id: str,
+        project_id: str | None,
+        kind: str,
+        exact_scope: bool = False,
+    ) -> Mapping[str, Any] | None:
+        inherited: Mapping[str, Any] | None = None
+        for definition in definitions.values():
+            if not isinstance(definition, Mapping):
+                continue
+            if (
+                optional_text(definition.get("team_id")) != team_id
+                or text(definition.get("kind")) != kind
+            ):
+                continue
+            definition_project_id = optional_text(definition.get("project_id"))
+            if definition_project_id == project_id:
+                return definition
+            if not exact_scope and definition_project_id is None:
+                inherited = definition
+        return inherited
+
+    def add_definition(
+        *,
+        team_id: str | None,
+        project_id: str | None,
+        kind: str,
+        source: Mapping[str, Any],
+        profile_guidance: str | None = None,
+        exact_scope: bool = False,
+    ) -> Mapping[str, Any] | None:
+        if team_id is None or not kind:
+            return None
+        existing = definition_for(
+            team_id=team_id,
+            project_id=project_id,
+            kind=kind,
+            exact_scope=exact_scope,
+        )
+        if existing is not None:
+            return existing
+        known = _KNOWN_OUTCOME_KIND_MIGRATIONS.get(kind)
+        name = (
+            known["name"]
+            if known is not None
+            else kind.replace("_", " ").replace("-", " ").title()
+        )
+        description = (
+            known["description"]
+            if known is not None
+            else text(source.get("description") or source.get("name"))
+            or f"Migrated definition for the {name} outcome kind."
+        )
+        reference_requirements = (
+            known["reference_requirements"]
+            if known is not None
+            else f"Provide durable reference IDs for {name}."
+        )
+        evidence_requirements = (
+            known["evidence_requirements"]
+            if known is not None
+            else profile_guidance
+            or "Provide evidence sufficient to verify the claimed outcome."
+        )
+        digest = hashlib.sha256(
+            f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")
+        ).hexdigest()[:16]
+        base_id = f"outcome-kind-{digest}"
+        definition_id = base_id
+        suffix = 2
+        while definition_id in definitions:
+            definition_id = f"{base_id}-{suffix}"
+            suffix += 1
+        definition: dict[str, Any] = {
+            "id": definition_id,
+            "team_id": team_id,
+            "project_id": project_id,
+            "kind": kind,
+            "name": name,
+            "description": description,
+            "reference_requirements": reference_requirements,
+            "evidence_requirements": evidence_requirements,
+            "archived": False,
+        }
+        for timestamp_field in ("created_at", "updated_at"):
+            if source.get(timestamp_field) is not None:
+                definition[timestamp_field] = source[timestamp_field]
+        definitions[definition_id] = definition
+        return definition
+
+    def snapshot(
+        definition: Mapping[str, Any] | None,
+    ) -> dict[str, str] | None:
+        if definition is None:
+            return None
+        kind = text(definition.get("kind"))
+        name = text(definition.get("name"))
+        if not kind or not name:
+            return None
+        return {
+            "kind": kind,
+            "name": name,
+            "description": text(definition.get("description")),
+            "reference_requirements": text(
+                definition.get("reference_requirements")
+            ),
+            "evidence_requirements": text(
+                definition.get("evidence_requirements")
+            ),
+        }
+
+    for profile in profiles.values():
+        if not isinstance(profile, Mapping):
+            continue
+        team_id = optional_text(profile.get("team_id"))
+        project_id = optional_text(profile.get("project_id"))
+        criteria = profile.get("criteria")
+        guidance = "; ".join(
+            text(criterion.get("description") or criterion.get("label"))
+            for criterion in criteria
+            if isinstance(criterion, Mapping)
+            and text(criterion.get("description") or criterion.get("label"))
+        ) if isinstance(criteria, list) else ""
+        for kind in kind_list(profile.get("required_outcome_kinds")):
+            add_definition(
+                team_id=team_id,
+                project_id=project_id,
+                kind=kind,
+                source=profile,
+                profile_guidance=guidance,
+                exact_scope=True,
+            )
+
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        contract = task.get("outcome_contract")
+        if not isinstance(contract, dict):
+            continue
+        legacy_forbidden = kind_list(contract.pop("forbidden_effect_kinds", []))
+        forbidden = kind_list(contract.get("forbidden_outcome_kinds"))
+        contract["forbidden_outcome_kinds"] = [
+            *forbidden,
+            *(kind for kind in legacy_forbidden if kind not in forbidden),
+        ]
+        project_id = optional_text(task.get("project_id"))
+        team_id = project_team_id(project_id)
+        kinds = [
+            *kind_list(contract.get("required_outcome_kinds")),
+            *contract["forbidden_outcome_kinds"],
+        ]
+        for kind in kinds:
+            add_definition(
+                team_id=team_id,
+                project_id=project_id,
+                kind=kind,
+                source=task,
+            )
+
+    for deliverable in deliverables.values():
+        if not isinstance(deliverable, Mapping):
+            continue
+        task = tasks.get(optional_text(deliverable.get("task_id")))
+        project_id = (
+            optional_text(task.get("project_id"))
+            if isinstance(task, Mapping)
+            else None
+        )
+        team_id = project_team_id(project_id)
+        outcomes = deliverable.get("outcomes")
+        if not isinstance(outcomes, list):
+            continue
+        for outcome in outcomes:
+            if not isinstance(outcome, Mapping):
+                continue
+            add_definition(
+                team_id=team_id,
+                project_id=project_id,
+                kind=text(outcome.get("kind")),
+                source=deliverable,
+            )
+
+    for task in tasks.values():
+        if not isinstance(task, Mapping):
+            continue
+        contract = task.get("outcome_contract")
+        if not isinstance(contract, dict):
+            continue
+        project_id = optional_text(task.get("project_id"))
+        team_id = project_team_id(project_id)
+        kinds = [
+            *kind_list(contract.get("required_outcome_kinds")),
+            *kind_list(contract.get("forbidden_outcome_kinds")),
+        ]
+        existing_snapshots = {
+            text(item.get("kind")): dict(item)
+            for item in contract.get("outcome_kind_definitions", [])
+            if isinstance(item, Mapping) and text(item.get("kind"))
+        }
+        contract["outcome_kind_definitions"] = [
+            resolved
+            for kind in kinds
+            if (
+                resolved := existing_snapshots.get(kind)
+                or snapshot(
+                    definition_for(
+                        team_id=team_id or "",
+                        project_id=project_id,
+                        kind=kind,
+                    )
+                )
+            )
+            is not None
+        ]
+
+    for deliverable in deliverables.values():
+        if not isinstance(deliverable, Mapping):
+            continue
+        task = tasks.get(optional_text(deliverable.get("task_id")))
+        project_id = (
+            optional_text(task.get("project_id"))
+            if isinstance(task, Mapping)
+            else None
+        )
+        team_id = project_team_id(project_id)
+        outcomes = deliverable.get("outcomes")
+        if not isinstance(outcomes, list):
+            continue
+        for outcome in outcomes:
+            if not isinstance(outcome, dict) or isinstance(
+                outcome.get("definition_snapshot"),
+                Mapping,
+            ):
+                continue
+            outcome["definition_snapshot"] = snapshot(
+                definition_for(
+                    team_id=team_id or "",
+                    project_id=project_id,
+                    kind=text(outcome.get("kind")),
+                )
+            )
+
+    for review in reviews.values():
+        if not isinstance(review, dict):
+            continue
+        profile = profiles.get(optional_text(review.get("review_profile_id")))
+        if not isinstance(profile, Mapping):
+            continue
+        team_id = optional_text(profile.get("team_id"))
+        deliverable = deliverables.get(
+            optional_text(review.get("deliverable_id"))
+        )
+        task = (
+            tasks.get(optional_text(deliverable.get("task_id")))
+            if isinstance(deliverable, Mapping)
+            else None
+        )
+        release = releases.get(optional_text(review.get("release_package_id")))
+        project_id = (
+            optional_text(task.get("project_id"))
+            if isinstance(task, Mapping)
+            else optional_text(release.get("project_id"))
+            if isinstance(release, Mapping)
+            else optional_text(profile.get("project_id"))
+        )
+        existing_snapshots = {
+            text(item.get("kind")): dict(item)
+            for item in review.get("required_outcome_kind_definitions", [])
+            if isinstance(item, Mapping) and text(item.get("kind"))
+        }
+        review["required_outcome_kind_definitions"] = [
+            resolved
+            for kind in kind_list(profile.get("required_outcome_kinds"))
+            if (
+                resolved := existing_snapshots.get(kind)
+                or snapshot(
+                    definition_for(
+                        team_id=team_id or "",
+                        project_id=project_id,
+                        kind=kind,
+                    )
+                )
+            )
+            is not None
+        ]
+
+
+def _migrate_legacy_outcome_kind_definitions(
+    connection: sqlite3.Connection,
+) -> None:
+    profiles = connection.execute(
+        """
+        SELECT id, team_id, project_id, name, description,
+               required_outcome_kinds_json, created_at, updated_at
+        FROM team_review_profiles
+        ORDER BY id
+        """
+    ).fetchall()
+    for profile in profiles:
+        kinds = _json_loads(profile["required_outcome_kinds_json"])
+        criteria_rows = connection.execute(
+            """
+            SELECT label, description
+            FROM team_review_profile_criteria
+            WHERE profile_id = ?
+            ORDER BY position
+            """,
+            (profile["id"],),
+        ).fetchall()
+        criteria_guidance = "; ".join(
+            str(row["description"] or row["label"])
+            for row in criteria_rows
+            if row["description"] or row["label"]
+        )
+        for raw_kind in kinds:
+            kind = str(raw_kind).strip()
+            if not kind:
+                continue
+            existing = connection.execute(
+                """
+                SELECT id
+                FROM team_outcome_kind_definitions
+                WHERE team_id = ?
+                  AND COALESCE(project_id, '') = COALESCE(?, '')
+                  AND kind = ?
+                """,
+                (profile["team_id"], profile["project_id"], kind),
+            ).fetchone()
+            if existing is not None:
+                continue
+            known = _KNOWN_OUTCOME_KIND_MIGRATIONS.get(kind)
+            name = (
+                known["name"]
+                if known is not None
+                else kind.replace("_", " ").replace("-", " ").title()
+            )
+            description = (
+                known["description"]
+                if known is not None
+                else str(profile["description"] or profile["name"])
+            )
+            reference_requirements = (
+                known["reference_requirements"]
+                if known is not None
+                else f"Provide durable reference IDs for {name}."
+            )
+            evidence_requirements = (
+                known["evidence_requirements"] if known is not None else criteria_guidance
+            )
+            digest = hashlib.sha256(
+                (f"{profile['team_id']}:{profile['project_id'] or ''}:{kind}").encode("utf-8")
+            ).hexdigest()[:16]
+            connection.execute(
+                """
+                INSERT INTO team_outcome_kind_definitions(
+                    id, team_id, project_id, kind, name, description,
+                    reference_requirements, evidence_requirements, archived,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    f"outcome-kind-{digest}",
+                    profile["team_id"],
+                    profile["project_id"],
+                    kind,
+                    name,
+                    description,
+                    reference_requirements,
+                    evidence_requirements,
+                    profile["created_at"],
+                    profile["updated_at"],
+                ),
+            )
+
+    def ensure_generic_definition(
+        *,
+        team_id: str,
+        project_id: str | None,
+        kind: str,
+        created_at: str,
+        updated_at: str,
+    ) -> None:
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM team_outcome_kind_definitions
+            WHERE team_id = ?
+              AND kind = ?
+              AND (project_id = ? OR project_id IS NULL)
+            ORDER BY CASE WHEN project_id = ? THEN 0 ELSE 1 END, id
+            LIMIT 1
+            """,
+            (team_id, kind, project_id, project_id),
+        ).fetchone()
+        if existing is not None:
+            return
+        known = _KNOWN_OUTCOME_KIND_MIGRATIONS.get(kind)
+        name = (
+            known["name"] if known is not None else kind.replace("_", " ").replace("-", " ").title()
+        )
+        description = (
+            known["description"]
+            if known is not None
+            else f"Migrated definition for the {name} outcome kind."
+        )
+        reference_requirements = (
+            known["reference_requirements"]
+            if known is not None
+            else f"Provide durable reference IDs for {name}."
+        )
+        evidence_requirements = (
+            known["evidence_requirements"]
+            if known is not None
+            else "Provide evidence sufficient to verify the claimed outcome."
+        )
+        digest = hashlib.sha256(f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")).hexdigest()[
+            :16
+        ]
+        connection.execute(
+            """
+            INSERT INTO team_outcome_kind_definitions(
+                id, team_id, project_id, kind, name, description,
+                reference_requirements, evidence_requirements, archived,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                f"outcome-kind-{digest}",
+                team_id,
+                project_id,
+                kind,
+                name,
+                description,
+                reference_requirements,
+                evidence_requirements,
+                created_at,
+                updated_at,
+            ),
+        )
+
+    task_source_rows = connection.execute(
+        """
+        SELECT task.id, task.project_id, task.outcome_contract_json,
+               task.created_at, task.updated_at, project.team_id
+        FROM team_tasks AS task
+        JOIN team_projects AS project ON project.id = task.project_id
+        WHERE task.outcome_contract_json IS NOT NULL
+        """
+    ).fetchall()
+    for row in task_source_rows:
+        contract = _json_loads(row["outcome_contract_json"])
+        kinds = list(contract.get("required_outcome_kinds", [])) + list(
+            contract.get(
+                "forbidden_outcome_kinds",
+                contract.get("forbidden_effect_kinds", []),
+            )
+        )
+        for raw_kind in kinds:
+            kind = str(raw_kind).strip()
+            if kind:
+                ensure_generic_definition(
+                    team_id=row["team_id"],
+                    project_id=row["project_id"],
+                    kind=kind,
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+
+    deliverable_source_rows = connection.execute(
+        """
+        SELECT deliverable.id, deliverable.outcomes_json,
+               deliverable.created_at, task.project_id, task.updated_at,
+               project.team_id
+        FROM team_deliverables AS deliverable
+        JOIN team_tasks AS task ON task.id = deliverable.task_id
+        JOIN team_projects AS project ON project.id = task.project_id
+        WHERE deliverable.outcomes_json <> '[]'
+        """
+    ).fetchall()
+    for row in deliverable_source_rows:
+        for outcome in _json_loads(row["outcomes_json"]):
+            if not isinstance(outcome, dict):
+                continue
+            kind = str(outcome.get("kind") or "").strip()
+            if kind:
+                ensure_generic_definition(
+                    team_id=row["team_id"],
+                    project_id=row["project_id"],
+                    kind=kind,
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+
+    def snapshot_for(
+        *,
+        team_id: str,
+        project_id: str | None,
+        kind: str,
+    ) -> dict[str, str] | None:
+        row = connection.execute(
+            """
+            SELECT kind, name, description, reference_requirements,
+                   evidence_requirements
+            FROM team_outcome_kind_definitions
+            WHERE team_id = ?
+              AND kind = ?
+              AND (project_id = ? OR project_id IS NULL)
+            ORDER BY CASE WHEN project_id = ? THEN 0 ELSE 1 END, id
+            LIMIT 1
+            """,
+            (team_id, kind, project_id, project_id),
+        ).fetchone()
+        return (
+            {
+                "kind": row["kind"],
+                "name": row["name"],
+                "description": row["description"],
+                "reference_requirements": row["reference_requirements"],
+                "evidence_requirements": row["evidence_requirements"],
+            }
+            if row is not None
+            else None
+        )
+
+    for row in task_source_rows:
+        contract = _json_loads(row["outcome_contract_json"])
+        if "forbidden_effect_kinds" in contract:
+            contract["forbidden_outcome_kinds"] = contract.pop("forbidden_effect_kinds")
+        kinds = list(contract.get("required_outcome_kinds", [])) + list(
+            contract.get("forbidden_outcome_kinds", [])
+        )
+        contract["outcome_kind_definitions"] = [
+            snapshot
+            for kind in kinds
+            if (
+                snapshot := snapshot_for(
+                    team_id=row["team_id"],
+                    project_id=row["project_id"],
+                    kind=str(kind),
+                )
+            )
+            is not None
+        ]
+        connection.execute(
+            "UPDATE team_tasks SET outcome_contract_json = ? WHERE id = ?",
+            (_json_dumps(contract), row["id"]),
+        )
+
+    for row in deliverable_source_rows:
+        outcomes = _json_loads(row["outcomes_json"])
+        for outcome in outcomes:
+            if not isinstance(outcome, dict):
+                continue
+            kind = str(outcome.get("kind") or "").strip()
+            if not kind:
+                continue
+            outcome["definition_snapshot"] = snapshot_for(
+                team_id=row["team_id"],
+                project_id=row["project_id"],
+                kind=kind,
+            )
+        connection.execute(
+            "UPDATE team_deliverables SET outcomes_json = ? WHERE id = ?",
+            (_json_dumps(outcomes), row["id"]),
+        )
+
+    review_rows = connection.execute(
+        """
+        SELECT review.id, profile.team_id,
+               COALESCE(
+                   task.project_id,
+                   release.project_id,
+                   profile.project_id
+               ) AS reviewed_project_id,
+               profile.required_outcome_kinds_json
+        FROM team_review_requests AS review
+        JOIN team_review_profiles AS profile
+          ON profile.id = review.review_profile_id
+        LEFT JOIN team_deliverables AS deliverable
+          ON deliverable.id = review.deliverable_id
+        LEFT JOIN team_tasks AS task
+          ON task.id = deliverable.task_id
+        LEFT JOIN team_release_packages AS release
+          ON release.id = review.release_package_id
+        """
+    ).fetchall()
+    for row in review_rows:
+        snapshots = [
+            snapshot
+            for kind in _json_loads(row["required_outcome_kinds_json"])
+            if (
+                snapshot := snapshot_for(
+                    team_id=row["team_id"],
+                    project_id=row["reviewed_project_id"],
+                    kind=str(kind),
+                )
+            )
+            is not None
+        ]
+        connection.execute(
+            """
+            UPDATE team_review_requests
+            SET required_outcome_kind_definitions_json = ?
+            WHERE id = ?
+            """,
+            (_json_dumps(snapshots), row["id"]),
+        )
+
+
 def _ensure_column(
     connection: sqlite3.Connection,
     *,
@@ -3767,6 +5215,7 @@ _STATE_TABLES = (
     "team_deliverable_artifacts",
     "team_deliverable_reviews",
     "team_deliverable_promotion_records",
+    "team_deliverable_sources",
     "team_review_profile_roles",
     "team_review_profile_criteria",
     "team_review_request_findings",
@@ -3775,6 +5224,19 @@ _STATE_TABLES = (
     "team_release_artifacts",
     "team_release_feature_branches",
     "team_release_git_promotions",
+    "team_human_review_request_configured_groups",
+    "team_human_review_request_initial_users",
+    "team_human_review_request_current_users",
+    "team_human_review_request_explicit_users",
+    "team_human_review_decision_confirmed_findings",
+    "team_human_review_finding_targets",
+    "team_human_review_finding_proposals",
+    "team_dispatch_tasks",
+    "team_dispatch_blockers",
+    "team_dispatch_reviews",
+    "team_dispatch_inbox",
+    "team_dispatch_projects",
+    "team_dispatch_repositories",
     "team_ephemeral_assignment_artifacts",
     "team_ephemeral_assignment_allowed_tools",
     "team_memory_tags",
@@ -3782,6 +5244,11 @@ _STATE_TABLES = (
     "team_memory_artifact_refs",
     "team_git_work_contexts",
     "team_git_promotions",
+    "team_worktree_cleanup_candidates",
+    "team_dispatches",
+    "team_human_review_decisions",
+    "team_human_review_findings",
+    "team_human_review_requests",
     "team_ephemeral_assignments",
     "team_release_verification_runs",
     "team_release_packages",
@@ -3792,10 +5259,12 @@ _STATE_TABLES = (
     "team_memories",
     "team_action_records",
     "team_blocker_events",
+    "team_blocker_affected_tasks",
     "team_blockers",
     "team_inbox",
     "team_review_requests",
     "team_review_profiles",
+    "team_outcome_kind_definitions",
     "team_deliverables",
     "team_cases",
     "team_tasks",
@@ -3861,6 +5330,7 @@ CREATE TABLE IF NOT EXISTS team_governance_group_goals (
     governance_group_id TEXT NOT NULL,
     position INTEGER NOT NULL,
     goal_id TEXT NOT NULL,
+    goal_name TEXT NOT NULL,
     description TEXT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY(governance_group_id, position)
@@ -4059,6 +5529,8 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     created_by_agent_id TEXT,
     created_by_actor TEXT,
     parent_task_id TEXT,
+    originating_task_id TEXT,
+    cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
     completion_json TEXT,
@@ -4107,11 +5579,14 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     outcomes_json TEXT NOT NULL DEFAULT '[]',
     carried_findings_json TEXT NOT NULL DEFAULT '[]',
     review_manifest_json TEXT,
+    acceptance_recipient_agent_id TEXT,
+    acceptance_decision_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
     supersession_reason TEXT,
     superseded_at TEXT,
     superseded_by_actor TEXT,
+    completion_json TEXT,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_deliverables_task_state ON team_deliverables(task_id, state, id);
@@ -4138,6 +5613,15 @@ CREATE TABLE IF NOT EXISTS team_deliverable_promotion_records (
     PRIMARY KEY(deliverable_id, position)
 );
 
+CREATE TABLE IF NOT EXISTS team_deliverable_sources (
+    deliverable_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    source_deliverable_id TEXT NOT NULL,
+    PRIMARY KEY(deliverable_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_deliverable_sources_source
+    ON team_deliverable_sources(source_deliverable_id, deliverable_id);
+
 CREATE TABLE IF NOT EXISTS team_review_profiles (
     id TEXT PRIMARY KEY,
     team_id TEXT NOT NULL,
@@ -4151,6 +5635,28 @@ CREATE TABLE IF NOT EXISTS team_review_profiles (
 );
 CREATE INDEX IF NOT EXISTS idx_team_review_profiles_scope
     ON team_review_profiles(team_id, project_id, archived, id);
+
+CREATE TABLE IF NOT EXISTS team_outcome_kind_definitions (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    reference_requirements TEXT NOT NULL,
+    evidence_requirements TEXT NOT NULL,
+    archived INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_outcome_kind_definitions_scope_kind
+    ON team_outcome_kind_definitions(
+        team_id,
+        COALESCE(project_id, ''),
+        kind
+    );
+CREATE INDEX IF NOT EXISTS idx_team_outcome_kind_definitions_scope
+    ON team_outcome_kind_definitions(team_id, project_id, archived, kind, id);
 
 CREATE TABLE IF NOT EXISTS team_review_profile_roles (
     profile_id TEXT NOT NULL,
@@ -4175,9 +5681,12 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     release_package_id TEXT,
     candidate_commit_sha TEXT,
     reviewer_agent_id TEXT NOT NULL,
+    requested_by_agent_id TEXT,
+    requested_by_actor TEXT,
     state TEXT NOT NULL,
     review_profile_id TEXT,
     criteria_snapshot_json TEXT,
+    required_outcome_kind_definitions_json TEXT NOT NULL DEFAULT '[]',
     instructions TEXT,
     reviewed_commit_sha TEXT,
     supersedes_review_request_id TEXT,
@@ -4237,6 +5746,8 @@ CREATE TABLE IF NOT EXISTS team_blockers (
     source_kind TEXT NOT NULL,
     source_id TEXT NOT NULL,
     reporter_agent_id TEXT,
+    reporter_actor TEXT,
+    reason_code TEXT NOT NULL DEFAULT 'unspecified',
     owner_agent_id TEXT,
     delegate_agent_id TEXT,
     state TEXT NOT NULL,
@@ -4263,6 +5774,15 @@ CREATE INDEX IF NOT EXISTS idx_team_blockers_dispatch_state
     ON team_blockers(active_dispatch_id, state, id);
 CREATE INDEX IF NOT EXISTS idx_team_blockers_team_project_state
     ON team_blockers(team_id, project_id, state, updated_at, id);
+
+CREATE TABLE IF NOT EXISTS team_blocker_affected_tasks (
+    blocker_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    PRIMARY KEY(blocker_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_blocker_affected_tasks_task
+    ON team_blocker_affected_tasks(task_id, blocker_id);
 
 CREATE TABLE IF NOT EXISTS team_blocker_events (
     id TEXT PRIMARY KEY,
@@ -4420,6 +5940,8 @@ CREATE TABLE IF NOT EXISTS team_chat_attachment_policies (
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
+    summary TEXT,
+    supersedes_release_package_id TEXT,
     release_branch TEXT,
     canonical_branch TEXT,
     published_commit_sha TEXT,
@@ -4475,6 +5997,192 @@ CREATE TABLE IF NOT EXISTS team_release_git_promotions (
     promotion_record_id TEXT NOT NULL,
     PRIMARY KEY(package_id, position)
 );
+
+CREATE TABLE IF NOT EXISTS team_human_review_requests (
+    id TEXT PRIMARY KEY,
+    release_package_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    candidate_commit_sha TEXT NOT NULL,
+    candidate_tree_hash TEXT NOT NULL,
+    assignment_generation INTEGER NOT NULL,
+    preparation_generation INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_human_review_requests_release
+    ON team_human_review_requests(release_package_id);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_requests_state
+    ON team_human_review_requests(state, id);
+
+CREATE TABLE IF NOT EXISTS team_human_review_request_configured_groups (
+    human_review_request_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    group_id TEXT NOT NULL,
+    PRIMARY KEY(human_review_request_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_request_groups_group
+    ON team_human_review_request_configured_groups(
+        group_id, human_review_request_id
+    );
+
+CREATE TABLE IF NOT EXISTS team_human_review_request_initial_users (
+    human_review_request_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY(human_review_request_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_request_initial_users_user
+    ON team_human_review_request_initial_users(
+        user_id, human_review_request_id
+    );
+
+CREATE TABLE IF NOT EXISTS team_human_review_request_current_users (
+    human_review_request_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY(human_review_request_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_request_current_users_user
+    ON team_human_review_request_current_users(
+        user_id, human_review_request_id
+    );
+
+CREATE TABLE IF NOT EXISTS team_human_review_request_explicit_users (
+    human_review_request_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY(human_review_request_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_request_explicit_users_user
+    ON team_human_review_request_explicit_users(
+        user_id, human_review_request_id
+    );
+
+CREATE TABLE IF NOT EXISTS team_human_review_decisions (
+    id TEXT PRIMARY KEY,
+    human_review_request_id TEXT NOT NULL,
+    reviewer_user_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    UNIQUE(human_review_request_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_decisions_request
+    ON team_human_review_decisions(human_review_request_id, decided_at, id);
+
+CREATE TABLE IF NOT EXISTS team_human_review_decision_confirmed_findings (
+    human_review_decision_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    finding_id TEXT NOT NULL,
+    PRIMARY KEY(human_review_decision_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_decision_findings_finding
+    ON team_human_review_decision_confirmed_findings(
+        finding_id, human_review_decision_id
+    );
+
+CREATE TABLE IF NOT EXISTS team_human_review_findings (
+    id TEXT PRIMARY KEY,
+    source_human_review_request_id TEXT NOT NULL,
+    correction_task_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    resolved_by_human_review_request_id TEXT,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_findings_request_state
+    ON team_human_review_findings(source_human_review_request_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_team_human_review_findings_task
+    ON team_human_review_findings(correction_task_id, state, id);
+
+CREATE TABLE IF NOT EXISTS team_human_review_finding_targets (
+    finding_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    deliverable_id TEXT NOT NULL,
+    PRIMARY KEY(finding_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS team_human_review_finding_proposals (
+    finding_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    deliverable_id TEXT NOT NULL,
+    PRIMARY KEY(finding_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS team_dispatches (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    cause_kind TEXT NOT NULL,
+    cause_id TEXT,
+    review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    prepared_at TEXT,
+    leased_at TEXT,
+    lease_expires_at TEXT,
+    completed_at TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_agent_status
+    ON team_dispatches(agent_id, status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_session_status
+    ON team_dispatches(session_id, status, created_at, id);
+
+CREATE TABLE IF NOT EXISTS team_dispatch_tasks (
+    dispatch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    PRIMARY KEY(dispatch_id, position)
+);
+CREATE TABLE IF NOT EXISTS team_dispatch_blockers (
+    dispatch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    blocker_id TEXT NOT NULL,
+    PRIMARY KEY(dispatch_id, position)
+);
+CREATE TABLE IF NOT EXISTS team_dispatch_reviews (
+    dispatch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    review_request_id TEXT NOT NULL,
+    PRIMARY KEY(dispatch_id, position)
+);
+CREATE TABLE IF NOT EXISTS team_dispatch_inbox (
+    dispatch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    inbox_item_id TEXT NOT NULL,
+    PRIMARY KEY(dispatch_id, position)
+);
+CREATE TABLE IF NOT EXISTS team_dispatch_projects (
+    dispatch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    project_id TEXT NOT NULL,
+    PRIMARY KEY(dispatch_id, position)
+);
+CREATE TABLE IF NOT EXISTS team_dispatch_repositories (
+    dispatch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    managed_repo_id TEXT NOT NULL,
+    PRIMARY KEY(dispatch_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS team_worktree_cleanup_candidates (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    managed_repo_id TEXT NOT NULL,
+    worktree_path TEXT,
+    state TEXT NOT NULL,
+    eligible_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_worktree_cleanup_identity_v2
+    ON team_worktree_cleanup_candidates(
+        task_id, managed_repo_id, session_id, worktree_path
+    );
+CREATE INDEX IF NOT EXISTS idx_team_worktree_cleanup_state_eligible
+    ON team_worktree_cleanup_candidates(state, eligible_at, id);
 
 CREATE TABLE IF NOT EXISTS team_ephemeral_assignments (
     id TEXT PRIMARY KEY,

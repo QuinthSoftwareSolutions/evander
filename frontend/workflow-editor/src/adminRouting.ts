@@ -107,6 +107,10 @@ const TAB_ALIASES: Readonly<Record<string, BuiltinAdminTab>> = {
 };
 
 const ADDON_TAB_PATTERN = /^addon:[a-z0-9][a-z0-9._-]{0,127}$/;
+const ADDON_IFRAME_HASH_PARAM_NAMES = [
+  "view",
+  "human_review_request_id",
+] as const;
 
 export function tabsForExecutionBackend(
   executionBackend: "libvirt_vm" | "container_worker_vm" | null,
@@ -217,4 +221,22 @@ export function hashQueryParam(hash: string, name: string): string | null {
   const value = hashQuery(hash).get(name);
   const normalized = value?.trim() ?? "";
   return normalized || null;
+}
+
+export function addonIframeHashQuery(
+  hash: string,
+  addonTab: AdminTab,
+): string {
+  if (!addonTab.startsWith("addon:") || tabFromHash(hash) !== addonTab) {
+    return "";
+  }
+  const source = hashQuery(hash);
+  const forwarded = new URLSearchParams();
+  for (const name of ADDON_IFRAME_HASH_PARAM_NAMES) {
+    const value = source.get(name)?.trim() ?? "";
+    if (value) {
+      forwarded.set(name, value);
+    }
+  }
+  return forwarded.toString();
 }

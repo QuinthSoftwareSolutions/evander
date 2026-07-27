@@ -16,7 +16,9 @@
     {"term": "backup", "targets": ["15-admin-operations-observability-backup-and-recovery", "29-troubleshooting-decision-tables"]},
     {"term": "bare repositories", "targets": ["11-managed-git-artifacts-and-code-consultations", "24-team-git-promotion-and-release-gates"]},
     {"term": "base VM", "targets": ["9-execution-backends", "10-networking-relays-packages-and-secrets"]},
+    {"term": "blockers", "targets": ["18-organization-projects-tasks-and-cases", "20-wakes-leases-context-rotation-and-stand-down", "29-troubleshooting-decision-tables"]},
     {"term": "bootstrap scripts", "targets": ["9-execution-backends", "26-engineering-and-extension-guide"]},
+    {"term": "cancellation", "targets": ["18-organization-projects-tasks-and-cases", "22-deliverables-reviews-and-decision-cascades"]},
     {"term": "canonical branch", "targets": ["11-managed-git-artifacts-and-code-consultations", "24-team-git-promotion-and-release-gates"]},
     {"term": "capabilities", "targets": ["6-identity-sessions-rbac-and-policy", "7-mcp-approvals-and-audit"]},
     {"term": "cases", "targets": ["18-organization-projects-tasks-and-cases", "28-system-reference"]},
@@ -27,6 +29,7 @@
     {"term": "communication targets", "targets": ["13-communications-meetings-calls-and-wakes", "28-system-reference"]},
     {"term": "configuration", "targets": ["5-runtime-assembly-configuration-and-directories", "28-system-reference"]},
     {"term": "container worker VM", "targets": ["9-execution-backends", "10-networking-relays-packages-and-secrets"]},
+    {"term": "contribution graph", "targets": ["22-deliverables-reviews-and-decision-cascades", "24-team-git-promotion-and-release-gates"]},
     {"term": "control plane", "targets": ["3-trust-model-and-security-boundaries", "4-system-topology-services-and-ports"]},
     {"term": "cost tracking", "targets": ["25-governance-memory-cost-and-internals"]},
     {"term": "credentials", "targets": ["3-trust-model-and-security-boundaries", "10-networking-relays-packages-and-secrets"]},
@@ -46,6 +49,7 @@
     {"term": "email", "targets": ["13-communications-meetings-calls-and-wakes", "21-chat-agent-mail-voice-and-escalation"]},
     {"term": "ephemeral delegates", "targets": ["23-ephemeral-delegation", "29-troubleshooting-decision-tables"]},
     {"term": "events", "targets": ["8-workflow-runtime-and-orchestration", "19-commands-identity-revisions-and-the-durable-outbox"]},
+    {"term": "evidenced no-op", "targets": ["18-organization-projects-tasks-and-cases", "22-deliverables-reviews-and-decision-cascades"]},
     {"term": "exact-SHA publication", "targets": ["11-managed-git-artifacts-and-code-consultations", "24-team-git-promotion-and-release-gates"]},
     {"term": "execution backends", "targets": ["9-execution-backends", "28-system-reference"]},
     {"term": "extension points", "targets": ["14-semantic-memory-model-usage-skills-and-add-ons", "26-engineering-and-extension-guide"]},
@@ -61,6 +65,7 @@
     {"term": "guest", "targets": ["3-trust-model-and-security-boundaries", "9-execution-backends", "10-networking-relays-packages-and-secrets"]},
     {"term": "host configuration", "targets": ["5-runtime-assembly-configuration-and-directories", "28-system-reference"]},
     {"term": "HTTP target relay", "targets": ["10-networking-relays-packages-and-secrets", "28-system-reference"]},
+    {"term": "human release review", "targets": ["17-enabling-and-operating-the-team-add-on", "24-team-git-promotion-and-release-gates"]},
     {"term": "idempotency", "targets": ["2-one-work-item-end-to-end", "8-workflow-runtime-and-orchestration", "19-commands-identity-revisions-and-the-durable-outbox", "24-team-git-promotion-and-release-gates"]},
     {"term": "inbox", "targets": ["13-communications-meetings-calls-and-wakes", "20-wakes-leases-context-rotation-and-stand-down", "21-chat-agent-mail-voice-and-escalation"]},
     {"term": "index", "targets": ["1-how-to-read-this-manual", "30-glossary"]},
@@ -72,6 +77,7 @@
     {"term": "managed Git", "targets": ["11-managed-git-artifacts-and-code-consultations", "28-system-reference"]},
     {"term": "managed repository ID", "targets": ["11-managed-git-artifacts-and-code-consultations", "24-team-git-promotion-and-release-gates"]},
     {"term": "MCP", "targets": ["7-mcp-approvals-and-audit", "16-team-add-on-boundary-and-domain-model"]},
+    {"term": "APP walkthrough", "targets": ["24-team-git-promotion-and-release-gates"]},
     {"term": "meetings", "targets": ["13-communications-meetings-calls-and-wakes", "21-chat-agent-mail-voice-and-escalation"]},
     {"term": "memory", "targets": ["14-semantic-memory-model-usage-skills-and-add-ons", "25-governance-memory-cost-and-internals"]},
     {"term": "Microsoft Teams", "targets": ["13-communications-meetings-calls-and-wakes", "21-chat-agent-mail-voice-and-escalation"]},
@@ -121,6 +127,7 @@
     {"term": "stand-down", "targets": ["20-wakes-leases-context-rotation-and-stand-down", "23-ephemeral-delegation"]},
     {"term": "systemd", "targets": ["4-system-topology-services-and-ports", "15-admin-operations-observability-backup-and-recovery", "28-system-reference"]},
     {"term": "task board", "targets": ["17-enabling-and-operating-the-team-add-on", "18-organization-projects-tasks-and-cases"]},
+    {"term": "task hierarchy", "targets": ["16-team-add-on-boundary-and-domain-model", "18-organization-projects-tasks-and-cases", "22-deliverables-reviews-and-decision-cascades"]},
     {"term": "Team Add-on", "targets": ["16-team-add-on-boundary-and-domain-model", "17-enabling-and-operating-the-team-add-on"]},
     {"term": "Team commands", "targets": ["19-commands-identity-revisions-and-the-durable-outbox"]},
     {"term": "Team state database", "targets": ["16-team-add-on-boundary-and-domain-model", "25-governance-memory-cost-and-internals", "28-system-reference"]},
@@ -138,6 +145,7 @@
     {"term": "wakes", "targets": ["13-communications-meetings-calls-and-wakes", "20-wakes-leases-context-rotation-and-stand-down"]},
     {"term": "workflow packs", "targets": ["8-workflow-runtime-and-orchestration", "15-admin-operations-observability-backup-and-recovery"]},
     {"term": "workflow runtime", "targets": ["8-workflow-runtime-and-orchestration"]},
-    {"term": "worktrees", "targets": ["11-managed-git-artifacts-and-code-consultations", "24-team-git-promotion-and-release-gates"]}
+    {"term": "worktree cleanup", "targets": ["20-wakes-leases-context-rotation-and-stand-down", "29-troubleshooting-decision-tables"]},
+    {"term": "worktrees", "targets": ["11-managed-git-artifacts-and-code-consultations", "20-wakes-leases-context-rotation-and-stand-down", "24-team-git-promotion-and-release-gates"]}
   ]
 }

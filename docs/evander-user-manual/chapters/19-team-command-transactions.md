@@ -48,6 +48,32 @@ Governance commands use a governance-group scope and validate that the caller ma
 
 An inactive, teamless, stood-down, mismatched, or unleased persistent agent cannot mutate normal Team state. Tool hiding improves the prompt, but server authorization remains decisive even if a client manually invokes a hidden name.
 
+## Durable dispatch scope
+
+A persistent wake first creates a durable <code>TeamDispatch</code> in
+<code>preparing</code>. Its task, blocker, review-request, inbox, project, and
+managed-repository ID lists are the exact records selected by the scheduler.
+They are immutable authorization scope, not a convenient snapshot that an
+agent may widen.
+
+The lists remain source-specific. A blocker that mentions a scoped task is not
+automatically in <code>blocker_ids</code>; another agent's task mentioned by a
+review is not automatically in <code>task_ids</code>. Before applying a
+command, Team confirms that the target is in the corresponding list and is
+still assigned, open, and actionable. Work created during a dispatch becomes
+eligible for a later dispatch.
+
+Repository preparation happens before the dispatch becomes
+<code>leased</code>. Every required task/repository checkout must succeed and
+receive a fresh dispatch-bound Git context; otherwise the complete dispatch is
+marked <code>failed</code>, partial contexts are finalized, and the runtime
+reservation is released. Team never silently drops one failed checkout and
+resumes the agent with a smaller scope.
+
+This is why a valid Team command needs both ambient identity and the current
+leased dispatch. A session that remembers an older task or Git context still
+cannot act on it after its authorization scope has ended.
+
 ## One command, one durable result
 
 Suppose Imani has read Priya's request and is ready to submit the telemetry deliverable. A single command can validate Imani's current authority, create the deliverable, mark the selected inbox item handled, record activity, and queue the next asynchronous work. If any required part is invalid, the intended Team change is not partly committed.
@@ -79,6 +105,31 @@ This design gives Northstar a useful guarantee. If Imani submits the telemetry r
 Read the figure as one commit boundary: the Team change, inbox handling, activity, replay response, and instruction for later work become durable together.
 
 <p class="figure-caption">Figure 19.1 — State, inbox handling, activity, replay evidence, and outbox intent commit together.</p>
+
+## Human changes requested is one transaction
+
+An authenticated Admin human decision uses a separate HTTP identity boundary,
+but its domain cascade follows the same all-or-nothing principle. A
+<code>changes_requested</code> decision atomically:
+
+1. stores the immutable decision and deterministic findings;
+2. ends the pinned release attempt without queuing canonical publication;
+3. creates or reuses one correction <code>TeamCase</code>;
+4. creates independent correction or project-lead triage roots;
+5. links each finding to its current correction task; and
+6. creates or reuses the Team inbox and work-due consequences.
+
+The idempotency key covers the complete cascade. A retry or racing identical
+terminal decision reuses the same decision, case, tasks, notices, and wake
+obligations. A failure in any part rolls the transition back; Team never leaves
+a recorded human veto without actionable correction work, or correction work
+without the veto that authorized it.
+
+The system may create those narrowly scoped correction roots because the
+authenticated request and target release already authorize the same-team,
+same-project relationship. It does not grant <code>create_root_task</code> to
+the original agent. Accepted tasks, deliverables, agent reviews, and the
+predecessor candidate remain immutable.
 
 ## Idempotency
 
@@ -181,6 +232,8 @@ First ask which promise appears to have failed: was the Team command rejected, s
 |---|---|---|
 | Identity/session conflict | Supplied compatibility identity disagrees with the connection. | Stop supplying identity fields; use the intended session. |
 | No active dispatch or lease mismatch | A persistent agent called outside its leased Team wake. | Diagnose routing and lease state; do not fabricate a dispatch ID. |
+| Target is not in dispatch scope | The current wake did not deliver that task, blocker, review, or inbox record in the corresponding scope list. | Finish or finalize the current dispatch and let the scheduler construct a later scope; do not reuse a remembered ID. |
+| Dispatch is still <code>preparing</code> | Required repository/task-worktree setup has not completed. | Inspect the exact preparation failure; commands remain denied until the complete immutable scope is leased. |
 | Stand-down error | The caller or an ancestor has an active hold. | Resolve the hold through its authorized revocation path. |
 | <code>idempotency_conflict</code> | One request ID was reused for different normalized content. | Read the original response and issue a new semantic request ID only for truly new work. |
 | Invalid handled inbox item | At least one ID is missing, already handled, or owned by another agent. | Reload the caller inbox and resubmit the atomic command with the correct set. |
@@ -212,6 +265,7 @@ For database inspection, use a consistent snapshot and current schema. The relev
 
 - <code>src/evander_team_addon/services/commands/executor.py</code>, <code>context.py</code>, and <code>types.py</code> — ambient identity, command scopes, validation, transaction order, and activity.
 - <code>src/evander_team_addon/services/commands/outbox.py</code> and <code>responses.py</code> — event conversion, durable response IDs, replay, and correction payloads.
+- <code>src/evander_team_addon/services/domain/dispatch_scope.py</code> and <code>human_reviews.py</code> — immutable source-specific dispatch scope and atomic human-decision cascades.
 - <code>src/evander_team_addon/sqlite_store.py</code> — serialized command transaction, idempotency keys, outbox claims, retries, and schema.
 - <code>src/evander_team_addon/mcp.py</code> — grouped command/read registration and session-aware call context.
 - <code>src/evander_team_addon/providers.py</code> and <code>workflow_packs.py</code> — outbox publication provider and runtime routes.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from ...models import (
@@ -13,11 +13,10 @@ from ...models import (
     ReviewProfile,
     ReviewRequest,
     Team,
+    TeamDispatchReviewRoutingAuthority,
     TeamInboxItemState,
     TeamState,
     agent_project_ids,
-    deliverable_requires_formal_review,
-    task_payload_with_derived,
 )
 
 from .agent_access import (
@@ -33,6 +32,8 @@ from .common import (
 )
 from .deliverables import _active_task_deliverables
 from .stand_down import _active_stand_downs_for_agent
+from .task_assessment import task_payload_with_assessment
+from ..wake_prompt_context import MAX_MANAGER_FALLBACK_ROWS
 
 
 _MANAGER_FALLBACK_OPEN_WORK_LIMIT = 20
@@ -41,7 +42,7 @@ _MANAGER_FALLBACK_PENDING_INBOX_LIMIT = 10
 
 _MANAGER_FALLBACK_FAILED_ACTION_LIMIT = 3
 
-_MANAGER_FALLBACK_ROUTING_GAP_LIMIT = 20
+_MANAGER_FALLBACK_ROUTING_GAP_LIMIT = MAX_MANAGER_FALLBACK_ROWS
 
 _MANAGER_FALLBACK_TEXT_LIMIT = 240
 
@@ -62,6 +63,7 @@ def _manager_fallback_summary_payload(
     team: Team,
     manager: PersistentAgent,
     now: datetime,
+    routing_gap_limit: int | None = _MANAGER_FALLBACK_ROUTING_GAP_LIMIT,
 ) -> dict[str, Any]:
     project_ids = {project.id for project in state.projects.values() if project.team_id == team.id}
     team_agents = sorted(
@@ -141,7 +143,9 @@ def _manager_fallback_summary_payload(
     ]
     reviewer_candidates = _manager_fallback_reviewer_candidates(
         state,
-        team_agents=team_agents,
+        team_agents=[
+            agent for agent in team_agents if agent.id != manager.id
+        ],
         project_ids=project_ids,
         review_profiles=review_profiles,
         now=now,
@@ -195,10 +199,16 @@ def _manager_fallback_summary_payload(
         failed_action_rows,
         _MANAGER_FALLBACK_FAILED_ACTION_LIMIT,
     )
-    limited_routing_gaps, omitted_routing_gaps = _manager_fallback_limited_rows(
-        routing_gaps,
-        _MANAGER_FALLBACK_ROUTING_GAP_LIMIT,
-    )
+    if routing_gap_limit is None:
+        limited_routing_gaps = list(routing_gaps)
+        omitted_routing_gaps = 0
+    else:
+        limited_routing_gaps, omitted_routing_gaps = (
+            _manager_fallback_limited_rows(
+                routing_gaps,
+                max(0, routing_gap_limit),
+            )
+        )
     omitted_counts = _manager_fallback_omitted_counts(
         {
             "open_work": omitted_open_work,
@@ -260,6 +270,181 @@ def _manager_fallback_summary_payload(
     }
 
 
+def _manager_fallback_review_routing_authorities(
+    state: TeamState,
+    *,
+    summary: Mapping[str, Any],
+) -> list[TeamDispatchReviewRoutingAuthority]:
+    """Freeze the exact reviewer and deliverable pairs exposed as routing gaps."""
+
+    raw_gaps = summary.get("routing_gaps")
+    if not isinstance(raw_gaps, Sequence) or isinstance(
+        raw_gaps,
+        (str, bytes, bytearray),
+    ):
+        return []
+    authorities: dict[
+        tuple[str, str],
+        TeamDispatchReviewRoutingAuthority,
+    ] = {}
+    for raw_gap in raw_gaps:
+        if not isinstance(raw_gap, Mapping):
+            continue
+        if raw_gap.get("kind") != "reviewer_without_assigned_review_work":
+            continue
+        reviewer_agent_id = _optional_text(raw_gap.get("agent_id"))
+        deliverable_ids = raw_gap.get("deliverable_ids")
+        if (
+            reviewer_agent_id is None
+            or reviewer_agent_id not in state.agents
+            or not isinstance(deliverable_ids, Sequence)
+            or isinstance(deliverable_ids, (str, bytes, bytearray))
+        ):
+            continue
+        for raw_deliverable_id in deliverable_ids:
+            deliverable_id = _optional_text(raw_deliverable_id)
+            deliverable = state.deliverables.get(deliverable_id or "")
+            task = (
+                state.tasks.get(deliverable.task_id)
+                if deliverable is not None
+                else None
+            )
+            if deliverable is None or task is None:
+                continue
+            authorities[(reviewer_agent_id, deliverable.id)] = (
+                TeamDispatchReviewRoutingAuthority(
+                    kind="reviewer_without_assigned_review_work",
+                    reviewer_agent_id=reviewer_agent_id,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    deliverable_id=deliverable.id,
+                )
+            )
+    return [authorities[key] for key in sorted(authorities)]
+
+
+def _manager_fallback_review_routing_authority_error(
+    state: TeamState,
+    *,
+    dispatch_agent_id: str,
+    authority: TeamDispatchReviewRoutingAuthority,
+) -> str | None:
+    """Return why a frozen routing pair is no longer intrinsically actionable.
+
+    Idle workload, wake leases, and shortlist order are minting-time concerns.
+    Rechecking them here would make one frozen pair invalidate its siblings or
+    let unrelated work reorder immutable dispatch authority.
+    """
+
+    if authority.consumed_by_review_request_id is not None:
+        return (
+            "reviewer/deliverable pair "
+            f"{authority.reviewer_agent_id}:{authority.deliverable_id} "
+            "was already consumed by review "
+            f"{authority.consumed_by_review_request_id}"
+        )
+    manager = state.agents.get(dispatch_agent_id)
+    reviewer = state.agents.get(authority.reviewer_agent_id)
+    project = state.projects.get(authority.project_id)
+    task = state.tasks.get(authority.task_id)
+    deliverable = state.deliverables.get(authority.deliverable_id)
+    if manager is None:
+        return f"manager {dispatch_agent_id} no longer exists"
+    if project is None:
+        return f"project {authority.project_id} no longer exists"
+    if task is None or task.project_id != project.id:
+        return f"task {authority.task_id} no longer belongs to project {project.id}"
+    if task.state not in _NON_TERMINAL_TASK_STATES:
+        return f"task {task.id} is now {task.state.value}, not open review work"
+    if (
+        deliverable is None
+        or deliverable.task_id != task.id
+        or not _is_active_deliverable_work(deliverable)
+    ):
+        return (
+            f"deliverable {authority.deliverable_id} is no longer active "
+            f"review work for task {task.id}"
+        )
+    team = state.teams.get(project.team_id)
+    if team is None:
+        return f"project team {project.team_id} no longer exists"
+    if manager.team_id != team.id or team.manager_agent_id != manager.id:
+        return (
+            f"agent {manager.id} is no longer manager of project team "
+            f"{team.id}"
+        )
+    pair = f"{authority.reviewer_agent_id}:{authority.deliverable_id}"
+    if reviewer is None:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: reviewer no longer exists"
+        )
+    if reviewer.id == manager.id:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: manager cannot route review to self"
+        )
+    if reviewer.status != AgentStatus.ACTIVE:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: reviewer is not active"
+        )
+    if reviewer.team_id != team.id:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: reviewer is not in the project team"
+        )
+    if _active_stand_downs_for_agent(state, reviewer.id):
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: reviewer is stood down"
+        )
+    review_profiles = [
+        profile
+        for profile in state.review_profiles.values()
+        if profile.team_id == team.id
+        and not profile.archived
+        and (profile.project_id is None or profile.project_id == project.id)
+    ]
+    eligible_project_ids = _manager_fallback_reviewer_eligible_project_ids(
+        state,
+        agent=reviewer,
+        project_ids={project.id},
+        review_profiles=review_profiles,
+    )
+    if project.id not in eligible_project_ids:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: reviewer is no longer assignment- "
+            "and profile-eligible for the project"
+        )
+    current_reviews = [
+        review
+        for review in state.review_requests.values()
+        if review.deliverable_id == deliverable.id
+        and review.superseded_by_review_request_id is None
+        and review.retired_at is None
+    ]
+    if not _manager_fallback_deliverable_needs_review(
+        deliverable,
+        reviews=current_reviews,
+    ):
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: deliverable no longer needs review"
+        )
+    if any(
+        review.reviewer_agent_id == reviewer.id
+        for review in current_reviews
+    ):
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: reviewer already has a current "
+            "review for the deliverable"
+        )
+    return None
+
+
 def _manager_fallback_time(value: datetime | None) -> str | None:
     return _ensure_utc(value).isoformat() if value is not None else None
 
@@ -303,7 +488,7 @@ def _manager_fallback_task_row(
     task: AgentTask,
     visible_reviews: list[ReviewRequest],
 ) -> dict[str, Any]:
-    task_payload = task_payload_with_derived(state, task)
+    task_payload = task_payload_with_assessment(state, task)
     deliverables = _active_task_deliverables(state, task)
     deliverable_ids = [deliverable.id for deliverable in deliverables]
     reviews = [review for review in visible_reviews if review.deliverable_id in deliverable_ids]
@@ -581,7 +766,9 @@ def _manager_fallback_routing_gaps(
     review_work = [
         deliverable
         for deliverable in visible_deliverables
-        if _manager_fallback_deliverable_needs_review(
+        if (task := tasks_by_id.get(deliverable.task_id)) is not None
+        and task.state in _NON_TERMINAL_TASK_STATES
+        and _manager_fallback_deliverable_needs_review(
             deliverable,
             reviews=reviews_by_deliverable.get(deliverable.id, []),
         )
@@ -776,7 +963,7 @@ def _manager_fallback_deliverable_needs_review(
 ) -> bool:
     if not _is_active_deliverable_work(deliverable):
         return False
-    if deliverable_requires_formal_review(deliverable):
+    if any(finding.state == "open" for finding in deliverable.carried_findings):
         return True
     return any(review.release_package_id is None for review in reviews)
 
@@ -790,6 +977,8 @@ __all__ = [
     "_MANAGER_FALLBACK_PENDING_REVIEW_STATES",
     "_manager_fallback_task_visible_for_work",
     "_manager_fallback_summary_payload",
+    "_manager_fallback_review_routing_authorities",
+    "_manager_fallback_review_routing_authority_error",
     "_manager_fallback_time",
     "_manager_fallback_short_text",
     "_manager_fallback_limited_rows",

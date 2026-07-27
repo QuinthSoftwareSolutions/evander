@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,6 +21,13 @@ from .models import (
     agent_project_ids,
     project_lead_agent_id,
 )
+
+
+class TimelineChange(TeamModel):
+    field: str
+    before: str | None = None
+    after: str | None = None
+    before_known: bool = False
 
 
 class TimelineEntry(TeamModel):
@@ -45,6 +52,10 @@ class TimelineEntry(TeamModel):
     release_package_id: str | None = None
     status: str | None = None
     attention_needed: bool = False
+    subject: str | None = None
+    change: TimelineChange | None = None
+    reason: str | None = None
+    process: str | None = None
     summary: str
 
 
@@ -65,6 +76,32 @@ def derive_team_timeline(
     normalized_offset = max(0, offset)
 
     entries = _collect_timeline_entries(state)
+    type_facet_entries = [
+        entry
+        for entry in entries
+        if _entry_matches_filters(
+            entry,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            types=None,
+            statuses=normalized_statuses,
+            attention_needed=attention_needed,
+        )
+    ]
+    status_facet_entries = [
+        entry
+        for entry in entries
+        if _entry_matches_filters(
+            entry,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            types=normalized_types,
+            statuses=None,
+            attention_needed=attention_needed,
+        )
+    ]
     filtered_entries = [
         entry
         for entry in entries
@@ -99,6 +136,12 @@ def derive_team_timeline(
         "limit": normalized_limit,
         "offset": normalized_offset,
         "has_more": normalized_offset + len(windowed_entries) < total_count,
+        "facets": {
+            "types": sorted({entry.type for entry in type_facet_entries}),
+            "statuses": sorted(
+                {entry.status for entry in status_facet_entries if entry.status is not None}
+            ),
+        },
         "entries": [entry.model_dump(mode="json") for entry in windowed_entries],
     }
 
@@ -127,6 +170,11 @@ def _task_entries(state: TeamState) -> list[TimelineEntry]:
             [task.owner_agent_id, creator_agent_id]
             + ([parent.owner_agent_id] if parent is not None else [])
         )
+        creator_subject = (
+            _agent_subject(state, creator_agent_id)
+            if creator_agent_id is not None
+            else task.created_by_actor
+        )
         entries.append(
             _entry(
                 id=f"task:{task.id}:created",
@@ -135,32 +183,80 @@ def _task_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=task.created_at,
                 timestamp_source="created_at",
                 actor_agent_id=creator_agent_id,
-                actor_subject=creator_agent_id or task.created_by_actor,
+                actor_subject=creator_subject,
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=task.project_id,
                 task_id=task.id,
                 status=task.state.value,
                 attention_needed=_task_attention_needed(task.state),
-                summary=f"Task {task.id} created: {task.title}",
+                subject=task.title,
+                process=(
+                    _process_subject(task.created_by_actor)
+                    if creator_agent_id is None
+                    else None
+                ),
+                summary=f"Task created: {task.title}",
             )
         )
         if task.updated_at != task.created_at:
+            category = "updated"
+            actor_agent_id = None
+            actor_subject = None
+            process = None
+            reason = None
+            change = None
+            summary = f"Task snapshot updated: {task.title}"
+            cancellation = task.cancellation
+            if (
+                task.state == TeamTaskState.CANCELLED
+                and cancellation is not None
+                and _timestamps_equal(cancellation.cancelled_at, task.updated_at)
+            ):
+                category = "cancelled"
+                if cancellation.actor_kind == "agent":
+                    actor_agent_id = cancellation.actor_id
+                    actor_subject = _agent_subject(state, cancellation.actor_id)
+                else:
+                    actor_subject = cancellation.actor_id
+                    process = _humanize_token(cancellation.actor_kind)
+                reason = cancellation.reason
+                change = TimelineChange(
+                    field="State",
+                    after=_humanize_token(task.state.value),
+                    before_known=False,
+                )
+                summary = f"Task cancelled: {task.title}"
+            elif _timestamps_equal(task.state_entered_at, task.updated_at):
+                change = TimelineChange(
+                    field="State",
+                    after=_humanize_token(task.state.value),
+                    before_known=False,
+                )
+                summary = (
+                    f"Task entered {_humanize_token(task.state.value).lower()}: "
+                    f"{task.title}"
+                )
             entries.append(
                 _entry(
-                    id=f"task:{task.id}:updated",
+                    id=f"task:{task.id}:{category}",
                     type="task",
-                    category="updated",
+                    category=category,
                     timestamp=task.updated_at,
                     timestamp_source="updated_at",
-                    actor_agent_id=task.owner_agent_id,
+                    actor_agent_id=actor_agent_id,
+                    actor_subject=actor_subject,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=task.project_id,
                     task_id=task.id,
                     status=task.state.value,
                     attention_needed=_task_attention_needed(task.state),
-                    summary=f"Task {task.id} updated: {task.title}",
+                    subject=task.title,
+                    change=change,
+                    reason=reason,
+                    process=process,
+                    summary=summary,
                 )
             )
     return entries
@@ -176,6 +272,9 @@ def _inbox_entries(state: TeamState) -> list[TimelineEntry]:
         if team_id is None and project is not None:
             team_id = project.team_id
         related = _unique_agent_ids([item.recipient_agent_id, item.sender_agent_id])
+        subject = _inbox_subject(item, task_title=task.title if task is not None else None)
+        item_type = _humanize_token(item.item_type.value)
+        sender_subject = _agent_subject(state, item.sender_agent_id)
         entries.append(
             _entry(
                 id=f"inbox:{item.id}:created",
@@ -184,6 +283,7 @@ def _inbox_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=item.created_at,
                 timestamp_source="created_at",
                 actor_agent_id=item.sender_agent_id,
+                actor_subject=sender_subject,
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=task.project_id if task is not None else None,
@@ -191,11 +291,27 @@ def _inbox_entries(state: TeamState) -> list[TimelineEntry]:
                 inbox_item_id=item.id,
                 status=item.state.value,
                 attention_needed=item.state == TeamInboxItemState.PENDING,
-                summary=f"Inbox item {item.id} created for {item.recipient_agent_id}",
+                subject=subject,
+                process=(
+                    _inbox_process(item.payload)
+                    if item.sender_agent_id is None
+                    else None
+                ),
+                summary=f"{item_type} sent: {subject}",
             )
         )
         if item.updated_at != item.created_at:
             category = "handled" if item.state == TeamInboxItemState.HANDLED else "updated"
+            change = (
+                TimelineChange(
+                    field="State",
+                    before=_humanize_token(TeamInboxItemState.PENDING.value),
+                    after=_humanize_token(TeamInboxItemState.HANDLED.value),
+                    before_known=True,
+                )
+                if category == "handled"
+                else None
+            )
             entries.append(
                 _entry(
                     id=f"inbox:{item.id}:{category}",
@@ -203,7 +319,6 @@ def _inbox_entries(state: TeamState) -> list[TimelineEntry]:
                     category=category,
                     timestamp=item.updated_at,
                     timestamp_source="updated_at",
-                    actor_agent_id=item.sender_agent_id,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=task.project_id if task is not None else None,
@@ -211,7 +326,13 @@ def _inbox_entries(state: TeamState) -> list[TimelineEntry]:
                     inbox_item_id=item.id,
                     status=item.state.value,
                     attention_needed=item.state == TeamInboxItemState.PENDING,
-                    summary=_inbox_summary(item),
+                    subject=subject,
+                    change=change,
+                    summary=(
+                        f"{item_type} handled: {subject}"
+                        if category == "handled"
+                        else f"{item_type} snapshot updated: {subject}"
+                    ),
                 )
             )
     return entries
@@ -230,6 +351,7 @@ def _deliverable_entries(state: TeamState) -> list[TimelineEntry]:
                 task.created_by_agent_id if task is not None else None,
             ]
         )
+        subject = _deliverable_subject(deliverable.summary, task.title if task else None)
         entries.append(
             _entry(
                 id=f"deliverable:{deliverable.id}:created",
@@ -238,6 +360,7 @@ def _deliverable_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=deliverable.created_at,
                 timestamp_source="created_at",
                 actor_agent_id=deliverable.producer_agent_id,
+                actor_subject=_agent_subject(state, deliverable.producer_agent_id),
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=task.project_id if task is not None else None,
@@ -245,7 +368,8 @@ def _deliverable_entries(state: TeamState) -> list[TimelineEntry]:
                 deliverable_id=deliverable.id,
                 status=deliverable.state.value,
                 attention_needed=_record_attention_needed(deliverable.state),
-                summary=f"Deliverable {deliverable.id} created: {deliverable.summary}",
+                subject=subject,
+                summary=f"Deliverable created: {subject}",
             )
         )
     return entries
@@ -254,17 +378,52 @@ def _deliverable_entries(state: TeamState) -> list[TimelineEntry]:
 def _review_entries(state: TeamState) -> list[TimelineEntry]:
     entries: list[TimelineEntry] = []
     for review in state.review_requests.values():
-        deliverable = state.deliverables.get(review.deliverable_id)
+        deliverable = (
+            state.deliverables.get(review.deliverable_id)
+            if review.deliverable_id is not None
+            else None
+        )
+        release = (
+            state.release_packages.get(review.release_package_id)
+            if review.release_package_id is not None
+            else None
+        )
         task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
-        project = state.projects.get(task.project_id) if task is not None else None
+        project_id = (
+            task.project_id
+            if task is not None
+            else release.project_id
+            if release is not None
+            else None
+        )
+        project = state.projects.get(project_id) if project_id is not None else None
         team_id = project.team_id if project is not None else None
+        release_related_agent_ids = (
+            _release_related_agent_ids(state, release)
+            if release is not None
+            else []
+        )
         related = _unique_agent_ids(
             [
                 review.reviewer_agent_id,
+                review.requested_by_agent_id,
                 deliverable.producer_agent_id if deliverable is not None else None,
                 task.owner_agent_id if task is not None else None,
                 task.created_by_agent_id if task is not None else None,
+                *release_related_agent_ids,
             ]
+        )
+        subject = (
+            _deliverable_subject(deliverable.summary, task.title if task else None)
+            if deliverable is not None
+            else _release_subject(state, release)
+            if release is not None
+            else "Retained review target unavailable"
+        )
+        requester_subject = (
+            _agent_subject(state, review.requested_by_agent_id)
+            if review.requested_by_agent_id is not None
+            else review.requested_by_actor
         )
         entries.append(
             _entry(
@@ -274,19 +433,29 @@ def _review_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=review.created_at,
                 timestamp_source="created_at",
                 timestamp_missing=review.created_at is None,
-                actor_agent_id=review.reviewer_agent_id,
+                actor_agent_id=review.requested_by_agent_id,
+                actor_subject=requester_subject,
                 related_agent_ids=related,
                 team_id=team_id,
-                project_id=task.project_id if task is not None else None,
+                project_id=project_id,
                 task_id=task.id if task is not None else None,
                 deliverable_id=review.deliverable_id,
+                release_package_id=review.release_package_id,
                 review_request_id=review.id,
                 status=review.state.value,
                 attention_needed=_record_attention_needed(review.state),
-                summary=f"Review requested for deliverable {review.deliverable_id}",
+                subject=subject,
+                reason=review.retry_reason,
+                process=(
+                    _process_subject(review.requested_by_actor)
+                    if review.requested_by_agent_id is None
+                    else None
+                ),
+                summary=f"Review requested: {subject}",
             )
         )
         if review.decision_at is not None or review.state != TeamRecordState.PENDING:
+            decision = _humanize_token(review.state.value)
             entries.append(
                 _entry(
                     id=f"review:{review.id}:decision",
@@ -296,15 +465,24 @@ def _review_entries(state: TeamState) -> list[TimelineEntry]:
                     timestamp_source="decision_at",
                     timestamp_missing=review.decision_at is None,
                     actor_agent_id=review.reviewer_agent_id,
+                    actor_subject=_agent_subject(state, review.reviewer_agent_id),
                     related_agent_ids=related,
                     team_id=team_id,
-                    project_id=task.project_id if task is not None else None,
+                    project_id=project_id,
                     task_id=task.id if task is not None else None,
                     deliverable_id=review.deliverable_id,
+                    release_package_id=review.release_package_id,
                     review_request_id=review.id,
                     status=review.state.value,
                     attention_needed=_review_decision_attention_needed(review.state),
-                    summary=_review_decision_summary(review),
+                    subject=subject,
+                    change=TimelineChange(
+                        field="Decision",
+                        after=decision,
+                        before_known=False,
+                    ),
+                    reason=_review_reason(review),
+                    summary=f"Review {decision.lower()}: {subject}",
                 )
             )
     return entries
@@ -319,6 +497,8 @@ def _action_entries(state: TeamState) -> list[TimelineEntry]:
             agent_project_ids(state, record.agent_id) if agent is not None else []
         )
         project_id = assigned_project_ids[0] if assigned_project_ids else None
+        subject = _action_subject(record)
+        status = "succeeded" if record.success else "failed"
         entries.append(
             _entry(
                 id=f"action:{record.id}:created",
@@ -327,13 +507,17 @@ def _action_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=record.created_at,
                 timestamp_source="created_at",
                 actor_agent_id=record.agent_id,
+                actor_subject=_agent_subject(state, record.agent_id),
                 related_agent_ids=_unique_agent_ids([record.agent_id]),
                 team_id=team_id,
                 project_id=project_id,
                 action_record_id=record.id,
-                status="succeeded" if record.success else "failed",
+                status=status,
                 attention_needed=not record.success and record.dismissed_at is None,
-                summary=_action_summary(record),
+                subject=subject,
+                reason=record.error if not record.success else None,
+                process=_action_process(record),
+                summary=f"Action {status}: {subject}",
             )
         )
     return entries
@@ -353,6 +537,7 @@ def _ephemeral_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=assignment.created_at,
                 timestamp_source="created_at",
                 actor_agent_id=assignment.parent_agent_id,
+                actor_subject=_agent_subject(state, assignment.parent_agent_id),
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=assignment.project_id,
@@ -360,10 +545,12 @@ def _ephemeral_entries(state: TeamState) -> list[TimelineEntry]:
                 ephemeral_assignment_id=assignment.id,
                 status=assignment.state.value,
                 attention_needed=_ephemeral_attention_needed(assignment.state),
-                summary=f"Ephemeral assignment {assignment.id} requested for task {assignment.task_id}",
+                subject=assignment.title,
+                summary=f"Temporary assignment requested: {assignment.title}",
             )
         )
         if assignment.updated_at != assignment.created_at:
+            assignment_state = _humanize_token(assignment.state.value)
             entries.append(
                 _entry(
                     id=f"ephemeral:{assignment.id}:state",
@@ -371,7 +558,6 @@ def _ephemeral_entries(state: TeamState) -> list[TimelineEntry]:
                     category="state",
                     timestamp=assignment.updated_at,
                     timestamp_source="updated_at",
-                    actor_agent_id=assignment.parent_agent_id,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=assignment.project_id,
@@ -379,7 +565,17 @@ def _ephemeral_entries(state: TeamState) -> list[TimelineEntry]:
                     ephemeral_assignment_id=assignment.id,
                     status=assignment.state.value,
                     attention_needed=_ephemeral_attention_needed(assignment.state),
-                    summary=f"Ephemeral assignment {assignment.id} {assignment.state.value}",
+                    subject=assignment.title,
+                    change=TimelineChange(
+                        field="State",
+                        after=assignment_state,
+                        before_known=False,
+                    ),
+                    reason=assignment.error,
+                    summary=(
+                        f"Temporary assignment {assignment_state.lower()}: "
+                        f"{assignment.title}"
+                    ),
                 )
             )
     return entries
@@ -390,6 +586,9 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
     for promotion in state.git_promotions.values():
         project = state.projects.get(promotion.project_id)
         team_id = project.team_id if project is not None else None
+        related = _unique_agent_ids([promotion.actor_agent_id])
+        subject = _git_promotion_subject(state, promotion)
+        promotion_process = f"{_humanize_token(promotion.promotion_kind)} promotion"
         entries.append(
             _entry(
                 id=f"git-promotion:{promotion.id}:requested",
@@ -398,7 +597,8 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
                 timestamp=promotion.created_at,
                 timestamp_source="created_at",
                 actor_agent_id=promotion.actor_agent_id,
-                related_agent_ids=_unique_agent_ids([promotion.actor_agent_id]),
+                actor_subject=_agent_subject(state, promotion.actor_agent_id),
+                related_agent_ids=related,
                 team_id=team_id,
                 project_id=promotion.project_id,
                 task_id=promotion.task_id,
@@ -407,10 +607,13 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
                 git_promotion_id=promotion.id,
                 status=promotion.state,
                 attention_needed=_git_promotion_attention_needed(promotion.state),
-                summary=_git_promotion_requested_summary(promotion),
+                subject=subject,
+                process=promotion_process,
+                summary=f"{promotion_process} requested: {subject}",
             )
         )
         if promotion.state != "pending":
+            promotion_state = _humanize_token(promotion.state)
             entries.append(
                 _entry(
                     id=f"git-promotion:{promotion.id}:result",
@@ -418,8 +621,7 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
                     category="result",
                     timestamp=promotion.updated_at,
                     timestamp_source="updated_at",
-                    actor_agent_id=promotion.actor_agent_id,
-                    related_agent_ids=_unique_agent_ids([promotion.actor_agent_id]),
+                    related_agent_ids=related,
                     team_id=team_id,
                     project_id=promotion.project_id,
                     task_id=promotion.task_id,
@@ -428,7 +630,18 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
                     git_promotion_id=promotion.id,
                     status=promotion.state,
                     attention_needed=promotion.state == "failed",
-                    summary=_git_promotion_result_summary(promotion),
+                    subject=subject,
+                    change=TimelineChange(
+                        field="State",
+                        before=_humanize_token("pending"),
+                        after=promotion_state,
+                        before_known=True,
+                    ),
+                    reason=promotion.error,
+                    process="Git promotion worker",
+                    summary=(
+                        f"{promotion_process} {promotion_state.lower()}: {subject}"
+                    ),
                 )
             )
     return entries
@@ -439,16 +652,8 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
     for release in state.release_packages.values():
         project = state.projects.get(release.project_id)
         team_id = project.team_id if project is not None else None
-        related = _unique_agent_ids(
-            [
-                project_lead_agent_id(state, release.project_id) if project is not None else None,
-                *(
-                    state.deliverables[deliverable_id].producer_agent_id
-                    for deliverable_id in release.deliverable_ids
-                    if deliverable_id in state.deliverables
-                ),
-            ]
-        )
+        related = _release_related_agent_ids(state, release)
+        subject = _release_subject(state, release)
         entries.append(
             _entry(
                 id=f"release:{release.id}:created",
@@ -456,16 +661,14 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                 category="created",
                 timestamp=release.created_at,
                 timestamp_source="created_at",
-                actor_agent_id=project_lead_agent_id(state, release.project_id)
-                if project is not None
-                else None,
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=release.project_id,
                 release_package_id=release.id,
                 status=release.state.value,
                 attention_needed=_release_attention_needed(release.state),
-                summary=f"Release package {release.id} created for project {release.project_id}",
+                subject=subject,
+                summary=f"Release prepared: {subject}",
             )
         )
         if release.state == TeamRecordState.ACCEPTED:
@@ -480,16 +683,19 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                     if release.published_at is not None
                     else "updated_at",
                     timestamp_missing=timestamp is None,
-                    actor_agent_id=project_lead_agent_id(state, release.project_id)
-                    if project is not None
-                    else None,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=release.project_id,
                     release_package_id=release.id,
                     status=release.state.value,
                     attention_needed=_release_attention_needed(release.state),
-                    summary=_release_summary(release),
+                    subject=subject,
+                    change=TimelineChange(
+                        field="Publication",
+                        after="Published",
+                        before_known=False,
+                    ),
+                    summary=f"Release published: {subject}",
                 )
             )
         elif release.state == TeamRecordState.BLOCKED:
@@ -501,16 +707,20 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                     timestamp=release.updated_at,
                     timestamp_source="updated_at",
                     timestamp_missing=release.updated_at is None,
-                    actor_agent_id=project_lead_agent_id(state, release.project_id)
-                    if project is not None
-                    else None,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=release.project_id,
                     release_package_id=release.id,
                     status=release.state.value,
                     attention_needed=_release_attention_needed(release.state),
-                    summary=_release_summary(release),
+                    subject=subject,
+                    change=TimelineChange(
+                        field="State",
+                        after=_humanize_token(release.state.value),
+                        before_known=False,
+                    ),
+                    reason=_release_reason(release),
+                    summary=f"Release blocked: {subject}",
                 )
             )
     return entries
@@ -538,6 +748,10 @@ def _entry(
     release_package_id: str | None = None,
     status: str | None = None,
     attention_needed: bool = False,
+    subject: str | None = None,
+    change: TimelineChange | Mapping[str, Any] | None = None,
+    reason: str | None = None,
+    process: str | None = None,
     summary: str,
     timestamp_missing: bool | None = None,
 ) -> TimelineEntry:
@@ -566,6 +780,10 @@ def _entry(
         release_package_id=release_package_id,
         status=status,
         attention_needed=attention_needed,
+        subject=subject,
+        change=change,
+        reason=reason,
+        process=process,
         summary=summary,
     )
 
@@ -687,42 +905,185 @@ def _release_attention_needed(state: TeamRecordState) -> bool:
     return state in {TeamRecordState.PENDING, TeamRecordState.BLOCKED}
 
 
-def _inbox_summary(item: AgentInboxItem) -> str:
-    if item.state == TeamInboxItemState.HANDLED:
-        return f"Inbox item {item.id} handled"
-    return f"Inbox item {item.id} updated"
+def _agent_subject(state: TeamState, agent_id: str | None) -> str | None:
+    if agent_id is None:
+        return None
+    agent = state.agents.get(agent_id)
+    if agent is not None and agent.display_name:
+        return agent.display_name
+    return agent_id
 
 
-def _review_decision_summary(review: ReviewRequest) -> str:
-    return f"Review {review.id} decided {review.state.value}"
+def _process_subject(actor_subject: str | None) -> str | None:
+    normalized = _optional_summary_text(actor_subject)
+    if normalized is None:
+        return None
+    prefix = normalized.split(":", 1)[0].strip()
+    if prefix.casefold() in {"operator", "system", "workflow", "admin"}:
+        return _humanize_token(prefix)
+    return None
 
 
-def _action_summary(record: AgentActionRecord) -> str:
+def _inbox_subject(item: AgentInboxItem, *, task_title: str | None) -> str:
+    payload = item.payload if isinstance(item.payload, Mapping) else {}
+    for key in (
+        "title",
+        "subject",
+        "summary",
+        "question",
+        "message",
+        "instructions",
+    ):
+        candidate = _optional_summary_text(payload.get(key))
+        if candidate is not None:
+            return _preview(candidate)
+    if task_title:
+        return _preview(task_title)
+    return _humanize_token(item.item_type.value)
+
+
+def _inbox_process(payload: Mapping[str, Any]) -> str | None:
+    for key in ("source", "origin", "created_by"):
+        candidate = _optional_summary_text(payload.get(key))
+        if candidate is not None:
+            return _preview(candidate, limit=80)
+    return None
+
+
+def _deliverable_subject(summary: str, task_title: str | None) -> str:
+    if task_title:
+        return _preview(task_title)
+    first_line = next(
+        (line.strip() for line in str(summary).splitlines() if line.strip()),
+        "Deliverable outcome",
+    )
+    return _preview(first_line)
+
+
+def _review_reason(review: ReviewRequest) -> str | None:
+    parts: list[str] = []
+    if review.block_kind is not None:
+        parts.append(f"Blocked by {_humanize_token(review.block_kind.value).lower()}")
+    parts.extend(_preview(finding, limit=240) for finding in review.findings if finding.strip())
+    return " · ".join(parts) or None
+
+
+def _action_subject(record: AgentActionRecord) -> str:
     action_type = record.action.get("type") if isinstance(record.action, dict) else None
     action_summary = record.action.get("summary") if isinstance(record.action, dict) else None
     if isinstance(action_summary, str) and action_summary.strip():
-        detail = action_summary.strip()
+        return _preview(action_summary)
     elif isinstance(action_type, str) and action_type.strip():
-        detail = action_type.strip()
-    else:
-        detail = "created"
-    return f"Action record {record.id} {detail}"
+        return _humanize_token(action_type)
+    return "Recorded action"
 
 
-def _git_promotion_requested_summary(promotion: GitPromotionRecord) -> str:
-    return (
-        f"Git promotion {promotion.id} requested from {promotion.source_branch} "
-        f"to {promotion.target_branch}"
+def _action_process(record: AgentActionRecord) -> str | None:
+    action_type = record.action.get("type") if isinstance(record.action, dict) else None
+    if isinstance(action_type, str) and action_type.strip():
+        return _humanize_token(action_type)
+    return None
+
+
+def _git_promotion_subject(state: TeamState, promotion: GitPromotionRecord) -> str:
+    if promotion.task_id is not None:
+        task = state.tasks.get(promotion.task_id)
+        if task is not None:
+            return _preview(task.title)
+    if promotion.deliverable_id is not None:
+        deliverable = state.deliverables.get(promotion.deliverable_id)
+        if deliverable is not None:
+            task = state.tasks.get(deliverable.task_id)
+            return _deliverable_subject(
+                deliverable.summary,
+                task.title if task is not None else None,
+            )
+    if promotion.release_package_id is not None:
+        release = state.release_packages.get(promotion.release_package_id)
+        if release is not None:
+            return _release_subject(state, release)
+    project = state.projects.get(promotion.project_id)
+    project_name = project.name if project is not None else "Project"
+    return f"{project_name} {_humanize_token(promotion.promotion_kind).lower()} promotion"
+
+
+def _release_related_agent_ids(
+    state: TeamState,
+    release: ReleasePackage,
+) -> list[str]:
+    project = state.projects.get(release.project_id)
+    return _unique_agent_ids(
+        [
+            project_lead_agent_id(state, release.project_id)
+            if project is not None
+            else None,
+            *(
+                state.deliverables[deliverable_id].producer_agent_id
+                for deliverable_id in release.deliverable_ids
+                if deliverable_id in state.deliverables
+            ),
+        ]
     )
 
 
-def _git_promotion_result_summary(promotion: GitPromotionRecord) -> str:
-    return f"Git promotion {promotion.id} {promotion.state}"
+def _release_subject(state: TeamState, release: ReleasePackage | None) -> str:
+    if release is None:
+        return "Retained release target unavailable"
+    project = state.projects.get(release.project_id)
+    project_name = project.name if project is not None else "Project"
+    work_titles: list[str] = []
+    seen_titles: set[str] = set()
+    for deliverable_id in release.deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            continue
+        task = state.tasks.get(deliverable.task_id)
+        title = _deliverable_subject(
+            deliverable.summary,
+            task.title if task is not None else None,
+        )
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+        work_titles.append(title)
+    if not work_titles:
+        return f"{project_name} release"
+    first = work_titles[0]
+    remainder = len(work_titles) - 1
+    work_label = f"{first} + {remainder} more" if remainder else first
+    return f"{project_name}: {work_label}"
 
 
-def _release_summary(release: ReleasePackage) -> str:
-    if release.state == TeamRecordState.ACCEPTED:
-        return f"Release package {release.id} published"
-    if release.state == TeamRecordState.BLOCKED:
-        return f"Release package {release.id} blocked"
-    return f"Release package {release.id} pending"
+def _release_reason(release: ReleasePackage) -> str | None:
+    if release.error:
+        return _preview(release.error, limit=400)
+    if release.gate_failure is not None:
+        return _preview(release.gate_failure.message, limit=400)
+    return None
+
+
+def _timestamps_equal(left: datetime | None, right: datetime | None) -> bool:
+    if left is None or right is None:
+        return False
+    return _normalized_sort_timestamp(left) == _normalized_sort_timestamp(right)
+
+
+def _optional_summary_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized or None
+
+
+def _preview(value: object, *, limit: int = 120) -> str:
+    normalized = _optional_summary_text(value) or ""
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(1, limit - 1)].rstrip()}…"
+
+
+def _humanize_token(value: object) -> str:
+    normalized = str(value or "").strip().replace("_", " ").replace("-", " ")
+    if not normalized:
+        return "Unknown"
+    return normalized[0].upper() + normalized[1:]

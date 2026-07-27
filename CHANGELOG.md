@@ -1,5 +1,312 @@
 # Changelog
 
+## 2026-07-27 - Team Human Review Checklist Editing
+
+- Replaced pipe-delimited human release acceptance-checklist text with structured, reorderable
+  checklist rows that preserve stable keys, support optional checks and descriptions containing
+  punctuation, validate missing labels and duplicate keys inline, and survive revision-conflict
+  draft restoration.
+
+## 2026-07-27 - Team Stand-down Revocation Visibility
+
+- Kept the Revoke stand-down action visible for superior-issued and inherited stand-downs, disabled
+  it when the operator cannot revoke the underlying record, and explained the responsible
+  revocation path on hover.
+
+## 2026-07-27 - Team Operational History and Delivery Clarity
+
+- Added coordinated Board and Hierarchy task views with named lineage navigation, relationship
+  highlighting, tree controls, operational badges, active-first defaults, completed-history
+  filters, search, and bounded paging.
+- Reworked deliverable and release cards around task-derived subjects, named producers and
+  projects, structured outcome/evidence/review groups, staged release progress, prominent included
+  work, durable release-request notes, current unsuperseded verification attempts, and copyable
+  identifiers behind technical details.
+- Kept resolved and closed cases durable while excluding them from active counts and wake context,
+  and added explicit case-history counts, search, status filtering whose all-status selection
+  includes history, and pagination.
+- Separated active runtime obligations, failed attempts, and retained history; added
+  occurrence age, terminal-work and inbox-reconciliation context, attention facets, bounded pages,
+  multi-team and multi-project scope matching, named ownership and related work, kind-specific
+  cards and remediation guidance, passive-correspondence history labels, Agent Mail routing,
+  actor-scoped linked metadata and narratives, primary-target reconciliation, agent-facing
+  failed-promotion commit details, and structured technical details while keeping recorded failure
+  attempts in workspace attention.
+- Structured expanded Planning tasks into scannable overview, lifecycle, hierarchy, contribution,
+  task-brief, and technical sections, with named relationships, contribution-state checklists,
+  formal review status, operator-readable lifecycle reasons, collapsed long briefs, safe
+  lightweight Markdown rendering, explicit cancelled and skipped lifecycle stages, and
+  not-applicable review stages for completed support work.
+- Replaced governance group storage-oriented editing with name-first manager choices, searchable
+  team selection and removable chips, independently validated and reorderable named goal rows in
+  both creation and editing, editable goal lifecycle states, copyable technical IDs, and lossless
+  backward-compatible persisted goal names.
+- Renamed the snapshot-derived history to Activity timeline, made its completeness and retention
+  limits explicit, and added human-readable subjects, actors, scopes, domain changes, reasons,
+  name-first filters, snapshot-only update descriptions, and deduplicated copyable identifiers
+  without claiming audit-log evidence.
+
+## 2026-07-27 - Team Review Profile Readability
+
+- Reworked review-profile cards around display names and clear Purpose, Reviewers, Required
+  outcomes, and Criteria groups, with internal identifiers moved behind optional technical
+  details.
+- Summarized unresolved task descendants with named previews and an expandable structured list
+  instead of printing long comma-separated ID sequences on task-board cards.
+
+## 2026-07-27 - Team Project Catalog Card Layout
+
+- Let project catalog cards grow across available desktop space, keep the project name and status
+  together in the primary row, show only the human-readable team name beneath it, and preserve
+  ordinary project-name words instead of breaking them mid-word.
+
+## 2026-07-27 - Team Governance Cost Roll-up Clarity
+
+- Distinguished governance portfolio cost roll-ups from team, project, and agent spend by giving
+  them a dedicated aggregate treatment, identifying the member-team sum as not governance-manager
+  spend, and making partial pricing coverage explicit in the cost details.
+
+## 2026-07-26 - Team Review Follow-up Fixes
+
+- Restricted manager-fallback review routing authority to exact prompt-visible pairs, revalidated
+  target and reviewer eligibility before activation and use, made each authority one-shot while
+  preserving idempotent replay, and kept terminal dispatch history from pinning current Team
+  membership.
+- Persisted exact manager-fallback reviewer and deliverable routing authority so empty-scope
+  deadlock-recovery wakes can request the reviews they are instructed to create, and allowed the
+  worker API to serialize the third validation from a failed non-force worktree removal.
+- Removed only proven ignored worktree paths before non-force Git cleanup, rejected new child
+  edges to terminal tasks, and preserved every deliverable and review reference in coalesced
+  parent-transition notices.
+- Re-resolved human-review authorization after project Git-directory changes,
+  reserved deterministic human-review case and task IDs, made terminal task
+  graph edges immutable, and validated proposed dependencies in legacy finish
+  updates.
+- Required a team-scoped role grant for team-wide outcome-catalog changes, migrated legacy JSON
+  outcome contracts and snapshots before strict validation, and kept mixed stored/legacy thread
+  fallback records pageable until every execution has been scanned.
+- Routed historical human-review corrections away from detached owners, enforced one active
+  successor per predecessor, made cleanup success and its audit atomic, pinned cleanup to the
+  originating dispatch session, and migrated review outcome snapshots with project overrides.
+- Rejected deliverable submissions after task resolution, kept post-release case source,
+  release provenance, and unresolved task membership protected across agent and Admin updates,
+  and made evidence-backed post-release closure terminal.
+- Normalized human-review preview expiry timestamps to UTC and anchored container thread-log
+  cursors to the first stable execution so newly arriving work cannot shift older pages.
+- Validated direct task completion against proposed dependency edits, reserved post-release case
+  provenance for the evidence-backed report path, and selected cleanup expectations from the
+  newest work context rather than opaque ID order.
+- Prevented completed legacy session transcripts from replaying across bounded log-scan windows
+  and kept sibling direct-acceptance handoffs decidable after one product is rejected.
+- Rejected artifact-only correction successors that cannot enter release gates and kept outcome
+  definitions reserved for rejected-task recovery and team-wide profiles using project overrides.
+- Allowed stale review attempts on superseded deliverables to close their reviewer inboxes and
+  blockers without recalculating historical deliverable or current task state.
+- Revalidated release scope when the asynchronous candidate manifest is built, accepted human
+  findings against recursively included contribution evidence, and routed single-source findings
+  to that contribution's owning task.
+- Loaded execution-mode content for unthreaded container logs before applying legacy cursorless
+  offsets instead of paginating the one-line thread probe.
+- Bound ID-only memory, outcome-catalog, and release-blocker mutations to the projects frozen into
+  the active dispatch, including multi-project agents.
+- Allowed one task dispatch to submit multiple independently reviewed products and to report
+  deliverable blockers from the preserved producer task or exact recipient handoff scope.
+- Reconciled cancelled-child blockers before evaluating parent resolution transitions so newly
+  integration-ready parent work is notified immediately.
+
+## 2026-07-26 - Team Review and Guided Tour Fixes
+
+- Kept rejected tasks unresolved for parent, dependency, release, and project completion; rejected
+  work now remains blocked until recovery, replacement, or authorized cancellation.
+- Restricted required human-review checklist completion to approvals (including the Team UI),
+  rejected common signed-URL `token` and `sig` credentials, and enforced the review request's
+  immutable outcome snapshot when a profile changes while review is pending.
+- Allowed agent session rebinding after terminal dispatches, rejected mixed hierarchy/dependency
+  cycles during task creation, and retained same-thread legacy execution fallbacks across bounded
+  log cursor windows.
+- Synchronized Admin theme and privilege changes into the mounted Team Add-on, repaired project
+  release-detail refresh, aligned the team-wide outcome checkbox, and escaped runtime errors
+  exactly once.
+- Excluded retired or superseded reviews from immutable release evidence and rejected human
+  findings that target work outside the reviewed release candidate.
+- Preserved cursorless offset paging for thread logs and kept grouped thread responses within the
+  requested line budget, including one-line pages.
+- Restored Team project mutation controls in both directions as Admin privileges change, required
+  browser revalidation of Team static assets, and populated timeline type and status filters from
+  full-history facets instead of the current page while keeping release-detail DOM identities
+  unique to the active surface.
+
+## 2026-07-26 - Team Stand-down UI Clarity
+
+- Relabeled the Team agent action to “Revoke stand-down” so its effect remains clear wherever the
+  control is rendered.
+
+## 2026-07-26 - Team Lifecycle Review Fixes
+
+- Carried open human findings through the full successor-release lineage, made reviewer-request
+  notifications transactional through the Team outbox, and kept provider publication on the
+  outbox path so Admin notifications are durable.
+- Added human-review and execution-stall blocker projection, authorized accepted replacement links
+  from project or delivered intervention scope, and rejected task cancellation while direct
+  acceptance or review handoffs remain active.
+- Treated cancelled tasks as terminal across activity, runtime, API, access, outcome-catalog, and
+  Git-work-context projections, and reused one task-assessment evaluator per project-status pass.
+- Made workflow-preparation requests transactional, preserved persisted rejected-task history for
+  explicit recovery, and reconciled obsolete sibling review blockers when a release becomes
+  terminal.
+- Allowed authorized task cancellation to retire blocker-backed blocked review attempts while
+  continuing to reject cancellation across pending acceptance or review handoffs.
+
+## 2026-07-25 - Unified Team Hierarchy and Human Release Review
+
+- Added one recursive `TaskAssessment` for support completion, accepted outcomes and evidenced
+  no-ops, authorized cancellation, dependency and descendant readiness, invalid legacy topology,
+  and direct-child contribution coverage at every submit, accept, review, release, Admin, MCP,
+  workflow, and ephemeral-prompt boundary. Task reads now project each unique inherited upstream
+  blocker with its exact reason and routing context without persisting a duplicate blocker.
+- Added task provenance, immutable cancellation dispositions, exact source-deliverable lineage,
+  authority-scoped root creation, source-aware blockers that reconcile linked local and shared
+  incidents during reassignment or cancellation without rewriting formal review decisions,
+  transition-driven parent supervision, and project-completion blocking for unresolved hierarchy
+  and review work.
+- Added SHA/tree-pinned human release requests, current Admin-directory reviewer reconciliation,
+  strict session identity and RBAC, audited reassignment, retryable notifications and deep links,
+  blocked/resume recovery, workflow-prepared previews, and expiry handling.
+- Added immutable human decisions and findings, deterministic correction cases and independent
+  roots, predecessor-based successor releases with carried findings, complete gate reruns, and
+  exactly-once canonical publication of the approved candidate.
+- Added published-release regression or adjustment intake that preserves the published package,
+  creates one idempotent triage case, and requires an explicit open case plus accepted correction
+  scope to authorize an optional successor; reporting never implies rollback.
+- Added evidence-required post-release case closure plus supported Team MCP and Admin API
+  operations to retarget ambiguous findings to independent correction roots and propose
+  resolution from accepted correction deliverables without replacing the human decision.
+- Added Admin and Team UI policy, hierarchy, blocker, worktree, human-review, release-detail, and
+  post-release reporting surfaces, plus updated agent guidance and canonical operator manuals.
+- Upgraded Team SQLite state to schema 33 with normalized hierarchy, dispatch, human-review, and
+  cleanup relationships plus idempotent v32 backfill and round-trip validation.
+- Added one routed execution-stall incident when no-progress allowance is exhausted, reason-required
+  audited Admin repair for legacy task transitions into or out of `blocked`, Admin-accountable
+  empty-reviewer recovery, and preview URL rejection for userinfo or secret-bearing parameters.
+- Made the Admin Sessions repository-grant summary tolerate legacy detail payloads without a
+  `git_grants` collection and refreshed its browser contracts for repository and Codex-auth reads.
+
+## 2026-07-25 - Hierarchical Team Dispatch and Parent Supervision
+
+- Made agent dispatch a durable two-phase lifecycle: work is first reserved as `PREPARING`,
+  exact task, blocker, review, inbox, project, and repository scope is frozen, and the dispatch
+  becomes `LEASED` only after every scoped worktree is ready.
+- Required agent commands to present a current durable dispatch and rejected resources that were
+  not captured in its immutable scope or stopped being actionable before mutation.
+- Routed child blockers and deliverable acceptance to the owning parent task, and emitted
+  coalesced transition-driven parent supervision for handoff, rejection, resolution, and
+  integration readiness while retaining periodic readiness scans as a recovery backstop.
+
+## 2026-07-25 - Safe Task Worktree Cleanup Backends
+
+- Added structured container-worker task-worktree cleanup with a repository lock, repeated
+  branch, commit, registration, tracked-change, and untracked-file validation immediately before
+  removal.
+- Preserved refused cleanup evidence and ignored-file byte inventories, supported dry runs and
+  idempotent already-absent cleanup, and pruned Git registrations only after safe removal.
+- Added a self-contained libvirt guest cleanup command using the same locked validation contract.
+- Added durable Team cleanup candidates and periodic reconciliation for resolved or reassigned
+  task checkouts, with configurable dry-run, grace, retry, recovery, and batch limits.
+- Re-read Team safety state twice before backend mutation, retained active-dispatch/context
+  deferrals, and recorded refused cleanup as auditable recovery-required work with exact
+  path, branch, failed-check, ignored-file, and byte evidence.
+- Prevented Git-context metadata pruning until physical cleanup succeeds, then pruned only
+  obsolete unreferenced context rows after the backend confirms removal.
+
+## 2026-07-24 - Team Git Work Context Lifecycle
+
+- Marked Git work contexts as submitted when deliverables consume them and abandoned remaining
+  contexts when their dispatch ends, task becomes terminal, or task ownership changes.
+- Rejected terminal-task context creation and binding, closed every context when legacy actions
+  end their dispatch, and treated missing or expired matching dispatch leases as stale.
+- Added automatic stale-context reconciliation and 30-day pruning for unreferenced abandoned
+  metadata while retaining deliverable-linked provenance.
+
+## 2026-07-24 - Agent Log Run and Thread Paging
+
+- Kept the Executions log focused on the latest agent run while rendering artifact imports,
+  staging, and publishing as compact inline events instead of separate log-owning executions.
+- Made Threads history load newest-first through bounded continuation cursors so opening the tab
+  no longer downloads every historical execution or a complete long transcript.
+- Kept fallback thread history reachable beyond 25 executions, prevented recurring thread IDs
+  from being emitted twice across record windows, and recovered execution logs when session-log
+  reads fail.
+- Preserved failed artifact-command outcomes after worker cleanup and excluded known setup and
+  utility effects from the legacy current-agent-run fallback.
+
+## 2026-07-24 - Team Review Closure Reliability
+
+- Kept sibling task blockers authoritative when the last review on another deliverable closes.
+- Limited review inbox cleanup to reviewer assignments so owner rework notices remain actionable.
+- Restored an actionable owner notice and wake eligibility when retiring a blocked review exposes
+  open-finding rework.
+
+## 2026-07-23 - Team Review Lifecycle Hardening
+
+- Scoped review withdrawal and retirement by Team so managers cannot mutate another Team's work.
+- Preserved active task and deliverable blockers when closing a review would otherwise restore
+  prior acceptance.
+- Allowed terminal operator-created reviews without a decision timestamp to be retired, and
+  included deliverable verification evidence when withdrawal reroutes work to superior acceptance.
+
+## 2026-07-23 - Outcome Catalog Review Fixes
+
+- Prevented archival of outcome kinds that are still required or forbidden by nonterminal tasks.
+- Snapshotted team-wide review profile requirements from the reviewed project so project outcome
+  overrides remain authoritative for deliverable and release reviews.
+- Kept review-profile outcome selections scoped to the profile being edited, including configured
+  values that are no longer active, so unrelated project focus cannot silently clear them.
+
+## 2026-07-23 - Outcome Catalog Migration Repair
+
+- Added the missing SQLite column migration for review outcome-kind snapshots so existing Team
+  databases can upgrade to the configurable outcome catalog.
+
+## 2026-07-23 - Agent Review Recovery
+
+- Added authorized pending-review withdrawal and project-lead/manager retirement of terminal
+  non-release reviews without deleting decisions or findings.
+- Recorded review request provenance, closed stale reviewer inbox work, and returned review-free
+  deliverables to direct superior acceptance.
+- Added compact agent guidance for retry, withdrawal, retirement, rework lineage, and carried
+  findings, with detail kept in the relevant tools and review records.
+
+## 2026-07-23 - Configurable Team Outcome Catalog
+
+- Added first-class team-wide and project-specific outcome-kind definitions with names,
+  plain-language semantics, durable-reference requirements, evidence requirements, project
+  override behavior, and archival.
+- Made the effective catalog visible to every project agent through Team read tools, lease and
+  wake context, and manager guidance; unknown or archived outcome kinds are rejected instead of
+  silently becoming ad hoc conventions.
+- Added the configurable `manage_outcome_kinds` role permission. Only a structurally matching
+  Team manager or project lead with that permission may mutate definitions through Team tools;
+  unlocked operators retain catalog administration through the Team API and Projects UI.
+- Snapshotted effective definitions into task outcome contracts, deliverable outcomes, and review
+  requests so later catalog edits do not change the historical meaning of existing work.
+- Migrated pre-catalog local task, deliverable, and review data into explicit definitions and
+  renamed the unreleased `forbidden_effect_kinds` contract field to
+  `forbidden_outcome_kinds`.
+
+## 2026-07-23 - Superior Deliverable Decisions
+
+- Added `team_decide_deliverable` so the direct superior recorded on a plain deliverable handoff
+  can accept it or reject it with a concrete reason, atomically handle the notice, and preserve
+  the decision in Team state.
+- Kept formal review authoritative once attached, returned rejected handoffs to the task owner as
+  actionable rework, and added wake-specific guidance for accepting, rejecting, requesting
+  specialist review, or reporting a blocker.
+- Preserved pending pre-upgrade handoffs by deriving their recorded superior from the original
+  deliverable notice when the new recipient field has not yet been populated.
+- Preserved direct-handoff decisions as historical facts across later review and promotion state
+  transitions, automatically consumed matching pending handoff notices with the decision, and
+  allowed direct decisions for a selected deliverable even when a sibling follows formal review.
+
 ## 2026-07-23 - Branch Documentation Audit
 
 - Aligned the Team operator guide and technical manual with outcome contracts, superior acceptance,

@@ -21,6 +21,7 @@ import { DirectoryAddIcon, DirectoryDeleteIcon, NotificationBellIcon } from "./f
 import { Tooltip } from "./features/admin/Tooltip";
 import {
   addonTabsFromPayload,
+  addonIframeHashQuery,
   adminHash,
   currentTab,
   nextPathFromHash,
@@ -754,6 +755,7 @@ function addonUiPathWithDirectory(
   uiPath: string,
   selectedDirectoryPath: string,
   privilegedUnlocked: boolean,
+  addonHashQuery: string,
 ): string {
   const directoryPath = selectedDirectoryPath.trim() || "root";
   try {
@@ -761,6 +763,9 @@ function addonUiPathWithDirectory(
     const url = new URL(uiPath, base);
     url.searchParams.set("directory_path", directoryPath);
     url.searchParams.set("privileged_unlocked", privilegedUnlocked ? "true" : "false");
+    for (const [name, value] of new URLSearchParams(addonHashQuery)) {
+      url.searchParams.set(name, value);
+    }
     if (/^[a-z][a-z0-9+.-]*:/i.test(uiPath)) {
       return url.toString();
     }
@@ -768,7 +773,8 @@ function addonUiPathWithDirectory(
   } catch {
     const [withoutHash, hash = ""] = uiPath.split("#", 2);
     const separator = withoutHash.includes("?") ? "&" : "?";
-    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}&privileged_unlocked=${privilegedUnlocked ? "true" : "false"}${hash ? `#${hash}` : ""}`;
+    const forwardedHashQuery = addonHashQuery ? `&${addonHashQuery}` : "";
+    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}&privileged_unlocked=${privilegedUnlocked ? "true" : "false"}${forwardedHashQuery}${hash ? `#${hash}` : ""}`;
   }
 }
 
@@ -776,28 +782,56 @@ function AddonView({
   tab,
   selectedDirectoryPath,
   privilegedUnlocked,
+  theme,
   onFrameLoad,
   onNavigateToSession,
 }: {
   tab: AdminTabDefinition;
   selectedDirectoryPath: string;
   privilegedUnlocked: boolean;
+  theme: AdminTheme;
   onFrameLoad?: () => void;
   onNavigateToSession?: (sessionId: string) => void;
 }) {
+  const [addonHashRevision, setAddonHashRevision] = useState(0);
+  useEffect(() => {
+    function handleAddonHashChange() {
+      setAddonHashRevision((revision) => revision + 1);
+    }
+    window.addEventListener("hashchange", handleAddonHashChange);
+    return () => window.removeEventListener("hashchange", handleAddonHashChange);
+  }, []);
+  const forwardedAddonHashQuery = useMemo(
+    () => addonIframeHashQuery(window.location.hash, tab.key),
+    [addonHashRevision, tab.key],
+  );
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const iframeSrcKey = `${tab.uiPath ?? ""}\n${selectedDirectoryPath}`;
+  const iframeSrcKey = `${tab.uiPath ?? ""}\n${selectedDirectoryPath}\n${forwardedAddonHashQuery}`;
   const iframeSrcRef = useRef<{ key: string; value: string } | null>(null);
   if (iframeSrcRef.current?.key !== iframeSrcKey) {
     iframeSrcRef.current = {
       key: iframeSrcKey,
-      value: addonUiPathWithDirectory(tab.uiPath ?? "", selectedDirectoryPath, privilegedUnlocked),
+      value: addonUiPathWithDirectory(
+        tab.uiPath ?? "",
+        selectedDirectoryPath,
+        privilegedUnlocked,
+        forwardedAddonHashQuery,
+      ),
     };
   }
   const iframeSrc = iframeSrcRef.current.value;
 
-  function postPrivilegeState() {
-    iframeRef.current?.contentWindow?.postMessage(
+  function postAddonContext() {
+    const contentWindow = iframeRef.current?.contentWindow;
+    contentWindow?.postMessage(
+      {
+        type: "admin-addon-context",
+        theme,
+        privileged_operations: { unlocked: privilegedUnlocked },
+      },
+      window.location.origin,
+    );
+    contentWindow?.postMessage(
       {
         type: "admin-privileged-operations",
         privileged_operations: { unlocked: privilegedUnlocked },
@@ -807,8 +841,8 @@ function AddonView({
   }
 
   useEffect(() => {
-    postPrivilegeState();
-  }, [privilegedUnlocked, iframeSrc]);
+    postAddonContext();
+  }, [privilegedUnlocked, theme, iframeSrc]);
 
   useEffect(() => {
     function handleAddonNavigation(event: MessageEvent<unknown>) {
@@ -820,6 +854,10 @@ function AddonView({
         return;
       }
       const data = payload as { type?: unknown; session_id?: unknown };
+      if (data.type === "admin-addon-ready") {
+        postAddonContext();
+        return;
+      }
       if (data.type !== "admin-navigate-to-session" || typeof data.session_id !== "string") {
         return;
       }
@@ -831,10 +869,10 @@ function AddonView({
 
     window.addEventListener("message", handleAddonNavigation);
     return () => window.removeEventListener("message", handleAddonNavigation);
-  }, [onNavigateToSession]);
+  }, [onNavigateToSession, privilegedUnlocked, theme]);
 
   function handleFrameLoad() {
-    postPrivilegeState();
+    postAddonContext();
     onFrameLoad?.();
   }
 
@@ -2258,6 +2296,7 @@ export default function AdminRoot() {
                   tab={activeTab}
                   selectedDirectoryPath={selectedDirectoryPath}
                   privilegedUnlocked={privilegeUnlocked}
+                  theme={theme}
                   onFrameLoad={() => {
                     void refreshAuthSession();
                   }}

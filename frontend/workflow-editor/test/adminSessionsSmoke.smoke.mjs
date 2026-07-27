@@ -126,6 +126,7 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
   const sessionDetailResponse = {
     session: sessionRecord,
     wake_schedules: [],
+    git_grants: [],
     summary_json: {},
   };
   const sessionCatalogResponse = overrides.sessionCatalogResponse ?? {
@@ -358,7 +359,11 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
         assert.deepEqual(body.communication_file_allowed_extensions, sessionRecord.communication_file_allowed_extensions);
         assert.deepEqual(body.communication_file_blocked_extensions, sessionRecord.communication_file_blocked_extensions);
         assert.equal(body.web_search_enabled, false);
-        assert.deepEqual(body.metadata, sessionRecord.metadata);
+        if (policyBodies.length === 1) {
+          assert.equal(body.metadata, undefined);
+        } else {
+          assert.deepEqual(body.metadata, sessionRecord.metadata);
+        }
         if (policyBodies.length === 1) {
           assert.deepEqual(body.approval_required_tools, ["prompt_agent"]);
           assert.deepEqual(body.approval_tool_settings, {

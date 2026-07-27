@@ -43,7 +43,13 @@ An active persistent agent can be eligible because it has:
 - action feedback that requires attention;
 - a pending manual or idle context rotation. The <code>every_wake</code> policy, by contrast, marks only an otherwise-eligible wake.
 
-Task work must have satisfied dependencies or open subtasks, and a task waiting on an active deliverable review normally does not wake its producer. Pending review work wakes the assigned reviewer. Completed ephemeral work can wake the parent for acceptance.
+Task work enters ordinary dispatch scope only when the canonical recursive
+assessment says it is <code>actionable</code>. An aggregate parent waiting on
+children, a task waiting on dependencies, and a task waiting on active
+acceptance or review are not implementation work for their owners. Pending
+review work wakes the assigned reviewer. Child blockers and handoffs notify the
+accountable parent owner without turning the waiting aggregate into a periodic
+polling task.
 
 The runtime then applies safety guards:
 
@@ -88,18 +94,68 @@ Low-priority items accumulate evaluation cycles and are batched after the config
 
 A lease is Team's temporary claim that one dispatch is responsible for this persistent agent's current work. It prevents a second scheduler pass from starting another Team dispatch at the same time, and it gives later commands and completion events an exact job identity to match.
 
-Leasing assigns:
+Before leasing, the scheduler persists a <code>TeamDispatch</code> with:
 
 - a new <code>dispatch_id</code>;
-- wake reason;
-- <code>last_wake_at</code>, <code>next_wake_at</code>, and lease expiry;
-- the dynamic tasks, cases, inbox, reviews, releases, feedback, reporting context, and visible operator-chat participants.
+- cause kind and optional cause ID;
+- exact task, blocker, review-request, inbox, project, and repository scope;
+- status <code>preparing</code>;
+- creation and preparation timestamps.
 
-The active dispatch ID is an authorization boundary. Normal Team commands must come from the bound session and active lease. A lease prevents a second scheduler pass from dispatching the same agent concurrently.
+Preparation then:
+
+1. derives every required project, repository, and task checkout;
+2. prepares all repositories and stable physical task worktrees;
+3. persists a fresh dispatch-bound Git context for every prepared task;
+4. changes the complete dispatch to <code>leased</code>; and
+5. only then resumes the agent.
+
+The agent runtime lease records:
+
+- the same dispatch ID and wake reason;
+- <code>last_wake_at</code>, <code>next_wake_at</code>, and lease expiry;
+- the bounded tasks, cases, inbox, reviews, releases, feedback, reporting context, and visible operator-chat participants.
+
+The active dispatch ID and each source-specific scope list are authorization
+boundaries. Normal Team commands must come from the bound session, reference a
+record delivered in the corresponding list, and use the active lease. A new
+task created during the wake cannot silently widen it.
+
+If any repository or task-worktree preparation fails, Team marks the dispatch
+<code>failed</code>, finalizes contexts already created for it, releases the
+runtime reservation, and reports the exact error. It does not resume with one
+scoped task omitted or choose a repository from incidental list order.
+
+Every prepared coding task is shown with this mapping:
+
+| Task | Project | Repository | Worktree | Branch | Context |
+|---|---|---|---|---|---|
+| Stable task ID | Owning project | Managed repository ID | Deterministic task path | Deterministic task branch | Fresh dispatch-bound context ID |
+
+The base repository checkout is labelled a control checkout. The agent enters
+the task worktree before editing. A physical task/repository checkout keeps a
+stable deterministic path across dispatches, while every dispatch receives a
+fresh authorization context. Submission still rejects another task's, agent's,
+branch's, or dispatch's context.
 
 The workflow's session-completion route calls <code>effect:team:finalize-agent-dispatch</code> with session, agent, and dispatch IDs. The finalizer rejects unrelated or stale completions and reads the durable activity ledger. Individual MCP tools never close the lease.
 
-Successful activity counts as substantive progress only when its progress classification says so. Failure activity does not. The finalizer resets <code>no_progress_count</code> on progress and increments it otherwise. Repeated task-only no-progress dispatches are suppressed; inbox, action feedback, and required context handling can still surface important new work.
+Successful activity counts as substantive progress only when its progress
+classification says so. Failure activity does not. The finalizer resets
+<code>no_progress_count</code> on progress and increments it otherwise.
+
+At the configured limit, Team creates or reuses one canonical blocker with
+<code>source_kind=agent_execution_stall</code> and the agent ID as its source.
+The blocker records the exhausted dispatch and affected task IDs, routes through
+the reporting line and Team/governance/operator fallbacks, notifies distinct
+accountable parent owners, and suppresses ordinary task dispatch for those
+still-owned tasks. It does not change the intrinsic task states. Source-aware
+resolution of that blocker resets the allowance; deleting a lease or editing
+the counter does not.
+
+Progress on any validly scoped task, blocker, review, or inbox action can reset
+the agent-wide counter. Neglecting one task while progressing another is a
+separate starvation concern, not permission to fabricate a task blocker.
 
 ## Context rotation
 
@@ -131,6 +187,39 @@ A stand-down applies to the target's reporting subtree. The runtime skips every 
 Revocation clears only the holds the caller is authorized to clear. If another inherited hold remains, the agent stays down. When the last effective hold clears, ready work can be made due for fresh evaluation.
 
 Use stand-down for a real operational reason: incident containment, unsafe output, cost investigation, credential concern, or explicit operator pause. Preserve the recorded reason and actor.
+
+## Reclaiming resolved task worktrees
+
+Persistent coding tasks use stable worktrees so an agent can resume the same
+checkout across dispatches. When a task validly resolves or is permanently
+reassigned away from the checkout owner, Team creates a durable,
+checkout-specific <code>WorktreeCleanupCandidate</code>. Cleanup is separate
+from task resolution: refusal never reopens accepted work or discards evidence.
+
+The periodic reconciler runs in dry-run mode by default and recovers
+interrupted or retryable candidates after configurable grace intervals. Before
+physical removal it acquires the same session/repository coordinator lock used
+by preparation, rereads Team state twice, and proves:
+
+- the task remains resolved or permanently reassigned;
+- no <code>preparing</code> or <code>leased</code> dispatch references it;
+- no active Git context references the path;
+- project, repository, deterministic path, and branch still match;
+- the expected commit is retained by durable deliverable/Git evidence;
+- <code>HEAD</code> is expected and tracked files are clean; and
+- no non-ignored untracked files remain.
+
+The selected libvirt or container-worker backend then locks the repository and
+repeats physical inspection immediately before using Git worktree removal.
+Ignored caches and generated files may be removed only after those source
+checks pass; their paths and byte counts are audited. Only after physical
+removal and Git pruning succeed may Team prune obsolete, unreferenced context
+metadata.
+
+A refusal becomes <code>recovery_required</code> with the task, repository,
+exact path, branch, failed safety check, timestamp, inventory, and size
+evidence. Preserve and inspect that recovery item. Never bypass it with a broad
+recursive delete.
 
 ## Northstar wake sequence
 
@@ -166,8 +255,12 @@ Begin in **Operations** with the agent's wake reason, runtime attention, active 
 | Normal-priority no-reply mail woke an agent | This is correct: non-low priority is wakeable independently of reply intent. |
 | Low-priority report does not wake | Confirm whether it requests a response, the batch cycle count, and whether another wake delivered it. |
 | Task owner never wakes | Check dependency status, active deliverable review, interval, no-progress count, Team cap, stand-down, busy session, and active lease. |
+| Dispatch remains <code>preparing</code> | Inspect every scoped repository/worktree and the recorded preparation error; Team will not lease a partial scope. |
+| Task appears in context but no worktree mapping does | Confirm the task actually needs the project's managed repository and that the complete dispatch preparation succeeded. |
 | Two prompts seem concurrent | Compare core session activity and Team <code>active_dispatch_id</code>; one may be a non-Team wake or an expired/stale completion. |
 | Lease remains after the model stopped | Session completion may not have routed or matched the active dispatch. Inspect session routing and finalizer workflow run. |
+| Tasks stop dispatching after repeated empty wakes | Inspect the canonical <code>agent_execution_stall</code> blocker, its affected tasks, route, and events. Resolve it through the blocker recovery path after addressing the cause. |
+| Cleanup reports <code>recovery_required</code> | A state, path, branch, commit, or dirty-file safety check failed. Preserve the worktree, inspect the named check, and retry the candidate only after the mismatch is understood. |
 | Context rotates repeatedly | Verify policy, pending flag, session startup result, and whether successful start clears it. |
 | Revocation appears ineffective | Another operator or inherited superior hold may remain active. Inspect the effective stand-down list. |
 | Manager wakes without owned tasks | Manager fallback found open Team work with no member lease; inspect the supplied routing summary. |
@@ -185,8 +278,11 @@ For “why did this agent wake?”:
 1. Record agent, session, dispatch ID, wake reason, Team revision, and workflow run.
 2. Read the lease payload and pending inbox at that revision.
 3. Apply the exact inbox formula and inspect task dependencies, action feedback, and context rotation.
-4. Verify safety inputs: busy session, effective stand-down, cap, interval, and no-progress.
-5. Follow the matching prompt and session-completion run.
+4. Read the durable dispatch and its source-specific scope, preparation state,
+   task/worktree mapping, and lease.
+5. Verify safety inputs: busy session, effective stand-down, cap, interval, and
+   execution-stall blocker.
+6. Follow the matching prompt and session-completion run.
 
 For “why did this agent not wake?”:
 
@@ -201,6 +297,8 @@ Do not clear leases, no-progress counters, or stand-down rows directly in SQLite
 ## Source trail
 
 - <code>src/evander_team_addon/services/runtime_service.py</code> — leasing, low-priority cycles, busy-session guard, manager fallback, finalization, and attention payloads.
+- <code>src/evander_team_addon/services/domain/dispatch_scope.py</code> and <code>task_assessment.py</code> — immutable source-specific dispatch construction and recursive readiness.
+- <code>src/evander_team_addon/services/worktree_cleanup_service.py</code> and <code>src/evander/execution/task_worktree_cleanup.py</code> — durable cleanup candidates, double-checked state and Git safety, backend removal, audit, and recovery.
 - <code>src/evander_team_addon/services/domain/wake.py</code> — exact inbox wake predicate, ready-work rules, debounce, and follow-up wake decisions.
 - <code>src/evander_team_addon/services/domain/context_rotation.py</code> and <code>stand_down.py</code> — context policies, durable handoff, subtree holds, and revocation.
 - <code>src/evander_team_addon/providers.py</code> and <code>workflow_packs.py</code> — wake effect, session routing, prompt construction, and event paths.

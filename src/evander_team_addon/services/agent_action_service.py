@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -9,12 +10,18 @@ from ..models import (
     AgentInboxItem,
     AgentRuntime,
     Deliverable,
+    TeamBlockerSourceKind,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TeamDispatchStatus,
     TeamTaskState,
+)
+from .domain.blockers import (
+    open_or_get_blocker,
+    reconcile_task_blockers_after_reassignment,
 )
 from .domain.action_feedback import (
     _append_action_item_error,
@@ -82,7 +89,12 @@ from .domain.git_promotion import (
     _apply_git_feature_update,
     _apply_git_review_promotion,
 )
-from .domain.git_work_contexts import bind_deliverable_git_refs_to_work_context
+from .domain.git_work_contexts import (
+    bind_deliverable_git_refs_to_work_context,
+    finalize_active_git_work_contexts_for_dispatch,
+    finalize_active_git_work_contexts_for_task,
+    mark_git_work_context_submitted,
+)
 from .domain.operator_escalation import _apply_operator_escalation
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
@@ -94,23 +106,44 @@ from .domain.review import (
     _apply_review_request,
     _review_request_was_created,
 )
+from .domain.human_reviews import (
+    HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
+)
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _apply_superior_stand_down,
     _apply_superior_stand_down_revocation,
     _stand_down_error_detail,
 )
+from .domain.task_assessment import require_task_can_finish
+from .domain.task_supervision import (
+    parent_task_for_child,
+    queue_parent_resolution_transitions,
+    queue_parent_task_transition,
+    task_acceptance_recipient_agent_id,
+)
 from .domain.wake import (
     _append_agent_wake_requested_event,
     _append_agent_wake_requested_event_for_inbox_item,
     _append_follow_up_agent_wake_requested_event,
 )
-from .domain.work_due import _mark_agent_work_due
+from .domain.work_due import (
+    _agent_has_open_execution_stall,
+    _mark_agent_work_due,
+)
 
 
 class TeamAgentActionService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+    ) -> None:
         self._repository = repository
+        self._human_review_eligibility_resolver = (
+            human_review_eligibility_resolver
+        )
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -163,6 +196,10 @@ class TeamAgentActionService:
             "replied_chat_message_ids": [],
             "created_operator_chat_message_ids": [],
         }
+        if self._human_review_eligibility_resolver is not None:
+            result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                self._human_review_eligibility_resolver
+            )
 
         def _mutate(state_model: TeamState) -> TeamState:
             agent = _resolve_action_agent(
@@ -380,8 +417,21 @@ class TeamAgentActionService:
                             continue
                     changed = False
                     now = utc_now()
+                    previous_task_state = task.state
                     if raw_state is not None:
+                        if raw_state == TeamTaskState.FINISHED.value:
+                            require_task_can_finish(
+                                state_model,
+                                task.id,
+                                dependency_task_ids=new_dependency_task_ids,
+                            )
                         _set_task_state(task, TeamTaskState(raw_state), now=now)
+                        if task.state not in _NON_TERMINAL_TASK_STATES:
+                            finalize_active_git_work_contexts_for_task(
+                                state_model,
+                                task_id=task.id,
+                                now=now,
+                            )
                         projects_to_recalc.add(task.project_id)
                         changed = True
                     if priority is not None:
@@ -395,7 +445,23 @@ class TeamAgentActionService:
                         changed = True
                     if has_owner_reassignment and new_owner_id is not None:
                         old_owner_id = task.owner_agent_id
+                        finalize_active_git_work_contexts_for_task(
+                            state_model,
+                            task_id=task.id,
+                            now=now,
+                        )
                         task.owner_agent_id = new_owner_id
+                        reconcile_task_blockers_after_reassignment(
+                            state_model,
+                            task_id=task.id,
+                            old_owner_agent_id=old_owner_id,
+                            new_owner_agent_id=new_owner_id,
+                            actor_agent_id=agent.id,
+                            dispatch_id=effective_dispatch_id,
+                            result=result,
+                            now=now,
+                        )
+                        projects_to_recalc.add(task.project_id)
                         _maybe_mark_idle_context_rotation_due(
                             state_model,
                             agent_id=old_owner_id,
@@ -413,6 +479,39 @@ class TeamAgentActionService:
                         changed = True
                     if changed:
                         task.updated_at = now
+                        if (
+                            previous_task_state != TeamTaskState.BLOCKED
+                            and task.state == TeamTaskState.BLOCKED
+                        ):
+                            open_or_get_blocker(
+                                state_model,
+                                source_kind=TeamBlockerSourceKind.TASK,
+                                source_id=task.id,
+                                summary=f"Task {task.id} is blocked",
+                                details=task.description,
+                                reporter_agent_id=agent.id,
+                                team_id=agent.team_id,
+                                project_id=task.project_id,
+                                task_id=task.id,
+                                result=result,
+                                now=now,
+                            )
+                        if (
+                            previous_task_state != task.state
+                            and task.state
+                            in {
+                                TeamTaskState.ACCEPTED,
+                                TeamTaskState.CANCELLED,
+                                TeamTaskState.FINISHED,
+                            }
+                        ):
+                            queue_parent_resolution_transitions(
+                                state_model,
+                                child_task_id=task.id,
+                                sender_agent_id=agent.id,
+                                result=result,
+                                now=now,
+                            )
                         if task.state in _NON_TERMINAL_TASK_STATES:
                             _append_agent_wake_requested_event(
                                 state_model,
@@ -739,6 +838,11 @@ class TeamAgentActionService:
                         producer_agent_id=agent.id,
                         supersedes_deliverable_id=supersedes_deliverable_id,
                     )
+                    acceptance_recipient_agent_id = task_acceptance_recipient_agent_id(
+                        state_model,
+                        task=task,
+                        producer_agent_id=agent.id,
+                    )
                     deliverable = Deliverable(
                         id=deliverable_id,
                         task_id=task_id,
@@ -748,6 +852,7 @@ class TeamAgentActionService:
                         git_refs=git_refs,
                         verification=verification,
                         state=TeamRecordState.PENDING,
+                        acceptance_recipient_agent_id=acceptance_recipient_agent_id,
                         supersedes_deliverable_id=supersedes_deliverable_id,
                     )
                     state_model.deliverables[deliverable.id] = deliverable
@@ -760,23 +865,43 @@ class TeamAgentActionService:
                         superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                     now = utc_now()
+                    mark_git_work_context_submitted(
+                        state_model,
+                        branch_context_id=deliverable.git_refs.branch_context_id,
+                        now=now,
+                    )
                     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
                     task.updated_at = now
                     projects_to_recalc.add(task.project_id)
                     result["created_deliverable_ids"].append(deliverable.id)
-                    if agent.reports_to_agent_id is not None:
+                    parent_task = parent_task_for_child(state_model, task)
+                    if acceptance_recipient_agent_id is not None:
                         inbox_id = f"inbox-{uuid4().hex}"
                         payload = {
+                            "kind": "superior_acceptance_requested",
                             "deliverable_id": deliverable.id,
+                            "task_id": task.id,
+                            "producer_agent_id": agent.id,
+                            "acceptance_recipient_agent_id": (
+                                acceptance_recipient_agent_id
+                            ),
                             "summary": deliverable.summary,
                             "artifact_refs": list(deliverable.artifact_refs),
                         }
+                        if parent_task is not None:
+                            payload.update(
+                                {
+                                    "transition": "handoff",
+                                    "parent_task_id": parent_task.id,
+                                    "child_task_id": task.id,
+                                }
+                            )
                         verification_payload = _deliverable_verification_payload(deliverable)
                         if verification_payload is not None:
                             payload["verification"] = verification_payload
                         state_model.inbox[inbox_id] = AgentInboxItem(
                             id=inbox_id,
-                            recipient_agent_id=agent.reports_to_agent_id,
+                            recipient_agent_id=acceptance_recipient_agent_id,
                             sender_agent_id=agent.id,
                             task_id=task_id,
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
@@ -785,6 +910,25 @@ class TeamAgentActionService:
                             payload=payload,
                         )
                         result["created_inbox_item_ids"].append(inbox_id)
+                        _mark_agent_work_due(
+                            state_model,
+                            agent_id=acceptance_recipient_agent_id,
+                            now=now,
+                        )
+                    if (
+                        parent_task is not None
+                        and acceptance_recipient_agent_id
+                        != parent_task.owner_agent_id
+                    ):
+                        queue_parent_task_transition(
+                            state_model,
+                            child_task_id=task.id,
+                            transition="handoff",
+                            sender_agent_id=agent.id,
+                            result=result,
+                            now=now,
+                            references={"deliverable_id": deliverable.id},
+                        )
                     _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "deliverables", index, exc)
@@ -1003,11 +1147,38 @@ class TeamAgentActionService:
                 error="; ".join(result["errors"]) if result["errors"] else None,
             )
             state_model.action_records[record.id] = record
+            completed_at = utc_now()
+            finalize_active_git_work_contexts_for_dispatch(
+                state_model,
+                agent_id=agent.id,
+                dispatch_id=effective_dispatch_id or record.dispatch_id,
+                now=completed_at,
+            )
+            durable_dispatch = state_model.dispatches.get(
+                effective_dispatch_id or record.dispatch_id
+            )
+            if (
+                durable_dispatch is not None
+                and durable_dispatch.status
+                in {
+                    TeamDispatchStatus.PREPARING,
+                    TeamDispatchStatus.LEASED,
+                }
+            ):
+                durable_dispatch.status = TeamDispatchStatus.COMPLETED
+                durable_dispatch.completed_at = completed_at
+                durable_dispatch.error = None
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
-            runtime.no_progress_count = 0 if progress else runtime.no_progress_count + 1
-            completed_at = utc_now()
+            if progress:
+                if not _agent_has_open_execution_stall(
+                    state_model,
+                    agent_id=agent.id,
+                ):
+                    runtime.no_progress_count = 0
+            else:
+                runtime.no_progress_count += 1
             if context_rotation_activity:
                 runtime.last_progress_at = completed_at
             runtime.updated_at = completed_at
@@ -1035,6 +1206,7 @@ class TeamAgentActionService:
             return state_model
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)
+        result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         result["ephemeral_events"] = [
             _ephemeral_assignment_event_payload(state, assignment_id)

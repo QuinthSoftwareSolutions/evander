@@ -24,6 +24,8 @@ from evander.worker.models import (
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskWorktreeCleanupRecord,
+    WorkerTaskWorktreeCleanupRequest,
 )
 
 
@@ -39,6 +41,7 @@ class FakeContainerWorkerClient:
         self.logged: list[tuple[str, str | None]] = []
         self.prepared_sessions: list[WorkerSessionPrepareRequest] = []
         self.cloned_repos: list[tuple[str, WorkerRepoCloneRequest]] = []
+        self.cleaned_worktrees: list[tuple[str, WorkerTaskWorktreeCleanupRequest]] = []
         self.written_files: list[tuple[str, WorkerFileWriteRequest]] = []
         self.provisioned_mssql: list[tuple[str, WorkerMssqlDatabaseRequest]] = []
         self.status_by_job: dict[str, str] = {}
@@ -121,6 +124,30 @@ class FakeContainerWorkerClient:
             session_id=session_id,
             copied_count=len(request.files),
             copied_paths=[entry.destination_path for entry in request.files],
+        )
+
+    def cleanup_task_worktree(
+        self,
+        session_id: str,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> WorkerTaskWorktreeCleanupRecord:
+        self.cleaned_worktrees.append((session_id, request))
+        return WorkerTaskWorktreeCleanupRecord(
+            session_id=session_id,
+            repo_name=request.repo_name,
+            worktree_name=request.worktree_name,
+            target_dir=request.expected_target_dir,
+            branch=request.branch,
+            expected_commit_sha=request.expected_commit_sha,
+            actual_branch=request.branch,
+            actual_commit_sha=request.expected_commit_sha,
+            state="dry_run" if request.dry_run else "removed",
+            safe_to_remove=True,
+            removed=not request.dry_run,
+            pruned=not request.dry_run,
+            dry_run=request.dry_run,
+            validation_count=1 if request.dry_run else 2,
+            message="safe",
         )
 
     def provision_mssql_database(
@@ -402,6 +429,38 @@ def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path:
     assert client.cloned_repos[0][1].repo_name == "Repo"
     assert written.copied_paths == ["/home/agent/repos/Repo/AGENT_TASK.yaml"]
     assert client.written_files[0][1].files[0].content == "task"
+
+
+def test_task_worktree_cleanup_delegates_structured_expectations(
+    tmp_path: Path,
+) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+
+    result = backend.cleanup_task_worktree(
+        session_id="session-1",
+        repo_name="repo",
+        worktree_name="task-a-1234",
+        branch="agents/session-1/tasks/task-a-1234",
+        expected_commit_sha="a" * 40,
+        expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
+        dry_run=True,
+    )
+
+    assert result.state == "dry_run"
+    assert client.cleaned_worktrees == [
+        (
+            "session-1",
+            WorkerTaskWorktreeCleanupRequest(
+                repo_name="repo",
+                worktree_name="task-a-1234",
+                branch="agents/session-1/tasks/task-a-1234",
+                expected_commit_sha="a" * 40,
+                expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
+                dry_run=True,
+            ),
+        )
+    ]
 
 
 def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:

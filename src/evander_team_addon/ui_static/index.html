@@ -213,7 +213,7 @@
           aria-controls="team-timeline-page"
           data-team-view="timeline"
         >
-          Timeline
+          Activity timeline
         </button>
         <button
           id="team-view-org-tab"
@@ -317,6 +317,14 @@
               <button type="button" class="delivery-filter" data-filter="accepted">Accepted</button>
               <button type="button" class="delivery-filter" data-filter="rejected">Rejected</button>
               <button type="button" class="delivery-filter" data-filter="blocked">Blocked</button>
+              <button
+                type="button"
+                class="delivery-filter human-review-filter"
+                data-my-human-reviews
+                aria-pressed="false"
+              >
+                My Human Reviews
+              </button>
             </div>
           </div>
           <div class="review-delivery-view" data-review-delivery-view></div>
@@ -707,7 +715,7 @@
               <label>Name <input name="name" required /></label>
               <label>Manager <select name="manager_agent_id" required data-options="agents-by-display-name"></select></label>
               <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
-              <label>Goals <textarea name="goals" rows="4" placeholder="id | description"></textarea></label>
+              <div data-governance-create-goals></div>
               <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
               <button type="submit">Create governance group</button>
             </form>
@@ -738,6 +746,7 @@
               <label><input id="planning-status-accepted" type="checkbox" data-planning-task-status="accepted" /> Accepted</label>
               <label><input id="planning-status-finished" type="checkbox" data-planning-task-status="finished" /> Finished</label>
               <label><input id="planning-status-rejected" type="checkbox" data-planning-task-status="rejected" /> Rejected</label>
+              <label><input id="planning-status-cancelled" type="checkbox" data-planning-task-status="cancelled" /> Cancelled</label>
             </div>
           </div>
           <div class="projects-view" data-projects-view></div>
@@ -755,15 +764,17 @@
         <section class="content-panel timeline-panel" aria-labelledby="focused-timeline-heading">
           <div class="timeline-header">
             <div>
-              <h2 id="focused-timeline-heading">Timeline / Audit</h2>
+              <h2 id="focused-timeline-heading">Activity timeline</h2>
               <p class="timeline-note">
-                Derived from the current TeamState snapshot, not a persisted audit log.
+                This history is reconstructed from records still present in the current Team
+                snapshot. It may omit earlier changes, deleted or compacted records, and previous
+                field values, so it is not a compliance-grade audit log.
               </p>
             </div>
             <div class="timeline-summary" data-timeline-summary></div>
           </div>
 
-          <div class="timeline-filters" aria-label="Timeline filters">
+          <div class="timeline-filters" aria-label="Activity timeline filters">
             <label>
               Team
               <select

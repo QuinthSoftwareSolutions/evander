@@ -8,12 +8,15 @@ from evander.models import utc_now
 
 from ...models import (
     AgentStatus,
+    TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerRoute,
     TeamBlockerSourceKind,
     TeamBlockerState,
     TeamInboxPriority,
+    TeamRecordState,
     TeamState,
+    TeamTaskState,
     _unique_text_list,
 )
 from ..domain.agent_access import _is_project_lead_for, _is_team_manager
@@ -58,6 +61,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
         summary: str,
         request_id: str,
         details: str | None = None,
+        reason_code: str = "unspecified",
         priority: TeamInboxPriority | str = TeamInboxPriority.NORMAL,
         project_id: str | None = None,
         task_id: str | None = None,
@@ -74,6 +78,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
         normalized_source_id = _required_text(source_id, "source_id")
         normalized_summary = _required_text(summary, "summary")
         normalized_details = _optional_text(details) or ""
+        normalized_reason_code = _required_text(reason_code, "reason_code")
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_priority = (
             priority
@@ -99,6 +104,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
             "source_id": normalized_source_id,
             "summary": normalized_summary,
             "details": normalized_details,
+            "reason_code": normalized_reason_code,
             "priority": normalized_priority.value,
             "project_id": normalized_project_id,
             "task_id": normalized_task_id,
@@ -141,6 +147,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 source_id=normalized_source_id,
                 summary=normalized_summary,
                 details=normalized_details,
+                reason_code=normalized_reason_code,
                 priority=normalized_priority,
                 reporter_agent_id=agent.id,
                 team_id=agent.team_id,
@@ -148,6 +155,31 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 task_id=source_task_id,
                 result=result,
             )
+            if created:
+                if normalized_source_kind == TeamBlockerSourceKind.TASK:
+                    task = state.tasks.get(normalized_source_id)
+                    if task is not None and task.state not in {
+                        TeamTaskState.FINISHED,
+                        TeamTaskState.ACCEPTED,
+                        TeamTaskState.CANCELLED,
+                    }:
+                        task.state = TeamTaskState.BLOCKED
+                        task.state_entered_at = utc_now()
+                        task.updated_at = task.state_entered_at
+                elif normalized_source_kind == TeamBlockerSourceKind.DELIVERABLE:
+                    deliverable = state.deliverables.get(normalized_source_id)
+                    if deliverable is not None and deliverable.state not in {
+                        TeamRecordState.ACCEPTED,
+                        TeamRecordState.REJECTED,
+                    }:
+                        deliverable.state = TeamRecordState.BLOCKED
+                elif normalized_source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+                    review = state.review_requests.get(normalized_source_id)
+                    if review is not None and review.state not in {
+                        TeamRecordState.ACCEPTED,
+                        TeamRecordState.REJECTED,
+                    }:
+                        review.state = TeamRecordState.BLOCKED
             result.update(
                 {
                     "blocker_id": blocker.id,
@@ -467,16 +499,55 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         now=now,
                     )
             elif normalized_action == "resolve":
-                event = resolve_blocker(
-                    state,
-                    blocker=blocker,
-                    actor_agent_id=actor.id,
-                    dispatch_id=resolved.dispatch_id,
-                    note=normalized_note,
-                    reference_ids=normalized_refs,
-                    now=now,
-                )
-                event_ids.append(event.id)
+                if blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
+                    from ..domain.human_reviews import resume_human_review
+
+                    before_event_ids = set(state.blocker_events)
+                    try:
+                        resume_human_review(
+                            state,
+                            human_review_request_id=blocker.source_id,
+                            result=result,
+                            now=now,
+                        )
+                    except ValueError as exc:
+                        raise TeamCommandValidationError(
+                            code="human_review_recovery_required",
+                            message=str(exc),
+                            correction_context={
+                                "blocker_id": blocker.id,
+                                "human_review_request_id": blocker.source_id,
+                                "reason_code": blocker.reason_code,
+                            },
+                        ) from None
+                    event_ids.extend(
+                        event_id
+                        for event_id in state.blocker_events
+                        if event_id not in before_event_ids
+                    )
+                else:
+                    _prepare_blocker_source_for_resolution(
+                        state,
+                        blocker=blocker,
+                    )
+                    event = resolve_blocker(
+                        state,
+                        blocker=blocker,
+                        actor_agent_id=actor.id,
+                        dispatch_id=resolved.dispatch_id,
+                        note=normalized_note,
+                        reference_ids=normalized_refs,
+                        now=now,
+                    )
+                    event_ids.append(event.id)
+                    if (
+                        blocker.source_kind
+                        == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
+                    ):
+                        runtime = state.agent_runtimes.get(blocker.source_id)
+                        if runtime is not None:
+                            runtime.no_progress_count = 0
+                            runtime.updated_at = now
             else:  # escalate
                 before_event_ids = set(state.blocker_events)
                 transfer_blocker_up(
@@ -519,6 +590,85 @@ class TeamBlockerCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
+        )
+
+
+def _prepare_blocker_source_for_resolution(
+    state: TeamState,
+    *,
+    blocker: TeamBlocker,
+) -> None:
+    """Restore the source lifecycle instead of blindly resolving its blocker."""
+
+    if blocker.source_kind == TeamBlockerSourceKind.TASK:
+        task = state.tasks.get(blocker.source_id)
+        if task is not None and task.state == TeamTaskState.BLOCKED:
+            task.state = TeamTaskState.IN_PROGRESS
+            task.state_entered_at = utc_now()
+            task.updated_at = task.state_entered_at
+        return
+    if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+        deliverable = state.deliverables.get(blocker.source_id)
+        if deliverable is not None and deliverable.state == TeamRecordState.BLOCKED:
+            deliverable.state = TeamRecordState.PENDING
+        return
+    if blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+        review = state.review_requests.get(blocker.source_id)
+        if (
+            review is not None
+            and review.state == TeamRecordState.BLOCKED
+            and review.decision_at is not None
+        ):
+            if review.release_package_id is not None:
+                raise TeamCommandValidationError(
+                    code="release_recovery_command_required",
+                    message=(
+                        "a blocked formal release review must be recovered with "
+                        "team_recover_release or team_retry_release_gate; generic "
+                        "blocker resolution cannot rewrite its recorded decision"
+                    ),
+                    correction_context={
+                        "review_request_id": review.id,
+                        "release_package_id": review.release_package_id,
+                        "recommended_tools": [
+                            "team_recover_release",
+                            "team_retry_release_gate",
+                        ],
+                    },
+                )
+            deliverable = state.deliverables.get(review.deliverable_id or "")
+            raise TeamCommandValidationError(
+                code="review_recovery_command_required",
+                message=(
+                    "a blocked formal review must be retried through "
+                    "team_retry_review; generic blocker resolution cannot rewrite "
+                    "its recorded decision"
+                ),
+                correction_context={
+                    "review_request_id": review.id,
+                    "deliverable_id": review.deliverable_id,
+                    "task_id": deliverable.task_id if deliverable is not None else None,
+                    "recommended_tools": ["team_retry_review"],
+                },
+            )
+        if review is not None and review.state == TeamRecordState.BLOCKED:
+            review.state = TeamRecordState.PENDING
+        return
+    if blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
+        raise TeamCommandValidationError(
+            code="release_recovery_command_required",
+            message=(
+                "release blockers require team_recover_release or "
+                "team_retry_release_gate; generic blocker resolution cannot "
+                "bypass the release lifecycle"
+            ),
+            correction_context={
+                "release_package_id": blocker.source_id,
+                "recommended_tools": [
+                    "team_recover_release",
+                    "team_retry_release_gate",
+                ],
+            },
         )
 
 

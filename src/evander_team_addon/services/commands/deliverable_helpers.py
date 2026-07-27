@@ -28,13 +28,13 @@ from ...models import (
     DeliverableOutcome,
     PersistentAgent,
     ReviewRequest,
+    TaskCompletion,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
     TeamTaskState,
     _unique_text_list,
-    task_payload_with_derived,
 )
 from ..domain.common import (
     _append_unique,
@@ -59,9 +59,21 @@ from ..domain.deliverables import (
 from ..domain.git_work_contexts import (
     GitWorkContextValidationError,
     bind_deliverable_git_refs_to_work_context,
+    mark_git_work_context_submitted,
 )
 from ..domain.project_status import _recalculate_project_status
+from ..domain.outcome_catalog import snapshot_deliverable_outcomes
 from ..domain.review import _review_profile_for_request
+from ..domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_deliverable_submission,
+    task_payload_with_assessment,
+)
+from ..domain.task_supervision import (
+    parent_task_for_child,
+    queue_parent_task_transition,
+    task_acceptance_recipient_agent_id,
+)
 from ..domain.work_due import _mark_agent_work_due
 
 
@@ -99,7 +111,16 @@ def _normalize_deliverable_submission_mapping(
                 f"{field_name}.outcomes",
             )
         ],
+        "source_deliverable_ids": _string_list(
+            payload.get("source_deliverable_ids"),
+            f"{field_name}.source_deliverable_ids",
+        ),
     }
+    completion = payload.get("completion")
+    if completion is not None:
+        normalized["completion"] = TaskCompletion.model_validate(completion).model_dump(
+            mode="json"
+        )
     verification = _normalize_deliverable_verification_mapping(
         payload.get("verification"),
         field_name=f"{field_name}.verification",
@@ -480,6 +501,24 @@ def _validate_command_deliverable_submission_pre_publication(
             },
         )
     try:
+        require_deliverable_submission(
+            state,
+            task_id=task.id,
+            source_deliverable_ids=_string_list(
+                deliverable.get("source_deliverable_ids"),
+                "source_deliverable_ids",
+            ),
+        )
+    except TaskAssessmentBoundaryError as exc:
+        raise TeamCommandValidationError(
+            code=exc.code,
+            message=exc.message,
+            correction_context={
+                "deliverable_id": deliverable_id,
+                **exc.correction_context,
+            },
+        ) from None
+    try:
         _superseded_deliverable_for_rework(
             state,
             task=task,
@@ -504,7 +543,21 @@ def _validate_command_deliverable_submission_pre_publication(
                 "outcomes",
             )
         ]
-        _validate_deliverable_outcomes_against_task_contract(task, outcomes)
+        outcomes = snapshot_deliverable_outcomes(
+            state,
+            project_id=task.project_id,
+            outcomes=outcomes,
+        )
+        completion = (
+            TaskCompletion.model_validate(deliverable["completion"])
+            if deliverable.get("completion") is not None
+            else None
+        )
+        _validate_deliverable_outcomes_against_task_contract(
+            task,
+            outcomes,
+            completion=completion,
+        )
     except GitWorkContextValidationError as exc:
         raise TeamCommandValidationError(
             code=exc.code,
@@ -596,6 +649,25 @@ def _apply_command_deliverable_submission(
                 "outcomes",
             )
         ]
+        outcomes = snapshot_deliverable_outcomes(
+            state,
+            project_id=task.project_id,
+            outcomes=outcomes,
+        )
+        source_deliverable_ids = _string_list(
+            deliverable.get("source_deliverable_ids"),
+            "source_deliverable_ids",
+        )
+        completion = (
+            TaskCompletion.model_validate(deliverable["completion"])
+            if deliverable.get("completion") is not None
+            else None
+        )
+        _validate_deliverable_outcomes_against_task_contract(
+            task,
+            outcomes,
+            completion=completion,
+        )
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",
@@ -610,6 +682,15 @@ def _apply_command_deliverable_submission(
         deliverable,
         published_records=published_records,
     )
+    acceptance_recipient_agent_id = (
+        task_acceptance_recipient_agent_id(
+            state,
+            task=task,
+            producer_agent_id=agent.id,
+        )
+        if not suppress_superior_notice
+        else None
+    )
     new_deliverable = Deliverable(
         id=deliverable_id,
         task_id=task.id,
@@ -619,7 +700,10 @@ def _apply_command_deliverable_submission(
         git_refs=git_refs,
         verification=verification,
         outcomes=outcomes,
+        source_deliverable_ids=source_deliverable_ids,
+        completion=completion,
         state=TeamRecordState.PENDING,
+        acceptance_recipient_agent_id=acceptance_recipient_agent_id,
         supersedes_deliverable_id=supersedes_deliverable_id,
         carried_findings=(
             [
@@ -639,23 +723,43 @@ def _apply_command_deliverable_submission(
         superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
     task.deliverable_ids = _append_unique(task.deliverable_ids, new_deliverable.id)
     now = utc_now()
+    mark_git_work_context_submitted(
+        state,
+        branch_context_id=new_deliverable.git_refs.branch_context_id,
+        now=now,
+    )
     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
     task.updated_at = now
     _recalculate_project_status(state, task.project_id)
     created_inbox_ids: list[str] = []
-    if not suppress_superior_notice and agent.reports_to_agent_id is not None:
+    parent_task = parent_task_for_child(state, task)
+    if not suppress_superior_notice and acceptance_recipient_agent_id is not None:
         inbox_id = f"inbox-{uuid4().hex}"
         payload = {
+            "kind": "superior_acceptance_requested",
             "deliverable_id": new_deliverable.id,
+            "task_id": task.id,
+            "producer_agent_id": agent.id,
+            "acceptance_recipient_agent_id": acceptance_recipient_agent_id,
             "summary": new_deliverable.summary,
             "artifact_refs": list(new_deliverable.artifact_refs),
+            "available_decisions": ["accepted", "rejected"],
+            "available_alternatives": ["request_review", "report_blocker"],
         }
+        if parent_task is not None:
+            payload.update(
+                {
+                    "transition": "handoff",
+                    "parent_task_id": parent_task.id,
+                    "child_task_id": task.id,
+                }
+            )
         verification_payload = _deliverable_verification_payload(new_deliverable)
         if verification_payload is not None:
             payload["verification"] = verification_payload
         state.inbox[inbox_id] = AgentInboxItem(
             id=inbox_id,
-            recipient_agent_id=agent.reports_to_agent_id,
+            recipient_agent_id=acceptance_recipient_agent_id,
             sender_agent_id=agent.id,
             task_id=task.id,
             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
@@ -666,7 +770,28 @@ def _apply_command_deliverable_submission(
             updated_at=now,
         )
         created_inbox_ids.append(inbox_id)
-        _mark_agent_work_due(state, agent_id=agent.reports_to_agent_id, now=now)
+        _mark_agent_work_due(
+            state,
+            agent_id=acceptance_recipient_agent_id,
+            now=now,
+        )
+    if (
+        parent_task is not None
+        and (
+            suppress_superior_notice
+            or acceptance_recipient_agent_id != parent_task.owner_agent_id
+        )
+    ):
+        parent_notice = queue_parent_task_transition(
+            state,
+            child_task_id=task.id,
+            transition="handoff",
+            sender_agent_id=agent.id,
+            now=now,
+            references={"deliverable_id": new_deliverable.id},
+        )
+        if parent_notice is not None:
+            created_inbox_ids.append(parent_notice.id)
     return created_inbox_ids
 
 
@@ -698,7 +823,11 @@ def _review_decision_correction_context(
     return {
         "review": review.model_dump(mode="json") if review is not None else None,
         "deliverable": (deliverable.model_dump(mode="json") if deliverable is not None else None),
-        "task": (task_payload_with_derived(state, task) if task is not None else None),
+        "task": (
+            task_payload_with_assessment(state, task)
+            if task is not None
+            else None
+        ),
         "reviewer": (
             reviewer.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
             if reviewer is not None

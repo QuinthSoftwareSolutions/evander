@@ -6,6 +6,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+from ..models import ACTIVE_TEAM_CASE_STATUS_VALUES
+
 
 TEXT_LIMIT = 240
 TITLE_LIMIT = 160
@@ -16,8 +18,10 @@ MAX_SUBORDINATE_IDS = 20
 MAX_SUBORDINATES = 12
 MAX_TASKS = 10
 MAX_PROJECTS = 8
+MAX_OUTCOME_KINDS = 20
 MAX_INBOX = 10
 MAX_BLOCKERS = 8
+MAX_REVIEWS = 8
 MAX_CASES = 8
 MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
@@ -85,6 +89,24 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
             "projects",
         )
 
+    outcome_kinds = sorted(
+        (
+            _compact_outcome_kind(row)
+            for row in _mapping_rows(lease.get("outcome_kinds"))
+        ),
+        key=lambda row: (
+            _sort_text(row.get("effective_project_id")),
+            _sort_text(row.get("kind")),
+        ),
+    )
+    if outcome_kinds:
+        context["outcome_kinds"] = _limited_rows(
+            outcome_kinds,
+            MAX_OUTCOME_KINDS,
+            omitted_counts,
+            "outcome_kinds",
+        )
+
     inbox_rows, non_pending_inbox_count = _pending_inbox_rows(lease.get("inbox"))
     _add_omitted(omitted_counts, "inbox_non_pending", non_pending_inbox_count)
     sorted_inbox_rows = sorted(inbox_rows, key=_inbox_sort_key)
@@ -121,6 +143,21 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
             MAX_BLOCKERS,
             omitted_counts,
             "blockers",
+        )
+
+    reviews = sorted(
+        (_compact_review(row) for row in _mapping_rows(lease.get("reviews"))),
+        key=lambda row: (
+            _sort_text(row.get("created_at")),
+            _sort_text(row.get("id")),
+        ),
+    )
+    if reviews:
+        context["reviews"] = _limited_rows(
+            reviews,
+            MAX_REVIEWS,
+            omitted_counts,
+            "reviews",
         )
 
     if _optional_text(lease.get("reason")) == "action_feedback":
@@ -210,6 +247,12 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         context["project_repo"] = _compact_project_repo(project_repo)
+    project_repos = [
+        _compact_project_repo(row)
+        for row in _mapping_rows(lease.get("project_repos"))
+    ]
+    if project_repos:
+        context["project_repos"] = project_repos
 
     review_artifact_imports = sorted(
         (
@@ -382,6 +425,30 @@ def _compact_project(project: Mapping[str, Any]) -> dict[str, Any]:
             }
             for source in blocking_sources[:ID_LIST_LIMIT]
         ]
+    return row
+
+
+def _compact_outcome_kind(definition: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        definition,
+        (
+            "id",
+            "kind",
+            "name",
+            "team_id",
+            "project_id",
+            "effective_project_id",
+            "inherited",
+        ),
+    )
+    for field_name in (
+        "description",
+        "reference_requirements",
+        "evidence_requirements",
+    ):
+        value = _trim_text(definition.get(field_name), 640)
+        if value:
+            row[field_name] = value
     return row
 
 
@@ -895,6 +962,7 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
         (
             "prepared",
             "project_id",
+            "managed_repo_id",
             "target_dir",
             "guest_repo_name",
             "remote_url",
@@ -919,6 +987,26 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
     message = _optional_text(repo.get("message"))
     if message is not None:
         row["message"] = _trim_text(message)
+    return row
+
+
+def _compact_review(review: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        review,
+        (
+            "id",
+            "deliverable_id",
+            "release_package_id",
+            "reviewer_agent_id",
+            "state",
+            "review_profile_id",
+            "candidate_commit_sha",
+            "created_at",
+        ),
+    )
+    instructions = _optional_text(review.get("instructions"))
+    if instructions is not None:
+        row["instructions"] = _trim_text(instructions)
     return row
 
 
@@ -1030,6 +1118,8 @@ _PAYLOAD_TEXT_KEYS = {
 _PAYLOAD_LIST_KEYS = {
     "artifact_paths",
     "artifact_refs",
+    "available_alternatives",
+    "available_decisions",
     "criteria",
     "deliverable_ids",
     "findings",
@@ -1093,7 +1183,7 @@ def _current_case_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
     current: list[Mapping[str, Any]] = []
     skipped = 0
     for row in rows:
-        if _optional_text(row.get("status")) == "closed":
+        if _optional_text(row.get("status")) not in ACTIVE_TEAM_CASE_STATUS_VALUES:
             skipped += 1
             continue
         current.append(row)

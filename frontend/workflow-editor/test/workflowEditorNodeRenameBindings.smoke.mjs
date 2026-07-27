@@ -515,7 +515,7 @@ test("workflow editor keeps node ids read-only and resets display-name edits", a
   }
 
   const triggerNode = page.locator('.react-flow__node[data-id="trigger-old"]');
-  await triggerNode.locator(".node-title").click({ force: true });
+  await triggerNode.click();
   await waitForInspectorNodeId("trigger-old");
   assert.equal(await nodeIdMetadata.locator("code").textContent(), "trigger-old");
   assert.equal(await inspector.locator(".inspector-label").filter({ hasText: "Node id" }).locator("input").count(), 0);

@@ -28,6 +28,8 @@ from evander_team_addon.models import (
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
+    HumanReviewRequirementSnapshot,
+    HumanReviewRequest,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -41,6 +43,8 @@ from evander_team_addon.models import (
     ReviewProfileCriterion,
     ReviewRequest,
     Team,
+    TeamBlocker,
+    TeamBlockerSourceKind,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamInboxItemType,
@@ -54,6 +58,10 @@ from evander_team_addon.models import (
     agent_project_ids,
     project_lead_agent_id,
     team_state_payload,
+)
+from evander_team_addon.services.domain.task_assessment import (
+    TaskAssessmentService,
+    assess_task,
 )
 
 
@@ -338,6 +346,7 @@ def _state_with_runtime_operations() -> TeamState:
         target_branch="team/team/releases/release",
         promotion_kind="release",
         state="failed",
+        commit_sha="failed-commit-sha",
         error="merge conflict",
     )
     state.ephemeral_assignments["ephemeral-failed"] = EphemeralAssignment(
@@ -763,6 +772,23 @@ def _state_with_task_graph() -> dict:
     return state
 
 
+def _add_other_project(state: dict) -> None:
+    """Add a second valid project without triggering unrelated assignment errors."""
+    state["roles"]["other__project-lead"] = {
+        "id": "other__project-lead",
+        "team_id": "team",
+        "project_id": "other",
+        "name": "Other Project Lead",
+    }
+    state["projects"]["other"] = {
+        "id": "other",
+        "team_id": "team",
+        "name": "Other",
+        "lead_agent_id": "lead",
+    }
+    state["teams"]["team"]["project_ids"] = ["project", "other"]
+
+
 def test_task_graph_loads_with_parent_and_dependencies() -> None:
     validated = TeamState.model_validate(_state_with_task_graph())
 
@@ -823,71 +849,100 @@ def test_case_link_rejects_missing_task_backlink() -> None:
         TeamState.model_validate(state)
 
 
-def test_task_graph_rejects_missing_parent() -> None:
+def test_task_graph_reports_missing_parent_without_rejecting_legacy_state() -> None:
     state = _valid_state().model_dump(mode="python")
     state["tasks"]["task"]["parent_task_id"] = "ghost"
 
-    with pytest.raises(ValidationError, match="missing parent ghost"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].parent_task_id == "ghost"
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.readiness.value == "invalid"
+    assert assessment.invalid_reason_codes == ["parent_task_missing"]
+    assert assessment.direct_child_ids == []
+    assert assessment.unsatisfied_dependency_ids == []
 
 
-def test_task_graph_rejects_missing_dependency() -> None:
+def test_task_graph_reports_missing_dependency_without_rejecting_legacy_state() -> None:
     state = _valid_state().model_dump(mode="python")
     state["tasks"]["task"]["dependency_task_ids"] = ["ghost"]
 
-    with pytest.raises(ValidationError, match="missing dependency ghost"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].dependency_task_ids == ["ghost"]
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.readiness.value == "invalid"
+    assert assessment.invalid_reason_codes == ["dependency_task_missing"]
+    assert assessment.unsatisfied_dependency_ids == ["ghost"]
 
 
-def test_task_graph_rejects_cross_project_parent() -> None:
+def test_task_graph_reports_cross_project_parent_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     state["tasks"]["parent"]["project_id"] = "other"
     # Decouple "task" from the (now cross-project) dependency tasks to isolate parent.
     state["tasks"]["task"]["dependency_task_ids"] = []
-    state["projects"]["other"] = {
-        "id": "other",
-        "team_id": "team",
-        "name": "Other",
-        "lead_agent_id": "lead",
-    }
-    state["teams"]["team"]["project_ids"] = ["project", "other"]
+    _add_other_project(state)
 
-    with pytest.raises(ValidationError, match="parent parent belongs to project other"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].parent_task_id == "parent"
+    assert validated.child_task_ids("parent") == ["task"]
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.invalid_reason_codes == ["parent_task_outside_project"]
+    assert assessment.unsatisfied_dependency_ids == []
 
 
-def test_task_graph_rejects_cross_project_dependency() -> None:
+def test_task_graph_reports_cross_project_dependency_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     state["tasks"]["task"]["parent_task_id"] = None
     state["tasks"]["dep-a"]["project_id"] = "other"
-    state["projects"]["other"] = {
-        "id": "other",
-        "team_id": "team",
-        "name": "Other",
-        "lead_agent_id": "lead",
-    }
-    state["teams"]["team"]["project_ids"] = ["project", "other"]
+    _add_other_project(state)
 
-    with pytest.raises(ValidationError, match="dependency dep-a belongs to project other"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessment = assess_task(validated, "task")
+
+    assert validated.tasks["task"].dependency_task_ids == ["dep-a", "dep-b"]
+    assert assessment.resolution_status.value == "invalid"
+    assert assessment.invalid_reason_codes == ["dependency_task_outside_project"]
+    assert assessment.unsatisfied_dependency_ids == ["dep-a", "dep-b"]
 
 
-def test_task_graph_rejects_parent_cycle() -> None:
+def test_task_graph_reports_parent_cycle_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     # parent <- task already; close the loop so parent points back to task.
     state["tasks"]["parent"]["parent_task_id"] = "task"
 
-    with pytest.raises(ValidationError, match="parent cycle"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessments = TaskAssessmentService(validated).assess_all()
+
+    assert validated.child_task_ids("parent") == ["task"]
+    assert validated.child_task_ids("task") == ["parent"]
+    assert assessments["parent"].invalid_reason_codes == ["parent_cycle"]
+    assert assessments["parent"].direct_child_ids == ["task"]
+    assert assessments["parent"].unresolved_descendant_ids == ["task"]
+    assert assessments["task"].invalid_reason_codes == ["parent_cycle"]
+    assert assessments["task"].direct_child_ids == ["parent"]
+    assert assessments["task"].unresolved_descendant_ids == ["parent"]
 
 
-def test_task_graph_rejects_dependency_cycle() -> None:
+def test_task_graph_reports_dependency_cycle_without_rejecting_legacy_state() -> None:
     state = _state_with_task_graph()
     # task -> dep-a, dep-b; add dep-a -> task to create a cycle.
     state["tasks"]["dep-a"]["dependency_task_ids"] = ["task"]
 
-    with pytest.raises(ValidationError, match="dependency cycle"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+    assessments = TaskAssessmentService(validated).assess_all()
+
+    assert validated.tasks["task"].dependency_task_ids == ["dep-a", "dep-b"]
+    assert validated.tasks["dep-a"].dependency_task_ids == ["task"]
+    assert assessments["task"].invalid_reason_codes == ["dependency_cycle"]
+    assert assessments["task"].unsatisfied_dependency_ids == ["dep-a", "dep-b"]
+    assert assessments["dep-a"].invalid_reason_codes == ["dependency_cycle"]
+    assert assessments["dep-a"].unsatisfied_dependency_ids == ["task"]
+    assert assessments["dep-b"].invalid_reason_codes == []
 
 
 def test_task_rejects_self_parent() -> None:
@@ -998,6 +1053,45 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         row["kind"] == "waiting_dependency_task" and row["id"] == "task"
         for row in runtime_operations["attention"]
     )
+
+
+def test_team_state_payload_serializes_human_review_and_stall_blockers() -> None:
+    state = _valid_state()
+    state.human_review_requests["human-review"] = HumanReviewRequest(
+        id="human-review",
+        release_package_id="release",
+        candidate_commit_sha="a" * 40,
+        candidate_tree_hash="b" * 40,
+        requirement_snapshot=HumanReviewRequirementSnapshot(
+            directory_path="root",
+            configured_group_ids=["reviewers"],
+            initially_eligible_user_ids=[],
+        ),
+        state="blocked",
+    )
+    state.blockers["human-review-blocker"] = TeamBlocker(
+        id="human-review-blocker",
+        team_id="team",
+        source_kind=TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST,
+        source_id="human-review",
+        owner_agent_id="manager",
+        summary="A reviewer must be reassigned.",
+    )
+    state.blockers["stall-blocker"] = TeamBlocker(
+        id="stall-blocker",
+        team_id="team",
+        source_kind=TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+        source_id="ui",
+        owner_agent_id="manager",
+        summary="The agent made no scoped progress.",
+    )
+
+    payload = team_state_payload(state)
+
+    assert payload["human_review_requests"]["human-review"]["active_blocker_ids"] == [
+        "human-review-blocker"
+    ]
+    assert payload["agents"]["ui"]["active_blocker_ids"] == ["stall-blocker"]
 
 
 def test_team_state_payload_distinguishes_superior_acceptance_from_review() -> None:
@@ -1238,6 +1332,7 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_action_record"]["error"] == "build failed"
     assert rows["failed_git_promotion"]["promotion_id"] == "promotion-1"
     assert rows["failed_git_promotion"]["release_package_id"] == "release"
+    assert rows["failed_git_promotion"]["commit_sha"] == "failed-commit-sha"
     assert rows["blocked_release_package"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["state"] == "blocked"
     assert rows["blocked_release_package"]["next_action"] == "resolve_blocked_release"
@@ -1251,6 +1346,139 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_ephemeral_assignment"]["state"] == "failed"
     assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
     assert rows["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_runtime_attention_derives_age_links_and_terminal_reconciliation() -> None:
+    state = _state_with_runtime_operations()
+    now = datetime(2026, 8, 1, 12, tzinfo=UTC)
+    occurred_at = now - timedelta(days=10)
+    state.tasks["waiting-task"].state = TeamTaskState.ACCEPTED
+    state.tasks["waiting-task"].state_entered_at = occurred_at
+    state.deliverables["deliverable"].state = TeamRecordState.ACCEPTED
+    state.release_packages["release"].state = TeamRecordState.ACCEPTED
+    state.release_packages["release"].error = None
+    state.inbox["inbox-1"].task_id = None
+    state.inbox["inbox-1"].created_at = occurred_at
+    state.inbox["inbox-1"].payload = {
+        "legacy_context": [
+            {"task_id": "waiting-task"},
+            {
+                "nested": {
+                    "deliverable_id": "deliverable",
+                    "release_package_id": "release",
+                }
+            },
+        ]
+    }
+    state.inbox["passive-note"] = AgentInboxItem(
+        id="passive-note",
+        recipient_agent_id="ui",
+        item_type=TeamInboxItemType.PROGRESS_REPORT,
+        response_requested=False,
+        state=TeamInboxItemState.PENDING,
+        created_at=now - timedelta(hours=2),
+    )
+
+    payload = runtime_operations_payload(state, now=now)
+    inbox_row = next(
+        row for row in payload["attention"] if row.get("inbox_item_id") == "inbox-1"
+    )
+    passive_row = next(
+        row for row in payload["attention"] if row.get("inbox_item_id") == "passive-note"
+    )
+
+    assert inbox_row["occurred_at"] == occurred_at.isoformat()
+    assert inbox_row["age_seconds"] == 10 * 24 * 60 * 60
+    assert inbox_row["age_bucket"] == "gte_7d"
+    assert inbox_row["attention_group"] == "retained_history"
+    assert inbox_row["attention_reason"] == "terminal_work_pending_reconciliation"
+    assert inbox_row["reconciliation_required"] is True
+    assert inbox_row["project_id"] == "project"
+    assert inbox_row["project_ids"] == ["project"]
+    assert inbox_row["team_id"] == "team"
+    assert {"waiting-task", "task"}.issubset(inbox_row["links"]["task_ids"])
+    assert inbox_row["links"]["deliverable_ids"] == ["deliverable"]
+    assert inbox_row["links"]["release_package_ids"] == ["release"]
+    terminal_context = {
+        (context["kind"], context["id"], context["state"])
+        for context in inbox_row["terminal_context"]
+    }
+    assert ("task", "waiting-task", "accepted") in terminal_context
+    assert ("deliverable", "deliverable", "accepted") in terminal_context
+    assert ("release_package", "release", "accepted") in terminal_context
+
+    assert passive_row["attention_group"] == "retained_history"
+    assert passive_row["attention_reason"] == "pending_without_response_obligation"
+    assert passive_row["reconciliation_required"] is False
+
+    group_ranks = {
+        "active_obligation": 0,
+        "failed_attempt": 1,
+        "retained_history": 2,
+    }
+    ranked_groups = [group_ranks[row["attention_group"]] for row in payload["attention"]]
+    assert ranked_groups == sorted(ranked_groups)
+    assert all(row["occurred_at"] for row in payload["attention"])
+
+
+def test_runtime_attention_reconciles_pending_inbox_from_its_primary_target() -> None:
+    state = _state_with_runtime_operations()
+    state.deliverables["deliverable"].state = TeamRecordState.ACCEPTED
+    state.release_packages["release"].state = TeamRecordState.PENDING
+    state.release_packages["release"].error = None
+    state.review_requests["release-review"] = ReviewRequest(
+        id="release-review",
+        release_package_id="release",
+        candidate_commit_sha="candidate-sha",
+        reviewer_agent_id="ui",
+        state=TeamRecordState.PENDING,
+    )
+    state.inbox["release-review-inbox"] = AgentInboxItem(
+        id="release-review-inbox",
+        recipient_agent_id="ui",
+        sender_agent_id="lead",
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        response_requested=True,
+        state=TeamInboxItemState.PENDING,
+        payload={
+            "kind": "release_review_request",
+            "review_request_id": "release-review",
+            "release_package_id": "release",
+        },
+    )
+
+    payload = runtime_operations_payload(
+        state,
+        now=datetime(2026, 8, 1, 12, tzinfo=UTC),
+    )
+    row = next(
+        item
+        for item in payload["attention"]
+        if item.get("inbox_item_id") == "release-review-inbox"
+    )
+
+    assert row["links"]["deliverable_ids"] == ["deliverable"]
+    assert {
+        (context["kind"], context["id"], context["state"])
+        for context in row["terminal_context"]
+    } == {("deliverable", "deliverable", "accepted")}
+    assert row["attention_group"] == "active_obligation"
+    assert row["attention_reason"] == "awaiting_response"
+    assert row["reconciliation_required"] is False
+
+    state.review_requests["release-review"].state = TeamRecordState.ACCEPTED
+    reconciled_payload = runtime_operations_payload(
+        state,
+        now=datetime(2026, 8, 1, 12, tzinfo=UTC),
+    )
+    reconciled = next(
+        item
+        for item in reconciled_payload["attention"]
+        if item.get("inbox_item_id") == "release-review-inbox"
+    )
+    assert reconciled["attention_group"] == "retained_history"
+    assert reconciled["attention_reason"] == "terminal_work_pending_reconciliation"
+    assert reconciled["reconciliation_required"] is True
 
 
 def test_runtime_operations_ignores_failed_promotion_for_terminal_release() -> None:

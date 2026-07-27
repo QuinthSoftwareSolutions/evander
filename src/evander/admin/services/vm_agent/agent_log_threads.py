@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+
 from evander.admin.services.vm_agent.common import (
     Any,
-    _CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT,
+    Mapping,
     _log_page_from_end,
     _log_page_from_start,
     datetime,
 )
+
+_CONTAINER_THREAD_GROUP_WINDOW = 10
+_CONTAINER_THREAD_RECORD_SCAN_WINDOW = 10
 
 
 class VmAgentThreadLogMixin:
@@ -97,6 +104,8 @@ class VmAgentThreadLogMixin:
                 raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
                 thread_id = self._container_log_thread_id(raw_text)
             if thread_id is None:
+                if not self._container_execution_is_agent_run(execution):
+                    continue
                 unthreaded_groups.append(
                     (
                         self._container_execution_sort_key(execution),
@@ -121,58 +130,201 @@ class VmAgentThreadLogMixin:
             )
         return sorted([*threaded_groups, *unthreaded_groups], key=lambda item: item[0])
 
-    def _container_thread_window_chunks(
+    @staticmethod
+    def _container_thread_cursor_state(
+        cursor: str | None,
+    ) -> tuple[int, int, int, frozenset[str], str | None]:
+        normalized = str(cursor or "").strip()
+        if not normalized:
+            return 0, 0, 0, frozenset(), None
+        try:
+            padding = "=" * (-len(normalized) % 4)
+            payload = json.loads(
+                base64.urlsafe_b64decode((normalized + padding).encode("ascii")).decode("utf-8")
+            )
+            if not isinstance(payload, dict) or int(payload.get("v") or 0) != 1:
+                raise ValueError
+            raw_skip_threads = payload.get("skip_threads")
+            if raw_skip_threads is None:
+                raw_skip_threads = []
+            if not isinstance(raw_skip_threads, list):
+                raise ValueError
+            skip_thread_ids = {
+                thread_id
+                for raw_thread_id in raw_skip_threads
+                if (thread_id := str(raw_thread_id or "").strip())
+            }
+            legacy_skip_thread_id = str(payload.get("skip_thread") or "").strip()
+            if legacy_skip_thread_id:
+                skip_thread_ids.add(legacy_skip_thread_id)
+            anchor_record_id = str(payload.get("anchor_record") or "").strip() or None
+            return (
+                max(0, int(payload.get("record") or 0)),
+                max(0, int(payload.get("group") or 0)),
+                max(0, int(payload.get("line") or 0)),
+                frozenset(skip_thread_ids),
+                anchor_record_id,
+            )
+        except (
+            binascii.Error,
+            UnicodeDecodeError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError("Invalid agent thread log cursor") from exc
+
+    @staticmethod
+    def _container_thread_cursor(
+        record_offset: int,
+        group_offset: int,
+        line_offset: int,
+        *,
+        skip_thread_ids: frozenset[str] = frozenset(),
+        anchor_record_id: str | None = None,
+    ) -> str:
+        normalized_skip_thread_ids = sorted(
+            thread_id
+            for raw_thread_id in skip_thread_ids
+            if (thread_id := str(raw_thread_id or "").strip())
+        )
+        payload = json.dumps(
+            {
+                "v": 1,
+                "record": max(0, record_offset),
+                "group": max(0, group_offset),
+                "line": max(0, line_offset),
+                **(
+                    {"skip_threads": normalized_skip_thread_ids}
+                    if normalized_skip_thread_ids
+                    else {}
+                ),
+                **(
+                    {"anchor_record": normalized_anchor_record_id}
+                    if (
+                        normalized_anchor_record_id
+                        := str(anchor_record_id or "").strip()
+                    )
+                    else {}
+                ),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    def _container_recent_thread_groups(
         self,
         worker_backend: Any,
         execution_records: list[Any],
         *,
-        target_lines: int,
-    ) -> tuple[list[str], bool]:
-        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        chunks: list[str] = []
+        record_offset: int,
+        max_groups: int,
+        skip_thread_ids: frozenset[str],
+    ) -> tuple[
+        list[tuple[str | None, list[Any], str | None]],
+        int,
+        bool,
+        frozenset[str],
+    ]:
+        sorted_records = sorted(
+            execution_records,
+            key=self._container_execution_sort_key,
+            reverse=True,
+        )
+        record_window = sorted_records[
+            max(0, record_offset) : max(0, record_offset) + _CONTAINER_THREAD_RECORD_SCAN_WINDOW
+        ]
+        groups: list[tuple[str | None, list[Any], str | None]] = []
         grouped_records: dict[str, list[Any]] = {}
-        thread_chunk_indexes: dict[str, int] = {}
-        dirty_thread_ids: set[str] = set()
-        line_count = 0
-        truncated_after = False
-        for index, execution in enumerate(sorted_records):
+        group_indexes: dict[str, int] = {}
+        for index, execution in enumerate(record_window):
+            is_agent_run = self._container_execution_is_agent_run(execution)
+            if self._container_execution_artifact_metadata(execution) is not None:
+                continue
+            metadata = getattr(execution, "metadata", None)
+            if (
+                not is_agent_run
+                and isinstance(metadata, Mapping)
+                and str(metadata.get("effect_type") or "").strip()
+            ):
+                continue
             raw_text = None
             thread_id = self._container_execution_stored_thread_id(execution)
             if thread_id is None:
                 raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
                 thread_id = self._container_log_thread_id(raw_text)
-            if thread_id is not None:
-                records = grouped_records.setdefault(thread_id, [])
-                records.append(execution)
-                chunk_index = thread_chunk_indexes.get(thread_id)
-                if chunk_index is not None:
-                    dirty_thread_ids.add(thread_id)
-                    continue
-                thread_chunk_indexes[thread_id] = len(chunks)
-            else:
-                records = [execution]
-            chunk = self._container_thread_group_chunk(
-                worker_backend,
-                thread_id=thread_id,
-                records=records,
-                raw_text=raw_text,
-            )
-            chunks.append(chunk)
-            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-            if line_count >= target_lines:
-                truncated_after = index < len(sorted_records) - 1
-                break
-        for thread_id in dirty_thread_ids:
-            chunk_index = thread_chunk_indexes.get(thread_id)
-            if chunk_index is None:
+            if thread_id is None and not is_agent_run:
                 continue
-            chunks[chunk_index] = self._container_thread_group_chunk(
-                worker_backend,
-                thread_id=thread_id,
-                records=grouped_records[thread_id],
-                raw_text=None,
+            if thread_id is not None and thread_id in skip_thread_ids:
+                continue
+            group_key = thread_id or f"unthreaded:{execution.execution_id}"
+            group_index = group_indexes.get(group_key)
+            if group_index is not None:
+                grouped_records[group_key].append(execution)
+                continue
+            if len(groups) >= max(1, max_groups):
+                return (
+                    groups,
+                    index,
+                    True,
+                    frozenset(
+                        existing_thread_id
+                        for existing_thread_id, _records, _raw_text in groups
+                        if existing_thread_id is not None
+                    ),
+                )
+            records = [execution]
+            grouped_records[group_key] = records
+            group_indexes[group_key] = len(groups)
+            groups.append((thread_id, records, raw_text))
+        records_consumed = len(record_window)
+        has_more_records = False
+        has_unscanned_legacy_records = False
+        deferred_grouped_records: dict[str, list[Any]] = {}
+        for execution in sorted_records[max(0, record_offset) + records_consumed :]:
+            is_agent_run = self._container_execution_is_agent_run(execution)
+            if self._container_execution_artifact_metadata(execution) is not None:
+                continue
+            metadata = getattr(execution, "metadata", None)
+            if (
+                not is_agent_run
+                and isinstance(metadata, Mapping)
+                and str(metadata.get("effect_type") or "").strip()
+            ):
+                continue
+            stored_thread_id = self._container_execution_stored_thread_id(execution)
+            if stored_thread_id is None:
+                has_more_records = True
+                has_unscanned_legacy_records = True
+                continue
+            group_index = group_indexes.get(stored_thread_id)
+            if group_index is not None:
+                deferred_grouped_records.setdefault(stored_thread_id, []).append(
+                    execution
+                )
+            elif stored_thread_id not in skip_thread_ids:
+                has_more_records = True
+        if has_unscanned_legacy_records:
+            has_more_records = has_more_records or bool(deferred_grouped_records)
+        else:
+            for thread_id, records in deferred_grouped_records.items():
+                grouped_records[thread_id].extend(records)
+        incomplete_thread_ids = (
+            frozenset(
+                thread_id
+                for thread_id, _records, _raw_text in groups
+                if thread_id is not None
             )
-        return chunks, truncated_after
+            if has_unscanned_legacy_records
+            else frozenset()
+        )
+        return (
+            groups,
+            records_consumed,
+            has_more_records,
+            incomplete_thread_ids,
+        )
 
     def _container_thread_group_chunk(
         self,
@@ -181,25 +333,337 @@ class VmAgentThreadLogMixin:
         thread_id: str | None,
         records: list[Any],
         raw_text: str | None,
+        body_lines: int | None = None,
     ) -> str:
-        first_execution = records[0]
+        ordered_records = sorted(records, key=self._container_execution_sort_key)
+        first_execution = ordered_records[0]
         header_parts = [
             f"thread={thread_id or 'unthreaded'}",
             f"first_execution={first_execution.execution_id}",
-            f"executions={len(records)}",
+            f"executions={len(ordered_records)}",
         ]
         if first_execution.started_at is not None:
             header_parts.append(f"started={first_execution.started_at.isoformat()}")
         header = "=== " + " ".join(header_parts) + " ==="
         if thread_id is None:
-            body = str(raw_text or "").rstrip()
+            if body_lines is None:
+                body = self._container_thread_execution_fallback_log(
+                    worker_backend,
+                    ordered_records,
+                    lines=0,
+                ).rstrip()
+            else:
+                execution_chunk, _truncated_before = (
+                    self._container_execution_log_page_chunk(
+                        worker_backend,
+                        first_execution,
+                        body_lines=max(1, body_lines),
+                        mode="execution",
+                    )
+                )
+                _execution_header, separator, execution_body = (
+                    execution_chunk.partition("\n")
+                )
+                body = (
+                    self._container_log_without_session_id_lines(execution_body).rstrip()
+                    if separator
+                    else ""
+                )
+            if not body:
+                body = str(raw_text or "").rstrip()
             return header if not body else header + "\n" + body
         transcript = self._container_thread_transcript(
             worker_backend,
-            records,
+            ordered_records,
             lines=0,
         )
         return header if not transcript else header + "\n" + transcript
+
+    def _container_thread_page_chunk(
+        self,
+        worker_backend: Any,
+        *,
+        thread_id: str | None,
+        records: list[Any],
+        raw_text: str | None,
+        limit: int,
+        offset: int,
+        include_header: bool = True,
+    ) -> tuple[str, int, bool, bool]:
+        ordered_records = sorted(records, key=self._container_execution_sort_key)
+        first_execution = ordered_records[0]
+        header_parts = [
+            f"thread={thread_id or 'unthreaded'}",
+            f"first_execution={first_execution.execution_id}",
+            f"executions={len(ordered_records)}",
+        ]
+        if first_execution.started_at is not None:
+            header_parts.append(f"started={first_execution.started_at.isoformat()}")
+        if offset > 0:
+            header_parts.append("continuation=older")
+        header = "=== " + " ".join(header_parts) + " ==="
+        if thread_id is None:
+            used_session_transcript = False
+            page = self._container_execution_log_page_payload(
+                worker_backend,
+                first_execution,
+                limit=max(1, limit),
+                offset=offset,
+                query=None,
+                mode="execution",
+            )
+        else:
+            page = self._container_execution_log_page_payload(
+                worker_backend,
+                first_execution,
+                limit=max(1, limit),
+                offset=offset,
+                query=None,
+                mode="session",
+            )
+            used_session_transcript = not bool(
+                page.get("log_unavailable")
+            ) and bool(str(page.get("text") or "").strip())
+            if not used_session_transcript:
+                page = self._container_thread_fallback_page(
+                    worker_backend,
+                    ordered_records,
+                    limit=limit,
+                    offset=offset,
+                )
+        body = self._container_log_without_session_id_lines(
+            str(page.get("text") or raw_text or "")
+        ).rstrip()
+        consumed_lines = int(page.get("returned_lines") or len(body.splitlines()))
+        chunk = header if not body else header + "\n" + body
+        if not include_header:
+            chunk = body or header
+        return (
+            chunk,
+            consumed_lines,
+            bool(page.get("has_more_before")),
+            used_session_transcript,
+        )
+
+    def _container_thread_fallback_page(
+        self,
+        worker_backend: Any,
+        records: list[Any],
+        *,
+        limit: int,
+        offset: int,
+    ) -> Mapping[str, object]:
+        target_lines = max(1, limit) + max(0, offset)
+        chunks: list[str] = []
+        used_lines = 0
+        truncated_before = False
+        ordered_records = sorted(records, key=self._container_execution_sort_key)
+        for index, execution in reversed(list(enumerate(ordered_records))):
+            remaining = max(1, target_lines - used_lines)
+            execution_page = self._container_execution_log_page_payload(
+                worker_backend,
+                execution,
+                limit=remaining,
+                offset=0,
+                query=None,
+                mode="execution",
+            )
+            body = self._container_log_without_session_id_lines(
+                str(execution_page.get("text") or "")
+            ).rstrip()
+            if body:
+                chunks.insert(0, body)
+                used_lines += len(body.splitlines()) + (1 if len(chunks) > 1 else 0)
+            if bool(execution_page.get("has_more_before")) or used_lines >= target_lines:
+                truncated_before = bool(execution_page.get("has_more_before")) or index > 0
+                break
+        page = _log_page_from_end(
+            self._join_container_log_chunks(chunks),
+            limit=limit,
+            offset=offset,
+        )
+        if truncated_before:
+            page["has_more_before"] = True
+            page["total_lines"] = None
+            page["start_line"] = None
+            page["end_line"] = None
+        return page
+
+    def _container_lazy_thread_log_page(
+        self,
+        *,
+        session_id: str,
+        execution_records: list[Any],
+        worker_backend: Any,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        if not execution_records:
+            page = _log_page_from_end(
+                f"No agent executions have run for session {session_id}.\n",
+                limit=limit,
+                offset=0,
+            )
+            page["next_cursor"] = None
+            return page
+        (
+            record_offset,
+            group_offset,
+            line_offset,
+            skip_thread_ids,
+            anchor_record_id,
+        ) = (
+            self._container_thread_cursor_state(cursor)
+        )
+        sorted_records = sorted(
+            execution_records,
+            key=self._container_execution_sort_key,
+            reverse=True,
+        )
+        if anchor_record_id is None:
+            anchor_record_id = str(
+                getattr(sorted_records[0], "execution_id", "") or ""
+            ).strip()
+        else:
+            anchor_index = next(
+                (
+                    index
+                    for index, execution in enumerate(sorted_records)
+                    if str(getattr(execution, "execution_id", "") or "")
+                    == anchor_record_id
+                ),
+                None,
+            )
+            if anchor_index is None:
+                raise ValueError("Invalid agent thread log cursor")
+            sorted_records = sorted_records[anchor_index:]
+        (
+            groups,
+            records_consumed,
+            records_truncated,
+            incomplete_thread_ids,
+        ) = self._container_recent_thread_groups(
+            worker_backend,
+            sorted_records,
+            record_offset=record_offset,
+            max_groups=_CONTAINER_THREAD_GROUP_WINDOW,
+            skip_thread_ids=skip_thread_ids,
+        )
+        completed_thread_ids = set(skip_thread_ids).union(
+            thread_id
+            for thread_id, _records, _raw_text in groups
+            if thread_id is not None
+            and thread_id not in incomplete_thread_ids
+        )
+        if group_offset >= len(groups):
+            next_cursor = (
+                self._container_thread_cursor(
+                    record_offset + records_consumed,
+                    0,
+                    0,
+                    skip_thread_ids=frozenset(completed_thread_ids),
+                    anchor_record_id=anchor_record_id,
+                )
+                if records_truncated and records_consumed > 0
+                else None
+            )
+            return {
+                "text": "",
+                "limit": limit,
+                "offset": 0,
+                "returned_lines": 0,
+                "total_lines": None,
+                "start_line": None,
+                "end_line": None,
+                "has_more_before": next_cursor is not None,
+                "query": None,
+                "next_cursor": next_cursor,
+            }
+
+        chunks_newest_first: list[str] = []
+        used_lines = 0
+        next_group_offset = group_offset
+        next_line_offset = line_offset
+        next_cursor: str | None = None
+        page_limit = max(1, limit)
+        while next_group_offset < len(groups) and used_lines < page_limit:
+            thread_id, records, raw_text = groups[next_group_offset]
+            separator_lines = 1 if chunks_newest_first else 0
+            body_limit = page_limit - used_lines - separator_lines - 1
+            include_header = True
+            if body_limit <= 0:
+                if chunks_newest_first:
+                    break
+                # A one-line request cannot fit both the group header and body.
+                # Return one body line and carry the body offset in the cursor.
+                body_limit = 1
+                include_header = False
+            (
+                chunk,
+                consumed_lines,
+                has_more_in_thread,
+                used_session_transcript,
+            ) = self._container_thread_page_chunk(
+                worker_backend,
+                thread_id=thread_id,
+                records=records,
+                raw_text=raw_text,
+                limit=body_limit,
+                offset=next_line_offset,
+                include_header=include_header,
+            )
+            if (
+                thread_id is not None
+                and used_session_transcript
+                and not has_more_in_thread
+            ):
+                completed_thread_ids.add(thread_id)
+            chunks_newest_first.append(chunk)
+            used_lines += len(chunk.splitlines()) + separator_lines
+            if has_more_in_thread and consumed_lines > 0:
+                next_cursor = self._container_thread_cursor(
+                    record_offset,
+                    next_group_offset,
+                    next_line_offset + consumed_lines,
+                    skip_thread_ids=skip_thread_ids,
+                    anchor_record_id=anchor_record_id,
+                )
+                break
+            next_group_offset += 1
+            next_line_offset = 0
+            if next_group_offset < len(groups):
+                next_cursor = self._container_thread_cursor(
+                    record_offset,
+                    next_group_offset,
+                    0,
+                    skip_thread_ids=skip_thread_ids,
+                    anchor_record_id=anchor_record_id,
+                )
+            elif records_truncated:
+                next_cursor = self._container_thread_cursor(
+                    record_offset + records_consumed,
+                    0,
+                    0,
+                    skip_thread_ids=frozenset(completed_thread_ids),
+                    anchor_record_id=anchor_record_id,
+                )
+            else:
+                next_cursor = None
+
+        text = self._join_container_log_chunks(list(reversed(chunks_newest_first)))
+        returned_lines = len(text.splitlines())
+        return {
+            "text": text,
+            "limit": max(1, limit),
+            "offset": 0,
+            "returned_lines": returned_lines,
+            "total_lines": None,
+            "start_line": None,
+            "end_line": None,
+            "has_more_before": next_cursor is not None,
+            "query": None,
+            "next_cursor": next_cursor,
+        }
 
     def _container_thread_log_page(
         self,
@@ -210,6 +674,7 @@ class VmAgentThreadLogMixin:
         limit: int,
         offset: int,
         query: str | None,
+        cursor: str | None = None,
     ) -> dict[str, object]:
         if not execution_records:
             return _log_page_from_start(
@@ -219,45 +684,125 @@ class VmAgentThreadLogMixin:
                 query=query,
             )
         normalized_query = str(query or "").strip()
-        chunks: list[str] = []
-        target_lines = max(1, int(limit)) + max(0, int(offset)) + 1
-        line_count = 0
-        truncated_after = False
-        if (
-            not normalized_query
-            and len(execution_records) > _CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT
-        ):
-            chunks, truncated_after = self._container_thread_window_chunks(
-                worker_backend,
-                execution_records,
-                target_lines=target_lines,
+        normalized_cursor = str(cursor or "").strip()
+        if not normalized_query and (offset == 0 or normalized_cursor):
+            return self._container_lazy_thread_log_page(
+                session_id=session_id,
+                execution_records=execution_records,
+                worker_backend=worker_backend,
+                limit=limit,
+                cursor=normalized_cursor or None,
             )
-        else:
-            groups = self._container_thread_groups(worker_backend, execution_records)
-            for index, (_sort_key, thread_id, records, raw_text) in enumerate(groups):
-                chunk = self._container_thread_group_chunk(
-                    worker_backend,
-                    thread_id=thread_id,
-                    records=records,
-                    raw_text=raw_text,
-                )
-                chunks.append(chunk)
-                if not normalized_query:
-                    line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-                    if line_count >= target_lines:
-                        truncated_after = index < len(groups) - 1
-                        break
-        page = _log_page_from_start(
+        chunks: list[str] = []
+        groups = self._container_thread_groups(worker_backend, execution_records)
+        for _sort_key, thread_id, records, raw_text in groups:
+            chunk = self._container_thread_group_chunk(
+                worker_backend,
+                thread_id=thread_id,
+                records=records,
+                raw_text=raw_text,
+                body_lines=(
+                    None
+                    if normalized_query
+                    else max(1, limit) + max(0, offset)
+                ),
+            )
+            chunks.append(chunk)
+        page = _log_page_from_end(
             self._join_container_log_chunks(chunks),
             limit=limit,
             offset=offset,
             query=normalized_query or None,
         )
-        if truncated_after:
-            page["has_more_before"] = True
-            page["total_lines"] = None
-            page["end_line"] = None
+        page["next_cursor"] = None
         return page
+
+    def _container_latest_agent_run(
+        self,
+        worker_backend: Any,
+        execution_records: list[Any],
+    ) -> tuple[Any | None, list[tuple[Any, Mapping[str, Any]]]]:
+        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
+        agent_execution = next(
+            (
+                execution
+                for execution in reversed(sorted_records)
+                if self._container_execution_is_agent_run(execution)
+            ),
+            None,
+        )
+        artifact_metadata_by_execution: dict[str, Mapping[str, Any]] = {}
+        fallback_execution = None
+        if agent_execution is None:
+            for execution in reversed(sorted_records):
+                metadata = self._container_execution_artifact_metadata(execution)
+                if metadata is None:
+                    execution_metadata = getattr(execution, "metadata", None)
+                    if (
+                        isinstance(execution_metadata, Mapping)
+                        and str(execution_metadata.get("effect_type") or "").strip()
+                    ):
+                        continue
+                    metadata = self._container_legacy_artifact_metadata(
+                        worker_backend,
+                        execution,
+                    )
+                if metadata is not None:
+                    artifact_metadata_by_execution[execution.execution_id] = metadata
+                    continue
+                thread_id = self._container_execution_stored_thread_id(execution)
+                if thread_id is None:
+                    raw_text = self._container_execution_thread_probe_text(
+                        worker_backend, execution
+                    )
+                    thread_id = self._container_log_thread_id(raw_text)
+                if thread_id is not None:
+                    agent_execution = execution
+                    break
+                if fallback_execution is None:
+                    fallback_execution = execution
+            agent_execution = agent_execution or fallback_execution
+        if agent_execution is None:
+            return None, []
+
+        artifact_events: list[tuple[Any, Mapping[str, Any]]] = []
+        agent_sort_key = self._container_execution_sort_key(agent_execution)
+        previous_agent_sort_key = next(
+            (
+                self._container_execution_sort_key(execution)
+                for execution in reversed(sorted_records)
+                if execution is not agent_execution
+                and self._container_execution_is_agent_run(execution)
+                and self._container_execution_sort_key(execution) < agent_sort_key
+            ),
+            None,
+        )
+        for execution in sorted_records:
+            if execution is agent_execution:
+                continue
+            execution_sort_key = self._container_execution_sort_key(execution)
+            if (
+                previous_agent_sort_key is not None
+                and execution_sort_key <= previous_agent_sort_key
+            ):
+                continue
+            metadata = artifact_metadata_by_execution.get(execution.execution_id)
+            if metadata is None:
+                metadata = self._container_execution_artifact_metadata(execution)
+            if metadata is None and not self._container_execution_is_agent_run(execution):
+                metadata = self._container_legacy_artifact_metadata(
+                    worker_backend,
+                    execution,
+                )
+            if (
+                metadata is not None
+                and execution_sort_key < agent_sort_key
+                and str(metadata.get("operation_kind") or "") != "artifact_import"
+            ):
+                continue
+            if metadata is not None:
+                artifact_events.append((execution, metadata))
+        return agent_execution, artifact_events
 
     def _container_execution_log_page(
         self,
@@ -278,38 +823,71 @@ class VmAgentThreadLogMixin:
             )
 
         normalized_query = str(query or "").strip()
-        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-
-        chunks: list[str] = []
-        truncated_before = False
-        # A short auxiliary execution, such as an artifact import, must not hide the
-        # preceding agent transcript. Read backward until the requested window is full.
+        agent_execution, artifact_events = self._container_latest_agent_run(
+            worker_backend,
+            execution_records,
+        )
+        if agent_execution is None:
+            return _log_page_from_end(
+                f"No agent executions have run for session {session_id}.\n",
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+        agent_sort_key = self._container_execution_sort_key(agent_execution)
+        before_event_lines = [
+            self._container_artifact_event_line(execution, metadata)
+            for execution, metadata in artifact_events
+            if self._container_execution_sort_key(execution) < agent_sort_key
+        ]
+        after_event_lines = [
+            self._container_artifact_event_line(execution, metadata)
+            for execution, metadata in artifact_events
+            if self._container_execution_sort_key(execution) >= agent_sort_key
+        ]
         target_lines = max(1, limit) + max(0, offset) + 1
-        line_count = 0
         if normalized_query:
-            for execution in sorted_records:
-                chunk = self._container_execution_log_chunk(
-                    worker_backend,
-                    execution,
-                    lines=0,
-                    mode="execution",
-                )
-                chunks.append(chunk)
+            payload = self._container_execution_log_page_payload(
+                worker_backend,
+                agent_execution,
+                limit=target_lines,
+                offset=0,
+                query=normalized_query,
+                mode="execution",
+            )
+            header = self._container_execution_log_header(
+                agent_execution,
+                mode="execution",
+            )
+            body = str(payload.get("text") or "").rstrip()
+            run_lines = [
+                header,
+                *before_event_lines,
+                *([body] if body else []),
+                *after_event_lines,
+            ]
+            chunks = ["\n".join(run_lines)]
+            truncated_before = bool(payload.get("has_more_before"))
         else:
-            for _original_index, execution in reversed(list(enumerate(sorted_records))):
-                separator_lines = 1 if chunks else 0
-                body_lines = max(1, target_lines - line_count - separator_lines - 1)
-                chunk, execution_has_more = self._container_execution_log_page_chunk(
-                    worker_backend,
-                    execution,
-                    body_lines=body_lines,
-                    mode="execution",
+            body_lines = max(1, target_lines - len(after_event_lines) - 1)
+            chunk, truncated_before = self._container_execution_log_page_chunk(
+                worker_backend,
+                agent_execution,
+                body_lines=body_lines,
+                mode="execution",
+            )
+            chunk_lines = chunk.splitlines()
+            visible_before_event_lines = [] if truncated_before else before_event_lines
+            chunks = [
+                "\n".join(
+                    [
+                        chunk_lines[0],
+                        *visible_before_event_lines,
+                        *chunk_lines[1:],
+                        *after_event_lines,
+                    ]
                 )
-                chunks.insert(0, chunk)
-                line_count += len(chunk.splitlines()) + separator_lines
-                if execution_has_more or line_count >= target_lines:
-                    truncated_before = execution_has_more or _original_index > 0
-                    break
+            ]
 
         page = _log_page_from_end(
             self._join_container_log_chunks(chunks),
@@ -333,6 +911,7 @@ class VmAgentThreadLogMixin:
         limit: int = 200,
         offset: int = 0,
         query: str | None = None,
+        cursor: str | None = None,
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> dict[str, object]:
@@ -396,6 +975,7 @@ class VmAgentThreadLogMixin:
                         limit=normalized_limit,
                         offset=normalized_offset,
                         query=normalized_query or None,
+                        cursor=cursor,
                     )
                 else:
                     page = self._container_execution_log_page(
@@ -434,7 +1014,8 @@ class VmAgentThreadLogMixin:
 
     container_thread_log_chunks = _container_thread_log_chunks
     container_thread_groups = _container_thread_groups
-    container_thread_window_chunks = _container_thread_window_chunks
+    container_recent_thread_groups = _container_recent_thread_groups
     container_thread_group_chunk = _container_thread_group_chunk
+    container_lazy_thread_log_page = _container_lazy_thread_log_page
     container_thread_log_page = _container_thread_log_page
     container_execution_log_page = _container_execution_log_page

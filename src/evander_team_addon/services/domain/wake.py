@@ -6,6 +6,7 @@ from datetime import (
 )
 from typing import Any
 from ...models import (
+    ACTIVE_TEAM_CASE_STATUS_VALUES,
     AgentInboxItem,
     AgentRuntime,
     AgentStatus,
@@ -14,7 +15,6 @@ from ...models import (
     EphemeralAssignmentState,
     PersistentAgent,
     ReviewRequest,
-    TeamCaseStatus,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamRecordState,
@@ -45,6 +45,7 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
         TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
     }
     tasks = [
         task
@@ -60,7 +61,7 @@ def _case_payloads_for_agent(state: TeamState, agent_id: str) -> list[dict[str, 
     cases = [
         case
         for case in state.cases.values()
-        if case.status != TeamCaseStatus.CLOSED
+        if case.status.value in ACTIVE_TEAM_CASE_STATUS_VALUES
         and (
             case.owner_agent_id == agent_id
             or any(task_id in active_task_ids for task_id in case.task_ids)
@@ -74,7 +75,7 @@ def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, An
     cases = [
         case
         for case in state.cases.values()
-        if case.team_id == team_id and case.status != TeamCaseStatus.CLOSED
+        if case.team_id == team_id and case.status.value in ACTIVE_TEAM_CASE_STATUS_VALUES
     ]
     cases.sort(key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id))
     return [case.model_dump(mode="json") for case in cases]

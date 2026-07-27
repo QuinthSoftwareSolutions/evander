@@ -109,6 +109,37 @@ class TeamStateRepository:
 
         return self.store.update_object_with_command_transaction(_update)
 
+    def update_with_dispatch_activity(
+        self,
+        mutator: Callable[[TeamState], TeamState | None],
+        *,
+        activity: TeamDispatchActivity | Mapping[str, Any],
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _update(
+            payload: dict[str, Any],
+            tx: TeamStateSqliteCommandTransaction,
+        ) -> TeamState:
+            state = TeamState.model_validate(payload)
+            if expected_revision is not None and state.revision != expected_revision:
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision,
+                    current_revision=state.revision,
+                )
+            next_state = mutator(state) or state
+            now = utc_now()
+            next_state = next_state.model_copy(
+                update={"revision": state.revision + 1, "updated_at": now},
+                deep=True,
+            )
+            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
+            payload.clear()
+            payload.update(validated.model_dump(mode="json"))
+            tx.append_dispatch_activity(activity)
+            return validated
+
+        return self.store.update_object_with_command_transaction(_update)
+
     def append_dispatch_activity(
         self,
         activity: TeamDispatchActivity | Mapping[str, Any],

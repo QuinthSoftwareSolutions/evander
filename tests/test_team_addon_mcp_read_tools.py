@@ -24,7 +24,10 @@ from evander_team_addon import mcp as team_mcp
 from evander_team_addon.models import (
     AgentInboxItem,
     AgentRuntime,
+    AgentTask,
+    GitPromotionRecord,
     GitWorkContext,
+    PersistentAgent,
     ProjectGoal,
     ReleasePackage,
     ReviewRequest,
@@ -36,6 +39,7 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.repository import ADDON_ID, TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.read_service import TeamReadService
 
 
 # Keep this file importable on branches before the production constants land. The
@@ -98,6 +102,16 @@ TEAM_LIST_PROJECTS_TOOL = getattr(
     "team_list_projects",
 )
 TEAM_GET_PROJECT_TOOL = getattr(team_mcp, "TEAM_GET_PROJECT_TOOL", "team_get_project")
+TEAM_LIST_OUTCOME_KINDS_TOOL = getattr(
+    team_mcp,
+    "TEAM_LIST_OUTCOME_KINDS_TOOL",
+    "team_list_outcome_kinds",
+)
+TEAM_GET_OUTCOME_KIND_TOOL = getattr(
+    team_mcp,
+    "TEAM_GET_OUTCOME_KIND_TOOL",
+    "team_get_outcome_kind",
+)
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = getattr(
     team_mcp,
     "TEAM_LIST_RUNTIME_ATTENTION_TOOL",
@@ -126,6 +140,8 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
+    TEAM_LIST_OUTCOME_KINDS_TOOL,
+    TEAM_GET_OUTCOME_KIND_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
     TEAM_LIST_BLOCKERS_TOOL,
     TEAM_GET_BLOCKER_TOOL,
@@ -203,6 +219,25 @@ def _seed_read_tool_state(runtime_dir: Path) -> TeamStateRepository:
         lead_session_id="session-beta-lead",
         worker_agent_id="beta-dev",
         worker_session_id="session-beta-dev",
+    )
+    admin.create_outcome_kind_definition(
+        definition_id="alpha-outcome-prepared-action",
+        team_id="alpha",
+        project_id="alpha-project",
+        kind="prepared_action",
+        name="Prepared action",
+        description="A durable action ready for approval.",
+        reference_requirements="Reference the prepared action ID.",
+        evidence_requirements="Cite validation evidence.",
+        expected_revision=repo.read().revision,
+    )
+    admin.create_outcome_kind_definition(
+        definition_id="beta-outcome-private",
+        team_id="beta",
+        project_id="beta-project",
+        kind="private_beta_outcome",
+        name="Private beta outcome",
+        expected_revision=repo.read().revision,
     )
     _seed_read_records(repo)
     return repo
@@ -441,6 +476,11 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         (TEAM_LIST_RELEASE_PACKAGES_TOOL, {}, "alpha-release"),
         (TEAM_LIST_AGENTS_TOOL, {}, "alpha-dev"),
         (TEAM_LIST_PROJECTS_TOOL, {}, "alpha-project"),
+        (
+            TEAM_LIST_OUTCOME_KINDS_TOOL,
+            {"project_id": "alpha-project"},
+            "alpha-outcome-prepared-action",
+        ),
         (TEAM_LIST_BLOCKERS_TOOL, {}, alpha_blocker_id),
     ]
     for tool_name, arguments, expected_id in list_calls:
@@ -496,6 +536,11 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         (TEAM_GET_AGENT_TOOL, {"agent_id": "alpha-dev"}, "alpha-dev"),
         (TEAM_GET_MY_IDENTITY_TOOL, {}, "alpha-dev"),
         (TEAM_GET_PROJECT_TOOL, {"project_id": "alpha-project"}, "alpha-project"),
+        (
+            TEAM_GET_OUTCOME_KIND_TOOL,
+            {"definition_id": "alpha-outcome-prepared-action"},
+            "alpha-outcome-prepared-action",
+        ),
         (TEAM_GET_BLOCKER_TOOL, {"blocker_id": alpha_blocker_id}, alpha_blocker_id),
     ]
     for tool_name, arguments, expected_id in get_calls:
@@ -508,6 +553,252 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         assert _item(result)["id"] == expected_id
 
     assert repo.read().revision == before_revision
+    _call_denied_or_not_found(
+        server,
+        TEAM_GET_OUTCOME_KIND_TOOL,
+        {
+            "session_id": "session-alpha-dev",
+            "definition_id": "beta-outcome-private",
+        },
+    )
+
+
+def test_runtime_attention_read_tool_exposes_derived_operator_context(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_LIST_RUNTIME_ATTENTION_TOOL])
+    _seed_read_tool_state(context.config.runtime_dir)
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+        {"session_id": "session-alpha-dev", "limit": 20},
+    )
+
+    _assert_read_success(result)
+    row = next(record for record in _items(result) if record["id"] == "alpha-task-c")
+    assert row["attention_group"] == "active_obligation"
+    assert row["attention_reason"] == "task_blocked"
+    assert row["occurred_at"]
+    assert isinstance(row["age_seconds"], int)
+    assert row["age_bucket"] in {"lt_1h", "lt_1d", "lt_7d", "gte_7d"}
+    assert row["reconciliation_required"] is False
+    assert row["terminal_context"] == []
+    assert row["team_id"] == "alpha"
+    assert row["project_id"] == "alpha-project"
+    assert row["project_ids"] == ["alpha-project"]
+    assert row["links"]["task_ids"] == ["alpha-task-c"]
+    assert row["links"]["project_ids"] == ["alpha-project"]
+    assert "raw_context" not in json.dumps(row)
+
+
+def test_runtime_attention_read_tool_exposes_visible_failed_promotion_commit(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_LIST_RUNTIME_ATTENTION_TOOL])
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+
+    def _add_failed_promotion(state):
+        state.git_promotions["alpha-promotion-failed"] = GitPromotionRecord(
+            id="alpha-promotion-failed",
+            project_id="alpha-project",
+            actor_agent_id="alpha-dev",
+            source_branch="agents/session-alpha-dev/failed-promotion",
+            target_branch="team/alpha/features/failed-promotion",
+            promotion_kind="feature",
+            state="failed",
+            commit_sha="failed-commit-sha",
+            error="promotion failed",
+        )
+        return state
+
+    repo.update(_add_failed_promotion)
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+        {"session_id": "session-alpha-dev", "limit": 20},
+    )
+
+    _assert_read_success(result)
+    row = next(
+        record
+        for record in _items(result)
+        if record["id"] == "alpha-promotion-failed"
+    )
+    assert row["promotion_id"] == "alpha-promotion-failed"
+    assert row["commit_sha"] == "failed-commit-sha"
+
+
+def test_runtime_attention_read_tool_redacts_hidden_session_ids_from_narrative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_LIST_RUNTIME_ATTENTION_TOOL])
+    _seed_read_tool_state(context.config.runtime_dir)
+    expires_at = "2026-07-01T12:00:00+00:00"
+
+    def _runtime_payload(_state):
+        return {
+            "attention": [
+                {
+                    "id": "alpha-lead:expired-session",
+                    "kind": "expired_agent_session",
+                    "severity": "critical",
+                    "title": "Expired session for alpha-lead",
+                    "detail": (
+                        "agent alpha-lead; session session-alpha-lead "
+                        f"expired at {expires_at}"
+                    ),
+                    "state": "expired",
+                    "agent_id": "alpha-lead",
+                    "session_id": "session-alpha-lead",
+                    "occurred_at": expires_at,
+                    "links": {
+                        "agent_ids": ["alpha-lead"],
+                        "session_ids": ["session-alpha-lead"],
+                    },
+                },
+                {
+                    "id": "alpha-dev:expired-session",
+                    "kind": "expired_agent_session",
+                    "severity": "critical",
+                    "title": "Expired session for alpha-dev",
+                    "detail": (
+                        "agent alpha-dev; session session-alpha-dev "
+                        f"expired at {expires_at}"
+                    ),
+                    "state": "expired",
+                    "agent_id": "alpha-dev",
+                    "session_id": "session-alpha-dev",
+                    "occurred_at": expires_at,
+                    "links": {
+                        "agent_ids": ["alpha-dev"],
+                        "session_ids": ["session-alpha-dev"],
+                    },
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.read_service.runtime_operations_payload",
+        _runtime_payload,
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+        {"session_id": "session-alpha-dev", "limit": 20},
+    )
+
+    _assert_read_success(result)
+    rows = {record["id"]: record for record in _items(result)}
+    hidden = rows["alpha-lead:expired-session"]
+    assert "session_id" not in hidden
+    assert "session_ids" not in hidden["links"]
+    assert "session-alpha-lead" not in json.dumps(hidden, sort_keys=True)
+    assert hidden["detail"] == (
+        f"agent alpha-lead; session [not visible] expired at {expires_at}"
+    )
+
+    own = rows["alpha-dev:expired-session"]
+    assert own["session_id"] == "session-alpha-dev"
+    assert own["links"]["session_ids"] == ["session-alpha-dev"]
+    assert "session session-alpha-dev expired" in own["detail"]
+
+
+def test_runtime_attention_read_service_filters_payload_links_to_actor_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_read_tool_state(tmp_path / "runtime")
+
+    def _add_teamless_inbox(state):
+        state.agents["unassigned"] = PersistentAgent(
+            id="unassigned",
+            session_id="session-unassigned",
+        )
+        state.tasks["beta-task-a"].state = TeamTaskState.ACCEPTED
+        state.deliverables["beta-deliverable"].state = TeamRecordState.ACCEPTED
+        state.release_packages["beta-release"].state = TeamRecordState.ACCEPTED
+        state.inbox["unassigned-inbox"] = AgentInboxItem(
+            id="unassigned-inbox",
+            recipient_agent_id="unassigned",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=True,
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+            payload={
+                "message": "Review the referenced records.",
+                "nested_context": {
+                    "task_id": "beta-task-a",
+                    "deliverable_id": "beta-deliverable",
+                    "release_package_id": "beta-release",
+                    "session_id": "session-beta-lead",
+                },
+            },
+        )
+        state.inbox["unassigned-passive-inbox"] = AgentInboxItem(
+            id="unassigned-passive-inbox",
+            recipient_agent_id="unassigned",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+            payload={"message": "Durable informational update."},
+        )
+        return state
+
+    repo.update(_add_teamless_inbox)
+    state = repo.read()
+    state.tasks["unassigned-task"] = AgentTask(
+        id="unassigned-task",
+        owner_agent_id="unassigned",
+        project_id="beta-project",
+        priority=1,
+        state=TeamTaskState.BLOCKED,
+        title="Visible task with a hidden dependency",
+        description="The dependency remains outside the actor's readable scope.",
+        created_by_actor="operator",
+        dependency_task_ids=["beta-task-a"],
+    )
+    result = TeamReadService(
+        state=state,
+        actor=state.agents["unassigned"],
+    ).list_runtime_attention(
+        limit=20,
+    )
+
+    row = next(record for record in result["records"] if record["id"] == "unassigned-inbox")
+    assert row["links"] == {
+        "agent_ids": ["unassigned"],
+        "inbox_item_ids": ["unassigned-inbox"],
+    }
+    assert row["terminal_context"] == []
+    assert row["reconciliation_required"] is False
+    assert row["attention_group"] == "active_obligation"
+    assert row["attention_reason"] == "awaiting_response"
+    assert row["project_ids"] == []
+    assert "team_id" not in row
+    assert "project_id" not in row
+    assert "beta-" not in json.dumps(row, sort_keys=True)
+
+    task_row = next(
+        record for record in result["records"] if record["id"] == "unassigned-task"
+    )
+    assert task_row["blocked_by_task_ids"] == []
+    assert task_row["links"]["task_ids"] == ["unassigned-task"]
+    assert "session-beta-lead" not in json.dumps(result, sort_keys=True)
+    row_ids = [record["id"] for record in result["records"]]
+    assert row_ids.index("unassigned-inbox") < row_ids.index("unassigned-passive-inbox")
+    group_ranks = {
+        "active_obligation": 0,
+        "failed_attempt": 1,
+        "retained_history": 2,
+    }
+    assert [
+        group_ranks[record["attention_group"]] for record in result["records"]
+    ] == sorted(group_ranks[record["attention_group"]] for record in result["records"])
 
 
 def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient_session(

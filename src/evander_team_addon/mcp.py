@@ -6,7 +6,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -57,6 +57,7 @@ from .services.commands import (
     TeamMemoryCommandService,
     TeamNoteCommandService,
     TeamOperatorEscalationCommandService,
+    TeamOutcomeCatalogCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
@@ -65,6 +66,9 @@ from .services.memory_service import (
     TeamMemorySemanticService,
     list_memory_records,
     memory_record_payload,
+)
+from .services.human_review_assignment_service import (
+    human_review_eligibility_resolver,
 )
 
 
@@ -85,18 +89,32 @@ TEAM_REPORT_BLOCKER_TOOL = "team_report_blocker"
 TEAM_UPDATE_BLOCKER_TOOL = "team_update_blocker"
 TEAM_CREATE_CASE_TOOL = "team_create_case"
 TEAM_UPDATE_CASE_TOOL = "team_update_case"
+TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = (
+    "team_propose_human_finding_resolution"
+)
+TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL = (
+    "team_create_human_finding_correction_root"
+)
+TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
+TEAM_CREATE_OUTCOME_KIND_TOOL = "team_create_outcome_kind"
+TEAM_UPDATE_OUTCOME_KIND_TOOL = "team_update_outcome_kind"
+TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
+TEAM_CANCEL_TASK_TOOL = "team_cancel_task"
 TEAM_UPDATE_GOAL_TOOL = "team_update_goal"
 TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
 TEAM_REVOKE_STAND_DOWN_TOOL = "team_revoke_stand_down"
 TEAM_SUBMIT_DELIVERABLE_TOOL = "team_submit_deliverable"
 TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL = "team_submit_deliverable_for_review"
+TEAM_DECIDE_DELIVERABLE_TOOL = "team_decide_deliverable"
 TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL = "team_link_deliverable_replacement"
 TEAM_REQUEST_REVIEW_TOOL = "team_request_review"
 TEAM_DECIDE_REVIEW_TOOL = "team_decide_review"
 TEAM_RETRY_REVIEW_TOOL = "team_retry_review"
+TEAM_WITHDRAW_REVIEW_TOOL = "team_withdraw_review"
+TEAM_RETIRE_REVIEW_TOOL = "team_retire_review"
 TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
@@ -129,6 +147,8 @@ TEAM_GET_AGENT_TOOL = "team_get_agent"
 TEAM_GET_MY_IDENTITY_TOOL = "team_get_my_identity"
 TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
 TEAM_GET_PROJECT_TOOL = "team_get_project"
+TEAM_LIST_OUTCOME_KINDS_TOOL = "team_list_outcome_kinds"
+TEAM_GET_OUTCOME_KIND_TOOL = "team_get_outcome_kind"
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = "team_list_runtime_attention"
 TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
 
@@ -147,18 +167,28 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
+    TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
+    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_UPDATE_OUTCOME_KIND_TOOL,
+    TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_CANCEL_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_RETRY_REVIEW_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -196,6 +226,8 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
+    TEAM_LIST_OUTCOME_KINDS_TOOL,
+    TEAM_GET_OUTCOME_KIND_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
     TEAM_SEARCH_MEMORY_TOOL,
 )
@@ -214,18 +246,28 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
+    TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
+    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_UPDATE_OUTCOME_KIND_TOOL,
+    TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_CANCEL_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_RETRY_REVIEW_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -258,18 +300,28 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
+    TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
+    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_OUTCOME_KIND_TOOL,
+    TEAM_UPDATE_OUTCOME_KIND_TOOL,
+    TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_CANCEL_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_REQUEST_REVIEW_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_RETRY_REVIEW_TOOL,
+    TEAM_WITHDRAW_REVIEW_TOOL,
+    TEAM_RETIRE_REVIEW_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
@@ -285,6 +337,10 @@ MCP_TOOL_NAMES = (
     *READ_TEAM_MCP_TOOL_NAMES,
 )
 _MCP_TOOL_CATALOG_DESCRIPTIONS = {
+    TEAM_DECIDE_DELIVERABLE_TOOL: (
+        "Accept or reject a direct deliverable handoff as its recorded superior; "
+        "formal review decisions remain separate."
+    ),
     TEAM_REPLY_TO_CHAT_TOOL: (
         "Reply to the specific human operator message that started the current Team Chat "
         "dispatch. Available only while that dispatch is active; use "
@@ -325,11 +381,17 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
     task_creation_commands = TeamTaskCreationCommandService(repo)
+    outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
     task_update_commands = TeamTaskUpdateCommandService(repo)
     agent_control_commands = TeamAgentControlCommandService(repo)
     governance_commands = TeamGovernanceCommandService(repo)
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(repo)
-    review_commands = TeamReviewCommandService(repo)
+    review_commands = TeamReviewCommandService(
+        repo,
+        human_review_eligibility_resolver=human_review_eligibility_resolver(
+            getattr(context.auth, "user_store", None)
+        ),
+    )
     git_release_commands = TeamGitReleaseCommandService(repo)
     ephemeral_commands = TeamEphemeralCommandService(repo)
     resolver = TeamMcpContextResolver(repo=repo, context=context)
@@ -432,6 +494,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         case_commands,
         task_creation_commands,
         task_update_commands,
+        outcome_catalog_commands,
         blocker_commands,
         agent_control_commands,
         resolver,
@@ -1023,6 +1086,7 @@ def _register_slice6_tools(
     case_commands: TeamCaseCommandService,
     task_creation_commands: TeamTaskCreationCommandService,
     task_update_commands: TeamTaskUpdateCommandService,
+    outcome_catalog_commands: TeamOutcomeCatalogCommandService,
     blocker_commands: TeamBlockerCommandService,
     agent_control_commands: TeamAgentControlCommandService,
     resolver: TeamMcpContextResolver,
@@ -1138,6 +1202,137 @@ def _register_slice6_tools(
         description="Update fields or task links on an existing Team case.",
     )
 
+    def team_propose_human_finding_resolution(
+        finding_id: str,
+        proposed_resolution: str,
+        evidence_refs: list[str],
+        proposed_by_deliverable_ids: list[str],
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
+        )
+        try:
+            _state, result = (
+                case_commands.propose_human_finding_resolution_command(
+                    session_id=caller.session_id,
+                    finding_id=finding_id,
+                    proposed_resolution=proposed_resolution,
+                    evidence_refs=evidence_refs,
+                    proposed_by_deliverable_ids=proposed_by_deliverable_ids,
+                    request_id=request_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_propose_human_finding_resolution,
+        name=TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
+        description=(
+            "Propose resolution of an open human-review finding from accepted "
+            "correction deliverables. Requires evidence and request_id; this does "
+            "not make the human decision."
+        ),
+    )
+
+    def team_create_human_finding_correction_root(
+        finding_id: str,
+        owner_agent_id: str,
+        title: str,
+        description: str,
+        request_id: str,
+        task_id: str | None = None,
+        originating_task_id: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+        )
+        try:
+            _state, result = (
+                case_commands.create_human_finding_correction_root_command(
+                    session_id=caller.session_id,
+                    finding_id=finding_id,
+                    owner_agent_id=owner_agent_id,
+                    title=title,
+                    description=description,
+                    request_id=request_id,
+                    task_id=task_id,
+                    originating_task_id=originating_task_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_create_human_finding_correction_root,
+        name=TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+        description=(
+            "Create and retarget an independent correction root for an ambiguous "
+            "or release-wide human-review finding. Requires root-task authority "
+            "and request_id."
+        ),
+    )
+
+    def team_close_post_release_case(
+        case_id: str,
+        reason: str,
+        evidence_refs: list[str],
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
+        )
+        try:
+            _state, result = (
+                case_commands.close_post_release_feedback_case_command(
+                    session_id=caller.session_id,
+                    case_id=case_id,
+                    reason=reason,
+                    evidence_refs=evidence_refs,
+                    request_id=request_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_close_post_release_case,
+        name=TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
+        description=(
+            "Close a post-release feedback case after all linked tasks resolve. "
+            "Requires a reason, evidence, and request_id; it does not roll back "
+            "the published release."
+        ),
+    )
+
     def team_create_task(
         owner_agent_id: str,
         project_id: str,
@@ -1149,6 +1344,7 @@ def _register_slice6_tools(
         case_id: str | None = None,
         state: str = "pending",
         parent_task_id: str | None = None,
+        originating_task_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1173,6 +1369,7 @@ def _register_slice6_tools(
                 description=description,
                 state=state,
                 parent_task_id=parent_task_id,
+                originating_task_id=originating_task_id,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1220,6 +1417,120 @@ def _register_slice6_tools(
         team_create_tasks,
         name=TEAM_CREATE_TASKS_TOOL,
         description="Create a batch of Team tasks all-or-nothing.",
+    )
+
+    def team_create_outcome_kind(
+        team_id: str,
+        kind: str,
+        name: str,
+        request_id: str,
+        project_id: str | None = None,
+        definition_id: str | None = None,
+        description: str = "",
+        reference_requirements: str = "",
+        evidence_requirements: str = "",
+        handled_inbox_item_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_CREATE_OUTCOME_KIND_TOOL,
+        )
+        try:
+            _state, result = outcome_catalog_commands.create_outcome_kind_command(
+                session_id=caller.session_id,
+                team_id=team_id,
+                project_id=project_id,
+                definition_id=definition_id,
+                kind=kind,
+                name=name,
+                description=description,
+                reference_requirements=reference_requirements,
+                evidence_requirements=evidence_requirements,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_create_outcome_kind,
+        name=TEAM_CREATE_OUTCOME_KIND_TOOL,
+        description=(
+            "Create a defined Team outcome kind. Requires manage_outcome_kinds "
+            "and matching team-manager or project-lead scope."
+        ),
+    )
+
+    def team_update_outcome_kind(
+        definition_id: str,
+        request_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        reference_requirements: str | None = None,
+        evidence_requirements: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_UPDATE_OUTCOME_KIND_TOOL,
+        )
+        try:
+            _state, result = outcome_catalog_commands.update_outcome_kind_command(
+                session_id=caller.session_id,
+                definition_id=definition_id,
+                name=name,
+                description=description,
+                reference_requirements=reference_requirements,
+                evidence_requirements=evidence_requirements,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_update_outcome_kind,
+        name=TEAM_UPDATE_OUTCOME_KIND_TOOL,
+        description=(
+            "Update an outcome kind's human meaning and reference/evidence "
+            "requirements. Existing task and review snapshots do not change."
+        ),
+    )
+
+    def team_archive_outcome_kind(
+        definition_id: str,
+        request_id: str,
+        archived: bool = True,
+        handled_inbox_item_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
+        )
+        try:
+            _state, result = outcome_catalog_commands.archive_outcome_kind_command(
+                session_id=caller.session_id,
+                definition_id=definition_id,
+                archived=archived,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_archive_outcome_kind,
+        name=TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
+        description=(
+            "Archive or restore an outcome kind definition. Active review "
+            "profile references must be removed before archival."
+        ),
     )
 
     def team_update_task(
@@ -1273,12 +1584,53 @@ def _register_slice6_tools(
         description="Update a Team task without accepting or rejecting review work.",
     )
 
+    def team_cancel_task(
+        task_id: str,
+        reason_code: str,
+        reason: str,
+        request_id: str,
+        successor_task_id: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_CANCEL_TASK_TOOL,
+        )
+        try:
+            _state, result = task_update_commands.cancel_task_command(
+                session_id=caller.session_id,
+                task_id=task_id,
+                reason_code=reason_code,
+                reason=reason,
+                successor_task_id=successor_task_id,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_cancel_task,
+        name=TEAM_CANCEL_TASK_TOOL,
+        description=(
+            "Cancel a Team task with an audited reason and optional same-project "
+            "successor. Unresolved descendants must be handled first."
+        ),
+    )
+
     def team_report_blocker(
         source_kind: str,
         source_id: str,
         summary: str,
         request_id: str,
         details: str | None = None,
+        reason_code: str = "unspecified",
         priority: str = "normal",
         project_id: str | None = None,
         task_id: str | None = None,
@@ -1298,6 +1650,7 @@ def _register_slice6_tools(
                 source_id=source_id,
                 summary=summary,
                 details=details,
+                reason_code=reason_code,
                 priority=priority,
                 project_id=project_id,
                 task_id=task_id,
@@ -1486,6 +1839,8 @@ def _register_slice7_tools(
         git_refs: dict[str, Any] | None = None,
         verification: dict[str, Any] | None = None,
         outcomes: list[dict[str, Any]] | None = None,
+        source_deliverable_ids: list[str] | None = None,
+        completion: dict[str, Any] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1509,6 +1864,8 @@ def _register_slice7_tools(
                 git_refs=git_refs,
                 verification=verification,
                 outcomes=outcomes,
+                source_deliverable_ids=source_deliverable_ids,
+                completion=completion,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1533,8 +1890,53 @@ def _register_slice7_tools(
             "unknown with a summary. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "
             "context. Call team_publish_review_branch separately only when a "
-            "durable review branch is needed. Requires task_id, summary, and "
-            "request_id."
+            "durable review branch is needed. Set supersedes_deliverable_id when "
+            "reworking a rejected or blocked same-task deliverable; its open "
+            "findings carry forward. Requires task_id, summary, and request_id."
+        ),
+    )
+
+    def team_decide_deliverable(
+        deliverable_id: str,
+        decision: Literal["accepted", "rejected"],
+        request_id: str,
+        reason: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_DECIDE_DELIVERABLE_TOOL,
+        )
+        try:
+            _state, result = deliverable_commands.decide_deliverable_command(
+                session_id=caller.session_id,
+                deliverable_id=deliverable_id,
+                decision=decision,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_decide_deliverable,
+        name=TEAM_DECIDE_DELIVERABLE_TOOL,
+        description=(
+            "Accept or reject a deliverable handed directly to the caller for "
+            "superior acceptance. Only the superior recorded on that handoff can "
+            "decide it. Acceptance can complete the task; rejection requires a "
+            "concrete reason and returns the task to its owner for rework. Include "
+            "the matching deliverable_notice id in handled_inbox_item_ids. Do not "
+            "use this for a deliverable with formal review requests; use "
+            "team_decide_review for an assigned review instead. Requires "
+            "deliverable_id, decision, and request_id."
         ),
     )
 
@@ -1575,7 +1977,9 @@ def _register_slice7_tools(
             "deliverable, reviews, and request_id. The deliverable may include "
             "verification status and git_refs. Git deliverables must include "
             "deliverable.branch_context_id; git_refs do not publish a review "
-            "branch by themselves and must match that context."
+            "branch by themselves and must match that context. A rework may set "
+            "deliverable.supersedes_deliverable_id to a rejected or blocked "
+            "same-task predecessor; its open findings carry forward."
         ),
     )
 
@@ -1711,8 +2115,10 @@ def _register_slice7_tools(
             "the candidate failed review; blocked is reserved for a non-candidate "
             "process or evidence-access blocker and requires a finding. For blocked "
             "decisions, block_kind may identify dependency, input_unavailable, policy, "
-            "system, or unspecified. Requires "
-            "review_request_id, state, and request_id."
+            "system, or unspecified. An accepted review must use finding_resolutions "
+            "for every open carried finding owned by its profile or reviewer role; "
+            "acceptance cascades only when all current reviews are accepted and no "
+            "finding remains open. Requires review_request_id, state, and request_id."
         ),
     )
 
@@ -1753,6 +2159,82 @@ def _register_slice7_tools(
             "non-release review without rewriting its immutable decision. The producer, "
             "supervisor, project lead, or team manager may retry it and optionally choose "
             "another eligible reviewer. Requires review_request_id, reason, and request_id."
+        ),
+    )
+
+    def team_withdraw_review(
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_WITHDRAW_REVIEW_TOOL,
+        )
+        try:
+            _state, result = review_commands.withdraw_review_command(
+                session_id=caller.session_id,
+                review_request_id=review_request_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_withdraw_review,
+        name=TEAM_WITHDRAW_REVIEW_TOOL,
+        description=(
+            "Withdraw a mistaken or unnecessary current pending non-release review "
+            "without recording a decision. The requester, deliverable producer, "
+            "producer's supervisor, project lead, or team manager may withdraw it. "
+            "History is preserved. Requires review_request_id, reason, and request_id."
+        ),
+    )
+
+    def team_retire_review(
+        review_request_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RETIRE_REVIEW_TOOL,
+        )
+        try:
+            _state, result = review_commands.retire_review_command(
+                session_id=caller.session_id,
+                review_request_id=review_request_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_retire_review,
+        name=TEAM_RETIRE_REVIEW_TOOL,
+        description=(
+            "Retire a current accepted, rejected, or blocked non-release review. "
+            "Only a project lead or team manager may do this. The decision and "
+            "history remain; open findings are not resolved or waived. Requires "
+            "review_request_id, reason, and request_id."
         ),
     )
 
@@ -1849,6 +2331,8 @@ def _register_slice8_tools(
         deliverable_ids: list[str],
         request_id: str,
         id: str | None = None,
+        supersedes_release_package_id: str | None = None,
+        post_release_feedback_case_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
@@ -1866,6 +2350,8 @@ def _register_slice8_tools(
             _state, result = command_service.request_release_command(
                 session_id=caller.session_id,
                 id=id,
+                supersedes_release_package_id=supersedes_release_package_id,
+                post_release_feedback_case_id=post_release_feedback_case_id,
                 project_id=project_id,
                 deliverable_ids=deliverable_ids,
                 release_branch=release_branch,
@@ -2762,6 +3248,64 @@ def _register_read_tools(
         team_get_project,
         name=TEAM_GET_PROJECT_TOOL,
         description="Get one visible Team project.",
+    )
+
+    def team_list_outcome_kinds(
+        session_id: str | None = None,
+        project_id: str | None = None,
+        team_id: str | None = None,
+        include_archived: bool = False,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_OUTCOME_KINDS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_outcome_kinds(
+                project_id=project_id,
+                team_id=team_id,
+                include_archived=include_archived,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_outcome_kinds,
+        name=TEAM_LIST_OUTCOME_KINDS_TOOL,
+        description=(
+            "List the effective, defined outcome vocabulary for a visible "
+            "project or the team-wide catalog."
+        ),
+    )
+
+    def team_get_outcome_kind(
+        definition_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_OUTCOME_KIND_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_outcome_kind(definition_id),
+            caller=caller,
+            record_name="outcome_kind",
+            record_id=definition_id,
+        )
+
+    server.add_tool(
+        team_get_outcome_kind,
+        name=TEAM_GET_OUTCOME_KIND_TOOL,
+        description=(
+            "Get one visible outcome kind definition including its durable "
+            "reference and evidence requirements."
+        ),
     )
 
     def team_list_runtime_attention(

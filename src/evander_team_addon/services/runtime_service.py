@@ -20,20 +20,27 @@ from ..models import (
     AgentStandDown,
     AgentStandDownSource,
     AgentStatus,
-    GitWorkContextState,
     GovernanceRuntime,
+    TaskAssessmentReadiness,
+    TeamBlockerRoute,
+    TeamBlockerState,
+    TeamDispatch,
     TeamDispatchActivityStatus,
     TeamDispatchActivity,
+    TeamDispatchStatus,
     TeamInboxPriority,
+    TeamInboxItemState,
+    TeamRecordState,
     TeamState,
     agent_has_project_assignment,
     agent_lead_project_ids,
     agent_project_assignment_payloads,
     agent_project_ids,
     effective_role_permissions,
-    task_payload_with_derived,
 )
 from .domain.action_feedback_payloads import _latest_action_feedback_for_agent
+from .domain.task_assessment import task_payload_with_assessment
+from .domain.task_assessment import TaskAssessmentService
 from .domain.agent_access import (
     _agent_for_session,
     _agent_payload,
@@ -52,6 +59,7 @@ from .domain.blockers import (
     assign_blockers_to_dispatch,
     blockers_due_for_agent,
     complete_blocker_dispatches,
+    open_or_update_agent_execution_stall,
     reconcile_unavailable_blocker_assignments,
 )
 from .domain.common import (
@@ -64,6 +72,11 @@ from .domain.common import (
 from .domain.context_rotation import (
     _mark_context_rotation_pending,
     _maybe_mark_idle_context_rotation_due,
+)
+from .domain.dispatch_scope import (
+    actionable_dispatch_reviews,
+    actionable_dispatch_tasks,
+    build_agent_dispatch_scope,
 )
 from .domain.dispatch_progress import (
     _dispatch_activity_counts_as_progress,
@@ -78,8 +91,17 @@ from .domain.governance import (
     _governance_member_team_payload,
     _pending_governance_agenda_for_group,
 )
-from .domain.manager_fallback import _manager_fallback_summary_payload
+from .domain.git_work_contexts import (
+    finalize_active_git_work_contexts_for_dispatch,
+    reconcile_git_work_context_lifecycle,
+)
+from .domain.manager_fallback import (
+    _manager_fallback_review_routing_authority_error,
+    _manager_fallback_review_routing_authorities,
+    _manager_fallback_summary_payload,
+)
 from .domain.project_status import project_blocking_sources
+from .domain.outcome_catalog import effective_outcome_kind_payloads
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _agent_subtree_ids,
@@ -90,17 +112,21 @@ from .domain.wake import (
     _case_payloads_for_agent,
     _case_payloads_for_team,
     _pending_inbox_for_agent,
+    _pending_reviews_for_agent,
     _release_package_payloads_for_agent,
     _runtime_attention_payloads_for_agent,
-    _task_can_wake_owner_for_work,
     _wakeable_inbox_items,
 )
 from .domain.work_due import (
     _advance_low_priority_batch,
+    _agent_has_open_execution_stall,
     _clear_low_priority_batch,
     _mark_agent_work_due,
 )
 from .commands.outbox import _team_event_outbox_records
+
+
+GIT_WORK_CONTEXT_RETENTION_DAYS = 30
 
 
 def utc_now() -> datetime:
@@ -270,6 +296,7 @@ class TeamRuntimeService:
         agent_id: str | None = None,
         blocked_team_ids: set[str] | None = None,
         session_is_busy: Callable[[str], bool] | None = None,
+        defer_activation: bool = False,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_team_id = _optional_text(team_id)
@@ -284,6 +311,11 @@ class TeamRuntimeService:
             return self._repository.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
+            reconcile_git_work_context_lifecycle(
+                state_model,
+                now=effective_now,
+                prune_before=effective_now - timedelta(days=GIT_WORK_CONTEXT_RETENTION_DAYS),
+            )
             availability_result: dict[str, Any] = {"events": [], "errors": []}
             reconcile_unavailable_blocker_assignments(
                 state_model,
@@ -307,17 +339,48 @@ class TeamRuntimeService:
                         and _ensure_utc(runtime.wake_leased_until) <= effective_now
                     ):
                         expired_dispatch_id = runtime.active_dispatch_id
-                        expiry_result: dict[str, Any] = {"events": [], "errors": []}
-                        processed_blockers = complete_blocker_dispatches(
+                        durable_dispatch = state_model.dispatches.get(
+                            expired_dispatch_id
+                        )
+                        if (
+                            durable_dispatch is not None
+                            and durable_dispatch.status
+                            == TeamDispatchStatus.PREPARING
+                        ):
+                            _release_blocker_dispatch_reservations(
+                                state_model,
+                                dispatch_id=expired_dispatch_id,
+                                now=effective_now,
+                            )
+                        else:
+                            expiry_result: dict[str, Any] = {
+                                "events": [],
+                                "errors": [],
+                            }
+                            processed_blockers = complete_blocker_dispatches(
+                                state_model,
+                                agent_id=agent.id,
+                                dispatch_id=expired_dispatch_id,
+                                result=expiry_result,
+                                now=effective_now,
+                            )
+                            blocker_routing_events.extend(
+                                expiry_result.get("events") or []
+                            )
+                            if processed_blockers:
+                                runtime.no_progress_count += 1
+                        finalize_active_git_work_contexts_for_dispatch(
                             state_model,
                             agent_id=agent.id,
                             dispatch_id=expired_dispatch_id,
-                            result=expiry_result,
                             now=effective_now,
                         )
-                        blocker_routing_events.extend(expiry_result.get("events") or [])
-                        if processed_blockers:
-                            runtime.no_progress_count += 1
+                        _mark_dispatch_terminal(
+                            state_model,
+                            dispatch_id=expired_dispatch_id,
+                            status=TeamDispatchStatus.EXPIRED,
+                            completed_at=effective_now,
+                        )
                         runtime.active_dispatch_id = None
                         runtime.wake_leased_until = None
                         runtime.wake_reason = None
@@ -369,9 +432,15 @@ class TeamRuntimeService:
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
                     continue
-                active_tasks = _active_tasks_for_agent(state_model, agent.id)
+                active_tasks = actionable_dispatch_tasks(
+                    state_model,
+                    agent=agent,
+                )
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
                 wake_inbox = _wakeable_inbox_items(pending_inbox)
+                pending_reviews = actionable_dispatch_reviews(
+                    _pending_reviews_for_agent(state_model, agent.id)
+                )
                 due_blockers = blockers_due_for_agent(
                     state_model,
                     agent_id=agent.id,
@@ -384,18 +453,63 @@ class TeamRuntimeService:
                     item for item in wake_inbox if item.priority == TeamInboxPriority.LOW
                 ]
                 action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
+                active_owned_tasks = _active_tasks_for_agent(
+                    state_model,
+                    agent.id,
+                )
+                if (
+                    max_no_progress_count >= 0
+                    and runtime.no_progress_count >= max_no_progress_count
+                    and (
+                        active_owned_tasks
+                        or wake_inbox
+                        or pending_reviews
+                        or action_feedback
+                        or due_blockers
+                    )
+                ):
+                    exhausted_dispatch = _latest_terminal_dispatch_for_agent(
+                        state_model,
+                        agent_id=agent.id,
+                    )
+                    stall_result: dict[str, Any] = {
+                        "events": [],
+                        "errors": [],
+                    }
+                    open_or_update_agent_execution_stall(
+                        state_model,
+                        agent_id=agent.id,
+                        affected_task_ids=[
+                            task.id for task in active_owned_tasks
+                        ],
+                        exhausted_dispatch_id=(
+                            exhausted_dispatch.id
+                            if exhausted_dispatch is not None
+                            else None
+                        ),
+                        exhausted_dispatch_task_ids=(
+                            exhausted_dispatch.task_ids
+                            if exhausted_dispatch is not None
+                            else []
+                        ),
+                        no_progress_count=runtime.no_progress_count,
+                        max_no_progress_count=max_no_progress_count,
+                        result=stall_result,
+                        now=effective_now,
+                    )
+                    blocker_routing_events.extend(
+                        stall_result.get("events") or []
+                    )
+                    active_tasks = actionable_dispatch_tasks(
+                        state_model,
+                        agent=agent,
+                    )
                 rotation_pending = runtime.context_rotation_pending
-                wakeable_tasks = [
-                    task
-                    for task in active_tasks
-                    if _task_can_wake_owner_for_work(state_model, task)
-                ]
-                task_work_ready = any(
-                    state_model.dependency_status(task.id) == "satisfied" for task in wakeable_tasks
-                ) or any(state_model.subtask_counts(task.id)["open"] > 0 for task in wakeable_tasks)
+                task_work_ready = bool(active_tasks)
                 wake_eligible = (
                     rotation_pending
                     or bool(wake_inbox)
+                    or bool(pending_reviews)
                     or bool(action_feedback)
                     or bool(due_blockers)
                     or task_work_ready
@@ -411,6 +525,7 @@ class TeamRuntimeService:
                 immediate_wake_ready = (
                     rotation_pending
                     or bool(immediate_inbox)
+                    or bool(pending_reviews)
                     or bool(action_feedback)
                     or bool(due_blockers)
                     or (task_work_ready and due_by_time)
@@ -429,6 +544,7 @@ class TeamRuntimeService:
                     _clear_low_priority_batch(runtime)
                 if (
                     not wake_inbox
+                    and not pending_reviews
                     and not rotation_pending
                     and not action_feedback
                     and not due_blockers
@@ -441,6 +557,7 @@ class TeamRuntimeService:
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
                     and not wake_inbox
+                    and not pending_reviews
                     and not rotation_pending
                     and not action_feedback
                     and not due_blockers
@@ -453,12 +570,44 @@ class TeamRuntimeService:
                     if immediate_inbox
                     else "blocker"
                     if due_blockers
+                    else "review"
+                    if pending_reviews
                     else "low_priority_inbox"
                     if low_priority_wake_ready
                     else "action_feedback"
                     if action_feedback
                     else "scheduled"
                 )
+                cause_id = (
+                    immediate_inbox[0].id
+                    if immediate_inbox
+                    else due_blockers[0].id
+                    if due_blockers
+                    else pending_reviews[0].id
+                    if pending_reviews
+                    else low_priority_inbox[0].id
+                    if low_priority_wake_ready and low_priority_inbox
+                    else _action_feedback_cause_id(action_feedback)
+                )
+                dispatch_scope = build_agent_dispatch_scope(
+                    state_model,
+                    agent=agent,
+                    tasks=active_tasks,
+                    blockers=due_blockers,
+                    reviews=pending_reviews,
+                    inbox_items=pending_inbox,
+                )
+                durable_dispatch = TeamDispatch(
+                    id=dispatch_id,
+                    agent_id=agent.id,
+                    session_id=agent.session_id,
+                    cause_kind=reason,
+                    cause_id=cause_id,
+                    status=TeamDispatchStatus.PREPARING,
+                    created_at=effective_now,
+                    **dispatch_scope.model_fields(),
+                )
+                state_model.dispatches[dispatch_id] = durable_dispatch
                 if (
                     runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
                     and not runtime.context_rotation_pending
@@ -491,8 +640,10 @@ class TeamRuntimeService:
                         "runtime": runtime.model_dump(mode="json"),
                         "dispatch_id": dispatch_id,
                         "reason": reason,
+                        "dispatch": durable_dispatch.model_dump(mode="json"),
                         "tasks": [
-                            task_payload_with_derived(state_model, task) for task in active_tasks
+                            task_payload_with_assessment(state_model, task)
+                            for task in active_tasks
                         ],
                         "projects": [
                             {
@@ -505,23 +656,34 @@ class TeamRuntimeService:
                             for project in sorted(
                                 (
                                     state_model.projects[visible_project_id]
-                                    for visible_project_id in sorted(
-                                        set(agent_project_ids(state_model, agent.id))
-                                        | set(
-                                            agent_lead_project_ids(
-                                                state_model,
-                                                agent.id,
-                                            )
-                                        )
-                                    )
+                                    for visible_project_id in durable_dispatch.project_ids
                                     if visible_project_id in state_model.projects
                                 ),
                                 key=lambda item: item.id,
                             )
                         ],
+                        "outcome_kinds": [
+                            {
+                                **definition,
+                                "effective_project_id": visible_project_id,
+                            }
+                            for visible_project_id in durable_dispatch.project_ids
+                            if visible_project_id in state_model.projects
+                            for definition in effective_outcome_kind_payloads(
+                                state_model,
+                                team_id=state_model.projects[
+                                    visible_project_id
+                                ].team_id,
+                                project_id=visible_project_id,
+                            )
+                        ],
                         "cases": _case_payloads_for_agent(state_model, agent.id),
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "blockers": assigned_blockers,
+                        "reviews": [
+                            review.model_dump(mode="json")
+                            for review in pending_reviews
+                        ],
                         "release_packages": _release_package_payloads_for_agent(
                             state_model,
                             agent,
@@ -587,6 +749,52 @@ class TeamRuntimeService:
                 if not due_by_time:
                     continue
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
+                manager_tasks = actionable_dispatch_tasks(
+                    state_model,
+                    agent=manager,
+                )
+                manager_inbox = _pending_inbox_for_agent(
+                    state_model,
+                    manager.id,
+                )
+                manager_reviews = actionable_dispatch_reviews(
+                    _pending_reviews_for_agent(state_model, manager.id)
+                )
+                manager_blockers = blockers_due_for_agent(
+                    state_model,
+                    agent_id=manager.id,
+                    now=effective_now,
+                )
+                manager_fallback_summary = _manager_fallback_summary_payload(
+                    state_model,
+                    team=team,
+                    manager=manager,
+                    now=effective_now,
+                )
+                manager_scope = build_agent_dispatch_scope(
+                    state_model,
+                    agent=manager,
+                    tasks=manager_tasks,
+                    blockers=manager_blockers,
+                    reviews=manager_reviews,
+                    inbox_items=manager_inbox,
+                )
+                durable_dispatch = TeamDispatch(
+                    id=dispatch_id,
+                    agent_id=manager.id,
+                    session_id=manager.session_id,
+                    cause_kind="manager_fallback",
+                    status=TeamDispatchStatus.PREPARING,
+                    review_routing_authorities=(
+                        _manager_fallback_review_routing_authorities(
+                            state_model,
+                            summary=manager_fallback_summary,
+                        )
+                    ),
+                    created_at=effective_now,
+                    **manager_scope.model_fields(),
+                )
+                state_model.dispatches[dispatch_id] = durable_dispatch
                 manager_runtime.active_dispatch_id = dispatch_id
                 manager_runtime.wake_reason = "manager_fallback"
                 manager_runtime.last_wake_at = effective_now
@@ -609,6 +817,12 @@ class TeamRuntimeService:
                         request_note=None,
                     )
                 _clear_low_priority_batch(manager_runtime)
+                assigned_blockers = assign_blockers_to_dispatch(
+                    state_model,
+                    agent_id=manager.id,
+                    dispatch_id=dispatch_id,
+                    now=effective_now,
+                )
                 teams_with_lease.add(team.id)
                 leases.append(
                     {
@@ -616,20 +830,20 @@ class TeamRuntimeService:
                         "runtime": manager_runtime.model_dump(mode="json"),
                         "dispatch_id": dispatch_id,
                         "reason": "manager_fallback",
+                        "dispatch": durable_dispatch.model_dump(mode="json"),
                         "tasks": [
-                            task_payload_with_derived(state_model, task)
-                            for task in _active_tasks_for_agent(
-                                state_model,
-                                manager.id,
-                            )
+                            task_payload_with_assessment(state_model, task)
+                            for task in manager_tasks
                         ],
                         "cases": _case_payloads_for_team(state_model, team.id),
                         "inbox": [
                             item.model_dump(mode="json")
-                            for item in _pending_inbox_for_agent(
-                                state_model,
-                                manager.id,
-                            )
+                            for item in manager_inbox
+                        ],
+                        "blockers": assigned_blockers,
+                        "reviews": [
+                            review.model_dump(mode="json")
+                            for review in manager_reviews
                         ],
                         "release_packages": _release_package_payloads_for_agent(
                             state_model,
@@ -643,12 +857,7 @@ class TeamRuntimeService:
                             state_model,
                             manager.id,
                         ),
-                        "manager_fallback_summary": _manager_fallback_summary_payload(
-                            state_model,
-                            team=team,
-                            manager=manager,
-                            now=effective_now,
-                        ),
+                        "manager_fallback_summary": manager_fallback_summary,
                         "operator_chat_participants": _operator_chat_participant_payloads(
                             state_model
                         ),
@@ -697,7 +906,140 @@ class TeamRuntimeService:
             return validated
 
         state = self._repository.store.update_object_with_command_transaction(_transaction)
+        if not defer_activation:
+            for lease in leases:
+                state = self.mark_agent_dispatch_leased(
+                    agent_id=lease["agent"]["id"],
+                    dispatch_id=lease["dispatch_id"],
+                    lease_seconds=lease_seconds,
+                    now=effective_now,
+                )
+                lease["runtime"] = state.agent_runtimes[
+                    lease["agent"]["id"]
+                ].model_dump(mode="json")
+                lease["dispatch"] = state.dispatches[
+                    lease["dispatch_id"]
+                ].model_dump(mode="json")
         return state, leases
+
+    def mark_agent_dispatch_leased(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        lease_seconds: int = 900,
+        now: datetime | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+        normalized_lease_seconds = max(1, int(lease_seconds))
+        preparation_error: list[str] = []
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(
+                state.dispatches,
+                normalized_dispatch_id,
+                "dispatch",
+            )
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, "
+                    f"not {normalized_agent_id}"
+                )
+            if dispatch.status == TeamDispatchStatus.LEASED:
+                return state
+            if dispatch.status != TeamDispatchStatus.PREPARING:
+                raise ValueError(
+                    f"dispatch {dispatch.id} is {dispatch.status.value}, not preparing"
+                )
+            runtime = _require_present(
+                state.agent_runtimes,
+                normalized_agent_id,
+                "agent runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                error = (
+                    f"dispatch {dispatch.id} no longer owns the runtime reservation "
+                    f"for agent {normalized_agent_id}"
+                )
+                preparation_error.append(error)
+                _fail_dispatch_preparation_in_state(
+                    state,
+                    dispatch_id=dispatch.id,
+                    error=error,
+                    completed_at=effective_now,
+                )
+                return state
+            stale_errors = _dispatch_staleness_errors(state, dispatch=dispatch)
+            if stale_errors:
+                error = "dispatch scope became stale during preparation: " + "; ".join(
+                    stale_errors
+                )
+                preparation_error.append(error)
+                _fail_dispatch_preparation_in_state(
+                    state,
+                    dispatch_id=dispatch.id,
+                    error=error,
+                    completed_at=effective_now,
+                )
+                return state
+            dispatch.status = TeamDispatchStatus.LEASED
+            dispatch.prepared_at = effective_now
+            dispatch.leased_at = effective_now
+            dispatch.lease_expires_at = effective_now + timedelta(
+                seconds=normalized_lease_seconds
+            )
+            dispatch.completed_at = None
+            dispatch.error = None
+            runtime.wake_leased_until = dispatch.lease_expires_at
+            runtime.updated_at = effective_now
+            return state
+
+        state = self._repository.update(_mutate)
+        if preparation_error:
+            raise RuntimeError(preparation_error[0])
+        return state
+
+    def fail_agent_dispatch(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        error: str,
+        now: datetime | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_error = _required_text(error, "error")
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(
+                state.dispatches,
+                normalized_dispatch_id,
+                "dispatch",
+            )
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, "
+                    f"not {normalized_agent_id}"
+                )
+            if dispatch.status in {
+                TeamDispatchStatus.COMPLETED,
+                TeamDispatchStatus.EXPIRED,
+                TeamDispatchStatus.FAILED,
+            }:
+                return state
+            _fail_dispatch_preparation_in_state(
+                state,
+                dispatch_id=dispatch.id,
+                error=normalized_error,
+                completed_at=effective_now,
+            )
+            return state
+
+        return self._repository.update(_mutate)
 
     def lease_due_governance_managers(
         self,
@@ -858,33 +1200,73 @@ class TeamRuntimeService:
         *,
         agent_id: str,
         dispatch_id: str,
+        error: str = "dispatch preparation was interrupted and will be retried",
     ) -> TeamState:
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_error = _required_text(error, "error")
 
         def _mutate(state: TeamState) -> TeamState:
             runtime = state.agent_runtimes.get(normalized_agent_id)
+            dispatch = state.dispatches.get(normalized_dispatch_id)
+            if dispatch is None:
+                raise ValueError(f"dispatch {normalized_dispatch_id} does not exist")
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {normalized_dispatch_id} belongs to agent "
+                    f"{dispatch.agent_id}, not {normalized_agent_id}"
+                )
+            if dispatch.status in {
+                TeamDispatchStatus.COMPLETED,
+                TeamDispatchStatus.EXPIRED,
+                TeamDispatchStatus.FAILED,
+            }:
+                return state
             if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
                 raise ValueError(
                     f"dispatch {normalized_dispatch_id} no longer owns the wake lease "
                     f"for agent {normalized_agent_id}"
                 )
-            runtime.active_dispatch_id = None
-            runtime.wake_leased_until = None
-            runtime.wake_reason = None
+            completed_at = utc_now()
+            _fail_dispatch_preparation_in_state(
+                state,
+                dispatch_id=normalized_dispatch_id,
+                error=normalized_error,
+                completed_at=completed_at,
+            )
             runtime.next_wake_at = None
-            runtime.updated_at = utc_now()
-            for context in state.git_work_contexts.values():
-                if (
-                    context.agent_id == normalized_agent_id
-                    and context.dispatch_id == normalized_dispatch_id
-                    and context.state == GitWorkContextState.ACTIVE
-                ):
-                    context.state = GitWorkContextState.ABANDONED
-                    context.updated_at = runtime.updated_at
             return state
 
         return self._repository.update(_mutate)
+
+    def reconcile_git_work_contexts(
+        self,
+        *,
+        now: datetime | None = None,
+        prune_before: datetime | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, int]]:
+        effective_now = _ensure_utc(now or utc_now())
+        effective_prune_before = (
+            _ensure_utc(prune_before) if prune_before is not None else None
+        )
+        result: dict[str, int] = {}
+
+        def _mutate(state: TeamState) -> TeamState:
+            result.update(
+                reconcile_git_work_context_lifecycle(
+                    state,
+                    now=effective_now,
+                    prune_before=effective_prune_before,
+                )
+            )
+            return state
+
+        state = self._repository.update(
+            _mutate,
+            expected_revision=expected_revision,
+        )
+        return state, result
 
     def finalize_agent_dispatch_from_activity(
         self,
@@ -958,6 +1340,20 @@ class TeamRuntimeService:
                     ),
                     resolved_agent_id=agent.id,
                 )
+            durable_dispatch = state.dispatches.get(normalized_dispatch_id)
+            if (
+                durable_dispatch is not None
+                and durable_dispatch.status != TeamDispatchStatus.LEASED
+            ):
+                return _failure(
+                    state,
+                    code="dispatch_not_leased",
+                    message=(
+                        f"dispatch {normalized_dispatch_id} is "
+                        f"{durable_dispatch.status.value}, not leased"
+                    ),
+                    resolved_agent_id=agent.id,
+                )
 
             all_activities = tx.list_dispatch_activity(dispatch_id=normalized_dispatch_id)
             activities = [
@@ -1012,6 +1408,7 @@ class TeamRuntimeService:
             chat_dispatch = runtime.wake_reason == "team_chat" or normalized_dispatch_id.startswith(
                 "team-chat:"
             )
+            chat_terminal_error: str | None = None
             if chat_dispatch:
                 successful_reply = next(
                     (
@@ -1029,10 +1426,13 @@ class TeamRuntimeService:
                     if replied_id is not None:
                         result["replied_chat_message_ids"].append(replied_id)
                 else:
+                    chat_terminal_error = _chat_dispatch_finalization_error(
+                        failed_activities
+                    )
                     failed_id = _mark_chat_dispatch_message_failed(
                         state,
                         dispatch_id=normalized_dispatch_id,
-                        error=_chat_dispatch_finalization_error(failed_activities),
+                        error=chat_terminal_error,
                     )
                     if failed_id is not None:
                         result["failed_chat_message_ids"].append(failed_id)
@@ -1044,10 +1444,34 @@ class TeamRuntimeService:
                 result=result,
                 now=completed_at,
             )
+            finalize_active_git_work_contexts_for_dispatch(
+                state,
+                agent_id=agent.id,
+                dispatch_id=normalized_dispatch_id,
+                now=completed_at,
+            )
+            _mark_dispatch_terminal(
+                state,
+                dispatch_id=normalized_dispatch_id,
+                status=(
+                    TeamDispatchStatus.FAILED
+                    if chat_terminal_error is not None
+                    else TeamDispatchStatus.COMPLETED
+                ),
+                completed_at=completed_at,
+                error=chat_terminal_error,
+            )
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
-            runtime.no_progress_count = 0 if progress_made else runtime.no_progress_count + 1
+            if progress_made:
+                if not _agent_has_open_execution_stall(
+                    state,
+                    agent_id=agent.id,
+                ):
+                    runtime.no_progress_count = 0
+            else:
+                runtime.no_progress_count += 1
             if context_activity:
                 runtime.last_progress_at = completed_at
             runtime.updated_at = completed_at
@@ -1168,3 +1592,196 @@ class TeamRuntimeService:
                 ),
             }
         }
+
+
+def _action_feedback_cause_id(
+    action_feedback: list[dict[str, Any]],
+) -> str | None:
+    if not action_feedback:
+        return None
+    return _optional_text(action_feedback[0].get("action_record_id"))
+
+
+def _latest_terminal_dispatch_for_agent(
+    state: TeamState,
+    *,
+    agent_id: str,
+) -> TeamDispatch | None:
+    terminal = {
+        TeamDispatchStatus.COMPLETED,
+        TeamDispatchStatus.EXPIRED,
+        TeamDispatchStatus.FAILED,
+    }
+    candidates = [
+        dispatch
+        for dispatch in state.dispatches.values()
+        if dispatch.agent_id == agent_id
+        and dispatch.status in terminal
+        and dispatch.completed_at is not None
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda dispatch: (
+            _ensure_utc(dispatch.completed_at),
+            dispatch.id,
+        ),
+    )
+
+
+def _release_blocker_dispatch_reservations(
+    state: TeamState,
+    *,
+    dispatch_id: str,
+    now: datetime,
+) -> None:
+    for blocker in state.blockers.values():
+        if blocker.active_dispatch_id != dispatch_id:
+            continue
+        blocker.active_dispatch_id = None
+        blocker.updated_at = now
+
+
+def _mark_dispatch_terminal(
+    state: TeamState,
+    *,
+    dispatch_id: str,
+    status: TeamDispatchStatus,
+    completed_at: datetime,
+    error: str | None = None,
+) -> None:
+    dispatch = state.dispatches.get(dispatch_id)
+    if dispatch is None:
+        return
+    if dispatch.status in {
+        TeamDispatchStatus.COMPLETED,
+        TeamDispatchStatus.EXPIRED,
+        TeamDispatchStatus.FAILED,
+    }:
+        return
+    dispatch.status = status
+    dispatch.completed_at = completed_at
+    dispatch.error = error if status == TeamDispatchStatus.FAILED else None
+
+
+def _fail_dispatch_preparation_in_state(
+    state: TeamState,
+    *,
+    dispatch_id: str,
+    error: str,
+    completed_at: datetime,
+) -> None:
+    dispatch = state.dispatches[dispatch_id]
+    finalize_active_git_work_contexts_for_dispatch(
+        state,
+        agent_id=dispatch.agent_id,
+        dispatch_id=dispatch.id,
+        now=completed_at,
+    )
+    _release_blocker_dispatch_reservations(
+        state,
+        dispatch_id=dispatch.id,
+        now=completed_at,
+    )
+    runtime = state.agent_runtimes.get(dispatch.agent_id)
+    if runtime is not None and runtime.active_dispatch_id == dispatch.id:
+        runtime.active_dispatch_id = None
+        runtime.wake_leased_until = None
+        runtime.wake_reason = None
+        runtime.updated_at = completed_at
+    _mark_dispatch_terminal(
+        state,
+        dispatch_id=dispatch.id,
+        status=TeamDispatchStatus.FAILED,
+        completed_at=completed_at,
+        error=error,
+    )
+
+
+def _dispatch_staleness_errors(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+) -> list[str]:
+    errors: list[str] = []
+    assessment_service = TaskAssessmentService(state)
+    for task_id in dispatch.task_ids:
+        task = state.tasks.get(task_id)
+        if task is None:
+            errors.append(f"task {task_id} no longer exists")
+            continue
+        if task.owner_agent_id != dispatch.agent_id:
+            errors.append(
+                f"task {task.id} is now assigned to {task.owner_agent_id}"
+            )
+            continue
+        assessment = assessment_service.assess(task.id)
+        if assessment.readiness != TaskAssessmentReadiness.ACTIONABLE:
+            errors.append(
+                f"task {task.id} is {assessment.readiness.value}, not actionable"
+            )
+    for blocker_id in dispatch.blocker_ids:
+        blocker = state.blockers.get(blocker_id)
+        if blocker is None:
+            errors.append(f"blocker {blocker_id} no longer exists")
+            continue
+        assigned = (
+            blocker.route == TeamBlockerRoute.DELEGATED
+            and blocker.delegate_agent_id == dispatch.agent_id
+        ) or (
+            blocker.route
+            in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+            and blocker.owner_agent_id == dispatch.agent_id
+        )
+        if blocker.state != TeamBlockerState.OPEN or not assigned:
+            errors.append(f"blocker {blocker.id} is no longer open and assigned")
+        elif blocker.active_dispatch_id != dispatch.id:
+            errors.append(
+                f"blocker {blocker.id} is not reserved by dispatch {dispatch.id}"
+            )
+    for review_id in dispatch.review_request_ids:
+        review = state.review_requests.get(review_id)
+        if review is None:
+            errors.append(f"review {review_id} no longer exists")
+            continue
+        if (
+            review.reviewer_agent_id != dispatch.agent_id
+            or review.state
+            not in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+            or review.superseded_by_review_request_id is not None
+            or review.retired_at is not None
+        ):
+            errors.append(f"review {review.id} is no longer actionable and assigned")
+    for inbox_id in dispatch.inbox_item_ids:
+        item = state.inbox.get(inbox_id)
+        if item is None:
+            errors.append(f"inbox item {inbox_id} no longer exists")
+            continue
+        if (
+            item.recipient_agent_id != dispatch.agent_id
+            or item.state != TeamInboxItemState.PENDING
+        ):
+            errors.append(f"inbox item {item.id} is no longer pending and assigned")
+    for project_id in dispatch.project_ids:
+        if project_id not in state.projects:
+            errors.append(f"project {project_id} no longer exists")
+    for authority in dispatch.review_routing_authorities:
+        authority_error = _manager_fallback_review_routing_authority_error(
+            state,
+            dispatch_agent_id=dispatch.agent_id,
+            authority=authority,
+        )
+        if authority_error is not None:
+            errors.append(authority_error)
+    current_managed_repo_ids = {
+        state.projects[project_id].git.managed_repo_id
+        for project_id in dispatch.project_ids
+        if project_id in state.projects
+        and state.projects[project_id].git is not None
+    }
+    if current_managed_repo_ids != set(dispatch.managed_repo_ids):
+        errors.append(
+            "managed repository scope changed during dispatch preparation"
+        )
+    return errors

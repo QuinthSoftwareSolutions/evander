@@ -9,6 +9,8 @@ from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     OPERATOR_GROUP_ID,
     OWNER_GROUP_ID,
+    PERMISSION_CATALOG,
+    TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
     USERS_MANAGE_PERMISSION,
     VIEWER_GROUP_ID,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
@@ -45,6 +47,11 @@ def test_admin_web_rbac_seeds_builtin_groups(tmp_path: Path) -> None:
     assert WORKFLOWS_READ_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
     assert WORKFLOWS_WRITE_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
     assert WORKFLOW_RUNS_CONTROL_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
+    assert TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION in PERMISSION_CATALOG
+    assert (
+        TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION
+        not in store.get_group(OPERATOR_GROUP_ID).permissions
+    )
 
 
 def test_admin_web_rbac_migrates_legacy_roles_to_assignments(
@@ -87,8 +94,13 @@ def test_admin_web_rbac_migrates_legacy_roles_to_assignments(
         ("owner@example.com", OWNER_GROUP_ID, "root"),
     }
     assert store.can("owner@example.com", ADMIN_OWNER_PERMISSION)
+    assert store.can("owner@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION)
     assert store.can("operator@example.com", WORKFLOWS_WRITE_PERMISSION)
     assert store.can("operator@example.com", WORKFLOW_RUNS_CONTROL_PERMISSION)
+    assert (
+        store.can("operator@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION)
+        is False
+    )
     assert store.can("operator@example.com", USERS_MANAGE_PERMISSION) is False
 
 
@@ -118,6 +130,44 @@ def test_admin_web_rbac_applies_directory_scope_and_direct_workflow_grants(
     )
     assert not store.can(
         "reader@example.com", WORKFLOWS_WRITE_PERMISSION, directory_path="root/other"
+    )
+
+
+def test_admin_web_rbac_scopes_human_review_decisions_to_assigned_directory(
+    tmp_path: Path,
+) -> None:
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin")
+    store.upsert_user(login="reviewer@example.com", role="regular")
+    store.remove_user_group_assignment(
+        login="reviewer@example.com",
+        group_id=OPERATOR_GROUP_ID,
+        directory_path="root",
+    )
+    store.upsert_group(
+        group_id="human-reviewers",
+        display_name="Human Reviewers",
+        description="Decide assigned human release reviews.",
+    )
+    store.set_group_permissions(
+        "human-reviewers",
+        [TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION],
+    )
+    store.assign_user_group(
+        login="reviewer@example.com",
+        group_id="human-reviewers",
+        directory_path="root/team",
+    )
+
+    assert store.can(
+        "reviewer@example.com",
+        TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+        directory_path="root/team/sub",
+    )
+    assert not store.can(
+        "reviewer@example.com",
+        TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
+        directory_path="root/other",
     )
 
 

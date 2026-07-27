@@ -10,11 +10,12 @@ Suppose the implementation agent finishes Northstar's telemetry-retry change. �
 
 A **review request** points to that deliverable rather than to the task in general. The reviewer can accept it, reject it with findings, or say that the review is blocked because the evidence or process is unavailable. If the producer corrects a defect, the correction becomes a new deliverable. The rejected attempt remains visible, so a later reader can understand what changed and why.
 
-This gives an operator a simple path to follow:
+This gives an operator two explicit decision paths to follow:
 
 ```text
-task -> submitted deliverable -> one or more reviews
-     -> accepted result, blocked review, or a new rework deliverable
+task -> submitted deliverable
+     -> direct superior -> accepted result or a new rework deliverable
+     -> formal review(s) -> accepted result, blocked review, or a new rework deliverable
 ```
 
 The key question is always **“Which exact deliverable and code version did this decision cover?”**
@@ -34,6 +35,7 @@ An operator will usually start with the summary, verification result, artifacts,
 > - a persistent Git work-context ID and derived agent branch/commit;
 > - verification status, summary, and evidence refs;
 > - structured outcome kinds, durable reference IDs, and outcome evidence refs;
+> - the direct-acceptance recipient and that superior's immutable decision, when applicable;
 > - supersession links;
 > - review findings and state.
 >
@@ -60,9 +62,40 @@ explicitly permit an evidence-backed no-op.
 Deliverables for outcome tasks include typed outcomes. Each submitted outcome must carry durable
 <code>reference_ids</code>; evidence refs can support that result but cannot replace its identity.
 A review profile can require outcome kinds before the review is requested or accepted. When no new
-external effect is correct, use an <code>evidenced_noop</code> task completion with evidence refs,
-and only when the contract allows it. A prose report or evidence-only deliverable does not satisfy
-an outcome contract.
+external effect is correct, submit an <code>evidenced_noop</code> deliverable completion with
+evidence refs, and only when the contract allows it. That submission still follows direct
+acceptance or formal review; only acceptance copies the completion to the task. A prose report,
+review, or evidence-only deliverable does not satisfy an outcome contract by itself.
+
+## Composing an aggregate result
+
+A parent task represents a combined outcome, not a label placed over unrelated
+work. Before its final deliverable can be submitted, every descendant must be
+validly resolved. The parent deliverable then names the exact accepted,
+current, non-superseded deliverables incorporated from its direct children in
+<code>source_deliverable_ids</code>.
+
+Contribution coverage follows these rules:
+
+- every resolved direct outcome child contributes its accepted deliverable,
+  unless it resolved through an accepted evidenced no-op or authorized
+  cancellation;
+- a support child contributes an accepted assessable deliverable when it has
+  one, but a support task that finished without output needs no artificial
+  deliverable;
+- every named source must belong to a direct child and be current and accepted;
+- missing or unexpected direct-child sources make the parent not
+  integration-ready; and
+- if a child is itself aggregate, its accepted deliverable carries the next
+  layer. Recursive lineage is derived rather than copying every leaf into the
+  root.
+
+The resulting parent Git commit or artifact bundle is the submitted object.
+Source IDs prove which accepted components were integrated; they do not copy
+child state or make a branch tip trustworthy. A release selects the accepted
+top-level aggregate deliverable instead of releasing it alongside the sources
+already contained within it. Independent root deliverables may still coexist
+in one release.
 
 ## Artifact publication boundary
 
@@ -95,11 +128,14 @@ The branch remains internal evidence at this stage. Review does not publish it t
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Persistent work-context checks**
 >
-> When a project uses managed Git, a persistent Team wake creates or reuses one task-specific work context and worktree. The context binds:
+> When a project uses managed Git, a persistent Team wake reuses the stable
+> physical task/repository worktree path but creates a fresh dispatch-bound work
+> context. The context binds:
 >
 > - agent, task, project, session, and dispatch;
 > - deterministic agent branch;
 > - prepared checkout/worktree;
+> - base branch, base commit, and current verified commit;
 > - status and timestamps.
 >
 > A Git deliverable must submit its <code>branch_context_id</code>. The server verifies the caller, task, dispatch, and context and derives the accepted agent branch. An agent cannot substitute an arbitrary branch string. Artifact-only deliverables remain valid without Git.
@@ -112,7 +148,8 @@ The producer submits the evidence, then chooses the handoff the task actually re
 
 - <code>team_submit_deliverable</code> sends a deliverable notice to the producer's direct
   superior. The task exposes <code>waiting_reason: superior_acceptance</code>; this is not formal
-  review work.
+  review work. That recorded recipient uses <code>team_decide_deliverable</code> to accept or
+  reject the exact handoff and handles the notice in the same command.
 - <code>team_submit_deliverable_for_review</code> submits the evidence and creates the intended
   formal review handoff in one command.
 - <code>team_request_review</code> attaches a formal review to an existing deliverable.
@@ -121,6 +158,13 @@ A top-level agent with no direct superior cannot use the superior-acceptance for
 formal review for a reviewable deliverable, or finish support/coordination work directly without
 manufacturing one. Team prevents accidental duplicate active reviews of the same deliverable by
 the same reviewer.
+
+For a direct handoff, acceptance can cascade to task acceptance once every active deliverable is
+accepted. Rejection requires a concrete reason, returns the task to <code>in_progress</code>, and
+queues actionable rework for the owner. The superior can request specialist review instead, or
+report a blocker when evidence or a dependency prevents a decision. Once a formal review is
+attached, the direct decision command cannot bypass it; the assigned reviewer path becomes
+authoritative.
 
 A review may be requested by an authorized producer, supervisor, project lead, or Team manager. The assigned reviewer must be active, in the same Team, and compatible with any selected review profile.
 
@@ -162,7 +206,10 @@ A deliverable becomes accepted only when:
 - all current, non-retired attached reviews are accepted; and
 - no carried review finding remains open.
 
-When every current required deliverable for the task is accepted, the task can become accepted. Project status and goals then recalculate under their own rules.
+When every current required deliverable for the task is accepted, every
+descendant is resolved, and aggregate contribution coverage is complete, the
+task can become accepted. Project status and goals then recalculate under their
+own rules.
 
 ### Rejected
 
@@ -187,15 +234,19 @@ A blocked non-release review can be retried with <code>team_retry_review</code>.
 the blocked attempt, links a new pending successor, reopens the deliverable, and resolves the
 obsolete review blocker. Do not overwrite the original decision.
 
+An authorized requester, producer, supervisor, project lead, or manager can withdraw a mistaken
+pending non-release review with <code>team_withdraw_review</code>. A project lead or manager can
+retire a terminal non-release attempt with <code>team_retire_review</code>. Withdrawal records no
+decision; both actions preserve history. Retirement preserves the decision and does not resolve or
+waive open findings.
+
 A rejected or blocked deliverable can be replaced by a same-task rework submission. When an
 accepted deliverable from another task is the intentional replacement, an authorized project
 lead or manager can link it explicitly with <code>team_link_deliverable_replacement</code>.
 Migration does not guess replacement lineage.
 
-An unlocked operator can retire an erroneous current non-release review through
-<code>POST /api/addons/team-addon/review-requests/{id}/retire</code>, with a reason and expected
-revision. Retirement keeps the terminal attempt in history and removes it from the current review
-set. It does not accept a deliverable that still carries open findings.
+An unlocked operator has equivalent revision-checked <code>/withdraw</code> and
+<code>/retire</code> routes. Release reviews continue through their release-gate recovery path.
 
 ## Multi-review cascades
 
@@ -230,10 +281,13 @@ The distinction operators should remember is that **seeing a review is not the s
 >
 > - <code>team_submit_deliverable</code>;
 > - <code>team_submit_deliverable_for_review</code>;
+> - <code>team_decide_deliverable</code> for the superior recorded on a direct handoff;
 > - <code>team_import_artifact</code> for permission-checked ordinary artifact handoffs;
 > - <code>team_request_review</code>;
 > - <code>team_decide_review</code>;
 > - <code>team_retry_review</code>;
+> - <code>team_withdraw_review</code>;
+> - <code>team_retire_review</code>;
 > - <code>team_link_deliverable_replacement</code>;
 > - delivery list/get tools;
 > - Git promotion and release tools covered in Chapter 24.
@@ -255,6 +309,8 @@ The distinction operators should remember is that **seeing a review is not the s
 | Task stays waiting after one acceptance | Another active review or open carried finding remains. | Inspect the complete current deliverable review set. |
 | Rejected task has no useful next step | Findings were vague. | Preserve evidence and create concrete, testable findings in the review decision. |
 | Outcome deliverable rejected before review | Its outcome kind is missing, forbidden, or lacks a durable reference ID. | Match the task contract and identify the actual external record; do not substitute prose or evidence-only output. |
+| Evidenced no-op does not resolve the task | The contract disallows it, evidence refs are absent, or the submitted completion has not been accepted. | Correct the contract-compatible evidence and follow the normal acceptance/review path; do not mark the outcome task finished. |
+| Aggregate deliverable reports missing or unexpected sources | Named <code>source_deliverable_ids</code> do not exactly cover current accepted direct-child contributions. | Read contribution coverage, resolve descendants, and integrate only the listed current child outputs. |
 | Blocked review remains current after recovery | Immutable history needs an explicit successor. | Use <code>team_retry_review</code> with a recovery reason. |
 | Retirement does not accept the deliverable | Another current review or carried finding still blocks acceptance. | Inspect the current review set and resolve findings through their owning profile. |
 | Plain submission has no recipient | The producer has no direct superior for superior acceptance. | Use formal review, or finish support work directly when no deliverable is required. |

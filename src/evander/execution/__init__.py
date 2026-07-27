@@ -15,6 +15,11 @@ from .models import (
     PreparedExecution,
 )
 from .registry import build_execution_backend
+from .task_worktree_cleanup import (
+    TaskWorktreeCleanupResult,
+    TaskWorktreeInspection,
+    build_libvirt_task_worktree_cleanup_command,
+)
 
 __all__ = [
     "ExecutionBackend",
@@ -30,5 +35,8 @@ __all__ = [
     "ExecutionStatus",
     "ExecutionStatusKind",
     "PreparedExecution",
+    "TaskWorktreeCleanupResult",
+    "TaskWorktreeInspection",
     "build_execution_backend",
+    "build_libvirt_task_worktree_cleanup_command",
 ]

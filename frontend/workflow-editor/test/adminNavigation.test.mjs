@@ -191,21 +191,24 @@ async function createAdminPage(t, options = {}) {
     },
     logLevel: "error",
   });
+  let browser;
+  let context;
+  let page;
+  await t.after(async () => {
+    await page?.close().catch(() => {});
+    await context?.close().catch(() => {});
+    await browser?.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
   await server.listen();
 
   const address = server.httpServer?.address();
   assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-
-  await t.after(async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-    await server.close().catch(() => {});
-  });
+  browser = await chromium.launch({ headless: true });
+  context = await browser.newContext();
+  page = await context.newPage();
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -462,7 +465,7 @@ async function createAdminPage(t, options = {}) {
       const session = (options.sessions ?? []).find((item) => item.session_id === sessionId);
       await route.fulfill(
         session
-          ? jsonResponse({ session, wake_schedules: [], summary_json: {} })
+          ? jsonResponse({ session, wake_schedules: [], git_grants: [], summary_json: {} })
           : jsonResponse({ error: "Unknown session" }, 404),
       );
       return;
@@ -799,13 +802,34 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
     await route.fulfill({
       status: 200,
       contentType: "text/html",
-      body: "<!doctype html><title>Team Add-on</title><main>Team Add-on</main>",
+      body: `<!doctype html>
+        <title>Team Add-on</title>
+        <main>Team Add-on</main>
+        <script>
+          window.addEventListener("message", (event) => {
+            const data = event.data || {};
+            if (data.type === "admin-addon-context") {
+              document.documentElement.dataset.theme = data.theme;
+              document.body.dataset.privilegedUnlocked =
+                String(Boolean(data.privileged_operations?.unlocked));
+            } else if (data.type === "admin-privileged-operations") {
+              document.body.dataset.privilegedUnlocked =
+                String(Boolean(data.privileged_operations?.unlocked));
+            }
+          });
+          window.parent.postMessage({ type: "admin-addon-ready" }, window.location.origin);
+        </script>`,
     });
   });
+  await page.addInitScript(
+    (storageKey) => window.localStorage.setItem(storageKey, "dark"),
+    THEME_STORAGE_KEY,
+  );
 
-  await page.goto(`http://127.0.0.1:${address.port}/#addon:team-addon`, {
-    waitUntil: "domcontentloaded",
-  });
+  await page.goto(
+    `http://127.0.0.1:${address.port}/#addon:team-addon?view=my-human-reviews&human_review_request_id=review-1&directory_path=ignored&privileged_unlocked=true&unsafe=drop-me`,
+    { waitUntil: "domcontentloaded" },
+  );
 
   await assert.doesNotReject(() => page.getByRole("button", { name: /^Teams\b/ }).waitFor({ state: "visible" }));
   const frame = page.locator('iframe.admin-addon-frame[title="Teams"]');
@@ -820,12 +844,55 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   );
   assert.equal(initialFrameUrl.searchParams.get("directory_path"), "root");
   assert.equal(initialFrameUrl.searchParams.get("privileged_unlocked"), "false");
+  assert.equal(initialFrameUrl.searchParams.get("view"), "my-human-reviews");
+  assert.equal(initialFrameUrl.searchParams.get("human_review_request_id"), "review-1");
+  assert.equal(initialFrameUrl.searchParams.get("unsafe"), null);
   await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('html[data-theme="dark"]')
+    .waitFor({ state: "attached" });
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('body[data-privileged-unlocked="false"]')
+    .waitFor({ state: "attached" });
 
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('body[data-privileged-unlocked="true"]')
+    .waitFor({ state: "attached" });
+  await page.getByRole("button", { name: "Light mode", exact: true }).click();
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('html[data-theme="light"]')
+    .waitFor({ state: "attached" });
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page
+    .frameLocator('iframe[title="Teams"]')
+    .locator('body[data-privileged-unlocked="false"]')
+    .waitFor({ state: "attached" });
   assert.equal(await frame.getAttribute("src"), initialFrameSrc);
   assert.equal(addonFrameRequests, 1);
+
+  await page.evaluate(() => {
+    window.location.hash =
+      "#addon:team-addon?view=my-human-reviews&human_review_request_id=review-2&unsafe=still-drop-me";
+  });
+  await page.waitForFunction(() => {
+    const src = document
+      .querySelector('iframe.admin-addon-frame[title="Teams"]')
+      ?.getAttribute("src");
+    return Boolean(src && new URL(src, window.location.origin).searchParams.get("human_review_request_id") === "review-2");
+  });
+  const updatedFrameSrc = await frame.getAttribute("src");
+  assert.notEqual(updatedFrameSrc, initialFrameSrc);
+  const updatedFrameUrl = new URL(updatedFrameSrc, `http://127.0.0.1:${address.port}`);
+  assert.equal(updatedFrameUrl.searchParams.get("view"), "my-human-reviews");
+  assert.equal(updatedFrameUrl.searchParams.get("human_review_request_id"), "review-2");
+  assert.equal(updatedFrameUrl.searchParams.get("unsafe"), null);
+  assert.equal(addonFrameRequests, 2);
 });
 
 test("Team add-on session navigation opens the selected session", async (t) => {

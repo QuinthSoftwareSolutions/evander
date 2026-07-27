@@ -14,6 +14,7 @@ from ...models import (
     PersistentAgent,
     TeamConversation,
     TeamConversationMessage,
+    TeamDispatchStatus,
     TeamDispatchActivity,
     TeamState,
 )
@@ -389,6 +390,19 @@ def _clear_completed_chat_dispatch_lease(
     )
     if message is None:
         return False
+    dispatch = state.dispatches.get(dispatch_id)
+    if (
+        dispatch is not None
+        and dispatch.status
+        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
+    ):
+        dispatch.status = (
+            TeamDispatchStatus.COMPLETED
+            if message.status == "replied"
+            else TeamDispatchStatus.FAILED
+        )
+        dispatch.completed_at = now
+        dispatch.error = message.error if message.status == "failed" else None
     runtime.active_dispatch_id = None
     runtime.wake_leased_until = None
     runtime.wake_reason = None
