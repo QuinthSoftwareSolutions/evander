@@ -566,7 +566,7 @@ const fieldTooltips = {
   "edit:project:goals": "Replace project goals using id | description | state rows.",
   "edit:project:human_review_enabled": "Require an authenticated, assigned Admin Web reviewer to decide the pinned release candidate.",
   "edit:project:human_reviewer_group_ids": "Directory-scoped Admin Web groups whose current eligible users may receive this review.",
-  "edit:project:human_review_checklist": "One row per acceptance check: id | label | description | required or optional.",
+  "edit:project:human_review_checklist": "Add, remove, and order the checks a human must complete before approving a release.",
   "edit:project:human_review_test_instructions": "Stable manual test instructions snapshotted onto each release request.",
   "edit:project:human_review_preparation_mode": "Manual uses these instructions directly; workflow requires a prepared preview target before review.",
   "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
@@ -1721,6 +1721,38 @@ function bindForms() {
       return;
     }
 
+    const checklistAdd = event.target?.closest?.("[data-human-review-checklist-add]");
+    if (checklistAdd) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review checklist")) {
+        return;
+      }
+      addHumanReviewChecklistRow(
+        checklistAdd.closest("[data-human-review-checklist-editor]"),
+      );
+      return;
+    }
+
+    const checklistRemove = event.target?.closest?.("[data-human-review-checklist-remove]");
+    if (checklistRemove) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review checklist")) {
+        return;
+      }
+      removeHumanReviewChecklistRow(checklistRemove);
+      return;
+    }
+
+    const checklistMove = event.target?.closest?.("[data-human-review-checklist-move]");
+    if (checklistMove) {
+      event.preventDefault();
+      if (!guardTeamMutation("reorder human review checklist")) {
+        return;
+      }
+      moveHumanReviewChecklistRow(checklistMove);
+      return;
+    }
+
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
     if (addButton) {
       event.preventDefault();
@@ -1792,6 +1824,21 @@ function bindForms() {
           '[name="governance_goal_name"], [name="governance_goal_description"], [name="governance_goal_state"]',
         )
         .forEach((field) => field.setCustomValidity(""));
+    }
+    const checklistField = event.target?.closest?.(
+      '[name="human_review_checklist_id"], [name="human_review_checklist_label"], [name="human_review_checklist_description"]',
+    );
+    if (
+      checklistField instanceof HTMLInputElement ||
+      checklistField instanceof HTMLTextAreaElement
+    ) {
+      const editor = checklistField.closest("[data-human-review-checklist-editor]");
+      editor
+        ?.querySelectorAll?.(
+          '[name="human_review_checklist_id"], [name="human_review_checklist_label"]',
+        )
+        .forEach((field) => field.setCustomValidity(""));
+      syncHumanReviewChecklistEditor(editor);
     }
     const governanceTeamSearch = event.target?.closest?.("[data-governance-team-search]");
     if (!(governanceTeamSearch instanceof HTMLInputElement)) {
@@ -2505,6 +2552,9 @@ const lockedMutationControlSelectors = [
   ["[data-governance-member-team-remove]", "change governance member teams"],
   ["[data-review-profile-criterion-add]", "edit review profile criteria"],
   ["[data-review-profile-criterion-remove]", "edit review profile criteria"],
+  ["[data-human-review-checklist-add]", "edit human review checklist"],
+  ["[data-human-review-checklist-remove]", "edit human review checklist"],
+  ["[data-human-review-checklist-move]", "reorder human review checklist"],
   ["[data-context-rotation-agent-id]", "clear agent context"],
   ["[data-stand-down-agent-id]", "stand down agents"],
   ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
@@ -11118,10 +11168,14 @@ function syncProjectCreatePanel({ reset = false } = {}) {
     form.hidden = !projectCreateFormOpen;
     if (reset) {
       form.reset();
+      restoreHumanReviewChecklistDraft(form, []);
     }
     if (projectCreateFormOpen) {
       fillSelectsIn(form);
       decorateFieldTooltips(form);
+      syncHumanReviewChecklistEditor(
+        form.querySelector("[data-human-review-checklist-editor]"),
+      );
     }
   }
   if (button) {
@@ -17983,6 +18037,12 @@ async function submitCreateForm(form, { detailedResult = false } = {}) {
   ) {
     return submitMutationResult(false, "validation", detailedResult);
   }
+  if (
+    formId === "create-project-form" &&
+    !validateHumanReviewPolicyEditor(form)
+  ) {
+    return submitMutationResult(false, "validation", detailedResult);
+  }
   const existingProjectIds =
     formId === "create-project-form"
       ? new Set(values(state.projects).map((project) => project.id))
@@ -19865,7 +19925,7 @@ function releasePolicyForForm(data, form = null) {
       }
       policy.human_review_requirement = {
         reviewer_group_ids: reviewerGroupIds,
-        checklist: parseHumanReviewChecklist(data.human_review_checklist),
+        checklist: humanReviewChecklistFromForm(form),
         test_instructions: text(data.human_review_test_instructions),
         preparation_mode: text(data.human_review_preparation_mode) || "manual",
       };
@@ -19887,16 +19947,6 @@ function releasePolicyWithoutHumanJson(policy) {
 }
 
 function renderHumanReviewPolicyEditor(requirement = null) {
-  const checklist = (requirement?.checklist || [])
-    .map((item) =>
-      [
-        item.id,
-        item.label,
-        item.description || "",
-        item.required === false ? "optional" : "required",
-      ].join(" | "),
-    )
-    .join("\n");
   return `
     <fieldset class="human-review-policy-editor">
       <legend>Human release review</legend>
@@ -19905,10 +19955,7 @@ function renderHumanReviewPolicyEditor(requirement = null) {
         rows: 3,
         placeholder: "release-approvers",
       })}
-      ${textareaField("Acceptance checklist", "human_review_checklist", checklist, {
-        rows: 5,
-        placeholder: "smoke-test | Smoke test passed | Verify the primary flow | required",
-      })}
+      ${renderHumanReviewChecklistEditor(requirement?.checklist || [])}
       ${textareaField("Test instructions", "human_review_test_instructions", requirement?.test_instructions || "", {
         rows: 4,
         placeholder: "Open the preview, execute the release scenario, and attach evidence.",
@@ -19924,27 +19971,277 @@ function renderHumanReviewPolicyEditor(requirement = null) {
   `;
 }
 
-function parseHumanReviewChecklist(value) {
-  return String(value || "")
-    .split(/\r?\n/)
-    .map(text)
-    .filter(Boolean)
-    .map((line, index) => {
-      const [rawId, rawLabel, rawDescription = "", rawRequired = "required"] = line
-        .split("|")
-        .map(text);
-      const id = rawId || `item-${index + 1}`;
-      const label = rawLabel || rawId;
-      if (!label) {
-        throw new Error(`Human checklist row ${index + 1} requires a label.`);
-      }
-      return {
-        id,
-        label,
-        description: rawDescription || null,
-        required: !["optional", "false", "no"].includes(rawRequired.toLowerCase()),
-      };
-    });
+function renderHumanReviewChecklistEditor(checklist = []) {
+  return `
+    <fieldset class="human-review-checklist-editor" data-human-review-checklist-editor>
+      <legend>Acceptance checklist</legend>
+      <div class="human-review-checklist-editor-rows" data-human-review-checklist-rows>
+        ${(checklist || []).map((item) => renderHumanReviewChecklistRow(item)).join("")}
+      </div>
+      <p class="human-review-checklist-empty" data-human-review-checklist-empty>No acceptance checks configured.</p>
+      <button
+        class="record-action human-review-checklist-add"
+        type="button"
+        data-human-review-checklist-add
+      >Add check</button>
+      <p class="field-help">Each release snapshots these checks in this order. Stable keys are generated from labels unless you set one explicitly.</p>
+    </fieldset>
+  `;
+}
+
+function renderHumanReviewChecklistRow(item = {}) {
+  return `
+    <div class="human-review-checklist-editor-row" data-human-review-checklist-row>
+      <label>
+        <span>Label</span>
+        <input
+          name="human_review_checklist_label"
+          value="${escapeAttr(item.label || "")}"
+          placeholder="Primary operator flow works"
+        />
+      </label>
+      <label class="human-review-checklist-description">
+        <span>Description</span>
+        <textarea
+          name="human_review_checklist_description"
+          rows="2"
+          placeholder="Explain what the reviewer should verify."
+        >${escapeHtml(item.description || "")}</textarea>
+      </label>
+      <label>
+        <span>Stable key</span>
+        <input
+          name="human_review_checklist_id"
+          value="${escapeAttr(item.id || "")}"
+          placeholder="Auto from label"
+        />
+        <small data-human-review-checklist-key-preview></small>
+      </label>
+      <label class="checkbox-label human-review-checklist-required">
+        <input
+          name="human_review_checklist_required"
+          type="checkbox"
+          ${item.required === false ? "" : "checked"}
+        />
+        Required
+      </label>
+      <div class="human-review-checklist-row-actions" aria-label="Checklist order and removal">
+        <button
+          class="record-action"
+          type="button"
+          data-human-review-checklist-move="up"
+          aria-label="Move checklist item up"
+        >Move up</button>
+        <button
+          class="record-action"
+          type="button"
+          data-human-review-checklist-move="down"
+          aria-label="Move checklist item down"
+        >Move down</button>
+        <button
+          class="record-action human-review-checklist-remove"
+          type="button"
+          data-human-review-checklist-remove
+        >Remove</button>
+      </div>
+    </div>
+  `;
+}
+
+function syncHumanReviewChecklistEditor(editor) {
+  if (!editor) {
+    return;
+  }
+  const rows = Array.from(editor.querySelectorAll("[data-human-review-checklist-row]"));
+  const mutationLocked = teamMutationLocked();
+  rows.forEach((row, index) => {
+    const up = row.querySelector('[data-human-review-checklist-move="up"]');
+    const down = row.querySelector('[data-human-review-checklist-move="down"]');
+    if (up) {
+      up.disabled = mutationLocked || index === 0;
+      up.setAttribute("aria-disabled", String(up.disabled));
+    }
+    if (down) {
+      down.disabled = mutationLocked || index === rows.length - 1;
+      down.setAttribute("aria-disabled", String(down.disabled));
+    }
+    const explicitId = text(
+      row.querySelector('[name="human_review_checklist_id"]')?.value,
+    );
+    const preview = row.querySelector("[data-human-review-checklist-key-preview]");
+    if (preview) {
+      preview.textContent = explicitId
+        ? "Using the stored key."
+        : `Generated key: ${humanReviewChecklistItemId(row, index)}`;
+    }
+  });
+  const empty = editor.querySelector("[data-human-review-checklist-empty]");
+  if (empty) {
+    empty.hidden = rows.length > 0;
+  }
+}
+
+function addHumanReviewChecklistRow(editor) {
+  const rows = editor?.querySelector?.("[data-human-review-checklist-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderHumanReviewChecklistRow({});
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  syncHumanReviewChecklistEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  row.querySelector('[name="human_review_checklist_label"]')?.focus();
+}
+
+function removeHumanReviewChecklistRow(button) {
+  const editor = button.closest("[data-human-review-checklist-editor]");
+  button.closest("[data-human-review-checklist-row]")?.remove();
+  syncHumanReviewChecklistEditor(editor);
+  rememberFormDraft(editor?.closest("form"));
+}
+
+function moveHumanReviewChecklistRow(button) {
+  const editor = button.closest("[data-human-review-checklist-editor]");
+  const row = button.closest("[data-human-review-checklist-row]");
+  const direction = text(button.dataset.humanReviewChecklistMove);
+  if (!editor || !row) {
+    return;
+  }
+  if (direction === "up" && row.previousElementSibling) {
+    row.parentElement.insertBefore(row, row.previousElementSibling);
+  } else if (direction === "down" && row.nextElementSibling) {
+    row.parentElement.insertBefore(row.nextElementSibling, row);
+  }
+  syncHumanReviewChecklistEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  button.focus();
+}
+
+function humanReviewChecklistItemId(row, index) {
+  const explicitId = text(
+    row.querySelector('[name="human_review_checklist_id"]')?.value,
+  );
+  const label = text(
+    row.querySelector('[name="human_review_checklist_label"]')?.value,
+  );
+  return explicitId || criterionIdFromText(label || `check ${index + 1}`);
+}
+
+function humanReviewChecklistFromForm(form) {
+  return Array.from(form.querySelectorAll("[data-human-review-checklist-row]")).map(
+    (row, index) => ({
+      id: humanReviewChecklistItemId(row, index),
+      label: text(
+        row.querySelector('[name="human_review_checklist_label"]')?.value,
+      ),
+      description:
+        text(
+          row.querySelector('[name="human_review_checklist_description"]')?.value,
+        ) || null,
+      required:
+        row.querySelector('[name="human_review_checklist_required"]')?.checked !==
+        false,
+    }),
+  );
+}
+
+function humanReviewChecklistDraftFromForm(form) {
+  const editor = form.querySelector("[data-human-review-checklist-editor]");
+  if (!editor) {
+    return null;
+  }
+  return Array.from(editor.querySelectorAll("[data-human-review-checklist-row]")).map(
+    (row) => ({
+      id: text(row.querySelector('[name="human_review_checklist_id"]')?.value),
+      label: text(
+        row.querySelector('[name="human_review_checklist_label"]')?.value,
+      ),
+      description: text(
+        row.querySelector('[name="human_review_checklist_description"]')?.value,
+      ),
+      required:
+        row.querySelector('[name="human_review_checklist_required"]')?.checked !==
+        false,
+    }),
+  );
+}
+
+function restoreHumanReviewChecklistDraft(form, checklist) {
+  const editor = form.querySelector("[data-human-review-checklist-editor]");
+  const rows = editor?.querySelector?.("[data-human-review-checklist-rows]");
+  if (!rows || !Array.isArray(checklist)) {
+    return;
+  }
+  rows.innerHTML = checklist
+    .map((item) => renderHumanReviewChecklistRow(item))
+    .join("");
+  decorateFieldTooltips(rows);
+  syncHumanReviewChecklistEditor(editor);
+}
+
+function validateHumanReviewPolicyEditor(form) {
+  const enabled = Boolean(form.elements.human_review_enabled?.checked);
+  const groupField = form.elements.human_reviewer_group_ids;
+  groupField?.setCustomValidity("");
+  const rows = Array.from(
+    form.querySelectorAll("[data-human-review-checklist-row]"),
+  );
+  rows.forEach((row) => {
+    row
+      .querySelector('[name="human_review_checklist_id"]')
+      ?.setCustomValidity("");
+    row
+      .querySelector('[name="human_review_checklist_label"]')
+      ?.setCustomValidity("");
+  });
+  if (!enabled) {
+    return true;
+  }
+
+  let valid = true;
+  if (!splitList(groupField?.value).length) {
+    groupField?.setCustomValidity(
+      "Choose at least one Admin reviewer group for human approval.",
+    );
+    valid = false;
+  }
+
+  const usedIds = new Map();
+  rows.forEach((row, index) => {
+    const labelField = row.querySelector(
+      '[name="human_review_checklist_label"]',
+    );
+    const idField = row.querySelector('[name="human_review_checklist_id"]');
+    const label = text(labelField?.value);
+    if (!label) {
+      labelField?.setCustomValidity("Give this acceptance check a label.");
+      valid = false;
+    }
+    const id = humanReviewChecklistItemId(row, index);
+    const earlierIdField = usedIds.get(id);
+    if (earlierIdField) {
+      const message = `Checklist keys must be unique. "${id}" is used more than once.`;
+      earlierIdField.setCustomValidity(message);
+      idField?.setCustomValidity(message);
+      valid = false;
+    } else {
+      usedIds.set(id, idField);
+    }
+  });
+  if (!form.checkValidity()) {
+    valid = false;
+  }
+  if (!valid) {
+    form.reportValidity();
+    setStatus("Fix the highlighted human review requirement before saving.", "error");
+  }
+  return valid;
 }
 
 async function submitReviewDecision(form) {
@@ -20030,6 +20327,11 @@ function openEditDialog(type, id) {
       elements.editFormBody.querySelector("[data-governance-goals-editor]"),
     );
   }
+  if (type === "project") {
+    syncHumanReviewChecklistEditor(
+      elements.editFormBody.querySelector("[data-human-review-checklist-editor]"),
+    );
+  }
   elements.editModal.hidden = false;
   const firstEditableField = elements.editFormBody.querySelector(
     "input:not([readonly]), select, textarea",
@@ -20059,6 +20361,9 @@ async function submitEditForm(form) {
   }
   const endpoint = editEndpoint(type, id);
   if (type === "governance-group" && !validateGovernanceGroupEditor(form)) {
+    return;
+  }
+  if (type === "project" && !validateHumanReviewPolicyEditor(form)) {
     return;
   }
   const payload = editPayloadForForm(type, form);
@@ -20582,6 +20887,10 @@ function formValuesForDraft(form) {
   if (form.querySelector("[data-governance-goals-editor]")) {
     values.__governance_goals = governanceGoalsDraftFromForm(form);
   }
+  const humanReviewChecklistDraft = humanReviewChecklistDraftFromForm(form);
+  if (humanReviewChecklistDraft) {
+    values.__human_review_checklist = humanReviewChecklistDraft;
+  }
   return values;
 }
 
@@ -20608,6 +20917,7 @@ function restoreFormDrafts(drafts) {
     }
     restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
     restoreGovernanceGoalsDraft(form, values.__governance_goals);
+    restoreHumanReviewChecklistDraft(form, values.__human_review_checklist);
     if (formSemanticIdentifier(form) === "setup-template-form") {
       const templateField = form.elements.template_id;
       if (templateField && values.template_id) {
@@ -20619,8 +20929,10 @@ function restoreFormDrafts(drafts) {
       if (
         name === "__review_profile_criteria" ||
         name === "__governance_goals" ||
+        name === "__human_review_checklist" ||
         name.startsWith("criterion_") ||
-        name.startsWith("governance_goal_")
+        name.startsWith("governance_goal_") ||
+        name.startsWith("human_review_checklist_")
       ) {
         return;
       }
@@ -20667,6 +20979,9 @@ function restoreFormDrafts(drafts) {
     );
     syncGovernanceGoalEditor(
       form.querySelector("[data-governance-goals-editor]"),
+    );
+    syncHumanReviewChecklistEditor(
+      form.querySelector("[data-human-review-checklist-editor]"),
     );
     rememberFormDraft(form);
   });

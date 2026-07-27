@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-27 - Team Human Review Checklist Editing
+
+- Replaced pipe-delimited human release acceptance-checklist text with structured, reorderable
+  checklist rows that preserve stable keys, support optional checks and descriptions containing
+  punctuation, validate missing labels and duplicate keys inline, and survive revision-conflict
+  draft restoration.
+
 ## 2026-07-27 - Team Stand-down Revocation Visibility
 
 - Kept the Revoke stand-down action visible for superior-issued and inherited stand-downs, disabled

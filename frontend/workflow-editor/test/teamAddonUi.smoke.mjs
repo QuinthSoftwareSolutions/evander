@@ -90,6 +90,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-git-import-button/);
   assert.match(script, /data-review-profile-criterion-add/);
   assert.match(script, /reviewProfileCriteriaFromForm/);
+  assert.match(script, /data-human-review-checklist-editor/);
+  assert.match(script, /data-human-review-checklist-move/);
+  assert.doesNotMatch(script, /parseHumanReviewChecklist/);
   assert.match(script, /rolePermissionTooltips/);
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
   assert.match(script, /data-release-gate-retry/);
@@ -101,6 +104,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.project-record-section/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.criteria-editor-row/);
+  assert.match(stylesheet, /\.human-review-checklist-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
@@ -10728,9 +10732,25 @@ test("team add-on project editor keeps human release policy in bounded controls"
     await form.locator('[name="human_reviewer_group_ids"]').inputValue(),
     "release-approvers",
   );
-  assert.match(
-    await form.locator('[name="human_review_checklist"]').inputValue(),
-    /operator-smoke \| Operator smoke test \| Run the primary operator flow\. \| required/,
+  assert.equal(await form.locator('[name="human_review_checklist"]').count(), 0);
+  const checklistEditor = form.locator("[data-human-review-checklist-editor]");
+  const checklistRows = checklistEditor.locator("[data-human-review-checklist-row]");
+  assert.equal(await checklistRows.count(), 1);
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_label"]').inputValue(),
+    "Operator smoke test",
+  );
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_description"]').inputValue(),
+    "Run the primary operator flow.",
+  );
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_id"]').inputValue(),
+    "operator-smoke",
+  );
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_required"]').isChecked(),
+    true,
   );
   assert.equal(
     await form.locator('[name="human_review_preparation_mode"]').inputValue(),
@@ -10747,6 +10767,61 @@ test("team add-on project editor keeps human release policy in bounded controls"
   await form
     .locator('[name="human_reviewer_group_ids"]')
     .fill("release-approvers\nrelease-qa");
+  await checklistEditor.getByRole("button", { name: "Add check" }).click();
+  assert.equal(await checklistRows.count(), 2);
+  const newChecklistRow = checklistRows.nth(1);
+  await newChecklistRow
+    .locator('[name="human_review_checklist_label"]')
+    .fill("Release confidence");
+  await newChecklistRow
+    .locator('[name="human_review_checklist_description"]')
+    .fill("Confirm the candidate | remaining risk is acceptable.");
+  await newChecklistRow
+    .locator('[name="human_review_checklist_id"]')
+    .fill("operator-smoke");
+  await newChecklistRow
+    .locator('[name="human_review_checklist_required"]')
+    .uncheck();
+
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page
+    .getByText("Fix the highlighted human review requirement before saving.")
+    .waitFor({ state: "visible" });
+  assert.match(
+    await newChecklistRow
+      .locator('[name="human_review_checklist_id"]')
+      .evaluate((field) => field.validationMessage),
+    /Checklist keys must be unique/,
+  );
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "PATCH" &&
+        request.pathname === "/api/addons/team-addon/projects/alpha-project",
+    ).length,
+    0,
+  );
+
+  await newChecklistRow
+    .locator('[name="human_review_checklist_id"]')
+    .fill("");
+  await checklistEditor.getByRole("button", { name: "Add check" }).click();
+  assert.equal(await checklistRows.count(), 3);
+  await checklistRows
+    .nth(2)
+    .locator('[name="human_review_checklist_label"]')
+    .fill("Temporary check");
+  await checklistRows.nth(2).getByRole("button", { name: "Remove" }).click();
+  assert.equal(await checklistRows.count(), 2);
+  await checklistRows
+    .nth(1)
+    .getByRole("button", { name: "Move checklist item up" })
+    .click();
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_label"]').inputValue(),
+    "Release confidence",
+  );
+
   await form.getByRole("button", { name: "Save changes" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
 
@@ -10764,9 +10839,22 @@ test("team add-on project editor keeps human release policy in bounded controls"
     patchRequest.payload.release_policy.human_review_requirement.preparation_mode,
     "workflow",
   );
-  assert.equal(
-    patchRequest.payload.release_policy.human_review_requirement.checklist[0].id,
-    "operator-smoke",
+  assert.deepEqual(
+    patchRequest.payload.release_policy.human_review_requirement.checklist,
+    [
+      {
+        id: "release-confidence",
+        label: "Release confidence",
+        description: "Confirm the candidate | remaining risk is acceptable.",
+        required: false,
+      },
+      {
+        id: "operator-smoke",
+        label: "Operator smoke test",
+        description: "Run the primary operator flow.",
+        required: true,
+      },
+    ],
   );
   assert.equal(
     JSON.stringify(patchRequest.payload.release_policy).includes("injected-user-control"),

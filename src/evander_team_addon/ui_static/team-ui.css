@@ -6321,6 +6321,92 @@ label textarea {
   gap: 0.4rem;
 }
 
+.human-review-checklist-editor {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--panel-alt);
+}
+
+.human-review-checklist-editor legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.human-review-checklist-editor-rows {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.human-review-checklist-editor-row {
+  display: grid;
+  grid-template-columns:
+    minmax(10rem, 0.9fr)
+    minmax(14rem, 1.4fr)
+    minmax(8rem, 0.65fr)
+    auto;
+  gap: 0.65rem;
+  align-items: end;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem;
+  background: var(--panel);
+}
+
+.human-review-checklist-editor-row label {
+  min-width: 0;
+}
+
+.human-review-checklist-editor-row small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.human-review-checklist-required {
+  min-height: 2.25rem;
+  margin-bottom: 0.05rem;
+}
+
+.human-review-checklist-required input {
+  flex: 0 0 1rem;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.15rem;
+}
+
+.human-review-checklist-row-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.human-review-checklist-row-actions button,
+.human-review-checklist-add {
+  width: auto;
+}
+
+.human-review-checklist-remove {
+  color: var(--danger);
+}
+
+.human-review-checklist-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.human-review-checklist-empty[hidden] {
+  display: none;
+}
+
 .human-review-approve {
   border-color: var(--accent);
 }
@@ -6411,6 +6497,7 @@ label textarea {
   .team-record-grid,
   .team-inline-create-fields,
   .criteria-editor-row,
+  .human-review-checklist-editor-row,
   .governance-goal-row,
   .governance-create-form,
   .project-columns,
