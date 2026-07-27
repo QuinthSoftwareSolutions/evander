@@ -16,10 +16,13 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             "node_ids": [
                 "team-cron",
                 "team-chat-message-queued",
+                "team-external-chat-reply-requested",
                 "team-agent-wake-requested",
                 "team-governance-wake-requested",
                 "team-wake-due-agents",
                 "team-wake-queued-chat-message",
+                "team-send-external-chat-reply",
+                "team-record-external-chat-delivery",
                 "team-wake-requested-agent",
                 "team-wake-requested-governance",
                 "team-wake-governance-managers",
@@ -79,6 +82,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team chat message queued",
                 "type": "trigger:event",
                 "event_type": "team.chat.message_queued",
+            },
+            {
+                "id": "team-external-chat-reply-requested",
+                "display_name": "Team external chat reply requested",
+                "type": "trigger:event",
+                "event_type": "team.chat.external_reply_requested",
             },
             {
                 "id": "team-agent-wake-requested",
@@ -248,6 +257,28 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "max_no_progress_count": 3,
                 "low_priority_wake_after_cycles": 4,
                 "resume_mode": "same_context",
+            },
+            {
+                "id": "team-send-external-chat-reply",
+                "display_name": "Send external Team Chat reply",
+                "type": "effect:communication:send-message",
+                "communication_target_id": (
+                    "${{team-external-chat-reply-requested.payload.communication_target_id}}"
+                ),
+                "message": "${{team-external-chat-reply-requested.payload.body}}",
+                "thread_id": (
+                    "${{team-external-chat-reply-requested.payload.source_thread_id ?? null}}"
+                ),
+            },
+            {
+                "id": "team-record-external-chat-delivery",
+                "display_name": "Record external Team Chat delivery",
+                "type": "effect:team:record-external-chat-delivery",
+                "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
+                "success": "${{team-send-external-chat-reply.success}}",
+                "provider_message_id": (
+                    "${{team-send-external-chat-reply.message_id ?? null}}"
+                ),
             },
             {
                 "id": "team-wake-requested-agent",
@@ -637,6 +668,14 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {
                 "source_id": "team-chat-message-queued",
                 "target_id": "team-wake-queued-chat-message",
+            },
+            {
+                "source_id": "team-external-chat-reply-requested",
+                "target_id": "team-send-external-chat-reply",
+            },
+            {
+                "source_id": "team-send-external-chat-reply",
+                "target_id": "team-record-external-chat-delivery",
             },
             {
                 "source_id": "team-agent-wake-requested",

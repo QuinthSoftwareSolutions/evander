@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 36
+SQLITE_SCHEMA_VERSION = 37
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1334,6 +1334,8 @@ class TeamStateSqliteStore:
             "memories": {},
             "conversations": {},
             "conversation_messages": {},
+            "external_chat_ingress": {},
+            "external_chat_deliveries": {},
             "chat_attachments": {},
             "chat_attachment_policies": {},
             "release_packages": {},
@@ -1371,6 +1373,8 @@ class TeamStateSqliteStore:
         self._read_memories(connection, payload)
         self._read_conversations(connection, payload)
         self._read_conversation_messages(connection, payload)
+        self._read_external_chat_ingress(connection, payload)
+        self._read_external_chat_deliveries(connection, payload)
         self._read_chat_attachments(connection, payload)
         self._read_chat_attachment_policies(connection, payload)
         self._read_release_packages(connection, payload)
@@ -1412,6 +1416,8 @@ class TeamStateSqliteStore:
         self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
+        self._write_external_chat_ingress(connection, payload["external_chat_ingress"])
+        self._write_external_chat_deliveries(connection, payload["external_chat_deliveries"])
         self._write_chat_attachments(connection, payload["chat_attachments"])
         self._write_chat_attachment_policies(connection, payload["chat_attachment_policies"])
         self._write_release_packages(connection, payload["release_packages"])
@@ -3070,6 +3076,121 @@ class TeamStateSqliteStore:
                     message["created_at"],
                     message["updated_at"],
                     _json_dumps(message.get("attachment_ids", [])),
+                ),
+            )
+
+    @staticmethod
+    def _read_external_chat_ingress(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_external_chat_ingress ORDER BY created_at, id"
+        ):
+            payload["external_chat_ingress"][row["id"]] = {
+                "id": row["id"],
+                "provider": row["provider"],
+                "communication_target_id": row["communication_target_id"],
+                "source_message_id": row["source_message_id"],
+                "source_thread_id": row["source_thread_id"],
+                "source_author_id": row["source_author_id"],
+                "source_author_name": row["source_author_name"],
+                "operator_user_id": row["operator_user_id"],
+                "conversation_id": row["conversation_id"],
+                "message_id": row["message_id"],
+                "dispatch_id": row["dispatch_id"],
+                "allow_team_mutations": bool(row["allow_team_mutations"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_external_chat_ingress(
+        connection: sqlite3.Connection,
+        records: dict[str, Any],
+    ) -> None:
+        for record in records.values():
+            connection.execute(
+                """
+                INSERT INTO team_external_chat_ingress(
+                    id, provider, communication_target_id, source_message_id,
+                    source_thread_id, source_author_id, source_author_name,
+                    operator_user_id, conversation_id, message_id, dispatch_id,
+                    allow_team_mutations, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["id"],
+                    record["provider"],
+                    record["communication_target_id"],
+                    record["source_message_id"],
+                    record.get("source_thread_id"),
+                    record["source_author_id"],
+                    record.get("source_author_name"),
+                    record["operator_user_id"],
+                    record["conversation_id"],
+                    record["message_id"],
+                    record["dispatch_id"],
+                    int(bool(record.get("allow_team_mutations"))),
+                    record["created_at"],
+                    record["updated_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_external_chat_deliveries(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_external_chat_deliveries ORDER BY created_at, id"
+        ):
+            payload["external_chat_deliveries"][row["id"]] = {
+                "id": row["id"],
+                "agent_reply_message_id": row["agent_reply_message_id"],
+                "operator_message_id": row["operator_message_id"],
+                "provider": row["provider"],
+                "communication_target_id": row["communication_target_id"],
+                "source_thread_id": row["source_thread_id"],
+                "status": row["status"],
+                "provider_message_id": row["provider_message_id"],
+                "attempt_count": row["attempt_count"],
+                "last_error": row["last_error"],
+                "attempted_at": row["attempted_at"],
+                "delivered_at": row["delivered_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_external_chat_deliveries(
+        connection: sqlite3.Connection,
+        records: dict[str, Any],
+    ) -> None:
+        for record in records.values():
+            connection.execute(
+                """
+                INSERT INTO team_external_chat_deliveries(
+                    id, agent_reply_message_id, operator_message_id, provider,
+                    communication_target_id, source_thread_id, status,
+                    provider_message_id, attempt_count, last_error, attempted_at,
+                    delivered_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["id"],
+                    record["agent_reply_message_id"],
+                    record["operator_message_id"],
+                    record["provider"],
+                    record["communication_target_id"],
+                    record.get("source_thread_id"),
+                    record.get("status", "pending"),
+                    record.get("provider_message_id"),
+                    record.get("attempt_count", 0),
+                    record.get("last_error"),
+                    record.get("attempted_at"),
+                    record.get("delivered_at"),
+                    record["created_at"],
+                    record["updated_at"],
                 ),
             )
 
@@ -5252,6 +5373,8 @@ _STATE_TABLES = (
     "team_ephemeral_assignments",
     "team_release_verification_runs",
     "team_release_packages",
+    "team_external_chat_deliveries",
+    "team_external_chat_ingress",
     "team_chat_attachments",
     "team_chat_attachment_policies",
     "team_conversation_messages",
@@ -5907,6 +6030,46 @@ CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_conversation
     ON team_conversation_messages(conversation_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_dispatch
     ON team_conversation_messages(dispatch_id, id);
+
+CREATE TABLE IF NOT EXISTS team_external_chat_ingress (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    communication_target_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    source_thread_id TEXT,
+    source_author_id TEXT NOT NULL,
+    source_author_name TEXT,
+    operator_user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL,
+    allow_team_mutations INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(provider, communication_target_id, source_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_external_chat_ingress_message
+    ON team_external_chat_ingress(message_id, id);
+
+CREATE TABLE IF NOT EXISTS team_external_chat_deliveries (
+    id TEXT PRIMARY KEY,
+    agent_reply_message_id TEXT NOT NULL,
+    operator_message_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    communication_target_id TEXT NOT NULL,
+    source_thread_id TEXT,
+    status TEXT NOT NULL,
+    provider_message_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    attempted_at TEXT,
+    delivered_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(agent_reply_message_id, communication_target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_external_chat_deliveries_reply
+    ON team_external_chat_deliveries(agent_reply_message_id, id);
 
 CREATE TABLE IF NOT EXISTS team_chat_attachments (
     id TEXT PRIMARY KEY,

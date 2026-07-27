@@ -2279,9 +2279,20 @@ class WorkflowConfigAdminService:
                     else field
                     for field in node.fields
                 ]
-            if node.type == "effect:communication:send-message":
+            if node.type in {
+                "effect:communication:send-message",
+                "effect:team:enqueue-operator-chat-message",
+            }:
                 node.fields = [
-                    field.model_copy(update={"options": communication_send_target_options})
+                    field.model_copy(
+                        update={
+                            "options": (
+                                communication_read_target_options
+                                if node.type == "effect:team:enqueue-operator-chat-message"
+                                else communication_send_target_options
+                            )
+                        }
+                    )
                     if field.key == "communication_target_id"
                     else field
                     for field in node.fields

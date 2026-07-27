@@ -194,6 +194,29 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
+### Communication-to-Team Chat bridge
+
+Use `effect:team:enqueue-operator-chat-message` after a
+`trigger:communication:new-message` to deliver an external human message through
+the normal persistent Team Chat lifecycle. Configure either a fixed
+`conversation_id` or an `agent_id`, plus a fixed `operator_user_id`; do not bind
+any of those values from message content. The configured communication target
+must allow `read` and its provider must match the trigger payload.
+
+The provider/source-target/message-ID tuple is durable ingress idempotency.
+Set `allow_team_mutations=false` unless the workflow also contains a fixed
+`authorized_author_ids` allowlist and the incoming authenticated
+`source_author_id` matches it. For a Discord channel, also set the trigger's
+`author_ids` filter and exclude the Evander bot; the effect-side allowlist stays
+the authority check.
+
+The bundled Team runtime pack consumes
+`team.chat.external_reply_requested` after `team_reply_to_chat`, sends the
+persisted reply through `effect:communication:send-message`, and records the
+delivery result. The Team reply remains visible even if external send fails.
+Discord sends are top-level channel posts; do not configure a thread ID for a
+Discord target.
+
 For the bundled Skatteverket Add-on, enabling `skatteverket-addon` exposes the
 Skatteverket Admin Web tab and MCP tools, and makes `query:skatteverket:*` and
 `effect:skatteverket:*` workflow providers available when the trigger
@@ -368,6 +391,7 @@ provider loader:
 | Event name | Meaning |
 |---|---|
 | `team.chat.message_queued` | Operator chat message queued for a Team agent |
+| `team.chat.external_reply_requested` | Persisted Team reply for an externally originated chat message is ready for delivery |
 | `team.agent.wake_requested` | Explicit Team agent wake requested |
 | `team.ephemeral.requested` | Persistent Team agent requested ephemeral execution work |
 | `team.ephemeral.completed` | Ephemeral Team assignment completed |

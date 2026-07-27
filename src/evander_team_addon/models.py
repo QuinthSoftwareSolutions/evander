@@ -23,7 +23,7 @@ from evander_team_addon.git_naming import (
     normalize_canonical_release_branch_prefix,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
     "text/markdown",
@@ -340,7 +340,6 @@ class AgentAvatar(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
-
 
 class AgentVoiceProfile(TeamModel):
     voice: str | None = None
@@ -2362,6 +2361,82 @@ class TeamConversationMessage(TeamModel):
         return self
 
 
+class ExternalChatIngressRecord(TeamModel):
+    """Durable external-message provenance and ingress idempotency record."""
+
+    id: str
+    provider: str
+    communication_target_id: str
+    source_message_id: str
+    source_thread_id: str | None = None
+    source_author_id: str
+    source_author_name: str | None = None
+    operator_user_id: str
+    conversation_id: str
+    message_id: str
+    dispatch_id: str
+    allow_team_mutations: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "provider",
+        "communication_target_id",
+        "source_message_id",
+        "source_author_id",
+        "operator_user_id",
+        "conversation_id",
+        "message_id",
+        "dispatch_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("source_thread_id", "source_author_name", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class ExternalChatDeliveryRecord(TeamModel):
+    """A persisted request to return one Team Chat reply through its source target."""
+
+    id: str
+    agent_reply_message_id: str
+    operator_message_id: str
+    provider: str
+    communication_target_id: str
+    source_thread_id: str | None = None
+    status: Literal["pending", "sending", "sent", "failed", "unknown"] = "pending"
+    provider_message_id: str | None = None
+    attempt_count: int = Field(default=0, ge=0)
+    last_error: str | None = None
+    attempted_at: datetime | None = None
+    delivered_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "agent_reply_message_id",
+        "operator_message_id",
+        "provider",
+        "communication_target_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("source_thread_id", "provider_message_id", "last_error", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class TeamChatAttachment(TeamModel):
     id: str
     message_id: str
@@ -3223,6 +3298,8 @@ class TeamState(TeamModel):
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
+    external_chat_ingress: dict[str, ExternalChatIngressRecord] = Field(default_factory=dict)
+    external_chat_deliveries: dict[str, ExternalChatDeliveryRecord] = Field(default_factory=dict)
     chat_attachments: dict[str, TeamChatAttachment] = Field(default_factory=dict)
     chat_attachment_policies: dict[str, TeamChatAttachmentPolicy] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
@@ -3422,6 +3499,7 @@ class TeamState(TeamModel):
         self._validate_action_records(errors)
         self._validate_memories(errors)
         self._validate_conversations(errors)
+        self._validate_external_chat_bridge(errors)
         self._validate_releases(errors)
         self._validate_human_reviews(errors)
         self._validate_dispatches(errors)
@@ -3463,6 +3541,8 @@ class TeamState(TeamModel):
             "memories",
             "conversations",
             "conversation_messages",
+            "external_chat_ingress",
+            "external_chat_deliveries",
             "chat_attachments",
             "chat_attachment_policies",
             "release_packages",
@@ -4528,6 +4608,56 @@ class TeamState(TeamModel):
             if message is not None and attachment.id not in message.attachment_ids:
                 errors.append(
                     f"chat attachment {attachment.id} is not linked from message {message.id}"
+                )
+
+    def _validate_external_chat_bridge(self, errors: list[str]) -> None:
+        ingress_keys: set[tuple[str, str, str]] = set()
+        for record in self.external_chat_ingress.values():
+            key = (
+                record.provider,
+                record.communication_target_id,
+                record.source_message_id,
+            )
+            if key in ingress_keys:
+                errors.append(
+                    "external chat ingress has duplicate provider/target/source message "
+                    f"identity {key!r}"
+                )
+            ingress_keys.add(key)
+            message = self.conversation_messages.get(record.message_id)
+            if message is None:
+                errors.append(
+                    f"external chat ingress {record.id} references missing message {record.message_id}"
+                )
+                continue
+            if message.conversation_id != record.conversation_id:
+                errors.append(
+                    f"external chat ingress {record.id} conversation does not match message"
+                )
+            if message.dispatch_id != record.dispatch_id:
+                errors.append(
+                    f"external chat ingress {record.id} dispatch does not match message"
+                )
+        delivery_keys: set[tuple[str, str]] = set()
+        for record in self.external_chat_deliveries.values():
+            key = (record.agent_reply_message_id, record.communication_target_id)
+            if key in delivery_keys:
+                errors.append(
+                    "external chat delivery has duplicate reply/target identity "
+                    f"{key!r}"
+                )
+            delivery_keys.add(key)
+            reply = self.conversation_messages.get(record.agent_reply_message_id)
+            if reply is None or reply.sender != "agent":
+                errors.append(
+                    f"external chat delivery {record.id} references missing agent reply "
+                    f"{record.agent_reply_message_id}"
+                )
+            operator_message = self.conversation_messages.get(record.operator_message_id)
+            if operator_message is None or operator_message.sender != "operator":
+                errors.append(
+                    f"external chat delivery {record.id} references missing operator message "
+                    f"{record.operator_message_id}"
                 )
 
     def _validate_releases(self, errors: list[str]) -> None:

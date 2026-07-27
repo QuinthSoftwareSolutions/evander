@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-27 - Communication-to-Team Chat Bridge
+
+- Added generic communication ingress for persistent Team Chat: an authorized
+  provider message now records durable provenance and idempotency state, queues
+  the normal `team-chat:<message-id>` dispatch, and retains the existing Team
+  transcript, lease, tools, and busy-agent ordering.
+- `team_reply_to_chat` now emits a transactional external-reply request only
+  for externally originated messages. Delivery outcome is retained beside the
+  persisted Team reply, so a communication-send failure cannot erase or
+  duplicate the internal answer.
+
 ## 2026-07-27 - Team Planning Detail Persistence
 
 - Preserved open Planning project, task, hierarchy, full-brief, worktree, and technical-detail

@@ -20,6 +20,7 @@ from .validators import (
     _require_command_conversation,
 )
 from ...models import (
+    ExternalChatDeliveryRecord,
     TeamChatAttachment,
     TeamConversation,
     TeamConversationMessage,
@@ -28,6 +29,7 @@ from ...models import (
 )
 from ...chat_attachments import PreparedChatAttachment
 from ..domain.chat import (
+    EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
     _chat_preview,
     _publish_admin_chat_notifications,
     _touch_conversation,
@@ -170,6 +172,56 @@ class TeamChatCommandService(TeamCommandExecutor):
                 now=now,
                 preview=_chat_message_preview(body_text, len(prepared_attachments)),
             )
+            events: list[dict[str, Any]] = []
+            external_origin = source_message.metadata.get("external_origin")
+            if isinstance(external_origin, dict):
+                provider = _optional_text(external_origin.get("provider"))
+                communication_target_id = _optional_text(
+                    external_origin.get("communication_target_id")
+                )
+                if provider is not None and communication_target_id is not None:
+                    delivery_id = f"external-chat-delivery-{uuid4().hex}"
+                    state.external_chat_deliveries[delivery_id] = ExternalChatDeliveryRecord(
+                        id=delivery_id,
+                        agent_reply_message_id=reply_id,
+                        operator_message_id=source_message.id,
+                        provider=provider,
+                        communication_target_id=communication_target_id,
+                        source_thread_id=_optional_text(external_origin.get("source_thread_id")),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    metadata["external_delivery"] = {
+                        "delivery_id": delivery_id,
+                        "provider": provider,
+                        "communication_target_id": communication_target_id,
+                        "state": "pending",
+                        "attempt_count": 0,
+                    }
+                    state.conversation_messages[reply_id].metadata = metadata
+                    events.append(
+                        {
+                            "event_type": EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
+                            "correlation_key": delivery_id,
+                            "idempotency_key": (
+                                "team-chat-external-reply:"
+                                f"{reply_id}:{communication_target_id}"
+                            ),
+                            "payload": {
+                                "delivery_id": delivery_id,
+                                "conversation_id": conversation.id,
+                                "operator_message_id": source_message.id,
+                                "agent_reply_message_id": reply_id,
+                                "agent_id": agent.id,
+                                "provider": provider,
+                                "communication_target_id": communication_target_id,
+                                "source_thread_id": _optional_text(
+                                    external_origin.get("source_thread_id")
+                                ),
+                                "body": body_text,
+                            },
+                        }
+                    )
             return TeamCommandApplyResult(
                 response_payload={
                     "chat_message_id": reply_id,
@@ -178,8 +230,16 @@ class TeamChatCommandService(TeamCommandExecutor):
                     "created_chat_reply_message_ids": [reply_id],
                     "replied_chat_message_ids": [source_message.id],
                     "progress_made": True,
+                    "events": events,
                 },
-                created_domain_ids=[reply_id],
+                created_domain_ids=[
+                    reply_id,
+                    *[
+                        str(event["correlation_key"])
+                        for event in events
+                        if event.get("correlation_key") is not None
+                    ],
+                ],
             )
 
         state, response = self._execute_team_command(

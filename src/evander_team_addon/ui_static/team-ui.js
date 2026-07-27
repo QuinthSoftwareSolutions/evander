@@ -9307,6 +9307,9 @@ function renderChatMessage(message) {
   const status = text(message.status);
   const type = text(message.message_type) || "text";
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const externalDelivery = metadata.external_delivery && typeof metadata.external_delivery === "object"
+    ? metadata.external_delivery
+    : null;
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
@@ -9316,11 +9319,26 @@ function renderChatMessage(message) {
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
+          ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
         ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
       </div>
     </article>
   `;
+}
+
+function externalChatDeliveryLabel(delivery) {
+  const state = text(delivery?.state) || "pending";
+  const provider = text(delivery?.provider);
+  return `${provider ? `${provider} ` : "External "}${state}`;
+}
+
+function externalChatDeliveryTitle(delivery) {
+  const parts = [externalChatDeliveryLabel(delivery)];
+  const attempts = Number(delivery?.attempt_count || 0);
+  if (attempts > 0) parts.push(`attempt ${attempts}`);
+  if (text(delivery?.last_error)) parts.push(text(delivery.last_error));
+  return parts.join(" · ");
 }
 
 function renderChatAttachment(attachment) {

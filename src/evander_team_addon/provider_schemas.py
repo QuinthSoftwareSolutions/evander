@@ -73,6 +73,31 @@ class TeamFinalizeAgentDispatchEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamEnqueueOperatorChatMessageEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:enqueue-operator-chat-message"]
+    conversation_id: ConfigValue | None = None
+    agent_id: ConfigValue | None = None
+    operator_user_id: ConfigValue
+    operator_display_name: ConfigValue | None = None
+    body: ConfigValue
+    provider: ConfigValue
+    communication_target_id: ConfigValue
+    source_message_id: ConfigValue
+    source_thread_id: ConfigValue | None = None
+    source_author_id: ConfigValue
+    source_author_name: ConfigValue | None = None
+    allow_team_mutations: ConfigValue | None = None
+    authorized_author_ids: ConfigValue | None = None
+
+
+class TeamRecordExternalChatDeliveryEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:record-external-chat-delivery"]
+    delivery_id: ConfigValue
+    success: ConfigValue
+    provider_message_id: ConfigValue | None = None
+    error: ConfigValue | None = None
+
+
 class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-operator-directive"]
     team_id: ConfigValue
@@ -488,6 +513,22 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "context_activity": {"type": "boolean"},
         "events": {"type": "array"},
         "errors": {"type": "array"},
+    },
+    "effect:team:enqueue-operator-chat-message": {
+        "success": {"type": "boolean"},
+        "queued": {"type": "boolean"},
+        "conversation_id": {"type": "string"},
+        "message_id": {"type": "string"},
+        "dispatch_id": {"type": "string"},
+        "duplicate": {"type": "boolean"},
+    },
+    "effect:team:record-external-chat-delivery": {
+        "success": {"type": "boolean"},
+        "delivery_id": {"type": "string"},
+        "status": {"type": "string"},
+        "attempt_count": {"type": "integer"},
+        "provider_message_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
     },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},

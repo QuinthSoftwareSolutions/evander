@@ -77,6 +77,7 @@ from evander_team_addon.provider_schemas import (
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
     TeamCreateTaskEffectDefinition,
+    TeamEnqueueOperatorChatMessageEffectDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
@@ -96,6 +97,7 @@ from evander_team_addon.providers import (
     TeamCreateCaseEffectProvider,
     TeamCreateOperatorDirectiveEffectProvider,
     TeamCreateTaskEffectProvider,
+    TeamEnqueueOperatorChatMessageEffectProvider,
     TeamFinalizeAgentDispatchEffectProvider,
     TeamAgentPromptCompletionFinalizeHook,
     TeamMarkEphemeralCleanedUpEffectProvider,
@@ -341,6 +343,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-cron",
         "team-agent-run-completed",
         "team-chat-message-queued",
+        "team-external-chat-reply-requested",
         "team-agent-wake-requested",
         "team-governance-wake-requested",
         "team-ephemeral-requested",
@@ -352,6 +355,8 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
     assert "team-wake-queued-chat-message" in _node_ids(config.effects)
+    assert "team-send-external-chat-reply" in _node_ids(config.effects)
+    assert "team-record-external-chat-delivery" in _node_ids(config.effects)
     assert "team-notify-operator" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
@@ -372,6 +377,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     }
     assert document.output_schemas["team-finalize-persistent-dispatch"]["progress_made"] == {
         "type": "boolean"
+    }
+    assert document.output_schemas["team-record-external-chat-delivery"]["status"] == {
+        "type": "string"
     }
     assert document.output_schemas["team-wake-due-agents"]["prepared_project_repos"] == {
         "type": "array"
@@ -5878,6 +5886,76 @@ def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
     assert reread.agent_runtimes["manager"].next_wake_at is None
 
 
+def test_enqueue_operator_chat_message_effect_validates_target_and_authorization(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(config.runtime_dir)
+    ).write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "codex-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read", "write"]},
+                }
+            ]
+        },
+    )
+    provider = TeamEnqueueOperatorChatMessageEffectProvider()
+    definition = TeamEnqueueOperatorChatMessageEffectDefinition(
+        id="enqueue-external-chat",
+        display_name="Enqueue external chat",
+        type="effect:team:enqueue-operator-chat-message",
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        body="Please reply through Team Chat.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-message-1",
+        source_author_id="discord-operator",
+        allow_team_mutations=True,
+        authorized_author_ids=["discord-operator"],
+    )
+    provider.initialize(
+        definition,
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+        ),
+    )
+
+    result = provider.execute()
+    replay = provider.execute()
+
+    assert result["success"] is True
+    assert result["duplicate"] is False
+    assert replay["duplicate"] is True
+    stored = TeamStateRepository(tmp_path).read()
+    message = stored.conversation_messages[result["message_id"]]
+    assert message.metadata.get("allow_team_mutations") is None
+
+    denied = TeamEnqueueOperatorChatMessageEffectProvider()
+    denied.initialize(
+        definition.model_copy(
+            update={"id": "deny-external-chat", "source_message_id": "discord-message-2", "source_author_id": "other"}
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+        ),
+    )
+    with pytest.raises(ValueError, match="not authorized"):
+        denied.execute()
+
+
 def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     _add_task(
@@ -6837,6 +6915,9 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     )
     assert triggers["team-chat-message-queued"]["type"] == "trigger:event"
     assert triggers["team-chat-message-queued"]["event_type"] == ("team.chat.message_queued")
+    assert triggers["team-external-chat-reply-requested"]["event_type"] == (
+        "team.chat.external_reply_requested"
+    )
     assert triggers["team-agent-wake-requested"]["type"] == "trigger:event"
     assert triggers["team-agent-wake-requested"]["event_type"] == ("team.agent.wake_requested")
     assert triggers["team-governance-wake-requested"]["event_type"] == (
@@ -6870,6 +6951,20 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
     assert ("team-operator-escalation", "team-notify-operator") in edges
     assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
+    assert (
+        "team-external-chat-reply-requested",
+        "team-send-external-chat-reply",
+    ) in edges
+    assert (
+        "team-send-external-chat-reply",
+        "team-record-external-chat-delivery",
+    ) in edges
+    assert effects["team-send-external-chat-reply"]["type"] == (
+        "effect:communication:send-message"
+    )
+    assert effects["team-record-external-chat-delivery"]["type"] == (
+        "effect:team:record-external-chat-delivery"
+    )
     assert ("team-agent-wake-requested", "team-wake-requested-agent") in edges
     assert (
         "team-governance-wake-requested",

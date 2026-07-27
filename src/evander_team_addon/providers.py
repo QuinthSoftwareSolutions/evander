@@ -55,6 +55,7 @@ from evander.events.provider_models import (
 from evander.events.models import TriggerEvent, WorkflowNodeEnvelope
 from evander.models import tool_name_value
 from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.messaging.targets import load_communication_targets_config
 from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryProviderBase
 from evander.triggers.delivery import (
@@ -150,6 +151,7 @@ from .provider_schemas import (
     TeamCreateReviewRequestEffectDefinition,
     TeamCreateTaskEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
+    TeamEnqueueOperatorChatMessageEffectDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
     TeamIndexMemoryEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
@@ -159,6 +161,7 @@ from .provider_schemas import (
     TeamPublishOutboxEventsEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
+    TeamRecordExternalChatDeliveryEffectDefinition,
     TeamRecordHumanReviewPreparationResultEffectDefinition,
     TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
@@ -174,7 +177,10 @@ from .sqlite_store import TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
-from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.chat import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
+)
 from .services.domain.common import _slug_id_part
 from .services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
@@ -604,6 +610,39 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional guard requiring the session to resolve to this Team agent.",
             ),
             _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:enqueue-operator-chat-message",
+        "Enqueue external Team Chat message",
+        "Persist and queue a communication message through the normal Team Chat dispatch path.",
+        [
+            _catalog_field("conversation_id", "Conversation ID", "string", description="Fixed Team conversation. Configure this or Agent ID, not both."),
+            _catalog_field("agent_id", "Agent ID", "string", description="Persistent Team agent used to resolve or create the configured operator conversation."),
+            _catalog_field("operator_user_id", "Operator user ID", "string", required=True, description="Configured Team operator identity; never bind this from external message content."),
+            _catalog_field("operator_display_name", "Operator display name", "string", description="Display name when the effect creates the Team conversation."),
+            _catalog_field("body", "Message body", "string", required=True, multiline=True, description="External message text to place in Team Chat."),
+            _catalog_field("provider", "Provider", "string", required=True, description="Authenticated communication provider from the inbound trigger.", placeholder="discord"),
+            _catalog_field("communication_target_id", "Communication target", "string", required=True, description="Read-capable source target; also becomes the external reply destination."),
+            _catalog_field("source_message_id", "Source message ID", "string", required=True, description="Provider message ID used as the durable ingress idempotency key."),
+            _catalog_field("source_thread_id", "Source thread ID", "string", description="Optional provider thread identifier preserved for reply-capable transports."),
+            _catalog_field("source_author_id", "Source author ID", "string", required=True, description="Authenticated provider-side sender identifier."),
+            _catalog_field("source_author_name", "Source author name", "string", description="Optional provider display name retained in message provenance."),
+            _catalog_field("allow_team_mutations", "Allow Team mutations", "boolean", description="Grant ordinary Team mutation tools only after the configured provider author allowlist passes.", default_value=False),
+            _catalog_field("authorized_author_ids", "Authorized author IDs", "json", description="Provider author allowlist required when Team mutations are enabled.", json_value_type="array"),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:record-external-chat-delivery",
+        "Record external Team Chat delivery",
+        "Record the outcome of the communication send without changing the persisted Team reply.",
+        [
+            _catalog_field("delivery_id", "Delivery ID", "string", required=True, description="External delivery intent emitted by team_reply_to_chat."),
+            _catalog_field("success", "Send succeeded", "boolean", required=True, description="Bind from the communication send result."),
+            _catalog_field("provider_message_id", "Provider message ID", "string", description="Provider message ID returned after a successful send."),
+            _catalog_field("error", "Error", "string", description="Send error to display on the Team reply when delivery fails."),
         ],
     ),
     _catalog_entry(
@@ -1663,6 +1702,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         "Published when an operator chat message is queued for a Team agent.",
     ),
     _team_internal_event(
+        EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
+        "Team external chat reply requested",
+        "Published after an externally originated Team Chat reply is persisted and ready to send.",
+    ),
+    _team_internal_event(
         AGENT_WAKE_REQUESTED_EVENT_TYPE,
         "Team agent wake requested",
         "Published when a Team agent should be considered for an explicit wake.",
@@ -2573,6 +2617,122 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
             state_payload["conversations"] = {}
             state_payload["conversation_messages"] = {}
         return {**result, "state": state_payload}
+
+
+class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamEnqueueOperatorChatMessageEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "conversation_id",
+            "agent_id",
+            "operator_user_id",
+            "operator_display_name",
+            "body",
+            "provider",
+            "communication_target_id",
+            "source_message_id",
+            "source_thread_id",
+            "source_author_id",
+            "source_author_name",
+            "allow_team_mutations",
+            "authorized_author_ids",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        context = self.runtime_context
+        if context is None:  # pragma: no cover - EffectProviderBase guard
+            raise RuntimeError("effect:team:enqueue-operator-chat-message requires runtime context")
+        provider = _required_text(payload.get("provider"), "provider").lower()
+        target_id = _required_text(
+            payload.get("communication_target_id"),
+            "communication_target_id",
+        ).lower()
+        directory_path = scoped_effect_directory_path(context)
+        target = _resolve_bridge_communication_target(
+            context,
+            directory_path=directory_path,
+            communication_target_id=target_id,
+        )
+        if target.provider != provider:
+            raise ValueError(
+                f"communication target {target.id!r} uses provider {target.provider!r}, "
+                f"not {provider!r}"
+            )
+        if "read" not in set(target.policy.capabilities):
+            raise ValueError(f"communication target {target.id!r} does not allow read capability")
+
+        source_author_id = _required_text(payload.get("source_author_id"), "source_author_id")
+        allow_team_mutations = _optional_bool(
+            payload.get("allow_team_mutations"),
+            default=False,
+        )
+        authorized_author_ids = _bridge_author_ids(payload.get("authorized_author_ids"))
+        if allow_team_mutations:
+            if not authorized_author_ids:
+                raise ValueError(
+                    "authorized_author_ids is required when allow_team_mutations is enabled"
+                )
+            if source_author_id not in authorized_author_ids:
+                raise ValueError(
+                    "source_author_id is not authorized for Team mutations on this bridge"
+                )
+        state, result = TeamChatService(TeamStateRepository(_runtime_dir(context))).enqueue_external_operator_chat_message(
+            conversation_id=_optional_text(payload.get("conversation_id")),
+            agent_id=_optional_text(payload.get("agent_id")),
+            operator_user_id=_required_text(payload.get("operator_user_id"), "operator_user_id"),
+            operator_display_name=_optional_text(payload.get("operator_display_name")),
+            body=_required_text(payload.get("body"), "body"),
+            provider=provider,
+            communication_target_id=target.id,
+            source_message_id=_required_text(payload.get("source_message_id"), "source_message_id"),
+            source_thread_id=_optional_text(payload.get("source_thread_id")),
+            source_author_id=source_author_id,
+            source_author_name=_optional_text(payload.get("source_author_name")),
+            allow_team_mutations=allow_team_mutations,
+        )
+        return {**result, "revision": state.revision}
+
+
+class TeamRecordExternalChatDeliveryEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamRecordExternalChatDeliveryEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "delivery_id",
+            "success",
+            "provider_message_id",
+            "error",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        state, delivery = TeamChatService(
+            TeamStateRepository(_runtime_dir(self.runtime_context))
+        ).record_external_chat_delivery(
+            delivery_id=_required_text(payload.get("delivery_id"), "delivery_id"),
+            success=_optional_bool(payload.get("success"), default=False),
+            provider_message_id=_optional_text(payload.get("provider_message_id")),
+            error=_optional_text(payload.get("error")),
+        )
+        return {
+            "success": delivery.status == "sent",
+            "revision": state.revision,
+            "delivery_id": delivery.id,
+            "status": delivery.status,
+            "attempt_count": delivery.attempt_count,
+            "provider_message_id": delivery.provider_message_id,
+            "error": delivery.last_error,
+        }
 
 
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
@@ -4902,6 +5062,12 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:wake-governance-managers": TeamWakeGovernanceManagersEffectProvider,
             "effect:team:publish-outbox-events": TeamPublishOutboxEventsEffectProvider,
             "effect:team:finalize-agent-dispatch": (TeamFinalizeAgentDispatchEffectProvider),
+            "effect:team:enqueue-operator-chat-message": (
+                TeamEnqueueOperatorChatMessageEffectProvider
+            ),
+            "effect:team:record-external-chat-delivery": (
+                TeamRecordExternalChatDeliveryEffectProvider
+            ),
             "effect:team:create-operator-directive": (TeamCreateOperatorDirectiveEffectProvider),
             "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
             "effect:team:create-task": TeamCreateTaskEffectProvider,
@@ -4948,6 +5114,18 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:finalize-agent-dispatch": (
                 lambda node: _materialize(
                     TeamFinalizeAgentDispatchEffectDefinition,
+                    node,
+                )
+            ),
+            "effect:team:enqueue-operator-chat-message": (
+                lambda node: _materialize(
+                    TeamEnqueueOperatorChatMessageEffectDefinition,
+                    node,
+                )
+            ),
+            "effect:team:record-external-chat-delivery": (
+                lambda node: _materialize(
+                    TeamRecordExternalChatDeliveryEffectDefinition,
                     node,
                 )
             ),
@@ -7568,6 +7746,45 @@ def _runtime_dir(context: Any) -> Path:
     if runtime_dir is None:
         raise RuntimeError("team add-on provider requires resolved_config.runtime_dir")
     return Path(runtime_dir)
+
+
+def _resolve_bridge_communication_target(
+    context: Any,
+    *,
+    directory_path: str,
+    communication_target_id: str,
+) -> Any:
+    admin_service = getattr(context, "admin_service", None)
+    runtime = getattr(admin_service, "runtime", None)
+    directory_store = getattr(runtime, "directories", None)
+    if directory_store is None:
+        directory_store = getattr(context, "metadata", {}).get("directory_store")
+    if directory_store is None:
+        raise RuntimeError(
+            "effect:team:enqueue-operator-chat-message requires directory configuration"
+        )
+    targets = load_communication_targets_config(
+        runtime_dir=_runtime_dir(context),
+        directory_store=directory_store,
+        directory_path=directory_path,
+    ).by_id()
+    target = targets.get(communication_target_id)
+    if target is None:
+        raise ValueError(
+            f"communication target {communication_target_id!r} is not configured for "
+            f"directory {directory_path!r}"
+        )
+    return target
+
+
+def _bridge_author_ids(value: object) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        return {item.strip() for item in value.split(",") if item.strip()}
+    if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
+        raise ValueError("authorized_author_ids must be a list of provider author IDs")
+    return {str(item).strip() for item in value if str(item).strip()}
 
 
 def _runtime_dir_from_worker(worker: Any) -> Path | None:

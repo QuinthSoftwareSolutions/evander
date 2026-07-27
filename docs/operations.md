@@ -285,6 +285,22 @@ tools are the only Team action path.
    `team_reply_to_chat`, governance wakes only see governance tools, and
    ephemeral workers only report through `team_report_ephemeral_result`.
 
+### External Team Chat bridge smoke check
+
+For a configured disposable communication target, send one allowlisted human
+message and confirm it produces exactly one Team operator message with
+`external_origin` metadata, one queued `team-chat:<message-id>` dispatch, and a
+normal Team Chat reply. Confirm that the reply produces one
+`team.chat.external_reply_requested` outbox event and appears in the source
+channel. Replay the same provider message ID: it must return the original Team
+message/dispatch rather than queue another turn. Verify an unauthorized author
+and a bot-authored reply create no Team message.
+
+If external delivery fails, retain the Team reply and inspect its recorded
+delivery state before retrying the communication workflow. Do not send a
+generic `effect:agent:enqueue-prompt` for bridge traffic: it bypasses the Team
+dispatch lease and cannot safely call `team_reply_to_chat` or Team mutations.
+
 Troubleshooting:
 
 - **Active lease mismatch** — if a completed session's dispatch does not match

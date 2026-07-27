@@ -1710,6 +1710,117 @@ def test_repository_reply_to_chat_command_rejects_non_chat_dispatch(
     assert result["errors"][0]["code"] == "not_chat_dispatch"
 
 
+def test_external_chat_ingress_is_idempotent_and_queues_normal_team_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    chat = _team_chat_service(repo)
+
+    state, first = chat.enqueue_external_operator_chat_message(
+        conversation_id=None,
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="Please check the bridge.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-message-1",
+        source_thread_id=None,
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+        allow_team_mutations=False,
+    )
+    replay_state, replay = chat.enqueue_external_operator_chat_message(
+        conversation_id=None,
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="Please check the bridge.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-message-1",
+        source_thread_id=None,
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+        allow_team_mutations=False,
+    )
+
+    assert first["duplicate"] is False
+    assert replay["duplicate"] is True
+    assert replay["message_id"] == first["message_id"]
+    assert replay["dispatch_id"] == first["dispatch_id"]
+    message = state.conversation_messages[first["message_id"]]
+    assert message.status == "queued"
+    assert message.dispatch_id == f"team-chat:{message.id}"
+    assert message.metadata["external_origin"] == {
+        "provider": "discord",
+        "communication_target_id": "codex-discord",
+        "source_message_id": "discord-message-1",
+        "source_thread_id": None,
+        "source_author_id": "discord-operator",
+        "source_author_name": "Operator Alice",
+    }
+    assert message.metadata["allow_team_mutations"] is False
+    assert len(replay_state.external_chat_ingress) == 1
+    records = repo.list_outbox_records(intent_type="team.chat.message_queued")
+    assert len(records) == 1
+    assert records[0].payload["payload"]["dispatch_id"] == first["dispatch_id"]
+
+
+def test_external_chat_reply_creates_delivery_event_and_records_failure(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    chat = _team_chat_service(repo)
+    state, inbound = chat.enqueue_external_operator_chat_message(
+        conversation_id=None,
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="Please reply through Discord.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-message-2",
+        source_thread_id=None,
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=inbound["message_id"],
+        dispatch_id=inbound["dispatch_id"],
+    )
+
+    state, reply = _command_service(repo).reply_to_chat_command(
+        session_id="session-backend",
+        conversation_id=inbound["conversation_id"],
+        message_id=inbound["message_id"],
+        body="The Team reply is persisted first.",
+        request_id="external-chat-reply",
+    )
+
+    assert len(state.external_chat_deliveries) == 1
+    delivery = next(iter(state.external_chat_deliveries.values()))
+    assert delivery.agent_reply_message_id == reply["chat_message_id"]
+    assert delivery.status == "pending"
+    records = repo.list_outbox_records(intent_type="team.chat.external_reply_requested")
+    assert len(records) == 1
+    assert records[0].payload["payload"]["delivery_id"] == delivery.id
+
+    state, recorded = chat.record_external_chat_delivery(
+        delivery_id=delivery.id,
+        success=False,
+        error="Discord unavailable",
+    )
+
+    assert recorded.status == "failed"
+    assert state.conversation_messages[reply["chat_message_id"]].body == (
+        "The Team reply is persisted first."
+    )
+    assert state.conversation_messages[reply["chat_message_id"]].metadata[
+        "external_delivery"
+    ]["state"] == "failed"
+
+
 def test_repository_send_operator_chat_message_command_creates_conversation_and_replays(
     tmp_path: Path,
 ) -> None:
