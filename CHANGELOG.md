@@ -2,6 +2,9 @@
 
 ## 2026-07-26 - Team Review Follow-up Fixes
 
+- Persisted exact manager-fallback reviewer and deliverable routing authority so empty-scope
+  deadlock-recovery wakes can request the reviews they are instructed to create, and allowed the
+  worker API to serialize the third validation from a failed non-force worktree removal.
 - Removed only proven ignored worktree paths before non-force Git cleanup, rejected new child
   edges to terminal tasks, and preserved every deliverable and review reference in coalesced
   parent-transition notices.

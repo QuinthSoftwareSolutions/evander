@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 33
+SQLITE_SCHEMA_VERSION = 34
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -843,6 +843,12 @@ class TeamStateSqliteStore:
                     table_name="team_inbox",
                     column_name="response_requested",
                     definition="INTEGER NOT NULL DEFAULT 1",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="review_routing_authorities_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
                     connection,
@@ -3583,6 +3589,9 @@ class TeamStateSqliteStore:
                 "inbox_item_ids": scope_values["inbox_item_ids"].get(dispatch_id, []),
                 "project_ids": scope_values["project_ids"].get(dispatch_id, []),
                 "managed_repo_ids": scope_values["managed_repo_ids"].get(dispatch_id, []),
+                "review_routing_authorities": _json_loads(
+                    row["review_routing_authorities_json"] or "[]"
+                ),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "prepared_at": row["prepared_at"],
@@ -3601,10 +3610,11 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_dispatches(
-                    id, agent_id, session_id, cause_kind, cause_id, status,
+                    id, agent_id, session_id, cause_kind, cause_id,
+                    review_routing_authorities_json, status,
                     created_at, prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -3612,6 +3622,9 @@ class TeamStateSqliteStore:
                     dispatch["session_id"],
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
+                    _json_dumps(
+                        dispatch.get("review_routing_authorities", [])
+                    ),
                     dispatch["status"],
                     dispatch["created_at"],
                     dispatch.get("prepared_at"),
@@ -6076,6 +6089,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     session_id TEXT NOT NULL,
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
+    review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     prepared_at TEXT,

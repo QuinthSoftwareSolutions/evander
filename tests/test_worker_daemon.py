@@ -30,6 +30,7 @@ from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeCleanupRecord,
     WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRequest,
 )
@@ -824,6 +825,31 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     assert repeated.validation_count == 2
     assert repeated.reclaimed_bytes == 0
     assert clone.commit_sha == prepared.commit_sha
+
+
+def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
+    record = WorkerTaskWorktreeCleanupRecord(
+        session_id="session-1",
+        repo_name="repo",
+        worktree_name="task-a-1234",
+        target_dir="/home/agent/worktrees/repo/task-a-1234",
+        branch="agents/session-1/tasks/task-a-1234",
+        expected_commit_sha="a" * 40,
+        actual_branch="agents/session-1/tasks/task-a-1234",
+        actual_commit_sha="a" * 40,
+        state="refused",
+        safe_to_remove=False,
+        removed=False,
+        pruned=False,
+        dry_run=False,
+        validation_count=3,
+        failed_check="tracked_changes",
+        message="late tracked work was retained",
+        tracked_paths=["README.md"],
+    )
+
+    assert record.validation_count == 3
+    assert record.tracked_paths == ["README.md"]
 
 
 @pytest.mark.parametrize(

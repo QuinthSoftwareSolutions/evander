@@ -313,10 +313,22 @@ class TeamCommandExecutor:
             dispatch=dispatch,
             review_request_ids=targets["review_request_ids"],
         )
+        request_review_routing_project_ids: set[str] = set()
+        if resolved.context.tool_name == "team_request_review":
+            request_review_routing_project_ids = (
+                _validate_request_review_dispatch_scope(
+                    state,
+                    dispatch=dispatch,
+                    payload=normalized_payload,
+                )
+            )
         _validate_dispatch_project_scope(
             state,
             dispatch=dispatch,
-            project_ids=targets["project_ids"],
+            project_ids=(
+                targets["project_ids"]
+                - request_review_routing_project_ids
+            ),
         )
         _validate_dispatch_managed_repo_scope(
             dispatch=dispatch,
@@ -339,12 +351,6 @@ class TeamCommandExecutor:
                     requested_ids=[deliverable_id or "unknown deliverable notice"],
                     allowed_ids=dispatch.inbox_item_ids,
                 )
-        if resolved.context.tool_name == "team_request_review":
-            _validate_request_review_dispatch_scope(
-                state,
-                dispatch=dispatch,
-                payload=normalized_payload,
-            )
         if resolved.context.tool_name == "team_report_blocker":
             _validate_report_blocker_dispatch_scope(
                 state,
@@ -1111,7 +1117,7 @@ def _validate_request_review_dispatch_scope(
     *,
     dispatch: TeamDispatch,
     payload: Mapping[str, Any],
-) -> None:
+) -> set[str]:
     deliverable_ids = sorted(_values_for_keys(payload, {"deliverable_id"}))
     deliverable_id = deliverable_ids[0] if len(deliverable_ids) == 1 else None
     deliverable = state.deliverables.get(deliverable_id or "")
@@ -1121,7 +1127,7 @@ def _validate_request_review_dispatch_scope(
         else None
     )
     if deliverable is None or task is None:
-        return
+        return set()
 
     matching_notice_ids = {
         item.id
@@ -1139,7 +1145,7 @@ def _validate_request_review_dispatch_scope(
             dispatch=dispatch,
             inbox_item_ids=matching_notice_ids,
         )
-        return
+        return set()
 
     if task.id in dispatch.task_ids:
         if task.owner_agent_id != dispatch.agent_id:
@@ -1158,13 +1164,38 @@ def _validate_request_review_dispatch_scope(
         # Submission legitimately moves the task out of actionable readiness
         # before its producer can route the resulting deliverable to a reviewer.
         # Immutable task membership plus current ownership remains the authority.
-        return
+        return set()
+
+    reviewer_ids = sorted(_values_for_keys(payload, {"reviewer_agent_id"}))
+    reviewer_agent_id = reviewer_ids[0] if len(reviewer_ids) == 1 else None
+    if dispatch.cause_kind == "manager_fallback" and reviewer_agent_id is not None:
+        for authority in dispatch.review_routing_authorities:
+            if (
+                authority.reviewer_agent_id == reviewer_agent_id
+                and authority.deliverable_id == deliverable.id
+                and authority.task_id == task.id
+                and authority.project_id == task.project_id
+            ):
+                return {task.project_id}
 
     raise _dispatch_scope_error(
         dispatch,
-        scope_kind="task or deliverable handoff inbox item",
+        scope_kind=(
+            "task, deliverable handoff inbox item, or manager fallback "
+            "review routing authority"
+        ),
         requested_ids=[task.id, deliverable.id],
-        allowed_ids=[*dispatch.task_ids, *dispatch.inbox_item_ids],
+        allowed_ids=[
+            *dispatch.task_ids,
+            *dispatch.inbox_item_ids,
+            *[
+                (
+                    f"{authority.reviewer_agent_id}:"
+                    f"{authority.deliverable_id}"
+                )
+                for authority in dispatch.review_routing_authorities
+            ],
+        ],
     )
 
 

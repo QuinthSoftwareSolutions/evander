@@ -118,7 +118,10 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from evander_team_addon.services.commands import TeamEphemeralCommandService
+from evander_team_addon.services.commands import (
+    TeamEphemeralCommandService,
+    TeamReviewCommandService,
+)
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
 )
@@ -2926,8 +2929,9 @@ def test_build_prompt_includes_typed_release_gate_retry_context(tmp_path: Path) 
     assert "audited reason" in release["next_action_hint"]
 
 
-def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
+def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
@@ -2976,9 +2980,8 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
 
     repo.update(_handle_all_inbox)
     _block_review_for_manager_fallback(repo)
-    _state, leases = _team_runtime_service(repo).lease_due_agents(
-        now=datetime(2026, 1, 1, tzinfo=UTC)
-    )
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(now=leased_at)
     assert [lease["agent"]["id"] for lease in leases] == ["manager"]
     lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
 
@@ -3031,7 +3034,47 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         and item["existing_reviewer_ids"] == ["manager"]
         for item in fallback_summary["routing_gaps"]
     )
+    assert lease["dispatch"]["review_routing_authorities"] == [
+        {
+            "kind": "reviewer_without_assigned_review_work",
+            "reviewer_agent_id": "luke",
+            "project_id": "project",
+            "task_id": "task",
+            "deliverable_id": "deliverable-stalled",
+        }
+    ]
     assert len(prompt.encode("utf-8")) < 32_000
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: leased_at + timedelta(minutes=1),
+    )
+    _state, denied = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="backend",
+        id="review-routed-outside-authority",
+        instructions="Review the stalled backend slice.",
+        request_id="manager-fallback-route-review-outside-authority",
+    )
+
+    assert denied["success"] is False
+    assert denied["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+    state, requested = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-routed-to-luke",
+        instructions="Review the stalled backend slice.",
+        request_id="manager-fallback-route-review",
+    )
+
+    assert requested["success"] is True, json.dumps(requested, indent=2, sort_keys=True)
+    assert (
+        state.review_requests["review-routed-to-luke"].reviewer_agent_id
+        == "luke"
+    )
 
 
 def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(

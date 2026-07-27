@@ -95,7 +95,10 @@ from .domain.git_work_contexts import (
     finalize_active_git_work_contexts_for_dispatch,
     reconcile_git_work_context_lifecycle,
 )
-from .domain.manager_fallback import _manager_fallback_summary_payload
+from .domain.manager_fallback import (
+    _manager_fallback_review_routing_authorities,
+    _manager_fallback_summary_payload,
+)
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
 from .domain.stand_down import (
@@ -761,6 +764,12 @@ class TeamRuntimeService:
                     agent_id=manager.id,
                     now=effective_now,
                 )
+                manager_fallback_summary = _manager_fallback_summary_payload(
+                    state_model,
+                    team=team,
+                    manager=manager,
+                    now=effective_now,
+                )
                 manager_scope = build_agent_dispatch_scope(
                     state_model,
                     agent=manager,
@@ -775,6 +784,12 @@ class TeamRuntimeService:
                     session_id=manager.session_id,
                     cause_kind="manager_fallback",
                     status=TeamDispatchStatus.PREPARING,
+                    review_routing_authorities=(
+                        _manager_fallback_review_routing_authorities(
+                            state_model,
+                            summary=manager_fallback_summary,
+                        )
+                    ),
                     created_at=effective_now,
                     **manager_scope.model_fields(),
                 )
@@ -841,12 +856,7 @@ class TeamRuntimeService:
                             state_model,
                             manager.id,
                         ),
-                        "manager_fallback_summary": _manager_fallback_summary_payload(
-                            state_model,
-                            team=team,
-                            manager=manager,
-                            now=effective_now,
-                        ),
+                        "manager_fallback_summary": manager_fallback_summary,
                         "operator_chat_participants": _operator_chat_participant_payloads(
                             state_model
                         ),

@@ -1918,6 +1918,25 @@ class WorktreeCleanupState(str, Enum):
     RECOVERY_REQUIRED = "recovery_required"
 
 
+class TeamDispatchReviewRoutingAuthority(TeamModel):
+    kind: Literal["reviewer_without_assigned_review_work"]
+    reviewer_agent_id: str
+    project_id: str
+    task_id: str
+    deliverable_id: str
+
+    @field_validator(
+        "reviewer_agent_id",
+        "project_id",
+        "task_id",
+        "deliverable_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
 class TeamDispatch(TeamModel):
     id: str
     agent_id: str
@@ -1930,6 +1949,9 @@ class TeamDispatch(TeamModel):
     inbox_item_ids: list[str] = Field(default_factory=list)
     project_ids: list[str] = Field(default_factory=list)
     managed_repo_ids: list[str] = Field(default_factory=list)
+    review_routing_authorities: list[TeamDispatchReviewRoutingAuthority] = Field(
+        default_factory=list
+    )
     status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
     created_at: datetime = Field(default_factory=utc_now)
     prepared_at: datetime | None = None
@@ -1963,6 +1985,16 @@ class TeamDispatch(TeamModel):
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> "TeamDispatch":
+        authority_keys = [
+            (authority.reviewer_agent_id, authority.deliverable_id)
+            for authority in self.review_routing_authorities
+        ]
+        if len(authority_keys) != len(set(authority_keys)):
+            raise ValueError("dispatch review routing authorities must be unique")
+        if self.review_routing_authorities and self.cause_kind != "manager_fallback":
+            raise ValueError(
+                "dispatch review routing authorities require manager_fallback cause"
+            )
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -4777,6 +4809,50 @@ class TeamState(TeamModel):
             for project_id in dispatch.project_ids:
                 if project_id not in self.projects:
                     errors.append(f"dispatch {dispatch.id} references missing project {project_id}")
+            for authority in dispatch.review_routing_authorities:
+                reviewer = self.agents.get(authority.reviewer_agent_id)
+                project = self.projects.get(authority.project_id)
+                task = self.tasks.get(authority.task_id)
+                deliverable = self.deliverables.get(authority.deliverable_id)
+                if reviewer is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing authority references "
+                        f"missing agent {authority.reviewer_agent_id}"
+                    )
+                if project is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing authority references "
+                        f"missing project {authority.project_id}"
+                    )
+                if task is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing authority references "
+                        f"missing task {authority.task_id}"
+                    )
+                elif task.project_id != authority.project_id:
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing task {task.id} "
+                        f"does not belong to project {authority.project_id}"
+                    )
+                if deliverable is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing authority references "
+                        f"missing deliverable {authority.deliverable_id}"
+                    )
+                elif deliverable.task_id != authority.task_id:
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing deliverable "
+                        f"{deliverable.id} does not belong to task {authority.task_id}"
+                    )
+                if (
+                    reviewer is not None
+                    and project is not None
+                    and reviewer.team_id != project.team_id
+                ):
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing agent {reviewer.id} "
+                        f"does not belong to project team {project.team_id}"
+                    )
 
     def _validate_worktree_cleanup_candidates(self, errors: list[str]) -> None:
         for candidate in self.worktree_cleanup_candidates.values():

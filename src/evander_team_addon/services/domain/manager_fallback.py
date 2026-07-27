@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from ...models import (
@@ -13,6 +13,7 @@ from ...models import (
     ReviewProfile,
     ReviewRequest,
     Team,
+    TeamDispatchReviewRoutingAuthority,
     TeamInboxItemState,
     TeamState,
     agent_project_ids,
@@ -257,6 +258,59 @@ def _manager_fallback_summary_payload(
         "routing_gaps": limited_routing_gaps,
         "omitted_counts": omitted_counts,
     }
+
+
+def _manager_fallback_review_routing_authorities(
+    state: TeamState,
+    *,
+    summary: Mapping[str, Any],
+) -> list[TeamDispatchReviewRoutingAuthority]:
+    """Freeze the exact reviewer and deliverable pairs exposed as routing gaps."""
+
+    raw_gaps = summary.get("routing_gaps")
+    if not isinstance(raw_gaps, Sequence) or isinstance(
+        raw_gaps,
+        (str, bytes, bytearray),
+    ):
+        return []
+    authorities: dict[
+        tuple[str, str],
+        TeamDispatchReviewRoutingAuthority,
+    ] = {}
+    for raw_gap in raw_gaps:
+        if not isinstance(raw_gap, Mapping):
+            continue
+        if raw_gap.get("kind") != "reviewer_without_assigned_review_work":
+            continue
+        reviewer_agent_id = _optional_text(raw_gap.get("agent_id"))
+        deliverable_ids = raw_gap.get("deliverable_ids")
+        if (
+            reviewer_agent_id is None
+            or reviewer_agent_id not in state.agents
+            or not isinstance(deliverable_ids, Sequence)
+            or isinstance(deliverable_ids, (str, bytes, bytearray))
+        ):
+            continue
+        for raw_deliverable_id in deliverable_ids:
+            deliverable_id = _optional_text(raw_deliverable_id)
+            deliverable = state.deliverables.get(deliverable_id or "")
+            task = (
+                state.tasks.get(deliverable.task_id)
+                if deliverable is not None
+                else None
+            )
+            if deliverable is None or task is None:
+                continue
+            authorities[(reviewer_agent_id, deliverable.id)] = (
+                TeamDispatchReviewRoutingAuthority(
+                    kind="reviewer_without_assigned_review_work",
+                    reviewer_agent_id=reviewer_agent_id,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    deliverable_id=deliverable.id,
+                )
+            )
+    return [authorities[key] for key in sorted(authorities)]
 
 
 def _manager_fallback_time(value: datetime | None) -> str | None:
@@ -789,6 +843,7 @@ __all__ = [
     "_MANAGER_FALLBACK_PENDING_REVIEW_STATES",
     "_manager_fallback_task_visible_for_work",
     "_manager_fallback_summary_payload",
+    "_manager_fallback_review_routing_authorities",
     "_manager_fallback_time",
     "_manager_fallback_short_text",
     "_manager_fallback_limited_rows",

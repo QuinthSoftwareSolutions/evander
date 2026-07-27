@@ -423,7 +423,7 @@ class WorkerTaskWorktreeCleanupRecord(BaseModel):
     removed: bool
     pruned: bool
     dry_run: bool
-    validation_count: int = Field(ge=0, le=2)
+    validation_count: int = Field(ge=0, le=3)
     failed_check: str | None = None
     message: str
     tracked_paths: list[str] = Field(default_factory=list)
