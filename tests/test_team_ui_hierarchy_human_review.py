@@ -36,6 +36,17 @@ def test_task_surfaces_receive_dispatch_and_worktree_identity_collections() -> N
         assert required <= TEAM_VIEW_COLLECTIONS[view]
 
 
+def test_projects_view_receives_release_evidence_collections() -> None:
+    assert {
+        "review_requests",
+        "git_promotions",
+    } <= TEAM_VIEW_COLLECTIONS["projects"]
+
+
+def test_planning_view_receives_formal_review_status_collection() -> None:
+    assert "review_requests" in TEAM_VIEW_COLLECTIONS["planning"]
+
+
 def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> None:
     content = _team_agent_guidance_content(
         agent={"id": "implementer", "display_name": "Implementer"}

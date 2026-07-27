@@ -4564,7 +4564,7 @@ The add-on UI currently has these top-level views:
 | **Activity** | Redacted dispatch/tool success and failure history, filterable by Team, agent, dispatch, status, and tool. |
 | **Governance** | Cross-Team groups, agendas, cost warnings, and directives. |
 | **Planning** | Planning-oriented summaries of goals and work. |
-| **Timeline** | A derived chronological rendering of current Team records. |
+| **Activity timeline** | A derived chronological rendering of current Team records. |
 | **Org chart** | Reporting hierarchy and operational details per agent. |
 
 There is no top-level **Roles** view. Roles are maintained inside **Teams** and setup/edit forms. Reviews and releases similarly live inside **Delivery**, not separate top-level tabs.
@@ -8054,7 +8054,7 @@ The Team Add-on contributes one navigation area with fifteen current views. Ther
 | Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |
 | Planning | Goals, deliverables, and status-filtered task context for planning work |
-| Timeline | Time-ordered domain activity |
+| Activity timeline | Time-ordered domain activity |
 | Org chart | Visual team, reporting, and governance relationships |
 
 UI state is a projection. For a disputed operational fact, prefer the Team Admin API payload and then `runtime/addons/team-addon/state.db` over what a stale browser tab last rendered.

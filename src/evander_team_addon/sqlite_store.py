@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 34
+SQLITE_SCHEMA_VERSION = 36
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -822,6 +822,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_governance_group_goals",
+                    column_name="goal_name",
+                    definition="TEXT NOT NULL DEFAULT ''",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_action_records",
                     column_name="feedback_delivered_at",
                     definition="TEXT",
@@ -1109,6 +1115,12 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_release_packages",
+                    column_name="summary",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
                     column_name="policy_version",
                     definition="INTEGER NOT NULL DEFAULT 1",
                 )
@@ -1199,6 +1211,13 @@ class TeamStateSqliteStore:
                     UPDATE team_tasks
                     SET state_entered_at = COALESCE(NULLIF(state_entered_at, ''), updated_at, created_at)
                     WHERE state_entered_at IS NULL OR state_entered_at = ''
+                    """
+                )
+                connection.execute(
+                    """
+                    UPDATE team_governance_group_goals
+                    SET goal_name = goal_id
+                    WHERE goal_name IS NULL OR goal_name = ''
                     """
                 )
                 connection.execute(
@@ -1498,12 +1517,13 @@ class TeamStateSqliteStore:
         goals = _grouped_rows(
             connection,
             """
-            SELECT governance_group_id AS owner_id, goal_id, description, state
+            SELECT governance_group_id AS owner_id, goal_id, goal_name, description, state
             FROM team_governance_group_goals
             ORDER BY governance_group_id, position
             """,
             lambda row: {
                 "id": row["goal_id"],
+                "name": row["goal_name"] or row["goal_id"],
                 "description": row["description"],
                 "state": row["state"],
             },
@@ -1557,14 +1577,15 @@ class TeamStateSqliteStore:
                 connection.execute(
                     """
                     INSERT INTO team_governance_group_goals(
-                        governance_group_id, position, goal_id, description, state
+                        governance_group_id, position, goal_id, goal_name, description, state
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         group["id"],
                         position,
                         goal["id"],
+                        goal["name"],
                         goal["description"],
                         goal.get("state", "pending"),
                     ),
@@ -3183,6 +3204,7 @@ class TeamStateSqliteStore:
             payload["release_packages"][row["id"]] = {
                 "id": row["id"],
                 "project_id": row["project_id"],
+                "summary": row["summary"],
                 "supersedes_release_package_id": row["supersedes_release_package_id"],
                 "deliverable_ids": deliverables.get(row["id"], []),
                 "artifact_refs": artifacts.get(row["id"], []),
@@ -3223,7 +3245,7 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_release_packages(
-                    id, project_id, supersedes_release_package_id,
+                    id, project_id, summary, supersedes_release_package_id,
                     release_branch, canonical_branch, published_commit_sha,
                     base_commit_sha, candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, verification_run_ids_json, review_request_ids_json,
@@ -3231,11 +3253,12 @@ class TeamStateSqliteStore:
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
                     package["project_id"],
+                    package.get("summary"),
                     package.get("supersedes_release_package_id"),
                     package.get("release_branch"),
                     package.get("canonical_branch"),
@@ -5307,6 +5330,7 @@ CREATE TABLE IF NOT EXISTS team_governance_group_goals (
     governance_group_id TEXT NOT NULL,
     position INTEGER NOT NULL,
     goal_id TEXT NOT NULL,
+    goal_name TEXT NOT NULL,
     description TEXT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY(governance_group_id, position)
@@ -5916,6 +5940,7 @@ CREATE TABLE IF NOT EXISTS team_chat_attachment_policies (
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
+    summary TEXT,
     supersedes_release_package_id TEXT,
     release_branch TEXT,
     canonical_branch TEXT,

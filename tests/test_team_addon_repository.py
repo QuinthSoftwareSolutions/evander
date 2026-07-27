@@ -5692,6 +5692,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     } <= review_columns
     assert "required_outcome_kinds_json" in review_profile_columns
     assert "gate_failure_json" in release_columns
+    assert "summary" in release_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
     assert "team_outbox" in tables
@@ -13229,11 +13230,13 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert result["git_promotion_event_ids"] == result["promotion_event_ids"]
     assert result["release_package"]["id"] == "rel-1"
     assert result["release_package"]["state"] == TeamRecordState.PENDING.value
+    assert result["release_package"]["summary"] == "Release accepted deliverable."
     assert any(
         "Prerequisite feature promotion intent recorded" in hint
         for hint in result["next_action_hints"]
     )
     release = state.release_packages["rel-1"]
+    assert release.summary == "Release accepted deliverable."
     feature_promotion_id = result["promotion_event_ids"][0]
     feature_promotion = state.git_promotions[feature_promotion_id]
     assert release.git_promotion_record_ids == [feature_promotion_id]

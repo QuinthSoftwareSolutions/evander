@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-07-27 - Team Operational History and Delivery Clarity
+
+- Added coordinated Board and Hierarchy task views with named lineage navigation, relationship
+  highlighting, tree controls, operational badges, active-first defaults, completed-history
+  filters, search, and bounded paging.
+- Reworked deliverable and release cards around task-derived subjects, named producers and
+  projects, structured outcome/evidence/review groups, staged release progress, prominent included
+  work, durable release-request notes, current unsuperseded verification attempts, and copyable
+  identifiers behind technical details.
+- Kept resolved and closed cases durable while excluding them from active counts and wake context,
+  and added explicit case-history counts, search, status filtering whose all-status selection
+  includes history, and pagination.
+- Separated active runtime obligations, failed attempts, and retained history; added
+  occurrence age, terminal-work and inbox-reconciliation context, attention facets, bounded pages,
+  multi-team and multi-project scope matching, named ownership and related work, kind-specific
+  cards and remediation guidance, passive-correspondence history labels, Agent Mail routing,
+  actor-scoped linked metadata and narratives, primary-target reconciliation, agent-facing
+  failed-promotion commit details, and structured technical details while keeping recorded failure
+  attempts in workspace attention.
+- Structured expanded Planning tasks into scannable overview, lifecycle, hierarchy, contribution,
+  task-brief, and technical sections, with named relationships, contribution-state checklists,
+  formal review status, operator-readable lifecycle reasons, collapsed long briefs, safe
+  lightweight Markdown rendering, explicit cancelled and skipped lifecycle stages, and
+  not-applicable review stages for completed support work.
+- Replaced governance group storage-oriented editing with name-first manager choices, searchable
+  team selection and removable chips, independently validated and reorderable named goal rows in
+  both creation and editing, editable goal lifecycle states, copyable technical IDs, and lossless
+  backward-compatible persisted goal names.
+- Renamed the snapshot-derived history to Activity timeline, made its completeness and retention
+  limits explicit, and added human-readable subjects, actors, scopes, domain changes, reasons,
+  name-first filters, snapshot-only update descriptions, and deduplicated copyable identifiers
+  without claiming audit-log evidence.
+
 ## 2026-07-27 - Team Review Profile Readability
 
 - Reworked review-profile cards around display names and clear Purpose, Reviewers, Required

@@ -64,7 +64,6 @@ from .models import (
     AgentVoiceProfile,
     EphemeralAgentPolicy,
     GovernanceAgendaItemType,
-    GovernanceGoal,
     ProjectGitConfig,
     ProjectReleasePolicy,
     ProjectGoal,
@@ -184,9 +183,12 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "blockers",
         "blocker_events",
         "action_records",
+        "deliverables",
+        "release_packages",
         "dispatches",
         "worktree_cleanup_candidates",
         "git_work_contexts",
+        "ephemeral_assignments",
     },
     "delivery": {
         "teams",
@@ -213,6 +215,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agents",
         "tasks",
         "deliverables",
+        "review_requests",
         "outcome_kind_definitions",
         "review_profiles",
         "release_packages",
@@ -221,6 +224,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "cases",
         "dispatches",
         "worktree_cleanup_candidates",
+        "git_promotions",
         "git_work_contexts",
     },
     "task-board": {
@@ -255,6 +259,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "governance_agenda",
         "governance_runtimes",
         "projects",
+        "roles",
         "agents",
         "blockers",
         "blocker_events",
@@ -265,6 +270,10 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agents",
         "tasks",
         "deliverables",
+        "review_requests",
+        "review_profiles",
+        "blockers",
+        "blocker_events",
         "dispatches",
         "worktree_cleanup_candidates",
         "git_work_contexts",
@@ -741,7 +750,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         raw_archived = payload.get("archived")
         goals = (
-            [GovernanceGoal.model_validate(item) for item in _optional_list(payload, "goals")]
+            list(_optional_list(payload, "goals"))
             if "goals" in payload
             else None
         )
@@ -3011,6 +3020,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             ),
             release_branch=_optional(payload, "release_branch"),
             canonical_branch=_optional(payload, "canonical_branch"),
+            summary=_optional(payload, "summary"),
             verification_waivers=(
                 _optional_list(payload, "verification_waivers")
                 if payload.get("verification_waivers") is not None
@@ -3997,7 +4007,17 @@ def _timeline_payload_for_request(request: Request, state: TeamState) -> dict[st
             offset=offset,
         ),
         "source": "derived_from_current_team_state",
-        "description": "Derived timeline from the current TeamState snapshot.",
+        "kind": "activity_timeline",
+        "completeness": "retained_current_state_only",
+        "retention_boundary": (
+            "Only records and timestamps retained in the current TeamState snapshot are "
+            "represented."
+        ),
+        "description": (
+            "Activity reconstructed from records retained in the current TeamState snapshot; "
+            "earlier transitions, deleted or compacted records, and previous field values may "
+            "be unavailable. This is not an audit log."
+        ),
         "filters": filters,
     }
 

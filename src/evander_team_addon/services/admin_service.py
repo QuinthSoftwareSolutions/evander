@@ -1139,13 +1139,21 @@ class TeamAdminService:
         manager_agent_id: str | None = None,
         member_team_ids: list[str] | None = None,
         set_member_team_ids: bool = False,
-        goals: list[GovernanceGoal] | None = None,
+        goals: list[GovernanceGoal | Mapping[str, Any]] | None = None,
         max_cost_usd: object | None = None,
         set_max_cost_usd: bool = False,
         archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_goals = (
+            _governance_goals_with_generated_ids(
+                list(goals),
+                governance_group_id=normalized_group_id,
+            )
+            if goals is not None
+            else None
+        )
 
         def _mutate(state: TeamState) -> TeamState:
             group = _require_present(
@@ -1191,8 +1199,8 @@ class TeamAdminService:
                     removed_team_ids=sorted(removed_team_ids),
                     now=membership_changed_at,
                 )
-            if goals is not None:
-                group.goals = goals
+            if normalized_goals is not None:
+                group.goals = normalized_goals
             if set_max_cost_usd:
                 group.max_cost_usd = _optional_cost_limit(max_cost_usd)
             group.updated_at = utc_now()
@@ -4574,6 +4582,7 @@ class TeamAdminService:
         post_release_feedback_case_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
+        summary: str | None = None,
         verification_waivers: list[Mapping[str, Any]] | None = None,
         operator_actor_id: str = "operator",
         expected_revision: int | None = None,
@@ -4586,6 +4595,7 @@ class TeamAdminService:
             post_release_feedback_case_id=post_release_feedback_case_id,
             release_branch=release_branch,
             canonical_branch=canonical_branch,
+            summary=summary,
             verification_waivers=verification_waivers,
             operator_actor_id=operator_actor_id,
             expected_revision=expected_revision,
@@ -4602,6 +4612,7 @@ class TeamAdminService:
         post_release_feedback_case_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
+        summary: str | None = None,
         verification_waivers: list[Mapping[str, Any]] | None = None,
         operator_actor_id: str = "operator",
         expected_revision: int | None = None,
@@ -4619,6 +4630,7 @@ class TeamAdminService:
             "deliverable_ids": list(deliverable_ids),
             "release_branch": _optional_text(release_branch),
             "canonical_branch": _optional_text(canonical_branch),
+            "summary": _optional_text(summary),
             "verification_waivers": [dict(item) for item in (verification_waivers or [])],
             "waiver_actor_kind": "operator",
             "waiver_actor_id": _required_text(operator_actor_id, "operator_actor_id"),
