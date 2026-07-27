@@ -11143,6 +11143,13 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
 });
 
 test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", async (t) => {
+  let releaseCosts = () => {};
+  const costsGate = new Promise((resolve) => {
+    releaseCosts = resolve;
+  });
+  t.after(() => {
+    releaseCosts();
+  });
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
@@ -11337,7 +11344,10 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     decision_at: "2026-07-26T14:00:00Z",
   };
 
-  const { port } = await createTeamAddonServer(t, { initialState });
+  const { port, costResponses } = await createTeamAddonServer(t, {
+    costsBeforeResponse: costsGate,
+    initialState,
+  });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -11461,6 +11471,28 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     0,
   );
 
+  releaseCosts();
+  await waitForCondition(
+    () => costResponses.length >= 1,
+    "expected the delayed costs response to complete",
+  );
+  assert.notEqual(
+    await alphaProjectCard.locator(":scope > details").getAttribute("open"),
+    null,
+    "the planning project should remain expanded after a background render",
+  );
+  assert.notEqual(
+    await rootTask.locator(":scope > .planning-task-details").getAttribute("open"),
+    null,
+    "the planning task should remain expanded after a background render",
+  );
+  assert.notEqual(
+    await briefDetails.getAttribute("open"),
+    null,
+    "the full task brief should remain expanded after a background render",
+  );
+  await briefDetails.locator(".planning-task-brief-content").waitFor({ state: "visible" });
+
   for (const identifier of [
     "task-starship-root",
     "task-starship-missing",
@@ -11509,7 +11541,11 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     "#team-planning-page .planning-project-card",
     { hasText: "Alpha Project" },
   );
-  await refreshedAlphaProjectCard.locator(":scope > details > summary").click();
+  assert.notEqual(
+    await refreshedAlphaProjectCard.locator(":scope > details").getAttribute("open"),
+    null,
+    "the planning project should stay expanded when filters re-render the task list",
+  );
   const cancelledTask = page.locator(
     '#team-planning-page [data-planning-task-id="task-starship-cancelled"]',
   );

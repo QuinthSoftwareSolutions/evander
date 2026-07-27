@@ -219,6 +219,7 @@ let activeTeamView = initialHumanReviewDeepLink.enabled
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
+const openPlanningDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
 let projectCreateFormOpen = false;
@@ -641,6 +642,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
+  bindPlanningDisclosures();
   bindProjectFocus();
   bindTaskBoardSelectors();
   bindCaseFilters();
@@ -3108,6 +3110,24 @@ function bindPlanningFilters() {
     });
   });
   updatePlanningFilterControls();
+}
+
+function bindPlanningDisclosures() {
+  document.addEventListener("toggle", (event) => {
+    const disclosure = event.target;
+    if (!disclosure?.matches?.("details[data-planning-disclosure-key]")) {
+      return;
+    }
+    const key = text(disclosure.dataset.planningDisclosureKey);
+    if (!key) {
+      return;
+    }
+    if (disclosure.open) {
+      openPlanningDisclosures.add(key);
+    } else {
+      openPlanningDisclosures.delete(key);
+    }
+  }, true);
 }
 
 function bindProjectFocus() {
@@ -10877,6 +10897,7 @@ function inboxPriorityLabel(item) {
 }
 
 function renderProjects() {
+  rememberOpenPlanningDisclosures();
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter(isVisibleProject);
   if (!allProjects.length) {
@@ -13116,8 +13137,8 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
     detailBits.push(`${hiddenCount} hidden`);
   }
   return `
-    <article class="project-block planning-project-card">
-      <details>
+    <article class="project-block planning-project-card" data-planning-project-id="${escapeAttr(project.id)}">
+      <details ${planningDisclosureAttributes("project", project.id)}>
         <summary class="planning-project-summary">
           <span class="planning-project-main">
             <strong>${escapeHtml(project.name)}</strong>
@@ -13158,6 +13179,29 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
       </details>
     </article>
   `;
+}
+
+function planningDisclosureKey(kind, recordId) {
+  return `${text(kind)}:${text(recordId)}`;
+}
+
+function planningDisclosureAttributes(kind, recordId) {
+  const key = planningDisclosureKey(kind, recordId);
+  return `data-planning-disclosure-key="${escapeAttr(key)}"${openPlanningDisclosures.has(key) ? " open" : ""}`;
+}
+
+function rememberOpenPlanningDisclosures() {
+  document.querySelectorAll("details[data-planning-disclosure-key]").forEach((disclosure) => {
+    const key = text(disclosure.dataset.planningDisclosureKey);
+    if (!key) {
+      return;
+    }
+    if (disclosure.open) {
+      openPlanningDisclosures.add(key);
+    } else {
+      openPlanningDisclosures.delete(key);
+    }
+  });
 }
 
 function renderProjectGit(git) {
@@ -13527,7 +13571,7 @@ function renderPlanningTaskHierarchy(task) {
     ${
       hasTree
         ? `
-          <details class="planning-hierarchy-details">
+          <details class="planning-hierarchy-details" ${planningDisclosureAttributes("hierarchy", task.id)}>
             <summary>Show named hierarchy (${unresolvedIds.length} unresolved)</summary>
             ${renderPlanningTaskTree(task.id, unresolvedIds)}
           </details>
@@ -13730,7 +13774,7 @@ function renderPlanningTaskBrief(task) {
     return body;
   }
   return `
-    <details class="planning-task-brief-details">
+    <details class="planning-task-brief-details" ${planningDisclosureAttributes("brief", task.id)}>
       <summary>Show full brief</summary>
       ${body}
     </details>
@@ -13759,8 +13803,11 @@ function renderPlanningTaskTechnicalDetails(task) {
       ["Acceptance IDs", assessment.active_acceptance_ids || []],
       ["Review IDs", assessment.active_review_request_ids || []],
       ["Blocker IDs", blockerIds],
-    ], { summary: "Identifiers and lifecycle references" })}
-    ${worktreeContexts.length ? `<details class="technical-details planning-worktree-details"><summary>Worktree mapping</summary>${renderTaskWorktreeMapping(task)}</details>` : ""}
+    ], {
+      summary: "Identifiers and lifecycle references",
+      disclosureKey: planningDisclosureKey("technical", task.id),
+    })}
+    ${worktreeContexts.length ? `<details class="technical-details planning-worktree-details" ${planningDisclosureAttributes("worktree", task.id)}><summary>Worktree mapping</summary>${renderTaskWorktreeMapping(task)}</details>` : ""}
   `;
 }
 
@@ -13797,7 +13844,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
   ].filter(Boolean).join(" ");
   return `
     <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}" data-planning-task-id="${escapeAttr(task.id)}">
-      <details class="planning-task-details">
+      <details class="planning-task-details" ${planningDisclosureAttributes("task", task.id)}>
         <summary class="compact-record-summary planning-task-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(task.title)}</strong>
@@ -14162,7 +14209,7 @@ function renderIdentifierCopy(value, { label = "Copy ID" } = {}) {
   `;
 }
 
-function renderTechnicalDetails(entries, { summary = "Technical details" } = {}) {
+function renderTechnicalDetails(entries, { summary = "Technical details", disclosureKey = "" } = {}) {
   const rows = entries
     .map(([label, value, copyLabel]) => {
       const values = Array.isArray(value) ? uniqueTextList(value) : [text(value)].filter(Boolean);
@@ -14181,7 +14228,7 @@ function renderTechnicalDetails(entries, { summary = "Technical details" } = {})
     return "";
   }
   return `
-    <details class="technical-details">
+    <details class="technical-details"${disclosureKey ? ` data-planning-disclosure-key="${escapeAttr(disclosureKey)}"${openPlanningDisclosures.has(disclosureKey) ? " open" : ""}` : ""}>
       <summary>${escapeHtml(summary)}</summary>
       <dl class="technical-details-list">${rows.join("")}</dl>
     </details>

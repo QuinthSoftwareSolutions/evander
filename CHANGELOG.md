@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27 - Team Planning Detail Persistence
+
+- Preserved open Planning project, task, hierarchy, full-brief, worktree, and technical-detail
+  disclosures across background cost and state refresh renders, so operators can keep reading a
+  task body while live data updates.
+
 ## 2026-07-27 - Team Chat Reader Scroll Preservation
 
 - Preserved an operator's reading position through Team state-stream and automatic chat-refresh
