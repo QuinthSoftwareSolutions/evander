@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27 - Team Governance Cost Roll-up Clarity
+
+- Distinguished governance portfolio cost roll-ups from team, project, and agent spend by giving
+  them a dedicated aggregate treatment, identifying the member-team sum as not governance-manager
+  spend, and making partial pricing coverage explicit in the cost details.
+
 ## 2026-07-26 - Team Review Follow-up Fixes
 
 - Restricted manager-fallback review routing authority to exact prompt-visible pairs, revalidated

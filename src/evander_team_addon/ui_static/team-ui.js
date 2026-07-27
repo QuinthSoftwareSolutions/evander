@@ -4589,7 +4589,7 @@ function renderWorkspaceMetricCards(model) {
     {
       label: "Cost alerts",
       value: model.costAttention.length,
-      detail: costState.error ? "cost data unavailable" : "estimated cap checks",
+      detail: costState.error ? "cost data unavailable" : "team caps and portfolio roll-ups",
       view: "governance",
       tone: model.costAttention.length || costState.error ? "warning" : "ok",
     },
@@ -4894,10 +4894,11 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       return;
     }
     if (cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length) {
+      const memberTeamCount = governanceCostMemberTeamCount(cost);
       rows.push({
-        title: `${group.name || groupId} cost attention`,
+        title: `${group.name || groupId} portfolio cost attention`,
         meta: cost?.cost_limit_reached
-          ? `${formatUsd(cost.estimated_cost)} estimated`
+          ? `${formatUsd(cost.estimated_cost)} governed roll-up across ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}`
           : `${(cost.member_team_cap_reached_ids || []).length} member cap${(cost.member_team_cap_reached_ids || []).length === 1 ? "" : "s"} reached`,
         severity: "warning",
         view: "governance",
@@ -5112,7 +5113,7 @@ function renderGovernanceGroup(group) {
         </div>
       </div>
       <div class="meta-line">${escapeHtml(group.id)} - manager ${escapeHtml(manager ? agentLabel(manager) : group.manager_agent_id)}</div>
-      ${cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : ""}
+      ${cost ? renderGovernanceCostCounter(cost) : ""}
       ${renderGovernanceGoals(group.goals || [])}
       ${renderGovernanceMemberTeams(memberTeams, cost)}
       ${renderGovernanceAgenda(group, visibleAgenda, pendingAgenda)}
@@ -5210,6 +5211,16 @@ function governanceCostForGroup(groupId) {
   return costState.governance_group_costs?.[groupId] || null;
 }
 
+function governanceCostMemberTeamCount(cost) {
+  const memberTeamIds = Array.isArray(cost?.member_team_ids)
+    ? cost.member_team_ids.map(text).filter(Boolean)
+    : [];
+  if (memberTeamIds.length) {
+    return new Set(memberTeamIds).size;
+  }
+  return Object.keys(cost?.member_team_costs || {}).length;
+}
+
 function prioritySortValue(priority) {
   const order = { high: 0, normal: 1, low: 2 };
   return order[text(priority)] ?? 1;
@@ -5223,10 +5234,23 @@ function renderProjectCostCounter(projectId) {
   return renderCostCounter(cost, { label: "Estimated project cost", compact: true });
 }
 
-function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
+function renderGovernanceCostCounter(cost) {
+  const memberTeamCount = governanceCostMemberTeamCount(cost);
+  return renderCostCounter(cost, {
+    label: "Governed portfolio roll-up",
+    compact: true,
+    aggregate: true,
+    context: `Sum of ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}; not governance manager spend.`,
+  });
+}
+
+function renderCostCounter(
+  cost,
+  { label, compact = false, aggregate = false, context = "", error = "" } = {},
+) {
   if (!cost) {
     return `
-      <div class="cost-counter cost-counter--warning${compact ? " cost-counter--compact" : ""}">
+      <div class="cost-counter cost-counter--warning${compact ? " cost-counter--compact" : ""}${aggregate ? " cost-counter--aggregate" : ""}">
         <strong>${escapeHtml(label || "Cost")}</strong>
         <span>${escapeHtml(error || "unavailable")}</span>
       </div>
@@ -5250,19 +5274,23 @@ function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
     );
   }
   if (events) {
-    parts.push(`${events} event${events === 1 ? "" : "s"}`);
+    parts.push(`${formatCount(events)} event${events === 1 ? "" : "s"}`);
   }
   if (unpriced) {
-    parts.push(`${unpriced} unpriced`);
+    parts.push(`${formatCount(unpriced)} unpriced`);
+  }
+  if (coverageStatus && coverageStatus !== "complete") {
+    parts.push("partial pricing coverage");
   }
   const sourceSummary = costSourceSummary(cost.source_counts || {});
   if (sourceSummary) {
     parts.push(sourceSummary);
   }
   return `
-    <div class="${className}${compact ? " cost-counter--compact" : ""}">
+    <div class="${className}${compact ? " cost-counter--compact" : ""}${aggregate ? " cost-counter--aggregate" : ""}">
       <span>${escapeHtml(label || "Cost")}</span>
       <strong>${escapeHtml(formatUsd(cost.estimated_cost))}</strong>
+      ${context ? `<small class="cost-counter-context">${escapeHtml(context)}</small>` : ""}
       ${parts.length ? `<small>${escapeHtml(parts.join(" - "))}</small>` : ""}
     </div>
   `;
@@ -5276,8 +5304,14 @@ function costSourceSummary(sourceCounts) {
     return "";
   }
   return entries
-    .map(([source, count]) => `${source}:${numberOrZero(count)}`)
+    .map(([source, count]) => `${source}:${formatCount(count)}`)
     .join(", ");
+}
+
+function formatCount(value) {
+  return numberOrZero(value).toLocaleString(undefined, {
+    maximumFractionDigits: 0,
+  });
 }
 
 function formatUsd(value) {
@@ -6225,7 +6259,7 @@ function orgGovernanceNodeData(group, visibleMemberTeamCount) {
     memberTeamCount: visibleMemberTeamCount,
     pendingAgendaCount: pendingAgenda.length,
     costAttention: Boolean(capReached),
-    costHtml: cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : "",
+    costHtml: cost ? renderGovernanceCostCounter(cost) : "",
   };
 }
 

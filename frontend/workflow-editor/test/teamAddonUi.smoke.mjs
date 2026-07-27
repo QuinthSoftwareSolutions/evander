@@ -4419,6 +4419,125 @@ test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
   );
 });
 
+test("team add-on distinguishes governance portfolio roll-ups from individual spend", async (t) => {
+  const initialState = seededGitState();
+  initialState.teams["team-alpha"].name = "Starship Team";
+  initialState.teams["team-beta"].name = "Accounting Department";
+  initialState.teams["team-gamma"] = {
+    id: "team-gamma",
+    name: "Evander Dev Team",
+    manager_agent_id: null,
+    operator_communication_target_id: null,
+    project_ids: [],
+    archived: false,
+  };
+  initialState.teams["team-delta"] = {
+    id: "team-delta",
+    name: "APP Dev Team",
+    manager_agent_id: null,
+    operator_communication_target_id: null,
+    project_ids: [],
+    archived: false,
+  };
+  initialState.governance_groups["platform-oversight"] = {
+    ...initialState.governance_groups["platform-oversight"],
+    name: "Evander Governance",
+    member_team_ids: ["team-alpha", "team-beta", "team-gamma", "team-delta"],
+    max_cost_usd: 900,
+  };
+  const memberCosts = {
+    "team-alpha": { estimated_cost: 474.9 },
+    "team-beta": { estimated_cost: 120 },
+    "team-gamma": { estimated_cost: 123.02 },
+    "team-delta": { estimated_cost: 187.84 },
+  };
+  const teamCosts = Object.fromEntries(
+    Object.entries(memberCosts).map(([teamId, values]) => [
+      teamId,
+      {
+        team_id: teamId,
+        ...values,
+        max_cost_usd: null,
+        remaining_cost_usd: null,
+        cost_limit_reached: false,
+        coverage_status: "partial",
+        events_count: 1,
+        priced_events_count: 1,
+        unpriced_events_count: 0,
+        source_counts: { openai: 1 },
+      },
+    ]),
+  );
+  const { port } = await createTeamAddonServer(t, {
+    initialState,
+    costsPayload: {
+      generated_at: "2026-07-27T00:00:00Z",
+      coverage_status: "partial",
+      coverage_reasons: ["unpriced model usage"],
+      team_costs: teamCosts,
+      project_costs: {},
+      governance_group_costs: {
+        "platform-oversight": {
+          governance_group_id: "platform-oversight",
+          estimated_cost: 905.76,
+          max_cost_usd: 900,
+          remaining_cost_usd: 0,
+          cost_limit_reached: true,
+          coverage_status: "partial",
+          coverage_reasons: ["unpriced model usage"],
+          events_count: 7759,
+          priced_events_count: 5914,
+          unpriced_events_count: 1845,
+          source_counts: { openai: 7759 },
+          member_team_ids: ["team-alpha", "team-beta", "team-gamma", "team-delta"],
+          member_team_costs: teamCosts,
+          member_team_cap_reached_ids: [],
+          member_team_cap_warning_ids: [],
+        },
+      },
+      unattributed_costs: null,
+      source_counts: { openai: 7759 },
+      events_count: 7759,
+      priced_events_count: 5914,
+      unpriced_events_count: 1845,
+      backfill: null,
+    },
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await openWorkspace(page);
+  const costAlerts = page.locator("#team-workspace-page .workspace-metric-card", {
+    hasText: "Cost alerts",
+  });
+  await costAlerts.getByText("1", { exact: true }).waitFor({ state: "visible" });
+  await costAlerts.getByText("team caps and portfolio roll-ups", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await costAlerts.click();
+
+  const aggregate = page.locator("#team-governance-page .cost-counter--aggregate");
+  await aggregate.waitFor({ state: "visible" });
+  const aggregateText = await aggregate.innerText();
+  assert.match(aggregateText, /Governed portfolio roll-up/i);
+  assert.match(aggregateText, /\$905\.76/);
+  assert.match(aggregateText, /Sum of 4 member teams; not governance manager spend\./);
+  assert.match(aggregateText, /7,759 events/);
+  assert.match(aggregateText, /1,845 unpriced/);
+  assert.match(aggregateText, /partial pricing coverage/);
+  assert.equal(
+    await page.locator("#team-governance-page .cost-counter", { hasText: "Estimated group cost" }).count(),
+    0,
+  );
+
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  await page.locator("#team-org-page").waitFor({ state: "visible" });
+  await page.locator("#team-org-page .org-flow-governance-node .cost-counter--aggregate").waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-org-page .org-flow-team-node .cost-counter--aggregate").count(), 0);
+});
+
 test("team add-on UI hides archived entities by default and reveals them on request", async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.archived = true;

@@ -3315,6 +3315,35 @@ button.record-action:hover {
   color: var(--amber);
 }
 
+.cost-counter--aggregate {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  border-color: rgba(103, 87, 36, 0.4);
+  border-left-width: 4px;
+  background: linear-gradient(135deg, rgba(154, 107, 19, 0.13), rgba(23, 111, 122, 0.06));
+  color: var(--text);
+}
+
+.cost-counter--aggregate > span:first-child {
+  color: var(--amber);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.cost-counter--aggregate > small {
+  grid-column: 1 / -1;
+}
+
+.cost-counter--aggregate .cost-counter-context {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.cost-counter--aggregate.cost-counter--warning {
+  border-color: rgba(154, 107, 19, 0.58);
+}
+
 .cost-counter--compact {
   margin-top: 0.35rem;
   padding: 0.28rem 0.45rem;
