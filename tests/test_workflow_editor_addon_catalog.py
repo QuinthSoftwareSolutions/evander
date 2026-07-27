@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 
 from evander.admin.composition import build_admin_runtime
+from evander.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 
 
 def _write_gateway_config(tmp_path: Path, *, addon_module: str | None = None) -> Path:
@@ -194,6 +198,72 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     state_fields = {field["key"]: field for field in read_state["fields"]}
     assert state_fields["include_records"]["kind"] == "boolean"
     assert state_fields["include_records"]["default_value"] is True
+
+
+def test_workflow_editor_catalog_enriches_team_bridge_target_options(
+    tmp_path: Path,
+) -> None:
+    _write_trigger_config(tmp_path, enable_team_addon=True)
+    runtime = build_admin_runtime(_write_gateway_config(tmp_path))
+    SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime.config.runtime_dir)
+    ).write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "bridge-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read", "write"]},
+                },
+                {
+                    "id": "bridge-teams-reply",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/channel",
+                    "policy": {"capabilities": ["read", "reply"]},
+                },
+                {
+                    "id": "read-only-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345679",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "write-only-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345680",
+                    "policy": {"capabilities": ["write"]},
+                },
+            ]
+        },
+    )
+
+    payload = runtime.workflow_config_admin.read_workflow_editor_catalog(
+        directory_path="root"
+    ).model_dump(mode="json")
+    nodes = {node["type"]: node for node in payload["nodes"]}
+    bridge = nodes["effect:team:enqueue-operator-chat-message"]
+    target_field = next(
+        field for field in bridge["fields"] if field["key"] == "communication_target_id"
+    )
+    options = {option["value"]: option for option in target_field["options"]}
+
+    assert set(options) == {"bridge-discord", "bridge-teams-reply"}
+    assert options["bridge-discord"]["metadata"]["required_capabilities"] == [
+        "read",
+        "write or reply",
+    ]
+    assert options["bridge-discord"]["metadata"]["thread_id"]["top_level"][
+        "supported"
+    ] is True
+    assert options["bridge-teams-reply"]["metadata"]["thread_id"]["reply"][
+        "supported"
+    ] is True
 
 
 def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_invalid(

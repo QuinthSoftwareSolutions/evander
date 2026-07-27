@@ -23,6 +23,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-wake-queued-chat-message",
                 "team-send-external-chat-reply",
                 "team-record-external-chat-delivery",
+                "team-record-external-chat-delivery-failure",
                 "team-wake-requested-agent",
                 "team-wake-requested-governance",
                 "team-wake-governance-managers",
@@ -279,6 +280,15 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "provider_message_id": (
                     "${{team-send-external-chat-reply.message_id ?? null}}"
                 ),
+            },
+            {
+                "id": "team-record-external-chat-delivery-failure",
+                "display_name": "Record failed external Team Chat delivery",
+                "type": "effect:team:record-external-chat-delivery",
+                "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
+                "success": False,
+                "provider_message_id": None,
+                "error": "${{team-send-external-chat-reply.error_message ?? null}}",
             },
             {
                 "id": "team-wake-requested-agent",
@@ -676,6 +686,11 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {
                 "source_id": "team-send-external-chat-reply",
                 "target_id": "team-record-external-chat-delivery",
+            },
+            {
+                "source_id": "team-send-external-chat-reply",
+                "source_port": "error",
+                "target_id": "team-record-external-chat-delivery-failure",
             },
             {
                 "source_id": "team-agent-wake-requested",

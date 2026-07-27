@@ -10,6 +10,12 @@
   for externally originated messages. Delivery outcome is retained beside the
   persisted Team reply, so a communication-send failure cannot erase or
   duplicate the internal answer.
+- Published external ingress wake events immediately after their transactional
+  outbox write, rejected bridge targets that cannot send the corresponding
+  top-level or threaded reply, and exposed eligible targets in the workflow
+  editor.
+- Routed communication send exceptions through an explicit workflow error
+  branch so the external delivery record always captures a failed attempt.
 
 ## 2026-07-27 - Team Planning Detail Persistence
 

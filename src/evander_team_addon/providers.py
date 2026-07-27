@@ -58,6 +58,7 @@ from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
 from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryProviderBase
+from evander.services import parse_teams_target
 from evander.triggers.delivery import (
     TriggerDeliveryRepository,
     TriggerDeliverySourceItem,
@@ -2666,6 +2667,17 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             )
         if "read" not in set(target.policy.capabilities):
             raise ValueError(f"communication target {target.id!r} does not allow read capability")
+        source_thread_id = _optional_text(payload.get("source_thread_id"))
+        if provider == "discord":
+            source_thread_id = None
+        elif provider == "teams" and parse_teams_target(target.address).kind != "channel":
+            source_thread_id = None
+        outbound_capability = "reply" if source_thread_id is not None else "write"
+        if outbound_capability not in set(target.policy.capabilities):
+            raise ValueError(
+                f"communication target {target.id!r} does not allow "
+                f"{outbound_capability} capability required for the Team Chat reply"
+            )
 
         source_author_id = _required_text(payload.get("source_author_id"), "source_author_id")
         allow_team_mutations = _optional_bool(
@@ -2682,7 +2694,8 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                 raise ValueError(
                     "source_author_id is not authorized for Team mutations on this bridge"
                 )
-        state, result = TeamChatService(TeamStateRepository(_runtime_dir(context))).enqueue_external_operator_chat_message(
+        repo = TeamStateRepository(_runtime_dir(context))
+        state, result = TeamChatService(repo).enqueue_external_operator_chat_message(
             conversation_id=_optional_text(payload.get("conversation_id")),
             agent_id=_optional_text(payload.get("agent_id")),
             operator_user_id=_required_text(payload.get("operator_user_id"), "operator_user_id"),
@@ -2691,11 +2704,38 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             provider=provider,
             communication_target_id=target.id,
             source_message_id=_required_text(payload.get("source_message_id"), "source_message_id"),
-            source_thread_id=_optional_text(payload.get("source_thread_id")),
+            source_thread_id=source_thread_id,
             source_author_id=source_author_id,
             source_author_name=_optional_text(payload.get("source_author_name")),
             allow_team_mutations=allow_team_mutations,
         )
+        if not result.get("duplicate"):
+            conversation = state.conversations[result["conversation_id"]]
+            agent = state.agents[conversation.agent_id]
+            published_event_ids = _publish_team_events(
+                context,
+                [
+                    {
+                        "event_type": CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+                        "correlation_key": result["dispatch_id"],
+                        "idempotency_key": (
+                            f"team-addon:{CHAT_MESSAGE_QUEUED_EVENT_TYPE}:"
+                            f"{provider}:{target.id}:"
+                            f"{_required_text(payload.get('source_message_id'), 'source_message_id')}"
+                        ),
+                        "payload": {
+                            "team_id": agent.team_id,
+                            "agent_id": agent.id,
+                            "session_id": agent.session_id,
+                            "conversation_id": conversation.id,
+                            "message_id": result["message_id"],
+                            "dispatch_id": result["dispatch_id"],
+                        },
+                    }
+                ],
+            )
+            if published_event_ids:
+                result["published_event_ids"] = published_event_ids
         return {**result, "revision": state.revision}
 
 

@@ -10,12 +10,17 @@ import pytest
 
 from evander.admin.composition import build_admin_runtime
 from evander.config import GatewayConfig
+from evander.directories import DirectoryStore
 from evander.artifact_spaces import ArtifactSpaceStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.scheduled import scheduled_internal_event_store_path
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.model_usage.store import ModelUsageStore
+from evander.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.workflow.packs import WorkflowPack
@@ -5905,7 +5910,21 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
                     "kind": "discord",
                     "address": "123456789012345678",
                     "policy": {"capabilities": ["read", "write"]},
-                }
+                },
+                {
+                    "id": "read-only-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345679",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "teams-without-reply",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/channel",
+                    "policy": {"capabilities": ["read", "write"]},
+                },
             ]
         },
     )
@@ -5941,11 +5960,20 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     stored = TeamStateRepository(tmp_path).read()
     message = stored.conversation_messages[result["message_id"]]
     assert message.metadata.get("allow_team_mutations") is None
+    published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(published) == 1
+    assert published[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
+    assert published[0].payload["message_id"] == result["message_id"]
+    assert published[0].payload["dispatch_id"] == result["dispatch_id"]
 
     denied = TeamEnqueueOperatorChatMessageEffectProvider()
     denied.initialize(
         definition.model_copy(
-            update={"id": "deny-external-chat", "source_message_id": "discord-message-2", "source_author_id": "other"}
+            update={
+                "id": "deny-external-chat",
+                "source_message_id": "discord-message-2",
+                "source_author_id": "other",
+            }
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
@@ -5954,6 +5982,42 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     )
     with pytest.raises(ValueError, match="not authorized"):
         denied.execute()
+
+    read_only = TeamEnqueueOperatorChatMessageEffectProvider()
+    read_only.initialize(
+        definition.model_copy(
+            update={
+                "id": "read-only-external-chat",
+                "communication_target_id": "read-only-discord",
+                "source_message_id": "discord-message-3",
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+        ),
+    )
+    with pytest.raises(ValueError, match="does not allow write capability"):
+        read_only.execute()
+
+    threaded_without_reply = TeamEnqueueOperatorChatMessageEffectProvider()
+    threaded_without_reply.initialize(
+        definition.model_copy(
+            update={
+                "id": "threaded-external-chat",
+                "provider": "teams",
+                "communication_target_id": "teams-without-reply",
+                "source_message_id": "teams-message-1",
+                "source_thread_id": "thread-1",
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+        ),
+    )
+    with pytest.raises(ValueError, match="does not allow reply capability"):
+        threaded_without_reply.execute()
 
 
 def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
@@ -6908,6 +6972,16 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+    send_delivery_edges = [
+        edge
+        for edge in pack["edges"]
+        if edge["source_id"] == "team-send-external-chat-reply"
+        and edge["target_id"]
+        in {
+            "team-record-external-chat-delivery",
+            "team-record-external-chat-delivery-failure",
+        }
+    ]
 
     assert triggers["team-operator-escalation"]["type"] == "trigger:event"
     assert triggers["team-operator-escalation"]["event_type"] == (
@@ -6965,6 +7039,18 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert effects["team-record-external-chat-delivery"]["type"] == (
         "effect:team:record-external-chat-delivery"
     )
+    failure_recorder = effects["team-record-external-chat-delivery-failure"]
+    assert failure_recorder["type"] == "effect:team:record-external-chat-delivery"
+    assert failure_recorder["success"] is False
+    assert failure_recorder["error"] == (
+        "${{team-send-external-chat-reply.error_message ?? null}}"
+    )
+    assert {
+        (edge["target_id"], edge.get("source_port")) for edge in send_delivery_edges
+    } == {
+        ("team-record-external-chat-delivery", None),
+        ("team-record-external-chat-delivery-failure", "error"),
+    }
     assert ("team-agent-wake-requested", "team-wake-requested-agent") in edges
     assert (
         "team-governance-wake-requested",
