@@ -6276,6 +6276,119 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     assert len(metadata["legacy_json_sha256"]) == 64
 
 
+def test_repository_imports_legacy_json_outcome_records_before_validation(
+    tmp_path: Path,
+) -> None:
+    seed_repo = _seed_hierarchy(tmp_path / "seed")
+    admin = _team_admin_service(seed_repo)
+    state = admin.create_outcome_kind_definition(
+        definition_id="legacy-team-action",
+        team_id="team",
+        project_id=None,
+        kind="legacy_action",
+        name="Legacy action",
+        expected_revision=seed_repo.read().revision,
+    )
+    state = admin.create_outcome_kind_definition(
+        definition_id="legacy-team-report",
+        team_id="team",
+        project_id=None,
+        kind="legacy_report",
+        name="Legacy report",
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="legacy-json-outcome-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Produce a legacy action",
+        description="Exercise the supported pre-catalog JSON shape.",
+        created_by_agent_id="lead",
+        task_kind=TeamTaskKind.OUTCOME,
+        outcome_contract={
+            "required_outcome_kinds": ["legacy_action"],
+            "forbidden_outcome_kinds": ["legacy_report"],
+        },
+        expected_revision=state.revision,
+    )
+    state = admin.record_deliverable(
+        deliverable_id="legacy-json-outcome-deliverable",
+        task_id="legacy-json-outcome-task",
+        producer_agent_id="backend",
+        summary="Created the legacy action.",
+        outcomes=[
+            {
+                "kind": "legacy_action",
+                "reference_ids": ["legacy-action:json"],
+            }
+        ],
+        expected_revision=state.revision,
+    )
+    state = admin.create_review_profile(
+        profile_id="legacy-json-review-profile",
+        team_id="team",
+        name="Legacy JSON review",
+        required_outcome_kinds=["legacy_action"],
+        expected_revision=state.revision,
+    )
+    state = admin.record_review_request(
+        review_request_id="legacy-json-review",
+        deliverable_id="legacy-json-outcome-deliverable",
+        reviewer_agent_id="worker",
+        review_profile_id="legacy-json-review-profile",
+        expected_revision=state.revision,
+    )
+    payload = state.model_dump(mode="json")
+    contract = payload["tasks"]["legacy-json-outcome-task"]["outcome_contract"]
+    contract.pop("outcome_kind_definitions")
+    contract["forbidden_effect_kinds"] = contract.pop(
+        "forbidden_outcome_kinds"
+    )
+    payload["deliverables"]["legacy-json-outcome-deliverable"]["outcomes"][0].pop(
+        "definition_snapshot"
+    )
+    payload["review_requests"]["legacy-json-review"][
+        "required_outcome_kind_definitions"
+    ] = []
+    payload["outcome_kind_definitions"] = {}
+
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    imported = TeamStateRepository(tmp_path).read()
+
+    imported_contract = imported.tasks[
+        "legacy-json-outcome-task"
+    ].outcome_contract
+    assert imported_contract is not None
+    assert imported_contract.forbidden_outcome_kinds == ["legacy_report"]
+    assert {
+        definition.kind
+        for definition in imported_contract.outcome_kind_definitions
+    } == {"legacy_action", "legacy_report"}
+    assert (
+        imported.deliverables["legacy-json-outcome-deliverable"]
+        .outcomes[0]
+        .definition_snapshot.kind
+        == "legacy_action"
+    )
+    assert (
+        imported.review_requests["legacy-json-review"]
+        .required_outcome_kind_definitions[0]
+        .kind
+        == "legacy_action"
+    )
+    assert {
+        definition.kind
+        for definition in imported.outcome_kind_definitions.values()
+    } == {"legacy_action", "legacy_report"}
+
+
 def test_task_state_entered_at_changes_only_on_state_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -11241,6 +11354,43 @@ def test_outcome_catalog_management_is_grant_and_scope_gated(
         )["prepared_action"].id
         == project_definition_id
     )
+
+
+def test_team_wide_outcome_catalog_rejects_project_scoped_manager_grant(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.update_role(
+        role_id="project__backend",
+        permissions=[RolePermission.MANAGE_OUTCOME_KINDS],
+        expected_revision=repo.read().revision,
+    )
+    admin.update_agent(
+        agent_id="manager",
+        project_id="project",
+        set_project_id=True,
+        role_id="project__backend",
+        set_role_id=True,
+        expected_revision=state.revision,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="manager",
+        dispatch_id="dispatch-manager-project-only-outcome-grant",
+    )
+
+    unchanged, denied = _command_service(repo).create_outcome_kind_command(
+        session_id="session-manager",
+        team_id="team",
+        kind="project_grant_must_not_escape",
+        name="Project grant must not escape",
+        request_id="request-manager-project-only-outcome-grant",
+    )
+
+    assert denied["success"] is False
+    assert denied["errors"][0]["code"] == "outcome_kind_management_forbidden"
+    assert unchanged.outcome_kind_definitions == {}
 
 
 def test_outcome_tasks_reject_unknown_catalog_kinds(tmp_path: Path) -> None:

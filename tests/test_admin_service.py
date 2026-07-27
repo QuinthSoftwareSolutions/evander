@@ -7020,6 +7020,129 @@ def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across
     assert page["has_more_before"] is False
 
 
+def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-mixed-shared",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-mixed-shared",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-mixed-shared",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(15):
+        started_at = (
+            datetime(2026, 5, 18, 11, 0, tzinfo=UTC)
+            + timedelta(minutes=index)
+            if index < 5
+            else datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
+            + timedelta(minutes=index)
+        )
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"agent-mixed-legacy-{index:03d}",
+                session_id="session-thread-mixed-shared",
+                worker_job_id=f"job-mixed-legacy-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-mixed-shared",
+                started_at=started_at,
+                last_status="removed",
+                directory_path="root",
+                metadata={"effect_type": "effect:agent:prompt"},
+            )
+        )
+    for index in range(10):
+        started_at = (
+            datetime(2026, 5, 18, 10, 0, tzinfo=UTC)
+            + timedelta(minutes=index)
+            if index < 5
+            else datetime(2026, 5, 18, 9, 0, tzinfo=UTC)
+            + timedelta(minutes=index)
+        )
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"agent-mixed-stored-{index:03d}",
+                session_id="session-thread-mixed-shared",
+                worker_job_id=f"job-mixed-stored-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-mixed-shared",
+                started_at=started_at,
+                last_status="removed",
+                directory_path="root",
+                metadata={
+                    "effect_type": "effect:agent:prompt",
+                    "resume_thread_id": "thread-mixed-shared",
+                },
+            )
+        )
+
+    class FakeContainerBackend:
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            if mode == "raw":
+                return "session id: thread-mixed-shared\n"
+            if mode == "session":
+                return ""
+            if mode == "execution":
+                return f"fallback body for {target}\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(
+            lambda self, **_kwargs: FakeContainerBackend(),
+            service.vm_agent_admin,
+        ),
+    )
+
+    page_texts: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = service.vm_agent_admin.get_admin_agent_log_page(
+            "session-thread-mixed-shared",
+            backend="container_worker_vm",
+            view="threads",
+            limit=100,
+            cursor=cursor,
+        )
+        page_texts.append(str(page["text"]))
+        next_cursor = page.get("next_cursor")
+        if not next_cursor:
+            break
+        cursor = str(next_cursor)
+    else:
+        pytest.fail("mixed shared-thread pagination did not terminate")
+
+    combined_text = "\n".join(page_texts)
+    for prefix, count in (("agent-mixed-legacy", 15), ("agent-mixed-stored", 10)):
+        for index in range(count):
+            assert (
+                combined_text.count(
+                    f"fallback body for {prefix}-{index:03d}"
+                )
+                == 1
+            )
+    assert page["has_more_before"] is False
+
+
 def test_get_admin_agent_log_page_emits_legacy_shared_transcript_once(
     tmp_path: Path,
     monkeypatch,

@@ -2,6 +2,9 @@
 
 ## 2026-07-26 - Team Review Follow-up Fixes
 
+- Required a team-scoped role grant for team-wide outcome-catalog changes, migrated legacy JSON
+  outcome contracts and snapshots before strict validation, and kept mixed stored/legacy thread
+  fallback records pageable until every execution has been scanned.
 - Routed historical human-review corrections away from detached owners, enforced one active
   successor per predecessor, made cleanup success and its audit atomic, pinned cleanup to the
   originating dispatch session, and migrated review outcome snapshots with project overrides.

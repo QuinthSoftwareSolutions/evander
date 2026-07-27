@@ -144,10 +144,14 @@ def agent_can_manage_outcome_kinds(
     if actor.team_id != team_id:
         return False
     if project_id is None:
+        role = state.roles.get(actor.role_id) if actor.role_id is not None else None
         return (
             _is_team_manager(state, actor)
+            and role is not None
+            and role.team_id == team_id
+            and role.project_id is None
             and RolePermission.MANAGE_OUTCOME_KINDS
-            in effective_role_permissions(state, actor)
+            in role.permissions
         )
     if not (
         _is_team_manager(state, actor)

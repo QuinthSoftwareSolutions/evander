@@ -238,7 +238,6 @@ class VmAgentThreadLogMixin:
         groups: list[tuple[str | None, list[Any], str | None]] = []
         grouped_records: dict[str, list[Any]] = {}
         group_indexes: dict[str, int] = {}
-        probed_thread_ids: set[str] = set()
         for index, execution in enumerate(record_window):
             is_agent_run = self._container_execution_is_agent_run(execution)
             if self._container_execution_artifact_metadata(execution) is not None:
@@ -255,8 +254,6 @@ class VmAgentThreadLogMixin:
             if thread_id is None:
                 raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
                 thread_id = self._container_log_thread_id(raw_text)
-                if thread_id is not None:
-                    probed_thread_ids.add(thread_id)
             if thread_id is None and not is_agent_run:
                 continue
             if thread_id is not None and thread_id in skip_thread_ids:
@@ -267,7 +264,16 @@ class VmAgentThreadLogMixin:
                 grouped_records[group_key].append(execution)
                 continue
             if len(groups) >= max(1, max_groups):
-                return groups, index, True, frozenset(probed_thread_ids)
+                return (
+                    groups,
+                    index,
+                    True,
+                    frozenset(
+                        existing_thread_id
+                        for existing_thread_id, _records, _raw_text in groups
+                        if existing_thread_id is not None
+                    ),
+                )
             records = [execution]
             grouped_records[group_key] = records
             group_indexes[group_key] = len(groups)
@@ -275,6 +281,7 @@ class VmAgentThreadLogMixin:
         records_consumed = len(record_window)
         has_more_records = False
         has_unscanned_legacy_records = False
+        deferred_grouped_records: dict[str, list[Any]] = {}
         for execution in sorted_records[max(0, record_offset) + records_consumed :]:
             is_agent_run = self._container_execution_is_agent_run(execution)
             if self._container_execution_artifact_metadata(execution) is not None:
@@ -293,11 +300,22 @@ class VmAgentThreadLogMixin:
                 continue
             group_index = group_indexes.get(stored_thread_id)
             if group_index is not None:
-                grouped_records[stored_thread_id].append(execution)
+                deferred_grouped_records.setdefault(stored_thread_id, []).append(
+                    execution
+                )
             elif stored_thread_id not in skip_thread_ids:
                 has_more_records = True
-        incomplete_probed_thread_ids = (
-            frozenset(probed_thread_ids)
+        if has_unscanned_legacy_records:
+            has_more_records = has_more_records or bool(deferred_grouped_records)
+        else:
+            for thread_id, records in deferred_grouped_records.items():
+                grouped_records[thread_id].extend(records)
+        incomplete_thread_ids = (
+            frozenset(
+                thread_id
+                for thread_id, _records, _raw_text in groups
+                if thread_id is not None
+            )
             if has_unscanned_legacy_records
             else frozenset()
         )
@@ -305,7 +323,7 @@ class VmAgentThreadLogMixin:
             groups,
             records_consumed,
             has_more_records,
-            incomplete_probed_thread_ids,
+            incomplete_thread_ids,
         )
 
     def _container_thread_group_chunk(
@@ -523,7 +541,7 @@ class VmAgentThreadLogMixin:
             groups,
             records_consumed,
             records_truncated,
-            incomplete_probed_thread_ids,
+            incomplete_thread_ids,
         ) = self._container_recent_thread_groups(
             worker_backend,
             sorted_records,
@@ -535,7 +553,7 @@ class VmAgentThreadLogMixin:
             thread_id
             for thread_id, _records, _raw_text in groups
             if thread_id is not None
-            and thread_id not in incomplete_probed_thread_ids
+            and thread_id not in incomplete_thread_ids
         )
         if group_offset >= len(groups):
             next_cursor = (
