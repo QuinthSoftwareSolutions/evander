@@ -13,6 +13,16 @@ const taskStates = [
   "rejected",
   "cancelled",
 ];
+const directlyCancellableTaskStates = new Set([
+  "pending",
+  "in_progress",
+  "blocked",
+  "waiting_for_review",
+  "rejected",
+]);
+const directlyEditableTaskStates = taskStates.filter(
+  (stateValue) => !["accepted", "cancelled"].includes(stateValue),
+);
 const caseStatuses = [
   "open",
   "triage",
@@ -373,6 +383,10 @@ const elements = {
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
   editFormBody: document.querySelector("#edit-form-body"),
+  taskCancellationModal: document.querySelector("#task-cancellation-modal"),
+  taskCancellationModalTitle: document.querySelector("#task-cancellation-modal-title"),
+  taskCancellationSubject: document.querySelector("#task-cancellation-subject"),
+  taskCancellationForm: document.querySelector("#task-cancellation-form"),
   chatAttachmentPolicyModal: document.querySelector("#chat-attachment-policy-modal"),
   chatAttachmentPolicyForm: document.querySelector("#chat-attachment-policy-form"),
 };
@@ -2192,6 +2206,35 @@ function bindRecordEditing() {
       return;
     }
 
+    const taskCancellationClose = event.target.closest("[data-task-cancellation-close]");
+    if (taskCancellationClose) {
+      if (
+        taskCancellationClose.classList.contains("edit-modal-backdrop") &&
+        event.target !== taskCancellationClose
+      ) {
+        return;
+      }
+      closeTaskCancellationDialog();
+      return;
+    }
+
+    if (elements.taskCancellationModal?.contains(event.target)) {
+      return;
+    }
+
+    const taskCancellationControl = event.target.closest("[data-task-cancel-id]");
+    if (taskCancellationControl) {
+      event.preventDefault();
+      if (
+        taskCancellationControl.matches(":disabled") ||
+        taskCancellationControl.getAttribute("aria-disabled") === "true"
+      ) {
+        return;
+      }
+      openTaskCancellationDialog(taskCancellationControl.dataset.taskCancelId);
+      return;
+    }
+
     const closeTarget = event.target.closest("[data-edit-close]");
     if (closeTarget) {
       if (closeTarget.classList.contains("edit-modal-backdrop") && event.target !== closeTarget) {
@@ -2216,6 +2259,14 @@ function bindRecordEditing() {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (
+      event.key === "Escape" &&
+      elements.taskCancellationModal &&
+      !elements.taskCancellationModal.hidden
+    ) {
+      closeTaskCancellationDialog();
+      return;
+    }
     if (event.key === "Escape" && elements.editModal && !elements.editModal.hidden) {
       closeEditDialog();
       return;
@@ -2240,6 +2291,10 @@ function bindRecordEditing() {
   elements.editForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitEditForm(elements.editForm);
+  });
+  elements.taskCancellationForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitTaskCancellation(elements.taskCancellationForm);
   });
 }
 
@@ -2558,6 +2613,7 @@ const lockedMutationControlSelectors = [
   ["[data-context-rotation-agent-id]", "clear agent context"],
   ["[data-stand-down-agent-id]", "stand down agents"],
   ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
+  ["[data-task-cancel-id]:not(:disabled)", "cancel tasks"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
@@ -2584,6 +2640,7 @@ const lockedMutationControlSelectors = [
   ["#update-task-form button[type='submit']", "update tasks"],
   ["#decide-review-form button[type='submit']", "record review decisions"],
   ["#edit-record-form button[type='submit']", "save changes"],
+  ["#task-cancellation-form button[type='submit']", "cancel tasks"],
   ["#chat-attachment-policy-form button[type='submit']", "configure Team Chat attachments"],
 ];
 
@@ -12694,6 +12751,7 @@ function renderTaskBoardCard(task, focus) {
       ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
       ${renderTaskBoardBlockerLine(task)}
       ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
+      <div class="record-actions">${taskCancellationButton(task)}</div>
     </li>
   `;
 }
@@ -13232,6 +13290,7 @@ function renderTaskHierarchyRow(
   const body = `
     <div class="record-actions">
       ${editButton("task", task.id)}
+      ${taskCancellationButton(task)}
     </div>
     <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
     ${renderTaskGraph(task)}
@@ -13260,6 +13319,7 @@ function renderTaskHierarchyRow(
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
           ${editButton("task", task.id)}
+          ${taskCancellationButton(task)}
         </div>
       </div>
       <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
@@ -13733,7 +13793,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
         </summary>
         <div class="compact-record-body planning-task-body">
           <section class="planning-task-section">
-            <div class="planning-task-section-heading"><h4>Overview</h4><div class="record-actions">${editButton("task", task.id)}</div></div>
+            <div class="planning-task-section-heading"><h4>Overview</h4><div class="record-actions">${editButton("task", task.id)}${taskCancellationButton(task)}</div></div>
             <div class="planning-task-overview">
               <div><span>Owner</span><strong>${escapeHtml(ownerName)}</strong></div>
               <div><span>State</span><strong>${escapeHtml(taskStateLabel(task))}</strong></div>
@@ -17811,6 +17871,7 @@ function buildSelectOptionSets() {
     "inbox-priorities": inboxPriorities.map((item) => [item, humanizeToken(item)]),
     "case-statuses": caseStatuses.map((item) => [item, humanizeToken(item)]),
     "task-states": taskStates.map((item) => [item, item]),
+    "task-edit-states": directlyEditableTaskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
     "context-clearing-policies": contextClearingPolicies,
@@ -20303,6 +20364,98 @@ function findingResolutionsFromForm(form) {
     .filter(Boolean);
 }
 
+function openTaskCancellationDialog(taskId) {
+  if (!guardTeamMutation("cancel tasks")) {
+    return;
+  }
+  const task = state.tasks?.[text(taskId)] || null;
+  const availability = taskCancellationAvailability(task);
+  if (!task || !availability.allowed) {
+    setStatus(availability.explanation, "warning");
+    return;
+  }
+  const form = elements.taskCancellationForm;
+  const modal = elements.taskCancellationModal;
+  if (!form || !modal) {
+    setStatus("The task cancellation dialog is unavailable.", "error");
+    return;
+  }
+
+  form.reset();
+  form.dataset.taskId = task.id;
+  if (elements.taskCancellationModalTitle) {
+    elements.taskCancellationModalTitle.textContent = `Cancel ${task.title}`;
+  }
+  if (elements.taskCancellationSubject) {
+    elements.taskCancellationSubject.textContent =
+      `${task.title} · ${taskStateLabel(task)} · owner ${agentLabel(state.agents?.[task.owner_agent_id]) || task.owner_agent_id}`;
+  }
+  const successorSelect = form.elements.successor_task_id;
+  if (successorSelect instanceof HTMLSelectElement) {
+    const successorOptions = values(state.tasks)
+      .filter(
+        (candidate) =>
+          candidate.id !== task.id &&
+          text(candidate.project_id) === text(task.project_id),
+      )
+      .sort(byPriority)
+      .map(
+        (candidate) =>
+          `<option value="${escapeAttr(candidate.id)}">${escapeHtml(candidate.title)} · ${escapeHtml(taskStateLabel(candidate))}</option>`,
+      )
+      .join("");
+    successorSelect.innerHTML = `<option value="">No successor</option>${successorOptions}`;
+  }
+  modal.hidden = false;
+  form.elements.reason_code?.focus();
+}
+
+function closeTaskCancellationDialog() {
+  const form = elements.taskCancellationForm;
+  if (elements.taskCancellationModal) {
+    elements.taskCancellationModal.hidden = true;
+  }
+  if (elements.taskCancellationModalTitle) {
+    elements.taskCancellationModalTitle.textContent = "Cancel task";
+  }
+  if (elements.taskCancellationSubject) {
+    elements.taskCancellationSubject.textContent = "";
+  }
+  if (form) {
+    clearFormDraft(form);
+    form.reset();
+    form.dataset.taskId = "";
+  }
+}
+
+async function submitTaskCancellation(form) {
+  if (!guardTeamMutation("cancel tasks")) {
+    return;
+  }
+  const taskId = text(form?.dataset?.taskId);
+  const task = state.tasks?.[taskId] || null;
+  const availability = taskCancellationAvailability(task);
+  if (!task || !availability.allowed) {
+    setStatus(availability.explanation, "warning");
+    return;
+  }
+  const data = formData(form);
+  const saved = await submitMutation(
+    form,
+    `/tasks/${encodeURIComponent(task.id)}/cancel`,
+    "POST",
+    {
+      reason_code: text(data.reason_code),
+      reason: text(data.reason),
+      successor_task_id: text(data.successor_task_id) || null,
+    },
+    { resetOnSuccess: false },
+  );
+  if (saved) {
+    closeTaskCancellationDialog();
+  }
+}
+
 function openEditDialog(type, id) {
   if (!guardTeamMutation("edit Team records")) {
     return;
@@ -20531,7 +20684,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
       ${readonlyField("Owner", record.owner_agent_id)}
-      ${selectField("State", "state", "task-states", record.state || "pending", { required: true })}
+      ${taskEditStateField(record)}
       ${selectField("Case", "case_id", "cases", record.case_id || "", { placeholder: "No case" })}
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
@@ -20567,6 +20720,23 @@ function renderEditFields(type, record) {
     `;
   }
   return "";
+}
+
+function taskEditStateField(task) {
+  const stateValue = text(task?.state) || "pending";
+  if (directlyEditableTaskStates.includes(stateValue)) {
+    return selectField(
+      "State",
+      "state",
+      "task-edit-states",
+      stateValue,
+      { required: true },
+    );
+  }
+  return `
+    ${readonlyField("State", taskStateLabel(task))}
+    <input type="hidden" name="state" value="${escapeAttr(stateValue)}" />
+  `;
 }
 
 function renderAvatarEditControls(record) {
@@ -21393,6 +21563,61 @@ function escapeAttr(value) {
 
 function editButton(type, id, label = "Edit") {
   return `<button type="button" class="record-action" data-edit-type="${escapeAttr(type)}" data-edit-id="${escapeAttr(id)}">${escapeHtml(label)}</button>`;
+}
+
+function taskCancellationAvailability(task) {
+  const stateValue = text(task?.state);
+  if (!directlyCancellableTaskStates.has(stateValue)) {
+    return {
+      allowed: false,
+      explanation: stateValue
+        ? `This task is already ${taskStateLabel(task)} and cannot be cancelled.`
+        : "This task is unavailable.",
+    };
+  }
+  const assessment = task?.assessment || {};
+  const unresolvedIds = uniqueTextList(
+    task?.unresolved_descendant_ids || assessment.unresolved_descendant_ids || [],
+  );
+  if (unresolvedIds.length) {
+    return {
+      allowed: false,
+      explanation: `Resolve or cancel ${unresolvedIds.length} descendant task${unresolvedIds.length === 1 ? "" : "s"} first.`,
+    };
+  }
+  const acceptanceIds = uniqueTextList(assessment.active_acceptance_ids || []);
+  const blockingReviewIds = uniqueTextList(
+    assessment.active_review_request_ids || [],
+  ).filter((reviewId) => {
+    const review = state.review_requests?.[reviewId];
+    return !(
+      text(review?.state) === "blocked" &&
+      activeBlockersForRecord("review_request", reviewId).length
+    );
+  });
+  if (acceptanceIds.length || blockingReviewIds.length) {
+    return {
+      allowed: false,
+      explanation: "Finish or retire the active acceptance and review handoffs first.",
+    };
+  }
+  return {
+    allowed: true,
+    explanation: "Cancel this task with an audited reason.",
+  };
+}
+
+function taskCancellationButton(task) {
+  const availability = taskCancellationAvailability(task);
+  return `
+    <button
+      type="button"
+      class="record-action task-cancellation-action"
+      data-task-cancel-id="${escapeAttr(task?.id)}"
+      title="${escapeAttr(availability.explanation)}"
+      ${availability.allowed ? "" : 'disabled aria-disabled="true"'}
+    >Cancel task</button>
+  `;
 }
 
 function fieldText(form, name) {

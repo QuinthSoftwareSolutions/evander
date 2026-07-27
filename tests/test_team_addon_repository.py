@@ -5204,6 +5204,35 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     assert state.conversation_messages[message.id].status == "running"
     assert state.agent_runtimes["backend"].active_dispatch_id == dispatch_id
     assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+    assert state.dispatches[dispatch_id].project_ids == ["project"]
+    assert state.dispatches[dispatch_id].managed_repo_ids == []
+
+
+def test_repository_reply_only_chat_dispatch_has_no_mutation_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please only explain the current state.",
+        created_by="operator:alice",
+        allow_team_mutations=False,
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+
+    state, _message = _team_chat_service(repo).begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+    )
+
+    assert state.dispatches[dispatch_id].project_ids == []
+    assert state.dispatches[dispatch_id].managed_repo_ids == []
 
 
 @pytest.mark.parametrize("blocker", ["paused", "stood_down"])

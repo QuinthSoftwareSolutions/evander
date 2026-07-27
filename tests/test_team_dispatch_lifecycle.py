@@ -25,6 +25,7 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.commands import (
     TeamBlockerCommandService,
     TeamDeliverableSubmissionCommandService,
@@ -513,6 +514,175 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
         and "child-task" in item.payload.get("child_task_ids", [])
     }
     assert {"resolution", "integration_ready"} <= parent_transitions
+
+
+def test_project_lead_cancels_task_from_role_bounded_operator_chat(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="operator@example.com",
+        created_by="operator:operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Cancel the superseded worker task.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    state, _message = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    dispatch = state.dispatches[f"team-chat:{message.id}"]
+    assert dispatch.task_ids == []
+    assert dispatch.project_ids == ["project"]
+    assert dispatch.managed_repo_ids == [MANAGED_REPO_ID]
+
+    state, cancelled = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="superseded",
+        reason="The operator confirmed that the contribution is already incorporated.",
+        request_id="operator-chat-lead-cancellation",
+    )
+
+    assert cancelled["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.CANCELLED
+    assert state.tasks["task"].cancellation is not None
+    assert state.tasks["task"].cancellation.actor_id == "lead"
+
+
+def test_operator_chat_selects_owned_task_at_tool_call_time(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_secondary_project_for_lead(repository)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="other-project-task",
+        owner_agent_id="lead",
+        project_id="other-project",
+        priority=1,
+        title="Other project work",
+        description="This task must remain outside the worker's chat scope.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="worker",
+        operator_user_id="operator@example.com",
+        created_by="operator:operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Raise the priority of the scoped task.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    state, _message = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    dispatch = state.dispatches[f"team-chat:{message.id}"]
+    assert dispatch.task_ids == []
+    assert dispatch.project_ids == ["project"]
+
+    state, updated = TeamTaskUpdateCommandService(repository).update_task_command(
+        session_id="session-worker",
+        task_id="task",
+        priority=0,
+        request_id="operator-chat-task-update",
+    )
+
+    assert updated["success"] is True
+    assert state.tasks["task"].priority == 0
+
+    state, rejected = TeamTaskUpdateCommandService(repository).update_task_command(
+        session_id="session-worker",
+        task_id="other-project-task",
+        priority=0,
+        request_id="operator-chat-cross-project-task-update",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.tasks["other-project-task"].priority == 1
+
+
+def test_non_chat_project_scope_does_not_replace_exact_cancellation_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _lease_lead_for_primary_project(repository)
+
+    state, rejected = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="superseded",
+        reason="An autonomous project wake must not select unrelated task work.",
+        request_id="scheduled-lead-cancellation-without-handoff",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+
+
+def test_operator_chat_selects_direct_acceptance_at_tool_call_time(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _add_direct_acceptance(state):
+        state.deliverables["chat-deliverable"] = Deliverable(
+            id="chat-deliverable",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="Awaiting a direct superior decision.",
+            acceptance_recipient_agent_id="lead",
+        )
+        state.tasks["task"].deliverable_ids = ["chat-deliverable"]
+        state.tasks["task"].state = TeamTaskState.WAITING_FOR_REVIEW
+        return state
+
+    repository.update(_add_direct_acceptance)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="operator@example.com",
+        created_by="operator:operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Reject the superseded direct-acceptance deliverable.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    state, decided = TeamDeliverableSubmissionCommandService(
+        repository
+    ).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="chat-deliverable",
+        decision="rejected",
+        reason="The operator confirmed this version is superseded.",
+        request_id="operator-chat-direct-acceptance-decision",
+    )
+
+    assert decided["success"] is True
+    assert state.deliverables["chat-deliverable"].state == TeamRecordState.REJECTED
 
 
 def test_cancellation_rejects_an_active_direct_acceptance_handoff(

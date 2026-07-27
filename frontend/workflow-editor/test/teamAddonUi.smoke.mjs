@@ -43,6 +43,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /context-rotation/);
   assert.match(script, /data-stand-down-agent-id/);
   assert.match(script, /data-stand-down-revoke-agent-id/);
+  assert.match(markup, /id="task-cancellation-modal"/);
+  assert.match(script, /data-task-cancel-id/);
+  assert.match(script, /\/cancel/);
+  assert.match(stylesheet, /\.task-cancellation-action/);
   assert.match(script, /data-open-session-id/);
   assert.match(script, /admin-navigate-to-session/);
   assert.match(script, /stand-down/);
@@ -2628,6 +2632,38 @@ function applyMutation(state, pathname, payload) {
       created_at: "2026-06-09T00:00:00Z",
       updated_at: "2026-06-09T00:00:00Z",
     };
+    return;
+  }
+  const taskCancellationMatch = pathname.match(
+    /^\/api\/addons\/team-addon\/tasks\/([^/]+)\/cancel$/,
+  );
+  if (taskCancellationMatch) {
+    const taskId = decodeURIComponent(taskCancellationMatch[1]);
+    const task = state.tasks[taskId];
+    if (task) {
+      task.state = "cancelled";
+      task.state_entered_at = "2026-07-27T12:00:00Z";
+      task.updated_at = "2026-07-27T12:00:00Z";
+      task.cancellation = {
+        reason_code: payload.reason_code,
+        reason: payload.reason,
+        successor_task_id: payload.successor_task_id || null,
+        actor_kind: "operator",
+        actor_id: "operator:admin",
+        cancelled_at: "2026-07-27T12:00:00Z",
+      };
+      task.readiness = "resolved";
+      task.resolution_status = "resolved";
+      task.assessment = {
+        ...(task.assessment || {}),
+        readiness: "resolved",
+        resolution_status: "resolved",
+        resolution_reason: "The task was explicitly cancelled.",
+        unresolved_descendant_ids: [],
+        active_acceptance_ids: [],
+        active_review_request_ids: [],
+      };
+    }
     return;
   }
   const taskUpdateMatch = pathname.match(/^\/api\/addons\/team-addon\/tasks\/(.+)$/);
@@ -10864,6 +10900,180 @@ test("team add-on project editor keeps human release policy in bounded controls"
     "reviewer_user_ids" in patchRequest.payload.release_policy.human_review_requirement,
     false,
   );
+});
+
+test("team add-on task cancellation is explicit audited and lifecycle-aware", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  const taskBase = {
+    owner_agent_id: "alpha-lead",
+    project_id: "alpha-project",
+    created_by_agent_id: "alpha-manager",
+    dependency_task_ids: [],
+    deliverable_ids: [],
+    created_at: "2026-07-27T08:00:00Z",
+    updated_at: "2026-07-27T08:00:00Z",
+  };
+  initialState.tasks["task-cancellable"] = {
+    ...taskBase,
+    id: "task-cancellable",
+    priority: 1,
+    state: "in_progress",
+    title: "Retire the incorporated retry action",
+    description: "The accepted parent deliverable already contains the corrected contribution.",
+    assessment: {
+      readiness: "actionable",
+      resolution_status: "unresolved",
+      unresolved_descendant_ids: [],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+  initialState.tasks["task-successor"] = {
+    ...taskBase,
+    id: "task-successor",
+    priority: 2,
+    state: "accepted",
+    title: "Accepted parent integration",
+    description: "The canonical accepted integration.",
+    parent_task_id: "task-with-child",
+    assessment: {
+      readiness: "resolved",
+      resolution_status: "resolved",
+      unresolved_descendant_ids: [],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+  initialState.tasks["task-with-child"] = {
+    ...taskBase,
+    id: "task-with-child",
+    priority: 3,
+    state: "blocked",
+    title: "Parent with active child",
+    description: "This task cannot be cancelled until its child is resolved.",
+    child_task_ids: ["task-active-child", "task-successor"],
+    assessment: {
+      readiness: "waiting",
+      resolution_status: "unresolved",
+      direct_child_ids: ["task-active-child", "task-successor"],
+      unresolved_descendant_ids: ["task-active-child"],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+  initialState.tasks["task-active-child"] = {
+    ...taskBase,
+    id: "task-active-child",
+    priority: 4,
+    state: "pending",
+    title: "Active child contribution",
+    description: "Finish or cancel this child first.",
+    parent_task_id: "task-with-child",
+    assessment: {
+      readiness: "actionable",
+      resolution_status: "unresolved",
+      unresolved_descendant_ids: [],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Planning" }).click();
+  const alphaProjectCard = page.locator(
+    "#team-planning-page .planning-project-card",
+    { hasText: "Alpha Project" },
+  );
+  await alphaProjectCard.locator(":scope > details > summary").click();
+
+  const cancellableTask = page.locator(
+    '#team-planning-page [data-planning-task-id="task-cancellable"]',
+  );
+  await cancellableTask.locator(":scope > .planning-task-details > summary").click();
+  const cancellableBody = cancellableTask.locator(".planning-task-body");
+  await cancellableBody.getByRole("button", { name: "Edit" }).click();
+  const editState = page.locator('#edit-record-form select[name="state"]');
+  await editState.waitFor({ state: "visible" });
+  assert.equal(await editState.locator('option[value="accepted"]').count(), 0);
+  assert.equal(await editState.locator('option[value="cancelled"]').count(), 0);
+  await page
+    .locator("#edit-modal")
+    .getByRole("button", { name: "Close" })
+    .click();
+
+  const cancelButton = cancellableBody.getByRole("button", {
+    name: "Cancel task",
+  });
+  assert.equal(await cancelButton.isEnabled(), true);
+  assert.match(await cancelButton.getAttribute("title"), /audited reason/);
+  await cancelButton.click();
+
+  const cancellationForm = page.locator("#task-cancellation-form");
+  await cancellationForm.waitFor({ state: "visible" });
+  await page
+    .locator("#task-cancellation-subject")
+    .getByText(/Retire the incorporated retry action/)
+    .waitFor({ state: "visible" });
+  await cancellationForm.locator('[name="reason_code"]').selectOption("superseded");
+  await cancellationForm
+    .locator('[name="reason"]')
+    .fill("Its contribution was incorporated and corrected in the accepted parent deliverable.");
+  await cancellationForm
+    .locator('[name="successor_task_id"]')
+    .selectOption("task-successor");
+  await cancellationForm.getByRole("button", { name: "Cancel task" }).click();
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+
+  const cancellationRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable/cancel",
+  );
+  assert.ok(cancellationRequest, "expected the dedicated cancellation request");
+  assert.deepEqual(
+    {
+      reason_code: cancellationRequest.payload.reason_code,
+      reason: cancellationRequest.payload.reason,
+      successor_task_id: cancellationRequest.payload.successor_task_id,
+    },
+    {
+      reason_code: "superseded",
+      reason:
+        "Its contribution was incorporated and corrected in the accepted parent deliverable.",
+      successor_task_id: "task-successor",
+    },
+  );
+  assert.equal(await page.locator("#task-cancellation-modal").isHidden(), true);
+  await alphaProjectCard.locator(":scope > details > summary").click();
+
+  const blockedParent = page.locator(
+    '#team-planning-page [data-planning-task-id="task-with-child"]',
+  );
+  await blockedParent.locator(":scope > .planning-task-details > summary").click();
+  const blockedCancel = blockedParent
+    .locator(".planning-task-body")
+    .getByRole("button", { name: "Cancel task" });
+  assert.equal(await blockedCancel.isDisabled(), true);
+  assert.match(await blockedCancel.getAttribute("title"), /descendant task/);
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  await page
+    .locator("#team-task-board-page")
+    .getByRole("button", { name: "Show completed" })
+    .click();
+  const terminalCancel = page
+    .locator('.task-board-card[data-task-board-task-id="task-successor"]')
+    .getByRole("button", { name: "Cancel task" });
+  await terminalCancel.waitFor({ state: "visible" });
+  assert.equal(await terminalCancel.isDisabled(), true);
+  assert.match(await terminalCancel.getAttribute("title"), /already Accepted/);
 });
 
 test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", async (t) => {

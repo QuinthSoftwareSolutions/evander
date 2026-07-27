@@ -21,6 +21,7 @@ from ..models import (
     TeamState,
     agent_has_project_assignment,
 )
+from .domain.agent_access import _visible_project_ids_for_agent
 from .domain.chat import (
     _chat_preview,
     _touch_conversation,
@@ -67,6 +68,43 @@ def _require_agent_chat_dispatch_eligibility(
 
 def _attachment_preview(count: int) -> str:
     return f"Sent {count} attachment{'s' if count != 1 else ''}"
+
+
+def _operator_chat_dispatch_scope(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    message: TeamConversationMessage,
+) -> dict[str, list[str]]:
+    mutation_allowed = True
+    for key in (
+        "allow_team_mutations",
+        "allow_team_mutation",
+        "mutation_allowed",
+        "team_mutation_allowed",
+    ):
+        if key in message.metadata:
+            mutation_allowed = bool(message.metadata[key])
+            break
+    if not mutation_allowed:
+        return {"project_ids": [], "managed_repo_ids": []}
+    project_ids = sorted(
+        project_id
+        for project_id in _visible_project_ids_for_agent(state, agent)
+        if project_id in state.projects
+    )
+    managed_repo_ids = sorted(
+        {
+            project.git.managed_repo_id
+            for project_id in project_ids
+            if (project := state.projects.get(project_id)) is not None
+            and project.git is not None
+        }
+    )
+    return {
+        "project_ids": project_ids,
+        "managed_repo_ids": managed_repo_ids,
+    }
 
 
 class TeamChatService:
@@ -270,12 +308,18 @@ class TeamChatService:
             )
             existing_dispatch = state.dispatches.get(normalized_dispatch_id)
             if existing_dispatch is None:
+                chat_scope = _operator_chat_dispatch_scope(
+                    state,
+                    agent=agent,
+                    message=message,
+                )
                 state.dispatches[normalized_dispatch_id] = TeamDispatch(
                     id=normalized_dispatch_id,
                     agent_id=agent.id,
                     session_id=agent.session_id,
                     cause_kind="team_chat",
                     cause_id=message.id,
+                    **chat_scope,
                     status=TeamDispatchStatus.LEASED,
                     created_at=now,
                     prepared_at=now,
@@ -432,12 +476,18 @@ class TeamChatService:
                 )
                 existing_dispatch = state.dispatches.get(dispatch_id)
                 if existing_dispatch is None:
+                    chat_scope = _operator_chat_dispatch_scope(
+                        state,
+                        agent=agent,
+                        message=message,
+                    )
                     state.dispatches[dispatch_id] = TeamDispatch(
                         id=dispatch_id,
                         agent_id=agent.id,
                         session_id=agent.session_id,
                         cause_kind="team_chat",
                         cause_id=message.id,
+                        **chat_scope,
                         status=TeamDispatchStatus.LEASED,
                         created_at=effective_now,
                         prepared_at=effective_now,

@@ -877,6 +877,66 @@
           </form>
         </section>
       </div>
+      <div
+        id="task-cancellation-modal"
+        class="edit-modal"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-cancellation-modal-title"
+      >
+        <div class="edit-modal-backdrop" data-task-cancellation-close></div>
+        <section class="edit-modal-panel">
+          <div class="edit-modal-header">
+            <div>
+              <p class="section-label">Task lifecycle</p>
+              <h2 id="task-cancellation-modal-title">Cancel task</h2>
+            </div>
+            <button type="button" class="record-action" data-task-cancellation-close>Close</button>
+          </div>
+          <form id="task-cancellation-form">
+            <div class="edit-form-body">
+              <p id="task-cancellation-subject" class="task-cancellation-subject"></p>
+              <p class="task-cancellation-warning">
+                Cancellation is a terminal, audited disposition. It resolves the task's active
+                blockers and finalizes its Git work context.
+              </p>
+              <label>
+                <span>Reason</span>
+                <select name="reason_code" required>
+                  <option value="">Select a reason</option>
+                  <option value="superseded">Superseded</option>
+                  <option value="duplicate">Duplicate</option>
+                  <option value="no_longer_required">No longer required</option>
+                  <option value="replaced">Replaced by another task</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
+                <span>Explanation</span>
+                <textarea
+                  name="reason"
+                  rows="4"
+                  required
+                  placeholder="Explain why this task no longer needs to remain active."
+                ></textarea>
+              </label>
+              <label>
+                <span>Successor task (optional)</span>
+                <select name="successor_task_id">
+                  <option value="">No successor</option>
+                </select>
+              </label>
+            </div>
+            <div class="edit-modal-actions">
+              <button type="submit" class="task-cancellation-confirm">Cancel task</button>
+              <button type="button" class="record-action" data-task-cancellation-close>
+                Keep task
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
       <div id="chat-attachment-policy-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="chat-attachment-policy-title">
         <div class="edit-modal-backdrop" data-chat-attachment-policy-close></div>
         <section class="edit-modal-panel">

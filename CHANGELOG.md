@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-27 - Team Task Cancellation and Operator Chat Authority
+
+- Added a dedicated audited task-cancellation dialog with a required reason, optional same-project
+  successor, visible disabled actions that explain lifecycle blockers on hover, and no generic
+  edit-state shortcut into accepted or cancelled.
+- Gave mutation-enabled authenticated operator chat dispatches the recipient's frozen,
+  role-visible project and managed-repository scope so natural-language requests can select exact
+  targets at tool-call time while existing domain authority checks remain decisive; kept
+  reply-only chat and autonomous dispatches narrowly scoped.
+
 ## 2026-07-27 - Team Human Review Checklist Editing
 
 - Replaced pipe-delimited human release acceptance-checklist text with structured, reorderable

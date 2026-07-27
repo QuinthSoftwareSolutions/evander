@@ -4218,6 +4218,17 @@ button.record-action:hover {
   color: var(--accent-strong);
 }
 
+button.record-action.task-cancellation-action {
+  border-color: rgba(163, 61, 61, 0.42);
+  color: var(--red);
+}
+
+button.record-action.task-cancellation-action:hover:not(:disabled) {
+  border-color: var(--red);
+  background: rgba(163, 61, 61, 0.1);
+  color: var(--red);
+}
+
 .org-context-menu[hidden] {
   display: none;
 }
@@ -5611,6 +5622,29 @@ form {
   padding: 0.45rem 0.75rem;
   font-size: 0.86rem;
   font-weight: 700;
+}
+
+.task-cancellation-subject {
+  margin: 0;
+  font-weight: 750;
+}
+
+.task-cancellation-warning {
+  margin: 0;
+  border-left: 4px solid var(--red);
+  padding: 0.65rem 0.75rem;
+  background: rgba(163, 61, 61, 0.08);
+  color: var(--ink);
+}
+
+.task-cancellation-confirm {
+  border-color: var(--red);
+  background: var(--red);
+}
+
+.task-cancellation-confirm:hover {
+  border-color: #7c2727;
+  background: #7c2727;
 }
 
 .org-action-modal-body {
