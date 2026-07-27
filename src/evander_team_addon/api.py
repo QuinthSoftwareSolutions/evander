@@ -871,9 +871,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             if has_git
             else (current_project.git if current_project is not None else None)
         )
+        release_policy_payload: Mapping[str, Any] = payload
+        re_resolve_existing_release_policy = (
+            has_git
+            and not has_release_policy
+            and current_project is not None
+            and current_project.release_policy is not None
+        )
+        if re_resolve_existing_release_policy:
+            release_policy_payload = {
+                **payload,
+                "release_policy": current_project.release_policy.model_dump(
+                    mode="python"
+                ),
+            }
         release_policy = _resolved_release_policy_for_admin(
             context.auth,
-            payload,
+            release_policy_payload,
             directory_path=(
                 effective_git.directory_path if effective_git is not None else "root"
             ),
@@ -886,7 +900,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 git=git_config,
                 set_git=has_git,
                 release_policy=release_policy,
-                set_release_policy=has_release_policy,
+                set_release_policy=(
+                    has_release_policy or re_resolve_existing_release_policy
+                ),
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
                 expected_revision=expected_revision,

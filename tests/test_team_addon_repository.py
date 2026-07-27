@@ -4634,6 +4634,48 @@ def test_task_finish_with_proposed_unresolved_dependency_is_rejected(
     assert persisted.tasks["task"].state == TeamTaskState.PENDING
     assert persisted.tasks["task"].dependency_task_ids == []
 
+    state = _team_admin_service(repo).update_task(
+        task_id="task",
+        state=TeamTaskState.FINISHED,
+        expected_revision=persisted.revision,
+    )
+    with pytest.raises(ValueError, match="terminal task task cannot change"):
+        _team_admin_service(repo).update_task(
+            task_id="task",
+            dependency_task_ids=["dependency"],
+            expected_revision=state.revision,
+        )
+    persisted = repo.read()
+    assert persisted.tasks["task"].state == TeamTaskState.FINISHED
+    assert persisted.tasks["task"].dependency_task_ids == []
+
+
+def test_legacy_agent_finish_validates_proposed_dependencies(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_task(repo, task_id="dependency")
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [
+                {
+                    "task_id": "task",
+                    "state": "finished",
+                    "dependency_task_ids": ["dependency"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("unsatisfied dependencies" in error for error in result["errors"])
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].dependency_task_ids == []
+    assert repo.read().tasks["task"].state == TeamTaskState.PENDING
+
 
 def test_repository_update_task_command_cannot_hide_blocked_deliverable(
     tmp_path: Path,

@@ -33,6 +33,7 @@ from evander_team_addon.models import (
     Team,
     TeamBlockerRoute,
     TeamBlockerState,
+    TeamCase,
     TeamInboxItemState,
     TeamOutboxStatus,
     TeamRecordState,
@@ -621,6 +622,73 @@ def test_changes_requested_allows_incomplete_checklist() -> None:
 
     assert decision.checklist_results == {"smoke": False}
     assert request.state == "changes_requested"
+
+
+@pytest.mark.parametrize("record_kind", ["case", "task"])
+def test_changes_requested_rejects_squatted_system_record_ids(
+    tmp_path: Path,
+    record_kind: str,
+) -> None:
+    repository, request_id = _persist_pending_human_review(
+        tmp_path,
+        eligible_user_ids=["reviewer"],
+    )
+    case_id = (
+        f"human-review-case-"
+        f"{human_review_domain._stable_token(request_id, length=24)}"
+    )
+    task_id = (
+        f"human-triage-"
+        f"{human_review_domain._stable_token(request_id, length=24)}"
+    )
+
+    def _squat(state: TeamState) -> TeamState:
+        if record_kind == "case":
+            state.cases[case_id] = TeamCase(
+                id=case_id,
+                team_id="team",
+                project_id="project",
+                title="Unrelated operator case",
+                owner_agent_id="owner",
+                source="operator_case",
+            )
+        else:
+            state.tasks[task_id] = AgentTask(
+                id=task_id,
+                owner_agent_id="owner",
+                project_id="project",
+                priority=1,
+                title="Unrelated project task",
+                description="This task must not receive human-review findings.",
+                created_by_agent_id="lead",
+            )
+        return state
+
+    repository.update(_squat)
+    before = repository.read().model_dump(mode="json")
+
+    with pytest.raises(
+        ValueError,
+        match=rf"reserved human-review {record_kind} id",
+    ):
+        TeamAdminService(repository).record_human_review_decision_with_result(
+            human_review_request_id=request_id,
+            reviewer_user_id="reviewer",
+            reviewer_display_name="Reviewer",
+            decision="changes_requested",
+            request_id=f"squatted-{record_kind}-decision",
+            expected_request_revision=0,
+            checklist_results={"smoke": False},
+            summary="The release-wide recovery path needs correction.",
+            findings=[
+                {
+                    "text": "Correct the release-wide recovery path.",
+                }
+            ],
+        )
+
+    assert repository.read().model_dump(mode="json") == before
+    assert repository.list_outbox_records() == []
 
 
 def test_changes_requested_routes_recursive_contribution_finding_to_owner() -> None:

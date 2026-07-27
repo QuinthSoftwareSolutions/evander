@@ -352,6 +352,12 @@ def record_human_review_decision(
         raise ValueError("changes_requested requires at least one actionable finding")
     if normalized_decision == "changes_requested":
         _validate_human_finding_targets(release, findings)
+        _validate_human_review_system_record_ids(
+            state,
+            request=request,
+            release=release,
+            finding_inputs=findings,
+        )
 
     decision_record = HumanReviewDecision(
         id=f"human-decision-{_stable_token(request.id, normalized_request_id, length=24)}",
@@ -884,8 +890,20 @@ def report_post_release_feedback(
     project = state.projects[release.project_id]
     lead_id = project_lead_agent_id(state, project.id) or project.lead_agent_id
     effective_now = now or utc_now()
+    case_id = f"post-release-case-{_stable_token(source_ref, length=24)}"
+    task_id = f"post-release-triage-{_stable_token(source_ref, length=24)}"
+    _require_system_record_id_available(
+        state.cases,
+        record_id=case_id,
+        record_kind="case",
+    )
+    _require_system_record_id_available(
+        state.tasks,
+        record_id=task_id,
+        record_kind="task",
+    )
     case = TeamCase(
-        id=f"post-release-case-{_stable_token(source_ref, length=24)}",
+        id=case_id,
         team_id=project.team_id,
         project_id=project.id,
         title=f"Post-release feedback for {release.id}",
@@ -907,7 +925,7 @@ def report_post_release_feedback(
     state.cases[case.id] = case
     task = _ensure_system_task(
         state,
-        task_id=f"post-release-triage-{_stable_token(source_ref, length=24)}",
+        task_id=task_id,
         project_id=project.id,
         case=case,
         owner_agent_id=lead_id,
@@ -978,23 +996,24 @@ def _apply_changes_requested(
     lead_id = project_lead_agent_id(state, project.id) or project.lead_agent_id
     case_id = f"human-review-case-{_stable_token(request.id, length=24)}"
     case = state.cases.get(case_id)
-    if case is None:
-        case = TeamCase(
-            id=case_id,
-            team_id=project.team_id,
-            project_id=project.id,
-            title=f"Human review corrections for {release.id}",
-            description=decision.summary,
-            status=TeamCaseStatus.IN_PROGRESS,
-            priority=TeamInboxPriority.HIGH,
-            owner_agent_id=lead_id,
-            source="human_release_review",
-            source_ref=request.id,
-            created_at=now,
-            updated_at=now,
-        )
-        state.cases[case.id] = case
-        result.setdefault("created_case_ids", []).append(case.id)
+    if case is not None:
+        raise ValueError(f"reserved human-review case id {case_id} already exists")
+    case = TeamCase(
+        id=case_id,
+        team_id=project.team_id,
+        project_id=project.id,
+        title=f"Human review corrections for {release.id}",
+        description=decision.summary,
+        status=TeamCaseStatus.IN_PROGRESS,
+        priority=TeamInboxPriority.HIGH,
+        owner_agent_id=lead_id,
+        source="human_release_review",
+        source_ref=request.id,
+        created_at=now,
+        updated_at=now,
+    )
+    state.cases[case.id] = case
+    result.setdefault("created_case_ids", []).append(case.id)
 
     ambiguous_task: AgentTask | None = None
     for position, raw in enumerate(finding_inputs):
@@ -1121,6 +1140,70 @@ def _validate_human_finding_targets(
             )
 
 
+def _require_system_record_id_available(
+    records: Mapping[str, Any],
+    *,
+    record_id: str,
+    record_kind: str,
+) -> None:
+    if record_id in records:
+        raise ValueError(
+            f"reserved human-review {record_kind} id {record_id} already exists"
+        )
+
+
+def _validate_human_review_system_record_ids(
+    state: TeamState,
+    *,
+    request: HumanReviewRequest,
+    release: ReleasePackage,
+    finding_inputs: Sequence[Mapping[str, Any]],
+) -> None:
+    case_id = f"human-review-case-{_stable_token(request.id, length=24)}"
+    _require_system_record_id_available(
+        state.cases,
+        record_id=case_id,
+        record_kind="case",
+    )
+    checked_task_ids: set[str] = set()
+    for position, raw in enumerate(finding_inputs):
+        text = str(raw.get("text") or "").strip()
+        if not text:
+            raise ValueError(
+                f"human finding {position + 1} requires actionable text"
+            )
+        target_ids = sorted(
+            {
+                str(value).strip()
+                for value in (raw.get("target_deliverable_ids") or [])
+                if str(value).strip()
+            }
+        )
+        origin_task_id, _owner_id = _specific_finding_route(
+            state,
+            release=release,
+            target_deliverable_ids=target_ids,
+        )
+        if origin_task_id is None:
+            task_id = f"human-triage-{_stable_token(request.id, length=24)}"
+        else:
+            finding_id = (
+                f"human-finding-"
+                f"{_stable_token(request.id, str(position), text, length=24)}"
+            )
+            task_id = (
+                f"human-correction-{_stable_token(finding_id, length=24)}"
+            )
+        if task_id in checked_task_ids:
+            continue
+        checked_task_ids.add(task_id)
+        _require_system_record_id_available(
+            state.tasks,
+            record_id=task_id,
+            record_kind="task",
+        )
+
+
 def _reviewed_candidate_deliverable_ids(
     release: ReleasePackage,
 ) -> set[str]:
@@ -1185,7 +1268,9 @@ def _ensure_system_task(
 ) -> AgentTask:
     existing = state.tasks.get(task_id)
     if existing is not None:
-        return existing
+        raise ValueError(
+            f"reserved human-review task id {task_id} already exists"
+        )
     task = AgentTask(
         id=task_id,
         owner_agent_id=owner_agent_id,

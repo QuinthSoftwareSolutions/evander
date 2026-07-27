@@ -420,7 +420,11 @@ class TeamAgentActionService:
                     previous_task_state = task.state
                     if raw_state is not None:
                         if raw_state == TeamTaskState.FINISHED.value:
-                            require_task_can_finish(state_model, task.id)
+                            require_task_can_finish(
+                                state_model,
+                                task.id,
+                                dependency_task_ids=new_dependency_task_ids,
+                            )
                         _set_task_state(task, TeamTaskState(raw_state), now=now)
                         if task.state not in _NON_TERMINAL_TASK_STATES:
                             finalize_active_git_work_contexts_for_task(

@@ -2,6 +2,10 @@
 
 ## 2026-07-26 - Team Review Follow-up Fixes
 
+- Re-resolved human-review authorization after project Git-directory changes,
+  reserved deterministic human-review case and task IDs, made terminal task
+  graph edges immutable, and validated proposed dependencies in legacy finish
+  updates.
 - Required a team-scoped role grant for team-wide outcome-catalog changes, migrated legacy JSON
   outcome contracts and snapshots before strict validation, and kept mixed stored/legacy thread
   fallback records pageable until every execution has been scanned.

@@ -52,6 +52,7 @@ from evander_team_addon.models import (
     HumanReviewAssignment,
     HumanReviewFinding,
     HumanReviewRequest,
+    HumanReviewRequirement,
     HumanReviewRequirementSnapshot,
     ProjectGitConfig,
     ProjectReleasePolicy,
@@ -168,6 +169,122 @@ def test_human_release_policy_resolves_directory_groups_and_rejects_empty_pool()
             payload,
             directory_path="root/team/project",
         )
+
+
+@pytest.mark.parametrize(
+    ("git_payload", "expected_directory", "expected_reviewer"),
+    [
+        (
+            {
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "directory_path": "root/new-project",
+            },
+            "root/new-project",
+            "new-reviewer@example.com",
+        ),
+        (None, "root", "root-reviewer@example.com"),
+    ],
+)
+def test_project_git_patch_re_resolves_existing_human_review_scope(
+    tmp_path: Path,
+    git_payload: dict[str, str] | None,
+    expected_directory: str,
+    expected_reviewer: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repository = TeamStateRepository(runtime_dir)
+    admin = TeamAdminService(repository)
+    state = admin.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    state = admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        git=ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/old-project",
+        ),
+        release_policy=ProjectReleasePolicy(
+            human_review_requirement=HumanReviewRequirement(
+                reviewer_group_ids=["release-reviewers"],
+                directory_path="root/old-project",
+                resolved_reviewer_user_ids=["old-reviewer@example.com"],
+            )
+        ),
+        expected_revision=state.revision,
+    )
+    assignments = [
+        SimpleNamespace(
+            login="old-reviewer@example.com",
+            group_id="release-reviewers",
+            directory_path="root/old-project",
+        ),
+        SimpleNamespace(
+            login=expected_reviewer,
+            group_id="release-reviewers",
+            directory_path=expected_directory,
+        ),
+    ]
+    known_users = {
+        "old-reviewer@example.com",
+        expected_reviewer,
+    }
+    user_store = SimpleNamespace(
+        get_group=lambda group_id: (
+            SimpleNamespace(group_id=group_id)
+            if group_id == "release-reviewers"
+            else None
+        ),
+        list_user_group_assignments=lambda: list(assignments),
+        get_user=lambda login: (
+            SimpleNamespace(login=str(login).casefold())
+            if str(login).casefold() in known_users
+            else None
+        ),
+        can=lambda login, permission, directory_path=None: (
+            permission == "team.human_reviews.decide"
+            and str(login).casefold() in known_users
+            and directory_path == expected_directory
+        ),
+    )
+    auth = _HumanApiAuthStub(
+        login=expected_reviewer,
+        owner=True,
+    )
+    auth.user_store = user_store
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=auth,
+                )
+            )
+        )
+    )
+
+    response = client.patch(
+        "/projects/project",
+        json={
+            "git": git_payload,
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    requirement = response.json()["projects"]["project"]["release_policy"][
+        "human_review_requirement"
+    ]
+    assert requirement["directory_path"] == expected_directory
+    assert requirement["resolved_reviewer_user_ids"] == [expected_reviewer]
 
 
 def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> None:

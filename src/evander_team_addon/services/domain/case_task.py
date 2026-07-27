@@ -972,6 +972,19 @@ def _task_graph_edit_error(
     """
 
     if task_id is not None:
+        existing_task = state.tasks.get(task_id)
+        if (
+            existing_task is not None
+            and existing_task.state not in _NON_TERMINAL_TASK_STATES
+            and (
+                parent_task_id != existing_task.parent_task_id
+                or dependency_task_ids != existing_task.dependency_task_ids
+            )
+        ):
+            return (
+                f"terminal task {task_id} cannot change its parent or "
+                "dependency task IDs"
+            )
         if parent_task_id == task_id:
             return "task cannot be its own parent"
         if task_id in dependency_task_ids:
