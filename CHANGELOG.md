@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27 - Team Stand-down Revocation Visibility
+
+- Kept the Revoke stand-down action visible for superior-issued and inherited stand-downs, disabled
+  it when the operator cannot revoke the underlying record, and explained the responsible
+  revocation path on hover.
+
 ## 2026-07-27 - Team Operational History and Delivery Clarity
 
 - Added coordinated Board and Hierarchy task views with named lineage navigation, relationship

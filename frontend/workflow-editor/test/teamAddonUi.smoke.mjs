@@ -4210,6 +4210,89 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
+test("team add-on keeps unavailable stand-down revocation visible with an explanation", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.agents.lead.display_name = "Project Lead";
+  const standDown = {
+    id: "stand-down-backend",
+    agent_id: "backend",
+    source: "superior",
+    reason: "Wait for upstream work",
+    set_by: "lead",
+    set_at: "2026-06-11T08:50:00Z",
+    cleared_by: null,
+    cleared_at: null,
+    active: true,
+    inherited: false,
+    root_agent_id: "backend",
+  };
+  initialState.stand_downs = { [standDown.id]: standDown };
+  initialState.agents.backend.stand_down_active = true;
+  initialState.agents.backend.effective_stand_downs = [standDown];
+  initialState.agents.worker.stand_down_active = true;
+  initialState.agents.worker.effective_stand_downs = [
+    {
+      ...standDown,
+      inherited: true,
+      root_agent_id: "backend",
+    },
+  ];
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="backend"]').click();
+
+  const detail = page.locator("#team-people-page .agent-detail", { hasText: "Backend Worker" });
+  await detail.waitFor({ state: "visible" });
+  const revokeButton = detail.getByRole("button", { name: "Revoke stand-down" });
+  await revokeButton.waitFor({ state: "visible" });
+  await revokeButton.hover();
+  assert.equal(await revokeButton.isDisabled(), true);
+  assert.equal(await revokeButton.getAttribute("aria-disabled"), "true");
+  assert.equal(
+    await revokeButton.getAttribute("title"),
+    "Only Project Lead can revoke this superior-issued stand-down.",
+  );
+
+  const revokeRequestCountBeforeClick = requests.filter(
+    (request) =>
+      request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+  ).length;
+  await revokeButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "POST"
+        && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+    ).length,
+    revokeRequestCountBeforeClick,
+  );
+
+  await teamGroup.locator('[data-select-agent-id="worker"]').click();
+  const inheritedDetail = page.locator("#team-people-page .agent-detail", { hasText: "worker" });
+  await inheritedDetail.waitFor({ state: "visible" });
+  const inheritedRevokeButton = inheritedDetail.getByRole("button", { name: "Revoke stand-down" });
+  await inheritedRevokeButton.waitFor({ state: "visible" });
+  await inheritedRevokeButton.hover();
+  assert.equal(await inheritedRevokeButton.isDisabled(), true);
+  assert.equal(
+    await inheritedRevokeButton.getAttribute("title"),
+    "This stand-down is inherited from Backend Worker. Only Project Lead can revoke it.",
+  );
+});
+
 test("team add-on project catalog uses growing cards with concise project metadata", async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";

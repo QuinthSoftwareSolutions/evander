@@ -2041,6 +2041,12 @@ function bindRecordEditing() {
     const standDownRevokeButton = event.target.closest("[data-stand-down-revoke-agent-id]");
     if (standDownRevokeButton) {
       event.preventDefault();
+      if (
+        standDownRevokeButton.matches(":disabled")
+        || standDownRevokeButton.getAttribute("aria-disabled") === "true"
+      ) {
+        return;
+      }
       if (!guardTeamMutation("revoke stand-downs")) {
         return;
       }
@@ -2501,7 +2507,7 @@ const lockedMutationControlSelectors = [
   ["[data-review-profile-criterion-remove]", "edit review profile criteria"],
   ["[data-context-rotation-agent-id]", "clear agent context"],
   ["[data-stand-down-agent-id]", "stand down agents"],
-  ["[data-stand-down-revoke-agent-id]", "revoke stand-downs"],
+  ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
@@ -10010,14 +10016,40 @@ function renderAgentStandDownControls(agentId, record) {
   }
   const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
   const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
+  const unavailableReason = standDownRevokeUnavailableReason(normalizedAgentId, standDowns);
   return `
     <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
     ${
       operatorRoot
         ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke stand-down</button>`
-        : ""
+        : `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}" disabled aria-disabled="true" title="${escapeAttr(unavailableReason)}">Revoke stand-down</button>`
     }
   `;
+}
+
+function standDownRevokeUnavailableReason(agentId, standDowns) {
+  const primary = standDowns[standDowns.length - 1];
+  if (!primary) {
+    return "This stand-down cannot be revoked here because its source details are unavailable.";
+  }
+  const rootAgentId = text(primary.root_agent_id || primary.agent_id);
+  const rootAgent = state.agents?.[rootAgentId];
+  const rootLabel = rootAgent ? agentLabel(rootAgent) : rootAgentId || "another agent";
+  const inherited = Boolean(primary.inherited) || (rootAgentId && rootAgentId !== text(agentId));
+  if (text(primary.source) === "superior") {
+    const setterAgentId = text(primary.set_by);
+    const setterAgent = state.agents?.[setterAgentId];
+    const setterLabel = setterAgent
+      ? agentLabel(setterAgent)
+      : setterAgentId || "the superior who set it";
+    return inherited
+      ? `This stand-down is inherited from ${rootLabel}. Only ${setterLabel} can revoke it.`
+      : `Only ${setterLabel} can revoke this superior-issued stand-down.`;
+  }
+  if (inherited) {
+    return `This stand-down is inherited from ${rootLabel}. Revoke the stand-down on that agent.`;
+  }
+  return "This stand-down cannot be revoked here. Revoke it at its source.";
 }
 
 function agentStandDownSummary(record) {
