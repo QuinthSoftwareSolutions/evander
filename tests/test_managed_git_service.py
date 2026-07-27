@@ -15,6 +15,7 @@ from evander.admin.services.managed_git_service import (
     ManagedGitConflictError,
     REGISTRY_SCHEMA,
 )
+from evander.config import GatewayConfig
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.models import SessionManifest, ToolName
 from evander.repositories.session_manifests import JsonSessionManifestRepository
@@ -175,16 +176,13 @@ def test_git_environment_drops_inherited_askpass_credentials(
     assert "EVANDER_GIT_PASSWORD" not in worktree_env
 
 
-def test_git_environment_rewrites_azure_ssh_refresh_to_https_when_pat_is_available(
+def test_git_environment_rewrites_azure_ssh_refresh_when_only_general_pat_is_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pat_env = "TEST_MANAGED_GIT_AZURE_PAT"
-    monkeypatch.setenv(pat_env, "test-secret")
+    monkeypatch.delenv("AZURE_DEVOPS_PR_PAT", raising=False)
+    monkeypatch.setenv("AZURE_DEVOPS_PAT", "test-secret")
     service = ManagedGitAdminService(
-        SimpleNamespace(
-            runtime_dir=tmp_path / "runtime",
-            azure_devops_pat_env=pat_env,
-        ),
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
         SimpleNamespace(),
         tmp_path,
     )
@@ -212,13 +210,10 @@ def test_git_environment_rewrites_azure_ssh_refresh_to_https_when_pat_is_availab
 def test_git_environment_preserves_azure_ssh_refresh_without_pat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pat_env = "TEST_MANAGED_GIT_MISSING_AZURE_PAT"
-    monkeypatch.delenv(pat_env, raising=False)
+    monkeypatch.delenv("AZURE_DEVOPS_PR_PAT", raising=False)
+    monkeypatch.delenv("AZURE_DEVOPS_PAT", raising=False)
     service = ManagedGitAdminService(
-        SimpleNamespace(
-            runtime_dir=tmp_path / "runtime",
-            azure_devops_pat_env=pat_env,
-        ),
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
         SimpleNamespace(),
         tmp_path,
     )

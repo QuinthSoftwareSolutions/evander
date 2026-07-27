@@ -5,6 +5,8 @@
 - Rewrote PAT-backed Azure DevOps SSH refresh sources to their canonical HTTPS URLs at Git
   invocation time, allowing the systemd refresh broker to use its configured non-interactive PAT
   without persisting credentials or changing registered repository identity.
+- Fell back to the general Azure DevOps PAT when the preferred PR PAT environment variable is
+  configured but unpopulated, covering both supported managed Git authentication configurations.
 - Preserved fail-closed stale-ref behavior while returning and logging stable, sanitized refresh
   failure codes and operator-readable categories instead of reducing every upstream failure to a
   generic `RuntimeError`.

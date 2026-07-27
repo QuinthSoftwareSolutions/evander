@@ -6410,12 +6410,19 @@ class ManagedGitAdminService:
             password = os.environ.get(token_env) or os.environ.get("GH_TOKEN")
             username = "x-access-token"
         elif provider == "azure_devops":
-            token_env = str(
-                getattr(resolved_config, "azure_devops_pr_pat_env", "")
-                or getattr(resolved_config, "azure_devops_pat_env", "")
-                or "AZURE_DEVOPS_PR_PAT"
-            )
-            password = os.environ.get(token_env)
+            token_envs = [
+                str(getattr(resolved_config, field_name, "") or "").strip()
+                for field_name in (
+                    "azure_devops_pr_pat_env",
+                    "azure_devops_pat_env",
+                )
+            ]
+            if not any(token_envs):
+                token_envs.append("AZURE_DEVOPS_PR_PAT")
+            for token_env in token_envs:
+                if token_env and (token := os.environ.get(token_env)):
+                    password = token
+                    break
             username = "evander"
         return username, password
 
