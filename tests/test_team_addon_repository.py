@@ -4650,6 +4650,61 @@ def test_task_finish_with_proposed_unresolved_dependency_is_rejected(
     assert persisted.tasks["task"].dependency_task_ids == []
 
 
+def test_terminal_parent_rejects_new_and_reparented_children(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="terminal-parent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Completed parent",
+        description="This parent has crossed its terminal boundary.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="existing-candidate",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=2,
+        title="Existing candidate",
+        description="This task must remain top-level.",
+        created_by_agent_id="lead",
+    )
+    state = admin.update_task(
+        task_id="terminal-parent",
+        state=TeamTaskState.FINISHED,
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="task parent terminal-parent is not active"):
+        admin.create_or_reprioritize_task(
+            task_id="new-child",
+            owner_agent_id="lead",
+            project_id="project",
+            priority=3,
+            title="Late child",
+            description="This child would invalidate the completed parent.",
+            created_by_agent_id="lead",
+            parent_task_id="terminal-parent",
+            expected_revision=state.revision,
+        )
+
+    with pytest.raises(ValueError, match="task parent terminal-parent is not active"):
+        admin.update_task(
+            task_id="existing-candidate",
+            parent_task_id="terminal-parent",
+            set_parent_task_id=True,
+            expected_revision=state.revision,
+        )
+
+    persisted = repo.read()
+    assert "new-child" not in persisted.tasks
+    assert persisted.tasks["existing-candidate"].parent_task_id is None
+
+
 def test_legacy_agent_finish_validates_proposed_dependencies(
     tmp_path: Path,
 ) -> None:

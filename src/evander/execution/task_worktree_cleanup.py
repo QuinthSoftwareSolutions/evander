@@ -108,13 +108,63 @@ def cleanup_task_worktree(
 
         removed = False
         if second.target_exists:
-            args = ["git", "-C", str(repo_dir), "worktree", "remove"]
             if second.ignored_paths:
-                # The two in-lock inspections proved that every remaining
-                # non-Git file is ignored. Force is only used for that case.
-                args.append("--force")
+                cleanup_error = _remove_proven_ignored_paths(
+                    target_dir,
+                    second.ignored_paths,
+                )
+                if cleanup_error is not None:
+                    return _refused_result(
+                        TaskWorktreeInspection(
+                            safe_to_remove=False,
+                            target_exists=True,
+                            registered=second.registered,
+                            actual_branch=second.actual_branch,
+                            actual_commit_sha=second.actual_commit_sha,
+                            failed_check="ignored_path_cleanup_failed",
+                            message=cleanup_error,
+                            tracked_paths=list(second.tracked_paths),
+                            untracked_paths=list(second.untracked_paths),
+                            ignored_paths=list(second.ignored_paths),
+                            ignored_bytes=second.ignored_bytes,
+                            worktree_bytes=second.worktree_bytes,
+                        ),
+                        validation_count=2,
+                    )
+            args = ["git", "-C", str(repo_dir), "worktree", "remove"]
             args.append(str(target_dir))
-            _run(args)
+            removal = _run(args, check=False)
+            if removal.returncode != 0:
+                final = inspect_task_worktree(
+                    repo_dir=repo_dir,
+                    worktrees_root=worktrees_root,
+                    target_dir=target_dir,
+                    branch=branch,
+                    expected_commit_sha=expected_commit_sha,
+                )
+                if not final.safe_to_remove:
+                    return _refused_result(final, validation_count=3)
+                detail = removal.stderr.strip() or removal.stdout.strip()
+                return _refused_result(
+                    TaskWorktreeInspection(
+                        safe_to_remove=False,
+                        target_exists=final.target_exists,
+                        registered=final.registered,
+                        actual_branch=final.actual_branch,
+                        actual_commit_sha=final.actual_commit_sha,
+                        failed_check="worktree_removal_failed",
+                        message=(
+                            "Git refused non-force task worktree removal"
+                            + (f": {detail}" if detail else "")
+                        ),
+                        tracked_paths=list(final.tracked_paths),
+                        untracked_paths=list(final.untracked_paths),
+                        ignored_paths=list(final.ignored_paths),
+                        ignored_bytes=final.ignored_bytes,
+                        worktree_bytes=final.worktree_bytes,
+                    ),
+                    validation_count=3,
+                )
             removed = True
         _run(["git", "-C", str(repo_dir), "worktree", "prune", "--expire", "now"])
 
@@ -422,6 +472,34 @@ def _tracked_change_paths(target_dir: Path) -> list[str]:
 
 def _git_path_list(args: list[str]) -> list[str]:
     return sorted({path for path in _run(args).stdout.split("\0") if path})
+
+
+def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | None:
+    """Remove only ignored paths observed by the final pre-cleanup inspection."""
+
+    for relative_path in paths:
+        result = _run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "-C",
+                str(target_dir),
+                "clean",
+                "-f",
+                "-d",
+                "-X",
+                "--",
+                relative_path,
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            return (
+                f"failed to remove proven ignored path {relative_path!r}"
+                + (f": {detail}" if detail else "")
+            )
+    return None
 
 
 def _path_inventory_bytes(root: Path, paths: list[str]) -> int:

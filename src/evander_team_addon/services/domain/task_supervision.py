@@ -104,12 +104,14 @@ def queue_parent_task_transition(
         existing.payload["child_task_ids"] = sorted(child_ids)
         for key, value in normalized_references.items():
             plural_key = key if key.endswith("_ids") else f"{key}s"
-            current = existing.payload.get(plural_key)
-            current_values = (
-                {str(item) for item in current}
-                if isinstance(current, list)
-                else set()
-            )
+            singular_key = key[:-1] if key.endswith("_ids") else key
+            current_values: set[str] = set()
+            for current_key in (singular_key, plural_key):
+                current = existing.payload.get(current_key)
+                if isinstance(current, list):
+                    current_values.update(str(item) for item in current)
+                elif current is not None:
+                    current_values.add(str(current))
             if isinstance(value, list):
                 current_values.update(str(item) for item in value)
             else:

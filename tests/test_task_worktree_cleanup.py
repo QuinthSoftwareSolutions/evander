@@ -116,6 +116,79 @@ def test_libvirt_cleanup_command_is_self_contained_and_removes_safe_worktree(
     assert not target.exists()
 
 
+def test_cleanup_preserves_tracked_work_created_during_final_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Cleanup Test"], cwd=repo, check=True)
+    (repo / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+    commit_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    branch = "agents/session/task"
+    worktrees_root = tmp_path / "worktrees"
+    target = worktrees_root / "task"
+    worktrees_root.mkdir()
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", branch, str(target), commit_sha],
+        cwd=repo,
+        check=True,
+    )
+    (target / "cache").mkdir()
+    (target / "cache" / "generated.bin").write_bytes(b"generated")
+
+    original_run = cleanup_module._run
+    injected_late_work = False
+
+    def _run_with_late_work(
+        args: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal injected_late_work
+        if (
+            not injected_late_work
+            and len(args) >= 5
+            and args[0] == "git"
+            and args[3:5] == ["worktree", "remove"]
+        ):
+            assert "--force" not in args
+            (target / "README.md").write_text("late agent work\n", encoding="utf-8")
+            injected_late_work = True
+        return original_run(args, check=check)
+
+    monkeypatch.setattr(cleanup_module, "_run", _run_with_late_work)
+
+    result = cleanup_task_worktree(
+        repo_dir=repo,
+        worktrees_root=worktrees_root,
+        target_dir=target,
+        branch=branch,
+        expected_commit_sha=commit_sha,
+        lock_path=tmp_path / "locks" / "repo.lock",
+    )
+
+    assert injected_late_work is True
+    assert result.state == "refused"
+    assert result.removed is False
+    assert result.validation_count == 3
+    assert result.failed_check == "tracked_changes"
+    assert result.tracked_paths == ["README.md"]
+    assert (target / "README.md").read_text(encoding="utf-8") == "late agent work\n"
+    assert not (target / "cache" / "generated.bin").exists()
+
+
 def test_cleanup_refuses_worktree_with_unexpected_commit(
     tmp_path: Path,
 ) -> None:

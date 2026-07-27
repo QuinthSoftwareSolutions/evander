@@ -25,6 +25,9 @@ from evander_team_addon.services.domain.deliverables import (
     _accept_deliverable_and_maybe_task,
 )
 from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.domain.task_supervision import (
+    queue_parent_task_transition,
+)
 
 
 def _state_with_hierarchy(*, child_count: int = 1) -> TeamState:
@@ -152,6 +155,41 @@ def test_child_handoff_routes_to_parent_owner_instead_of_org_superior() -> None:
     assert notice.payload["parent_task_id"] == "parent"
     assert _pending_for(state, "lead") == []
     assert state.agent_runtimes["parent-owner"].next_wake_at is None
+
+
+def test_parent_transition_coalescing_preserves_all_reference_ids() -> None:
+    state = _state_with_hierarchy(child_count=2)
+    now = utc_now()
+
+    first = queue_parent_task_transition(
+        state,
+        child_task_id="child-1",
+        transition="handoff",
+        sender_agent_id="child-owner",
+        now=now,
+        references={
+            "deliverable_id": "deliverable-1",
+            "review_request_id": "review-1",
+        },
+    )
+    second = queue_parent_task_transition(
+        state,
+        child_task_id="child-2",
+        transition="handoff",
+        sender_agent_id="child-owner",
+        now=now,
+        references={
+            "deliverable_id": "deliverable-2",
+            "review_request_id": "review-2",
+        },
+    )
+
+    assert first is not None
+    assert second is first
+    assert first.payload["deliverable_id"] == "deliverable-1"
+    assert first.payload["deliverable_ids"] == ["deliverable-1", "deliverable-2"]
+    assert first.payload["review_request_id"] == "review-1"
+    assert first.payload["review_request_ids"] == ["review-1", "review-2"]
 
 
 def test_formal_review_handoff_still_notifies_parent_owner() -> None:

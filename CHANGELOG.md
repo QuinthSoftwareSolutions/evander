@@ -2,6 +2,9 @@
 
 ## 2026-07-26 - Team Review Follow-up Fixes
 
+- Removed only proven ignored worktree paths before non-force Git cleanup, rejected new child
+  edges to terminal tasks, and preserved every deliverable and review reference in coalesced
+  parent-transition notices.
 - Re-resolved human-review authorization after project Git-directory changes,
   reserved deterministic human-review case and task IDs, made terminal task
   graph edges immutable, and validated proposed dependencies in legacy finish

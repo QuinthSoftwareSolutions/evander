@@ -971,8 +971,8 @@ def _task_graph_edit_error(
     re-validation abort the whole action. ``task_id`` is None for a new task.
     """
 
+    existing_task = state.tasks.get(task_id) if task_id is not None else None
     if task_id is not None:
-        existing_task = state.tasks.get(task_id)
         if (
             existing_task is not None
             and existing_task.state not in _NON_TERMINAL_TASK_STATES
@@ -995,6 +995,14 @@ def _task_graph_edit_error(
             return f"task references missing parent {parent_task_id}"
         if parent.project_id != project_id:
             return f"task parent {parent_task_id} belongs to project {parent.project_id}"
+        if (
+            parent.state not in _NON_TERMINAL_TASK_STATES
+            and (
+                existing_task is None
+                or existing_task.parent_task_id != parent_task_id
+            )
+        ):
+            return f"task parent {parent_task_id} is not active"
     for dependency_id in dependency_task_ids:
         dependency = state.tasks.get(dependency_id)
         if dependency is None:
