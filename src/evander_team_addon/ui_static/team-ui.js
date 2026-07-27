@@ -4091,6 +4091,7 @@ function applyChatCollectionPayload(
   if (requestId !== chatRequestId) {
     return;
   }
+  const previousSelectedConversationId = text(selectedChatConversationId);
   const previousConversations = new Map(
     chatState.conversations.map((conversation) => [text(conversation.id), conversation]),
   );
@@ -4105,7 +4106,11 @@ function applyChatCollectionPayload(
     selectExistingConversationId(text(payload.selected_conversation_id) || fallbackCandidateId) ||
     firstConversationId();
   const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
-  if (selectedMessagesLoaded) {
+  if (
+    selectedMessagesLoaded &&
+    (previousSelectedConversationId !== text(selectedChatConversationId) ||
+      !chatMessageListElement(selectedChatConversationId))
+  ) {
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   if (activeTeamView === "chat") {
@@ -4141,7 +4146,11 @@ function syncStateAgentsFromChat(chatPayload) {
   state = normalizeState({ ...state, revision: chatPayload.revision ?? state.revision, agents });
 }
 
-async function loadConversationDetail(conversationId, requestId = chatRequestId) {
+async function loadConversationDetail(
+  conversationId,
+  requestId = chatRequestId,
+  { preserveScroll = false } = {},
+) {
   const normalizedConversationId = text(conversationId);
   if (!normalizedConversationId) {
     return;
@@ -4162,7 +4171,16 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     if (activeTeamView === "chat" && text(selectedChatConversationId) === normalizedConversationId) {
       markChatConversationRead(normalizedConversationId, { rerender: false });
     }
-    scheduleChatScrollToBottom(normalizedConversationId);
+    const shouldStickToBottom =
+      !preserveScroll || chatIsScrolledNearBottom(normalizedConversationId);
+    const scrollSnapshot = shouldStickToBottom
+      ? null
+      : captureChatScroll(normalizedConversationId);
+    if (shouldStickToBottom) {
+      scheduleChatScrollToBottom(normalizedConversationId);
+    } else if (scrollSnapshot) {
+      scheduleChatScrollPreserve(normalizedConversationId, scrollSnapshot);
+    }
     renderChat();
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -4271,7 +4289,7 @@ function syncChatStreamForActiveView({ refresh = false } = {}) {
   }
   ensureChatStream(selectedChatConversationId);
   if (refresh) {
-    void loadConversationDetail(selectedChatConversationId);
+    void loadConversationDetail(selectedChatConversationId, chatRequestId, { preserveScroll: true });
   }
 }
 
@@ -4313,7 +4331,7 @@ function ensureChatStream(conversationId) {
       return;
     }
     chatStreamErrorRefreshPending = true;
-    void loadConversationDetail(normalizedConversationId).finally(() => {
+    void loadConversationDetail(normalizedConversationId, chatRequestId, { preserveScroll: true }).finally(() => {
       if (chatStream === stream) {
         chatStreamErrorRefreshPending = false;
       }

@@ -2183,7 +2183,24 @@ async function createTeamAddonServer(
       }
     }
   };
-  return { port: address.port, requests, state, timelineRequests, costResponses, chatRequests, emitChatSnapshots };
+  const emitStateSnapshot = (payload) => {
+    const serialized = JSON.stringify(payload);
+    for (const stream of openStateStreams) {
+      stream.response.write(`event: snapshot\ndata: ${serialized}\n\n`);
+    }
+    return openStateStreams.size;
+  };
+  return {
+    port: address.port,
+    requests,
+    state,
+    timelineRequests,
+    costResponses,
+    chatRequests,
+    emitChatSnapshots,
+    emitStateSnapshot,
+    stateStreamCount: () => openStateStreams.size,
+  };
 }
 
 function materializationDuplicateError(state, payload, template) {
@@ -7031,6 +7048,55 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
       ),
     "expected selecting a late-list chat agent to create or focus that chat",
   );
+});
+
+test("team add-on Chat preserves a reader position across a state-stream refresh", async (t) => {
+  const { port, state, chatRequests, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const messageList = page.locator(".chat-message-list");
+  await messageList.getByText("Message 119").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before forcing a refresh",
+  );
+
+  const before = await messageList.evaluate((element) => {
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = Math.max(128, Math.floor(maxTop / 2));
+    element.dispatchEvent(new Event("scroll"));
+    return { maxTop, scrollTop: element.scrollTop };
+  });
+  assert.ok(before.maxTop > before.scrollTop, "expected a non-bottom reader position");
+
+  const requestsBeforeRefresh = chatRequests.length;
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the test state revision to reach the Team client",
+  );
+  await waitForCondition(
+    () => chatRequests.length > requestsBeforeRefresh,
+    "expected the state-stream revision to refresh the active Chat view",
+  );
+  await waitForRevision(page, state.revision);
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+
+  const after = await messageList.evaluate((element) => ({
+    maxTop: Math.max(0, element.scrollHeight - element.clientHeight),
+    scrollTop: element.scrollTop,
+  }));
+  assert.ok(
+    Math.abs(after.scrollTop - before.scrollTop) <= 4,
+    `expected state refresh to preserve reading position, got ${after.scrollTop}, expected ${before.scrollTop}`,
+  );
+  assert.ok(after.maxTop - after.scrollTop > 96, "expected reader to remain away from the newest message");
 });
 
 test("team add-on Chat send keeps the selected message list anchored during send refreshes", async (t) => {

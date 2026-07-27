@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27 - Team Chat Reader Scroll Preservation
+
+- Preserved an operator's reading position through Team state-stream and automatic chat-refresh
+  updates, while keeping intentional thread changes, sends, and already-bottom views anchored to
+  the newest message.
+
 ## 2026-07-27 - Managed Git Refresh Authentication and Diagnostics
 
 - Rewrote PAT-backed Azure DevOps SSH refresh sources to their canonical HTTPS URLs at Git
