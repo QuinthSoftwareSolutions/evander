@@ -175,6 +175,70 @@ def test_git_environment_drops_inherited_askpass_credentials(
     assert "EVANDER_GIT_PASSWORD" not in worktree_env
 
 
+def test_git_environment_rewrites_azure_ssh_refresh_to_https_when_pat_is_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pat_env = "TEST_MANAGED_GIT_AZURE_PAT"
+    monkeypatch.setenv(pat_env, "test-secret")
+    service = ManagedGitAdminService(
+        SimpleNamespace(
+            runtime_dir=tmp_path / "runtime",
+            azure_devops_pat_env=pat_env,
+        ),
+        SimpleNamespace(),
+        tmp_path,
+    )
+    refresh_source = "ssh://git@ssh.dev.azure.com/v3/example/Example%20Project/ExampleRepo"
+    canonical_url = "https://dev.azure.com/example/Example%20Project/_git/ExampleRepo"
+
+    git_env = service._git_environment(
+        {
+            "provider": "azure_devops",
+            "directory_path": "root",
+            "refresh_source": refresh_source,
+            "canonical_repository_url": canonical_url,
+        }
+    )
+    git_config = {
+        git_env[f"GIT_CONFIG_KEY_{index}"]: git_env[f"GIT_CONFIG_VALUE_{index}"]
+        for index in range(int(git_env["GIT_CONFIG_COUNT"]))
+    }
+
+    assert git_env["EVANDER_GIT_USERNAME"] == "evander"
+    assert git_env["EVANDER_GIT_PASSWORD"] == "test-secret"
+    assert git_config[f"url.{canonical_url}.insteadOf"] == refresh_source
+
+
+def test_git_environment_preserves_azure_ssh_refresh_without_pat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pat_env = "TEST_MANAGED_GIT_MISSING_AZURE_PAT"
+    monkeypatch.delenv(pat_env, raising=False)
+    service = ManagedGitAdminService(
+        SimpleNamespace(
+            runtime_dir=tmp_path / "runtime",
+            azure_devops_pat_env=pat_env,
+        ),
+        SimpleNamespace(),
+        tmp_path,
+    )
+
+    git_env = service._git_environment(
+        {
+            "provider": "azure_devops",
+            "directory_path": "root",
+            "refresh_source": "ssh://git@ssh.dev.azure.com/v3/example/project/repo",
+            "canonical_repository_url": "https://dev.azure.com/example/project/_git/repo",
+        }
+    )
+    git_config_keys = {
+        git_env[f"GIT_CONFIG_KEY_{index}"] for index in range(int(git_env["GIT_CONFIG_COUNT"]))
+    }
+
+    assert "EVANDER_GIT_PASSWORD" not in git_env
+    assert not any(key.startswith("url.") for key in git_config_keys)
+
+
 def test_git_environment_fails_closed_when_scoped_config_resolution_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

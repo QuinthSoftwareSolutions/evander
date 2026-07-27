@@ -6371,12 +6371,22 @@ class ManagedGitAdminService:
             env["EVANDER_GIT_USERNAME"] = username
         if password:
             env["EVANDER_GIT_PASSWORD"] = password
+        git_config = {
+            "credential.helper": "",
+            "core.askPass": str(self.project_dir / "scripts" / "managed_git_askpass.sh"),
+        }
+        refresh_source = str(record.get("refresh_source") or "").strip()
+        canonical_url = str(record.get("canonical_repository_url") or "").strip()
+        if (
+            str(record.get("provider") or "").casefold() == "azure_devops"
+            and password
+            and urlsplit(refresh_source).scheme.casefold() == "ssh"
+            and urlsplit(canonical_url).scheme.casefold() == "https"
+        ):
+            git_config[f"url.{canonical_url}.insteadOf"] = refresh_source
         return self._with_git_config_environment(
             env,
-            {
-                "credential.helper": "",
-                "core.askPass": str(self.project_dir / "scripts" / "managed_git_askpass.sh"),
-            },
+            git_config,
         )
 
     def _resolved_config_for_record(self, record: Mapping[str, Any]) -> Any:

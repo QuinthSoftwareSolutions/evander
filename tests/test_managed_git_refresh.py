@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -100,25 +101,74 @@ def test_refresh_client_rejects_non_managed_or_non_exact_paths(
         )
 
 
-def test_refresh_client_fails_closed_on_broker_error(tmp_path: Path) -> None:
+def test_refresh_client_fails_closed_on_broker_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     broker = _FakeBroker(error=RuntimeError("secret-bearing upstream failure"))
     socket_path, server, thread = _running_server(tmp_path, broker)
     git_root = tmp_path / "managed-git"
 
     try:
-        with pytest.raises(RuntimeError, match="upstream refresh failed.*RuntimeError") as error:
-            refresh.request_refresh(
-                socket_path=socket_path,
-                git_root=git_root,
-                repository_path=git_root / "mr_0123456789abcdef0123.git",
-                timeout_seconds=1,
-            )
+        with caplog.at_level(logging.WARNING, logger="evander.managed_git_refresh"):
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    "upstream refresh failed.*code=upstream_refresh_failed.*category=RuntimeError"
+                ),
+            ) as error:
+                refresh.request_refresh(
+                    socket_path=socket_path,
+                    git_root=git_root,
+                    repository_path=git_root / "mr_0123456789abcdef0123.git",
+                    timeout_seconds=1,
+                )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
 
     assert "secret-bearing" not in str(error.value)
+    assert "secret-bearing" not in caplog.text
+    assert "code=upstream_refresh_failed" in caplog.text
+
+
+def test_refresh_client_reports_sanitized_authentication_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    broker = _FakeBroker(
+        error=RuntimeError(
+            "https://user:super-secret@example.invalid: Permission denied (publickey)"
+        )
+    )
+    socket_path, server, thread = _running_server(tmp_path, broker)
+    git_root = tmp_path / "managed-git"
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="evander.managed_git_refresh"):
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    "upstream authentication failed"
+                    ".*code=upstream_authentication_failed"
+                    ".*category=RuntimeError"
+                ),
+            ) as error:
+                refresh.request_refresh(
+                    socket_path=socket_path,
+                    git_root=git_root,
+                    repository_path=git_root / "mr_0123456789abcdef0123.git",
+                    timeout_seconds=1,
+                )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert "super-secret" not in str(error.value)
+    assert "super-secret" not in caplog.text
+    assert "code=upstream_authentication_failed" in caplog.text
 
 
 def test_broker_delegates_to_managed_git_service(

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-27 - Managed Git Refresh Authentication and Diagnostics
+
+- Rewrote PAT-backed Azure DevOps SSH refresh sources to their canonical HTTPS URLs at Git
+  invocation time, allowing the systemd refresh broker to use its configured non-interactive PAT
+  without persisting credentials or changing registered repository identity.
+- Preserved fail-closed stale-ref behavior while returning and logging stable, sanitized refresh
+  failure codes and operator-readable categories instead of reducing every upstream failure to a
+  generic `RuntimeError`.
+
 ## 2026-07-27 - Team Task Cancellation and Operator Chat Authority
 
 - Added a dedicated audited task-cancellation dialog with a required reason, optional same-project
