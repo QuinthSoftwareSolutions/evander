@@ -114,6 +114,61 @@ Moving tags such as
 `ubuntu:24.04` require a force rebuild when you want a base-image refresh, because the Dockerfile
 text can stay the same while the upstream image changes.
 
+### Optional Godot runner images
+
+Three additive images provide progressively broader Godot capabilities without enlarging the
+default runner:
+
+- `evander-runner-godot:4.7.1` adds the Godot 4.7.1 Linux editor/runtime and matching export
+  templates for GDScript projects, headless imports, tests, and exports.
+- `evander-runner-godot-native:4.7.1` extends that image with C/C++ compilation, Clang, CMake,
+  Ninja, pkg-config, and SCons for GDExtension and engine/module source work.
+- `evander-runner-godot-render:4.7.1` extends the standard Godot image with Xvfb, Mesa
+  software-rendering libraries, and `godot-render` for tests that need a real display and rendered
+  pixels rather than Godot's dummy headless renderer.
+
+The builder is host-seeded: provide the official Linux x86_64 Godot executable and its matching
+export-template directory or `.tpz` archive, then run:
+
+```bash
+HOST_GODOT_BINARY_PATH=/path/to/Godot_v4.7.1-stable_linux.x86_64 \
+HOST_GODOT_EXPORT_TEMPLATES_PATH=/path/to/Godot_v4.7.1-stable_export_templates.tpz \
+./scripts/build_evander_godot_runner_images.sh
+```
+
+Use `--variant godot`, `--variant godot-native`, or `--variant godot-render` to build one
+capability family. The native and render variants always rebuild or reuse the standard Godot
+parent locally. The standard image's `godot` wrapper links the read-only templates into the
+session's persistent home on first use. The render image adds a `godot-render` wrapper that starts
+Xvfb and defaults to the X11 display driver, dummy audio, Mesa's `llvmpipe`, and Godot's
+`gl_compatibility` renderer.
+
+These images are manual opt-ins. The script creates local Docker images only and does not alter
+`container_worker_images`, `evander_runner_image_archives`, or
+`evander_worker_preload_images`. It also does not create archives by default. Therefore the
+checked-in Ansible deployment and its documented Azure pipeline command list do not build, copy,
+load, pre-pull, or select any Godot image. An operator who later chooses to deploy them must take
+both explicit steps:
+
+1. Set `SAVE_GODOT_RUNNER_ARCHIVES=1` and arrange manual transfer or add an operator-owned archive
+   entry.
+2. Add only the approved aliases to the operator-owned `container_worker_images` configuration.
+
+For example, a later opt-in catalog would map the short names discussed here to their exact local
+tags:
+
+```yaml
+container_worker_images:
+  godot: "evander-runner-godot:4.7.1"
+  godot-native: "evander-runner-godot-native:4.7.1"
+  godot-render: "evander-runner-godot-render:4.7.1"
+```
+
+That example is documentation only; none of those entries is present in the checked-in defaults.
+Optional tarballs are written under ignored `dist/optional/` and are not consumed by the default
+worker playbook. Operator-owned pipeline overlays live outside this product repository and must
+preserve the same exclusion if automatic Godot deployment is not wanted.
+
 The worker playbook copies each configured local runner image archive to the worker VM, runs
 `docker load`, verifies every configured image tag exists, installs Docker, deploys the repo
 package, renders `config/worker-daemon.env`, installs `evander-worker-daemon.service`,

@@ -46,6 +46,13 @@
   name-first filters, snapshot-only update descriptions, and deduplicated copyable identifiers
   without claiming audit-log evidence.
 
+## 2026-07-27 - Optional Godot Runner Images
+
+- Added host-seeded Godot, Godot native-development, and software-rendering container-runner
+  images with matching export templates and explicit local-only build controls.
+- Kept every Godot image outside the default Ansible archive and preload allowlists and the
+  documented deployment pipeline, with regression coverage for that opt-in boundary.
+
 ## 2026-07-27 - Team Review Profile Readability
 
 - Reworked review-profile cards around display names and clear Purpose, Reviewers, Required
