@@ -6,6 +6,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+from ..models import ACTIVE_TEAM_CASE_STATUS_VALUES
+
 
 TEXT_LIMIT = 240
 TITLE_LIMIT = 160
@@ -1181,7 +1183,7 @@ def _current_case_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
     current: list[Mapping[str, Any]] = []
     skipped = 0
     for row in rows:
-        if _optional_text(row.get("status")) == "closed":
+        if _optional_text(row.get("status")) not in ACTIVE_TEAM_CASE_STATUS_VALUES:
             skipped += 1
             continue
         current.append(row)

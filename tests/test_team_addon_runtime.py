@@ -113,7 +113,11 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
-from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
+from evander_team_addon.services.domain.wake import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    _case_payloads_for_agent,
+    _case_payloads_for_team,
+)
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
@@ -1197,6 +1201,53 @@ def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> Non
     assert task_payload["child_task_ids"] == []
     assert task_payload["blocked_by_task_ids"] == []
     assert task_payload["subtask_counts"]["total"] == 0
+
+
+def test_wake_case_payloads_include_only_active_case_statuses(tmp_path: Path) -> None:
+    state = _seed_team(tmp_path).read()
+    for status in TeamCaseStatus:
+        state.cases[f"case-{status.value}"] = TeamCase(
+            id=f"case-{status.value}",
+            team_id="team",
+            project_id="project",
+            title=f"{status.value} case",
+            status=status,
+            owner_agent_id="backend",
+        )
+
+    expected_case_ids = {
+        "case-open",
+        "case-triage",
+        "case-in_progress",
+        "case-waiting",
+    }
+
+    assert {case["id"] for case in _case_payloads_for_agent(state, "backend")} == expected_case_ids
+    assert {case["id"] for case in _case_payloads_for_team(state, "team")} == expected_case_ids
+
+
+def test_compact_wake_context_omits_resolved_and_closed_cases() -> None:
+    context = build_compact_wake_context(
+        {
+            "agent": {"id": "backend"},
+            "cases": [
+                {
+                    "id": f"case-{status.value}",
+                    "status": status.value,
+                    "title": f"{status.value} case",
+                }
+                for status in TeamCaseStatus
+            ],
+        }
+    )
+
+    assert {case["id"] for case in context["cases"]} == {
+        "case-open",
+        "case-triage",
+        "case-in_progress",
+        "case-waiting",
+    }
+    assert context["omitted_counts"]["cases_non_current"] == 2
 
 
 def test_latest_failed_action_feedback_is_leased_once(tmp_path: Path) -> None:

@@ -81,7 +81,7 @@ The add-on UI currently has these top-level views:
 | **Activity** | Redacted dispatch/tool success and failure history, filterable by Team, agent, dispatch, status, and tool. |
 | **Governance** | Cross-Team groups, agendas, cost warnings, and directives. |
 | **Planning** | Planning-oriented summaries of goals and work. |
-| **Timeline** | A derived chronological rendering of current Team records. |
+| **Activity timeline** | A derived chronological rendering of current Team records. |
 | **Org chart** | Reporting hierarchy and operational details per agent. |
 
 There is no top-level **Roles** view. Roles are maintained inside **Teams** and setup/edit forms. Reviews and releases similarly live inside **Delivery**, not separate top-level tabs.

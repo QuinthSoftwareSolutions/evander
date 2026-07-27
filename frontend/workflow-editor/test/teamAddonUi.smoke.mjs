@@ -56,6 +56,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
+  assert.match(markup, />\s*Activity timeline\s*</);
+  assert.match(markup, /reconstructed from records still present in the current Team/);
+  assert.match(markup, /not a compliance-grade audit log/);
   assert.match(markup, /data-team-view="mail"/);
   assert.match(markup, /id="team-mail-page"/);
   assert.match(script, /createTeamMailController/);
@@ -87,6 +90,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-git-import-button/);
   assert.match(script, /data-review-profile-criterion-add/);
   assert.match(script, /reviewProfileCriteriaFromForm/);
+  assert.match(script, /data-human-review-checklist-editor/);
+  assert.match(script, /data-human-review-checklist-move/);
+  assert.doesNotMatch(script, /parseHumanReviewChecklist/);
   assert.match(script, /rolePermissionTooltips/);
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
   assert.match(script, /data-release-gate-retry/);
@@ -98,6 +104,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.project-record-section/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.criteria-editor-row/);
+  assert.match(stylesheet, /\.human-review-checklist-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
@@ -192,6 +199,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /data-governance-create-toggle/);
   assert.match(markup, /show-handled-governance-agenda-toggle/);
   assert.match(markup, /id="governance-create-panel"[\s\S]*id="create-governance-group-form"/);
+  assert.match(markup, /data-governance-create-goals/);
+  assert.doesNotMatch(markup, /name="goals"/);
   assert.doesNotMatch(markup, /<summary>Create governance group<\/summary>/);
   assert.match(script, /showHandledGovernanceAgenda/);
   assert.match(script, /bindGovernanceAgendaVisibilityToggle/);
@@ -582,7 +591,8 @@ function buildTimelinePayload(state, url) {
     derived: true,
     audit_log: false,
     source: "derived_from_current_team_state",
-    description: "Derived timeline from the current TeamState snapshot.",
+    description:
+      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
     filters: compactFilters(filters),
     timestampless_count: entries.filter((entry) => entry.timestamp === null).length,
     total_count: totalCount,
@@ -2808,7 +2818,7 @@ async function openDeliveryRow(row) {
   await row.waitFor({ state: "visible" });
   const isOpen = await row.evaluate((element) => !(element instanceof HTMLDetailsElement) || element.open);
   if (!isOpen) {
-    await row.locator("summary").click();
+    await row.locator(":scope > summary").click();
   }
   await row.locator(".delivery-row-body").waitFor({ state: "visible" });
 }
@@ -2837,7 +2847,7 @@ test("team add-on remembers the selected top-level view across refresh", async (
   const { port } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
-  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   assert.equal(
     await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), teamViewStorageKey),
@@ -3124,22 +3134,22 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
   assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 10);
   assert.equal(
-    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
-    "Visible deliverable 12",
+    await deliverablesSection.locator(".deliverable-list .record-item").first().getAttribute("data-deliverable-id"),
+    "deliverable-12",
   );
   assert.equal(await deliverablesSection.getByText("Rejected deliverable").count(), 0);
 
   await deliverablesSection.getByRole("button", { name: "Next" }).click();
   assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 2);
   assert.equal(
-    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
-    "Visible deliverable 2",
+    await deliverablesSection.locator(".deliverable-list .record-item").first().getAttribute("data-deliverable-id"),
+    "deliverable-02",
   );
 
   await deliverablesSection.getByRole("button", { name: "Show rejected" }).click();
   assert.equal(
-    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
-    "Rejected deliverable",
+    await deliverablesSection.locator(".deliverable-list .record-item").first().getAttribute("data-deliverable-id"),
+    "deliverable-rejected",
   );
 
   await deliverablesSection.locator("summary.project-record-section-summary").click();
@@ -3151,26 +3161,424 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   await releasesSection.locator("summary.project-record-section-summary").click();
   assert.equal(await releasesSection.locator(".release-list .record-item").count(), 10);
   assert.equal(
-    await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
+    await releasesSection.locator(".release-list .record-item").first().getAttribute("data-release-id"),
     "release-12",
   );
   assert.equal(await releasesSection.getByText("release-rejected").count(), 0);
 
   await releasesSection.getByRole("button", { name: "Show rejected" }).click();
   assert.equal(
-    await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
+    await releasesSection.locator(".release-list .record-item").first().getAttribute("data-release-id"),
     "release-rejected",
   );
 
-  const releaseCard = releasesSection.locator(".record-item", {
-    hasText: "release-12",
-  });
+  const releaseCard = releasesSection.locator('[data-release-id="release-12"]');
   await releaseCard.locator("summary.compact-record-summary").click();
   await releaseCard.getByRole("button", { name: "Open release detail" }).click();
   await releaseCard
     .getByRole("button", { name: "Close release detail" })
     .waitFor({ state: "visible" });
   await releaseCard.locator(".release-review-detail").waitFor({ state: "visible" });
+});
+
+test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
+  const initialState = seededOrgChartState();
+  const deliverableId = "deliverable-rich-internal-42";
+  const releaseId = "release-rich-internal-84";
+  const longSummary = [
+    "Implemented the bounded operator workflow with clearer review checkpoints.",
+    "",
+    "The second paragraph records verification, rollout notes, and supporting context without becoming the card title. ".repeat(
+      4,
+    ),
+  ].join("\n");
+
+  initialState.tasks.task_open.deliverable_ids = [deliverableId];
+  initialState.deliverables = {
+    [deliverableId]: {
+      id: deliverableId,
+      task_id: "task_open",
+      producer_agent_id: "backend",
+      artifact_refs: ["artifact-space:delivery/rich-result"],
+      summary: longSummary,
+      state: "accepted",
+      review_request_ids: ["review-rich-1"],
+      git_refs: {
+        branch_context_id: "branch-context-rich-1",
+        agent_branch: "agents/backend/rich-result",
+        feature_branch: "feature/rich-result",
+        commit_sha: "abc123rich",
+        promotion_record_ids: ["promotion-rich-1"],
+      },
+      created_at: "2026-06-11T09:15:00Z",
+    },
+  };
+  initialState.review_profiles = {
+    "profile-rich-1": {
+      id: "profile-rich-1",
+      project_id: "project",
+      name: "Release readiness",
+      description: "Confirms the bounded delivery is ready.",
+      applicable_role_ids: ["project__project-lead"],
+      criteria: [],
+      archived: false,
+    },
+  };
+  initialState.review_requests = {
+    "review-rich-1": {
+      id: "review-rich-1",
+      deliverable_id: deliverableId,
+      reviewer_agent_id: "lead",
+      review_profile_id: "profile-rich-1",
+      release_package_id: releaseId,
+      state: "accepted",
+      findings: ["Ready to publish."],
+      created_at: "2026-06-11T09:20:00Z",
+      decision_at: "2026-06-11T09:25:00Z",
+    },
+  };
+  initialState.release_packages = {
+    [releaseId]: {
+      id: releaseId,
+      project_id: "project",
+      summary: "Publish the bounded operator workflow with verified review checkpoints.",
+      deliverable_ids: [deliverableId],
+      state: "accepted",
+      policy_version: 2,
+      candidate_commit_sha: "abc123rich",
+      published_commit_sha: "abc123rich",
+      review_request_ids: ["review-rich-1"],
+      verification_run_ids: [
+        "verification-rich-failed",
+        "verification-rich-1",
+      ],
+      git_promotion_record_ids: ["promotion-rich-1"],
+      manifest: {
+        candidate_commit_sha: "abc123rich",
+        deliverables: [{ deliverable_id: deliverableId }],
+        verification_commands: [{ name: "focused-smoke" }],
+        review_requirements: [{ reviewer_role_id: "project__project-lead" }],
+        human_review_requirement: {
+          reviewer_group_ids: ["release-approvers"],
+        },
+      },
+      verification_runs: [
+        {
+          id: "verification-rich-failed",
+          state: "failed",
+          candidate_commit_sha: "abc123rich",
+          superseded_by_verification_run_id: "verification-rich-1",
+        },
+        {
+          id: "verification-rich-1",
+          state: "passed",
+          candidate_commit_sha: "abc123rich",
+          supersedes_verification_run_id: "verification-rich-failed",
+        },
+      ],
+      human_review: {
+        state: "approved",
+        request_id: "human-review-rich-1",
+      },
+      created_at: "2026-06-11T09:30:00Z",
+      updated_at: "2026-06-11T09:45:00Z",
+      published_at: "2026-06-11T09:45:00Z",
+    },
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, {
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const panel = page.locator("#team-projects-page");
+  const deliverablesSection = panel
+    .locator('details.project-record-section[data-project-section="deliverables"]')
+    .first();
+  await deliverablesSection.locator("summary.project-record-section-summary").click();
+
+  const deliverableCard = deliverablesSection.locator(
+    `[data-deliverable-id="${deliverableId}"]`,
+  );
+  await deliverableCard.getByText("Build API", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await deliverableCard.getByText(/^Backend Worker ·/).waitFor({ state: "visible" });
+  assert.equal(
+    await deliverableCard
+      .locator('summary.deliverable-card-summary time[datetime="2026-06-11T09:15:00Z"]')
+      .count(),
+    1,
+  );
+  const preview = await deliverableCard.locator(".deliverable-summary-preview").innerText();
+  assert.match(
+    preview,
+    /^Implemented the bounded operator workflow with clearer review checkpoints\./,
+  );
+  assert.equal(preview.includes("\n"), false);
+  assert.ok(preview.length <= 220, `expected a bounded summary preview, got ${preview.length} characters`);
+
+  await deliverableCard.locator("summary.deliverable-card-summary").click();
+  for (const heading of [
+    "Summary / outcome",
+    "Task and producer",
+    "Evidence and artifacts",
+    "Reviews and decision",
+    "Lineage / technical details",
+  ]) {
+    await deliverableCard.getByRole("heading", { name: heading, exact: true }).waitFor({
+      state: "visible",
+    });
+  }
+  await deliverableCard
+    .getByText("artifact-space:delivery/rich-result", { exact: true })
+    .waitFor({ state: "visible" });
+  const deliverableTechnicalDetails = deliverableCard.locator(
+    ".deliverable-lineage-group > details.technical-details",
+  );
+  assert.equal(
+    await deliverableTechnicalDetails.getByText(deliverableId, { exact: true }).isVisible(),
+    false,
+  );
+  await deliverableTechnicalDetails.locator("summary").click();
+  await deliverableTechnicalDetails.getByText(deliverableId, { exact: true }).waitFor({
+    state: "visible",
+  });
+  const deliverableCopyButton = deliverableTechnicalDetails.getByRole("button", {
+    name: `Copy ID: ${deliverableId}`,
+  });
+  await deliverableCopyButton.click();
+  await deliverableCopyButton.getByText("Copied", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), deliverableId);
+
+  const releasesSection = panel
+    .locator('details.project-record-section[data-project-section="releases"]')
+    .first();
+  await releasesSection.locator("summary.project-record-section-summary").click();
+  const releaseCard = releasesSection.locator(`[data-release-id="${releaseId}"]`);
+  await releaseCard.getByText("Release: Build API", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await releaseCard.getByText(/Project · 1 included work item/).waitFor({
+    state: "visible",
+  });
+  assert.equal(await releaseCard.getByText(releaseId, { exact: true }).isVisible(), false);
+
+  await releaseCard.locator("summary.release-card-summary").click();
+  const releaseStages = releaseCard.locator(".release-progress > .release-progress-stage");
+  assert.equal(await releaseStages.count(), 5);
+  for (const stage of [
+    "Candidate prepared",
+    "Automated verification",
+    "Agent review",
+    "Human review",
+    "Publication",
+  ]) {
+    await releaseStages.getByText(stage, { exact: true }).waitFor({ state: "visible" });
+  }
+  assert.equal(
+    await releaseCard.locator(
+      ".release-progress > .release-progress-stage.release-progress-complete",
+    ).count(),
+    5,
+  );
+  const verificationStage = releaseStages.filter({
+    hasText: "Automated verification",
+  });
+  assert.match(
+    (await verificationStage.getAttribute("class")) || "",
+    /release-progress-complete/,
+  );
+  await verificationStage.getByText("Checks passed", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await releaseCard
+    .getByRole("heading", { name: "Release notes", exact: true })
+    .waitFor({ state: "visible" });
+  await releaseCard
+    .getByText(
+      "Publish the bounded operator workflow with verified review checkpoints.",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  await releaseCard
+    .getByRole("heading", { name: "Included work", exact: true })
+    .waitFor({ state: "visible" });
+  await releaseCard.locator(".release-included-work").getByText("Build API", { exact: true }).waitFor({
+    state: "visible",
+  });
+
+  const releaseTechnicalDetails = releaseCard.locator("details.technical-details", {
+    hasText: "Release ID",
+  });
+  assert.equal(
+    await releaseTechnicalDetails.getByText(releaseId, { exact: true }).isVisible(),
+    false,
+  );
+  await releaseTechnicalDetails.locator("summary").click();
+  const releaseCopyButton = releaseTechnicalDetails.getByRole("button", {
+    name: `Copy ID: ${releaseId}`,
+  });
+  await releaseCopyButton.click();
+  await releaseCopyButton.getByText("Copied", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), releaseId);
+});
+
+test("team add-on Cases defaults to active work and pages durable case history", async (t) => {
+  const initialState = seededOrgChartState();
+  const activeStatuses = ["open", "triage", "in_progress", "waiting"];
+  initialState.cases = {};
+  activeStatuses.forEach((status, index) => {
+    const suffix = String(index + 1).padStart(2, "0");
+    initialState.cases[`case-active-${suffix}`] = {
+      id: `case-active-${suffix}`,
+      team_id: "team",
+      project_id: "project",
+      title: `Active ${status} case`,
+      description: `Current ${status} work.`,
+      source: "operator",
+      source_ref: `active-${suffix}`,
+      status,
+      priority: "normal",
+      owner_agent_id: "backend",
+      task_ids: ["task_open"],
+      tags: ["active"],
+      created_at: `2026-06-10T0${index}:00:00Z`,
+      updated_at: `2026-06-10T0${index}:30:00Z`,
+    };
+  });
+  for (let index = 1; index <= 21; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const durable = index === 21;
+    initialState.cases[`case-resolved-${suffix}`] = {
+      id: `case-resolved-${suffix}`,
+      team_id: "team",
+      project_id: "project",
+      title: durable ? "Durable record sentinel" : `Resolved archive ${suffix}`,
+      description: durable
+        ? "durable-record-sentinel keeps the linked terminal record searchable"
+        : `Resolved historical record ${suffix}.`,
+      source: "post_release_feedback",
+      source_ref: `release-${suffix}`,
+      status: "resolved",
+      priority: "normal",
+      owner_agent_id: "backend",
+      task_ids: durable ? ["task_open"] : [],
+      tags: durable ? ["durable-record-sentinel"] : ["history"],
+      created_at: `2026-06-09T${suffix}:00:00Z`,
+      updated_at: `2026-06-11T${suffix}:00:00Z`,
+    };
+  }
+  initialState.cases["case-closed-01"] = {
+    id: "case-closed-01",
+    team_id: "team",
+    project_id: "project",
+    title: "Closed historical case",
+    description: "Retained closed history.",
+    source: "operator",
+    source_ref: "closed-01",
+    status: "closed",
+    priority: "normal",
+    owner_agent_id: "backend",
+    task_ids: ["task_waiting"],
+    tags: ["history"],
+    created_at: "2026-06-08T00:00:00Z",
+    updated_at: "2026-06-08T01:00:00Z",
+  };
+
+  const { port, state } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await page.getByRole("tab", { name: "Cases" }).click();
+  const casesPage = page.locator("#team-cases-page");
+  await casesPage.waitFor({ state: "visible" });
+  const caseList = casesPage.locator("[data-case-page-list] .task-item");
+  await casesPage.locator('[data-case-id="case-active-01"]').waitFor({ state: "visible" });
+  assert.equal(await caseList.count(), 4);
+  await casesPage
+    .locator(".case-history-summary")
+    .getByText("4 active", { exact: true })
+    .waitFor({ state: "visible" });
+  await casesPage.getByText("21 resolved", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  await casesPage.getByText("1 closed", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  await casesPage
+    .locator(".case-team-counts")
+    .getByText("4 active", { exact: true })
+    .waitFor({ state: "visible" });
+  assert.equal(await casesPage.locator('[data-case-id^="case-resolved-"]').count(), 0);
+  assert.equal(await casesPage.locator('[data-case-id="case-closed-01"]').count(), 0);
+
+  const statusFilter = casesPage.locator("[data-case-status-filter]");
+  await statusFilter.selectOption("all");
+  assert.equal(await caseList.count(), 20);
+  await casesPage
+    .getByRole("button", { name: "Hide case history" })
+    .waitFor({ state: "visible" });
+  assert.ok(
+    (await casesPage.locator('[data-case-id^="case-resolved-"]').count()) > 0,
+  );
+  await casesPage.getByRole("button", { name: "Hide case history" }).click();
+  assert.equal(await caseList.count(), 4);
+
+  await casesPage.getByRole("button", { name: "Show case history (22)" }).click();
+  assert.equal(await caseList.count(), 20);
+  await statusFilter.selectOption("active");
+  assert.equal(await caseList.count(), 4);
+  await casesPage
+    .getByRole("button", { name: "Show case history (22)" })
+    .waitFor({ state: "visible" });
+  const activeSearchForm = casesPage.locator("[data-case-search-form]");
+  await activeSearchForm.locator('[name="query"]').fill("Active");
+  await activeSearchForm.getByRole("button", { name: "Search" }).click();
+  await casesPage.getByRole("button", { name: "Clear filters" }).click();
+  assert.equal(await statusFilter.inputValue(), "active");
+  await statusFilter.selectOption("all");
+  assert.equal(await caseList.count(), 20);
+  await casesPage.getByText(/Showing 1.20 of 26/).waitFor({ state: "visible" });
+  await casesPage.getByRole("button", { name: "Next" }).click();
+  assert.equal(await caseList.count(), 6);
+  await casesPage.locator('[data-case-id="case-closed-01"]').waitFor({ state: "visible" });
+
+  await statusFilter.selectOption("resolved");
+  assert.equal(await caseList.count(), 20);
+  await casesPage.getByText(/Showing 1.20 of 21/).waitFor({ state: "visible" });
+  await casesPage.getByRole("button", { name: "Next" }).click();
+  assert.equal(await caseList.count(), 1);
+
+  const searchForm = casesPage.locator("[data-case-search-form]");
+  await searchForm.locator('[name="query"]').fill("durable-record-sentinel");
+  await searchForm.getByRole("button", { name: "Search" }).click();
+  assert.equal(await caseList.count(), 1);
+  const durableRecord = casesPage.locator('[data-case-id="case-resolved-21"]');
+  await durableRecord.getByText("Durable record sentinel", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await durableRecord.getByText("Tasks Build API (task_open, In Progress)", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(state.cases["case-resolved-21"].status, "resolved");
+  assert.deepEqual(state.cases["case-resolved-21"].task_ids, ["task_open"]);
+
+  await casesPage.getByRole("button", { name: "Clear filters" }).click();
+  await statusFilter.selectOption("closed");
+  assert.equal(await caseList.count(), 1);
+  await casesPage.locator('[data-case-id="case-closed-01"]').waitFor({ state: "visible" });
+
+  await casesPage.getByRole("button", { name: "Hide case history" }).click();
+  assert.equal(await caseList.count(), 4);
+  assert.equal(await casesPage.locator('[data-case-id^="case-resolved-"]').count(), 0);
+  assert.equal(await casesPage.locator('[data-case-id="case-closed-01"]').count(), 0);
 });
 
 test("team add-on UI retries only a typed retryable release gate with an audited reason", async (t) => {
@@ -3218,12 +3626,12 @@ test("team add-on UI retries only a typed retryable release gate with an audited
     '#team-projects-page details.project-record-section[data-project-section="releases"]',
   ).first();
   await releases.locator("summary.project-record-section-summary").click();
-  const transient = releases.locator(".record-item", { hasText: "release-transient" });
+  const transient = releases.locator('li.release-card[data-release-id="release-transient"]');
   await transient.locator("summary.compact-record-summary").click();
   const retry = transient.getByRole("button", { name: "Retry verification gate" });
   await retry.waitFor({ state: "visible" });
   assert.equal(
-    await releases.locator(".record-item", { hasText: "release-code-failure" })
+    await releases.locator('li.release-card[data-release-id="release-code-failure"]')
       .getByRole("button", { name: /Retry .* gate/ }).count(),
     0,
   );
@@ -3806,6 +4214,89 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
+test("team add-on keeps unavailable stand-down revocation visible with an explanation", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.agents.lead.display_name = "Project Lead";
+  const standDown = {
+    id: "stand-down-backend",
+    agent_id: "backend",
+    source: "superior",
+    reason: "Wait for upstream work",
+    set_by: "lead",
+    set_at: "2026-06-11T08:50:00Z",
+    cleared_by: null,
+    cleared_at: null,
+    active: true,
+    inherited: false,
+    root_agent_id: "backend",
+  };
+  initialState.stand_downs = { [standDown.id]: standDown };
+  initialState.agents.backend.stand_down_active = true;
+  initialState.agents.backend.effective_stand_downs = [standDown];
+  initialState.agents.worker.stand_down_active = true;
+  initialState.agents.worker.effective_stand_downs = [
+    {
+      ...standDown,
+      inherited: true,
+      root_agent_id: "backend",
+    },
+  ];
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="backend"]').click();
+
+  const detail = page.locator("#team-people-page .agent-detail", { hasText: "Backend Worker" });
+  await detail.waitFor({ state: "visible" });
+  const revokeButton = detail.getByRole("button", { name: "Revoke stand-down" });
+  await revokeButton.waitFor({ state: "visible" });
+  await revokeButton.hover();
+  assert.equal(await revokeButton.isDisabled(), true);
+  assert.equal(await revokeButton.getAttribute("aria-disabled"), "true");
+  assert.equal(
+    await revokeButton.getAttribute("title"),
+    "Only Project Lead can revoke this superior-issued stand-down.",
+  );
+
+  const revokeRequestCountBeforeClick = requests.filter(
+    (request) =>
+      request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+  ).length;
+  await revokeButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "POST"
+        && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+    ).length,
+    revokeRequestCountBeforeClick,
+  );
+
+  await teamGroup.locator('[data-select-agent-id="worker"]').click();
+  const inheritedDetail = page.locator("#team-people-page .agent-detail", { hasText: "worker" });
+  await inheritedDetail.waitFor({ state: "visible" });
+  const inheritedRevokeButton = inheritedDetail.getByRole("button", { name: "Revoke stand-down" });
+  await inheritedRevokeButton.waitFor({ state: "visible" });
+  await inheritedRevokeButton.hover();
+  assert.equal(await inheritedRevokeButton.isDisabled(), true);
+  assert.equal(
+    await inheritedRevokeButton.getAttribute("title"),
+    "This stand-down is inherited from Backend Worker. Only Project Lead can revoke it.",
+  );
+});
+
 test("team add-on project catalog uses growing cards with concise project metadata", async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";
@@ -3976,9 +4467,9 @@ test("team add-on review profiles and task descendants prioritize display names"
   await page.getByRole("tab", { name: "Task board" }).click();
   await page.locator("#task-board-team-select").selectOption("team");
   await page.locator("#task-board-project-select").selectOption("project");
-  const rootTaskCard = page.locator(".task-board-card").filter({
-    has: page.locator(".task-board-card-title-row strong", { hasText: /^Build API$/ }),
-  });
+  const rootTaskCard = page.locator(
+    '.task-board-card[data-task-board-task-id="task_open"]',
+  );
   await rootTaskCard.waitFor({ state: "visible" });
   await rootTaskCard.getByText("26 unresolved descendants", { exact: true }).waitFor({
     state: "visible",
@@ -4888,34 +5379,86 @@ test("team add-on Governance tab creates governance groups from the top-level bu
   const form = page.locator("#create-governance-group-form");
   await waitForSelectOption(page, '#create-governance-group-form [name="manager_agent_id"]', "alpha-manager");
   await waitForSelectOption(page, '#create-governance-group-form [name="member_team_ids"]', "team-beta");
-  await form.locator('[name="name"]').fill("Platform Oversight");
+  assert.equal(await form.locator("[data-governance-goal-row]").count(), 0);
+  await form.locator('[name="name"]').fill("Goal-free Oversight");
   await form.locator('[name="manager_agent_id"]').selectOption("alpha-manager");
-  await form.locator('[name="member_team_ids"]').selectOption(["team-alpha", "team-beta"]);
-  await form.locator('[name="goals"]').fill("costs | Keep spend within guardrails | pending");
-  await form.locator('[name="max_cost_usd"]').fill("42.50");
+  await form.locator('[name="member_team_ids"]').selectOption(["team-alpha"]);
   await form.getByRole("button", { name: "Create governance group" }).click();
 
   await waitForRevision(page, 5);
+  await page.locator("#governance-create-panel").waitFor({ state: "hidden" });
+  const emptyGoalRequest = requests.find(
+    (entry) =>
+      entry.pathname === "/api/addons/team-addon/governance-groups",
+  );
+  assert.ok(emptyGoalRequest);
+  assert.equal(emptyGoalRequest.payload.expected_revision, 4);
+  assert.deepEqual(emptyGoalRequest.payload.goals, []);
+
+  await page.locator("[data-governance-create-toggle]").click();
+  await page.locator('#governance-create-panel:not([hidden])').waitFor({ state: "visible" });
+  assert.equal(await form.locator("[data-governance-goal-row]").count(), 0);
+  await form.locator('[name="name"]').fill("Platform Oversight");
+  await form.locator('[name="manager_agent_id"]').selectOption("alpha-manager");
+  await form.locator('[name="member_team_ids"]').selectOption(["team-alpha", "team-beta"]);
+  await form.locator('[name="max_cost_usd"]').fill("42.50");
+  await form.getByRole("button", { name: "Add goal" }).click();
+  const goalRow = form.locator("[data-governance-goal-row]");
+  assert.equal(await goalRow.count(), 1);
+  await goalRow.locator('[name="governance_goal_name"]').fill("Cost guardrail");
+  assert.equal(
+    await goalRow.locator('[name="governance_goal_name"]').getAttribute("required"),
+    "",
+  );
+  assert.equal(
+    await goalRow
+      .locator('[name="governance_goal_description"]')
+      .getAttribute("required"),
+    "",
+  );
+  assert.deepEqual(
+    await goalRow
+      .locator('[name="governance_goal_state"] option')
+      .allTextContents(),
+    ["Pending", "In Progress", "Accepted", "Rejected", "Blocked"],
+  );
+  await goalRow
+    .locator('[name="governance_goal_state"]')
+    .selectOption("in_progress");
+  await form.getByRole("button", { name: "Create governance group" }).click();
+  assert.equal(
+    requests.filter(
+      (entry) =>
+        entry.pathname === "/api/addons/team-addon/governance-groups",
+    ).length,
+    1,
+  );
+  await goalRow
+    .locator('[name="governance_goal_description"]')
+    .fill("Keep spend within guardrails");
+  await form.getByRole("button", { name: "Create governance group" }).click();
+
+  await waitForRevision(page, 6);
   await page.locator("#governance-create-panel").waitFor({ state: "hidden" });
   await page.locator(".governance-item", { hasText: "governance-group-platform-oversight" }).waitFor({
     state: "visible",
   });
 
-  const request = requests.find(
+  const request = requests.filter(
     (entry) => entry.pathname === "/api/addons/team-addon/governance-groups",
-  );
+  )[1];
   assert.ok(request);
   assert.equal(request.method, "POST");
-  assert.equal(request.payload.expected_revision, 4);
+  assert.equal(request.payload.expected_revision, 5);
   assert.equal(request.payload.name, "Platform Oversight");
   assert.equal(request.payload.manager_agent_id, "alpha-manager");
   assert.deepEqual(request.payload.member_team_ids, ["team-alpha", "team-beta"]);
   assert.equal(request.payload.max_cost_usd, 42.5);
   assert.deepEqual(request.payload.goals, [
     {
-      id: "costs",
+      name: "Cost guardrail",
       description: "Keep spend within guardrails",
-      state: "pending",
+      state: "in_progress",
     },
   ]);
 });
@@ -4977,6 +5520,279 @@ test("team add-on Governance tab hides handled agenda by default and emphasizes 
   await page.locator("#team-governance-page").getByText("Retired cost review").waitFor({
     state: "visible",
   });
+});
+
+test("team add-on governance editor uses named controls and preserves structured changes across retry", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.agents["beta-manager"].display_name = "Bea Manager";
+  initialState.teams["team-gamma"] = {
+    id: "team-gamma",
+    name: "Gamma Team",
+    manager_agent_id: "beta-manager",
+    operator_communication_target_id: "ops-gamma",
+    project_ids: [],
+    archived: false,
+  };
+  initialState.governance_groups["platform-oversight"].goals = [
+    {
+      id: "delivery-signal",
+      name: "delivery-signal",
+      description: "Keep release evidence current.",
+      state: "in_progress",
+    },
+    {
+      id: "cost-guardrail",
+      name: "Cost guardrail",
+      description: "Keep portfolio spend inside the agreed cap.",
+      state: "pending",
+    },
+  ];
+
+  const { port, requests } = await createTeamAddonServer(t, {
+    conflictOnFirstGovernanceGroupUpdate: true,
+    initialState,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Governance" }).click();
+  const groupCard = page.locator("#team-governance-page .governance-item", {
+    hasText: "Platform Oversight",
+  });
+  await groupCard.getByRole("button", { name: "Edit" }).click();
+
+  const dialog = page.locator("#edit-modal");
+  const form = dialog.locator("#edit-record-form");
+  await dialog.getByRole("heading", { name: "Edit Platform Oversight", exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await dialog.getByRole("heading", { name: "Edit governance group platform-oversight" }).count(),
+    0,
+  );
+
+  const manager = form.locator('[name="manager_agent_id"]');
+  const alphaManagerLabel = await manager.locator('option[value="alpha-manager"]').textContent();
+  const betaManagerLabel = await manager.locator('option[value="beta-manager"]').textContent();
+  assert.equal(alphaManagerLabel?.trim(), "Ada Manager — Manager · alpha-manager");
+  assert.equal(betaManagerLabel?.trim(), "Bea Manager — Manager · beta-manager");
+
+  const technicalDetails = form.locator("details.technical-details");
+  assert.equal(await technicalDetails.getAttribute("open"), null);
+  const groupIdText = form.getByText("platform-oversight", { exact: true });
+  assert.equal(await groupIdText.count(), 1);
+  assert.equal(await groupIdText.isVisible(), false);
+  assert.ok(
+    await groupIdText.evaluate((node) =>
+      Boolean(node.closest("details.technical-details")),
+    ),
+  );
+  await technicalDetails.locator("summary", { hasText: "Technical details" }).click();
+  await groupIdText.waitFor({ state: "visible" });
+  await technicalDetails
+    .getByRole("button", { name: "Copy ID: platform-oversight", exact: true })
+    .waitFor({ state: "visible" });
+  await technicalDetails.locator("summary", { hasText: "Technical details" }).click();
+
+  const teamEditor = form.locator("[data-governance-member-teams-editor]");
+  await teamEditor.getByText("Alpha Team", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  await teamEditor.getByText("Beta Team", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await teamEditor.locator('[data-governance-member-team-id="team-alpha"]').isChecked(),
+    true,
+  );
+  assert.equal(
+    await teamEditor.locator('[data-governance-member-team-id="team-beta"]').isChecked(),
+    true,
+  );
+  await teamEditor.getByRole("button", { name: "Remove Beta Team" }).click();
+  assert.equal(
+    await teamEditor.locator('[data-governance-member-team-id="team-beta"]').isChecked(),
+    false,
+  );
+  assert.equal(
+    await teamEditor
+      .locator("[data-governance-selected-teams]")
+      .getByText("Beta Team", { exact: true })
+      .count(),
+    0,
+  );
+
+  await teamEditor.getByRole("searchbox", { name: "Search teams" }).fill("Gamma");
+  await teamEditor
+    .locator('[data-governance-team-choice]:has([data-governance-member-team-id="team-gamma"])')
+    .waitFor({ state: "visible" });
+  assert.equal(
+    await teamEditor
+      .locator('[data-governance-team-choice]:has([data-governance-member-team-id="team-beta"])')
+      .isVisible(),
+    false,
+  );
+  await teamEditor.locator('[data-governance-member-team-id="team-gamma"]').check();
+  await teamEditor
+    .locator("[data-governance-selected-teams]")
+    .getByText("Gamma Team", { exact: true })
+    .waitFor({ state: "visible" });
+
+  const goalsEditor = form.locator("[data-governance-goals-editor]");
+  const goalRows = goalsEditor.locator("[data-governance-goal-row]");
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_name"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ["delivery-signal", "Cost guardrail"],
+  );
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_description"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    [
+      "Keep release evidence current.",
+      "Keep portfolio spend inside the agreed cap.",
+    ],
+  );
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_state"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ["in_progress", "pending"],
+  );
+
+  await goalsEditor.getByRole("button", { name: "Add goal" }).click();
+  const newGoal = goalRows.last();
+  await newGoal.evaluate((row) => {
+    row.dataset.testGoal = "risk-review";
+  });
+  const riskGoal = goalsEditor.locator('[data-test-goal="risk-review"]');
+  await newGoal.locator('[name="governance_goal_name"]').fill("Risk review");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  assert.equal(
+    requests.filter(
+      (entry) =>
+        entry.method === "PATCH" &&
+        entry.pathname === "/api/addons/team-addon/governance-groups/platform-oversight",
+    ).length,
+    0,
+  );
+
+  await riskGoal
+    .locator('[name="governance_goal_description"]')
+    .fill("Review operational risks before release.");
+  await riskGoal.locator('[name="governance_goal_state"]').selectOption("blocked");
+  await riskGoal.locator('[name="governance_goal_name"]').fill("DELIVERY-SIGNAL");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page
+    .getByText("Fix the highlighted governance goal before saving.", { exact: true })
+    .waitFor({ state: "visible" });
+  assert.equal(
+    requests.filter(
+      (entry) =>
+        entry.method === "PATCH" &&
+        entry.pathname === "/api/addons/team-addon/governance-groups/platform-oversight",
+    ).length,
+    0,
+  );
+
+  await riskGoal.locator('[name="governance_goal_name"]').fill("Risk review");
+  await riskGoal.getByRole("button", { name: "Move goal up" }).click();
+  await riskGoal.getByRole("button", { name: "Move goal up" }).click();
+  const costGoal = goalRows.filter({
+    has: page.locator('[name="governance_goal_name"][value="Cost guardrail"]'),
+  });
+  await costGoal.getByRole("button", { name: "Remove" }).click();
+  const deliveryGoal = goalRows.filter({
+    has: page.locator(
+      '[name="governance_goal_name"][value="delivery-signal"]',
+    ),
+  });
+  await deliveryGoal
+    .locator('[name="governance_goal_state"]')
+    .selectOption("accepted");
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_name"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ["Risk review", "delivery-signal"],
+  );
+
+  await form.locator('[name="name"]').fill("Platform Council");
+  await manager.selectOption("beta-manager");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page
+    .getByText(/Revision conflict\. Draft preserved and revision 5 loaded/)
+    .waitFor({ state: "visible" });
+
+  assert.equal(await form.locator('[name="name"]').inputValue(), "Platform Council");
+  assert.equal(await manager.inputValue(), "beta-manager");
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_name"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ["Risk review", "delivery-signal"],
+  );
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_description"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    [
+      "Review operational risks before release.",
+      "Keep release evidence current.",
+    ],
+  );
+  assert.deepEqual(
+    await goalRows
+      .locator('[name="governance_goal_state"]')
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ["blocked", "accepted"],
+  );
+  assert.equal(
+    await teamEditor.locator('[data-governance-member-team-id="team-alpha"]').isChecked(),
+    true,
+  );
+  assert.equal(
+    await teamEditor.locator('[data-governance-member-team-id="team-beta"]').isChecked(),
+    false,
+  );
+  assert.equal(
+    await teamEditor.locator('[data-governance-member-team-id="team-gamma"]').isChecked(),
+    true,
+  );
+
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await waitForRevision(page, 6);
+  await dialog.waitFor({ state: "hidden" });
+
+  const patches = requests.filter(
+    (entry) =>
+      entry.method === "PATCH" &&
+      entry.pathname === "/api/addons/team-addon/governance-groups/platform-oversight",
+  );
+  assert.equal(patches.length, 2);
+  assert.equal(patches[0].payload.expected_revision, 4);
+  assert.equal(patches[1].payload.expected_revision, 5);
+  for (const patch of patches) {
+    assert.equal(patch.payload.name, "Platform Council");
+    assert.equal(patch.payload.manager_agent_id, "beta-manager");
+    assert.deepEqual(patch.payload.member_team_ids, ["team-alpha", "team-gamma"]);
+    assert.deepEqual(patch.payload.goals, [
+      {
+        name: "Risk review",
+        description: "Review operational risks before release.",
+        state: "blocked",
+      },
+      {
+        id: "delivery-signal",
+        name: "delivery-signal",
+        description: "Keep release evidence current.",
+        state: "accepted",
+      },
+    ]);
+  }
 });
 
 function seededGitState() {
@@ -5484,6 +6300,7 @@ function seededGitState() {
       "release-accepted": {
         id: "release-accepted",
         project_id: "alpha-project",
+        summary: "Ship the accepted delivery after targeted verification.",
         deliverable_ids: ["deliverable-accepted"],
         artifact_refs: ["artifacts/release-accepted.zip"],
         feature_branches: ["team/alpha/features/accepted"],
@@ -7047,6 +7864,577 @@ test("team add-on Mail renders body, error, and generic historical payloads", as
   assert.match(genericBody, /"code": "stale_ref"/);
 });
 
+test("team add-on Workspace deduplicates runtime-backed tasks without crowding attention", async (t) => {
+  const initialState = seededGitState();
+  initialState.tasks = {
+    "task-blocked": {
+      ...initialState.tasks["task-blocked"],
+      title: "A task duplicate that should not render",
+    },
+  };
+  initialState.deliverables = {};
+  initialState.review_requests = {};
+  initialState.inbox = {};
+  initialState.governance_agenda = {};
+  initialState.runtime_operations = {
+    generated_at: "2026-07-27T12:00:00Z",
+    agents: [],
+    attention: [
+      {
+        id: "runtime-task-blocker",
+        kind: "blocked_task",
+        attention_group: "active_obligation",
+        severity: "warning",
+        title: "A runtime blocker for the task",
+        team_id: "team-beta",
+        project_id: "beta-project",
+        agent_id: "beta-lead",
+        task_id: "task-blocked",
+        state: "blocked",
+      },
+      ...Array.from({ length: 5 }, (_, offset) => ({
+        id: `runtime-signal-${offset + 1}`,
+        kind: "runtime_signal",
+        attention_group: "active_obligation",
+        severity: "warning",
+        title: `B runtime signal ${offset + 1}`,
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        agent_id: "alpha-lead",
+        state: "pending",
+      })),
+      {
+        id: "runtime-final-signal",
+        kind: "runtime_signal",
+        attention_group: "active_obligation",
+        severity: "warning",
+        title: "Z final actionable signal",
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        agent_id: "alpha-lead",
+        state: "pending",
+      },
+    ],
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await openWorkspace(page);
+  const workspace = page.locator("#team-workspace-page");
+  const attentionMetric = workspace.locator(".workspace-metric-card", {
+    hasText: "Needs attention",
+  });
+  await attentionMetric.getByText("7", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await workspace.getByText("7 items need attention.", { exact: true }).waitFor({
+    state: "visible",
+  });
+
+  const attentionList = workspace.locator(".workspace-attention-list");
+  assert.equal(await attentionList.locator("li").count(), 7);
+  assert.equal(
+    await attentionList
+      .getByText("A runtime blocker for the task", { exact: true })
+      .count(),
+    1,
+  );
+  assert.equal(
+    await attentionList
+      .getByText("A task duplicate that should not render", { exact: true })
+      .count(),
+    0,
+  );
+  await attentionList
+    .getByText("Z final actionable signal", { exact: true })
+    .waitFor({ state: "visible" });
+});
+
+test("team add-on Operations describes passive mail and failed recovery paths honestly", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  initialState.action_records = {
+    "action-failed": {
+      id: "action-failed",
+      agent_id: "alpha-lead",
+      dispatch_id: "dispatch-failed",
+      action: { type: "deploy", summary: "Deploy candidate" },
+      success: false,
+      error: "Deployment rejected.",
+      created_at: "2026-07-27T08:00:00Z",
+    },
+  };
+  initialState.runtime_operations = {
+    generated_at: "2026-07-27T12:00:00Z",
+    agents: [],
+    attention: [
+      {
+        id: "attention-passive-mail",
+        kind: "pending_inbox_item",
+        attention_group: "retained_history",
+        attention_reason: "pending_without_response_obligation",
+        reconciliation_required: false,
+        severity: "info",
+        title: "Deployment progress note",
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        agent_id: "alpha-lead",
+        inbox_item_id: "inbox-progress-note",
+        state: "pending",
+        detail: "The deployment completed its first verification pass.",
+        occurred_at: "2026-07-27T11:00:00Z",
+      },
+      {
+        id: "attention-action-failed",
+        kind: "failed_action_record",
+        attention_group: "failed_attempt",
+        severity: "warning",
+        title: "Deploy action failed",
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        agent_id: "alpha-lead",
+        action_record_id: "action-failed",
+        state: "failed",
+        error: "Deployment rejected.",
+        occurred_at: "2026-07-27T10:00:00Z",
+      },
+      {
+        id: "attention-promotion-failed",
+        kind: "failed_git_promotion",
+        attention_group: "failed_attempt",
+        severity: "critical",
+        title: "Candidate promotion failed",
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        agent_id: "alpha-lead",
+        promotion_id: "promotion-failed",
+        state: "failed",
+        error: "Candidate branch diverged.",
+        occurred_at: "2026-07-27T09:00:00Z",
+      },
+      {
+        id: "attention-assignment-failed",
+        kind: "failed_ephemeral_assignment",
+        attention_group: "failed_attempt",
+        severity: "warning",
+        title: "Ephemeral assignment failed",
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        agent_id: "alpha-lead",
+        assignment_id: "assignment-failed",
+        state: "failed",
+        error: "Worker exited before producing a result.",
+        occurred_at: "2026-07-27T08:30:00Z",
+      },
+    ],
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Operations" }).click();
+  const operations = page.locator("#team-operations-page");
+  await operations.getByRole("button", { name: "Needs attention" }).click();
+
+  const failedGroup = operations.locator('[data-attention-group="failed_attempt"]');
+  await failedGroup.getByRole("heading", { name: "Failed attempts", exact: true }).waitFor({
+    state: "visible",
+  });
+  await failedGroup.getByText("3 visible", { exact: true }).waitFor({
+    state: "visible",
+  });
+
+  const failedAction = failedGroup.locator(
+    '[data-attention-id="attention-action-failed"]',
+  );
+  await failedAction.locator(":scope > details > summary").click();
+  const failedActionBody = await failedAction.locator(".compact-record-body").innerText();
+  assert.match(failedActionBody, /explicitly dismissed/i);
+  assert.equal(await failedAction.locator("[data-dismiss-action-id]").count(), 1);
+
+  const failedPromotion = failedGroup.locator(
+    '[data-attention-id="attention-promotion-failed"]',
+  );
+  await failedPromotion.locator(":scope > details > summary").click();
+  const failedPromotionBody = await failedPromotion
+    .locator(".compact-record-body")
+    .innerText();
+  assert.match(failedPromotionBody, /release recovery path/i);
+  assert.doesNotMatch(failedPromotionBody, /\bdismiss(?:ed|al)?\b/i);
+  assert.equal(await failedPromotion.locator("[data-dismiss-action-id]").count(), 0);
+
+  const failedAssignment = failedGroup.locator(
+    '[data-attention-id="attention-assignment-failed"]',
+  );
+  await failedAssignment.locator(":scope > details > summary").click();
+  const failedAssignmentBody = await failedAssignment
+    .locator(".compact-record-body")
+    .innerText();
+  assert.match(failedAssignmentBody, /owning ephemeral workflow/i);
+  assert.doesNotMatch(failedAssignmentBody, /\bdismiss(?:ed|al)?\b/i);
+  assert.equal(await failedAssignment.locator("[data-dismiss-action-id]").count(), 0);
+
+  const historyGroup = operations.locator(".runtime-attention-history");
+  await historyGroup
+    .getByRole("button", { name: "Show retained history (1)" })
+    .click();
+  const passiveMail = historyGroup.locator(
+    '[data-attention-id="attention-passive-mail"]',
+  );
+  assert.match(
+    (await passiveMail.getAttribute("class")) || "",
+    /runtime-attention-kind-passive-correspondence/,
+  );
+  await passiveMail
+    .locator(".runtime-attention-kind-label", { hasText: "No response requested" })
+    .waitFor({ state: "visible" });
+  await passiveMail.locator(":scope > details > summary").click();
+  const passiveBody = await passiveMail.locator(".compact-record-body").innerText();
+  assert.match(passiveBody, /No response was requested/i);
+  assert.match(passiveBody, /no response is required/i);
+  assert.doesNotMatch(
+    passiveBody,
+    /Awaiting agent response|response .* outstanding|respond or/i,
+  );
+});
+
+test("team add-on Operations separates actionable attention from durable history", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  initialState.agents["beta-lead"].display_name = "Beta Lead";
+  initialState.runtime_operations.generated_at = "2026-07-27T12:00:00Z";
+
+  const activeFillers = Array.from({ length: 20 }, (_, offset) => {
+    const index = offset + 1;
+    const suffix = String(index).padStart(2, "0");
+    return {
+      id: `attention-active-${suffix}`,
+      kind: "team_blocker",
+      attention_group: "active_obligation",
+      severity: "warning",
+      title: `Active obligation ${suffix}`,
+      team_id: "team-alpha",
+      project_id: "alpha-project",
+      agent_id: "alpha-lead",
+      state: "open",
+      detail: `Current operational obligation ${suffix}.`,
+      occurred_at: `2026-07-27T10:${suffix}:00Z`,
+    };
+  });
+  initialState.runtime_operations.attention = [
+    {
+      id: "attention-active-blocker",
+      kind: "team_blocker",
+      attention_group: "active_obligation",
+      severity: "critical",
+      title: "Packaging approval is blocked",
+      team_id: "team-alpha",
+      project_id: "alpha-project",
+      agent_id: "alpha-lead",
+      task_id: "task-planned",
+      blocker_id: "blocker-packaging-approval",
+      state: "open",
+      detail: "The packaging approval dependency is unresolved.",
+      occurred_at: "2026-07-27T11:30:00Z",
+    },
+    {
+      id: "attention-active-inbox",
+      kind: "pending_inbox_item",
+      attention_group: "active_obligation",
+      severity: "warning",
+      title: "Clarify the rollout checklist",
+      team_id: null,
+      project_id: null,
+      links: {
+        team_ids: ["team-beta", "team-alpha"],
+        project_ids: ["beta-project", "alpha-project"],
+      },
+      agent_id: "beta-lead",
+      task_id: "task-rejected",
+      inbox_item_id: "inbox-rollout-checklist",
+      state: "pending",
+      detail: "The rollout checklist needs an agent response.",
+      occurred_at: "2026-07-27T11:00:00Z",
+      terminal_context: [
+        { kind: "deliverable", id: "deliverable-accepted", state: "accepted" },
+      ],
+    },
+    ...activeFillers,
+    {
+      id: "attention-promotion-failed",
+      kind: "failed_git_promotion",
+      attention_group: "failed_attempt",
+      severity: "critical",
+      title: "Release candidate promotion failed",
+      team_id: "team-beta",
+      project_id: "beta-project",
+      agent_id: "beta-lead",
+      task_id: "task-blocked",
+      deliverable_id: "deliverable-blocked",
+      promotion_id: "promotion-invalid-candidate",
+      state: "failed",
+      source_branch: "agents/beta-lead/release-candidate",
+      target_branch: "releases/beta",
+      commit_sha: "deadbeefbadc0de",
+      error: "Candidate commit is not reachable from the approved branch.",
+      detail: "Candidate commit is not reachable from the approved branch.",
+      occurred_at: "2026-07-27T09:00:00Z",
+    },
+    {
+      id: "attention-terminal-inbox",
+      kind: "pending_inbox_item",
+      attention_group: "retained_history",
+      severity: "critical",
+      title: "Accepted delivery still has pending correspondence",
+      team_id: "team-alpha",
+      project_id: "alpha-project",
+      agent_id: "alpha-lead",
+      task_id: "task-accepted",
+      inbox_item_id: "inbox-terminal-follow-up",
+      state: "pending",
+      detail: "A response was never reconciled after the task was accepted.",
+      occurred_at: "2026-07-20T12:00:00Z",
+      terminal_context: [{ kind: "task", id: "task-accepted", state: "accepted" }],
+      reconciliation_required: true,
+    },
+  ];
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, {
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Operations" }).click();
+  const operations = page.locator("#team-operations-page");
+  await operations.getByRole("button", { name: "Needs attention" }).click();
+
+  const counts = operations.locator("[data-runtime-attention-counts]");
+  const countsText = await counts.innerText();
+  assert.match(countsText, /22 active/);
+  assert.match(countsText, /1 failed attempts?/);
+  assert.match(countsText, /1 retained history/);
+  assert.match(countsText, /2 terminal-linked/);
+  assert.match(countsText, /1 need reconciliation/);
+
+  const activeGroup = operations.locator('[data-attention-group="active_obligation"]');
+  const failedGroup = operations.locator('[data-attention-group="failed_attempt"]');
+  const historyGroup = operations.locator(".runtime-attention-history");
+  await activeGroup.getByText("22 visible", { exact: true }).waitFor({ state: "visible" });
+  await failedGroup.getByText("1 visible", { exact: true }).waitFor({ state: "visible" });
+  await historyGroup.getByText("1 visible", { exact: true }).waitFor({ state: "visible" });
+  await historyGroup
+    .getByRole("button", { name: "Show retained history (1)" })
+    .waitFor({ state: "visible" });
+  assert.equal(
+    await operations.locator('[data-attention-id="attention-terminal-inbox"]').count(),
+    0,
+  );
+  assert.equal(await operations.locator(".runtime-attention-card details[open]").count(), 0);
+
+  const activeRows = activeGroup.locator("[data-attention-id]");
+  assert.equal(await activeRows.count(), 20);
+  assert.deepEqual(
+    (await activeRows.evaluateAll((nodes) =>
+      nodes.slice(0, 3).map((node) => node.dataset.attentionId),
+    )),
+    ["attention-active-blocker", "attention-active-inbox", "attention-active-20"],
+  );
+  const activePagination = activeGroup.locator(
+    'nav[aria-label="Active Obligation pages"]',
+  );
+  await activePagination.getByText("Showing 1–20 of 22", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await activePagination.getByRole("button", { name: "Next" }).click();
+  assert.deepEqual(
+    await activeGroup
+      .locator("[data-attention-id]")
+      .evaluateAll((nodes) => nodes.map((node) => node.dataset.attentionId)),
+    ["attention-active-02", "attention-active-01"],
+  );
+  await activeGroup.getByText("Showing 21–22 of 22", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await activeGroup.getByRole("button", { name: "Previous" }).click();
+
+  assert.deepEqual(
+    await operations
+      .locator(".runtime-attention-facets label > span")
+      .evaluateAll((nodes) => nodes.map((node) => node.textContent.trim())),
+    ["Kind", "Age", "Team", "Project", "Agent"],
+  );
+  await operations
+    .locator('[data-runtime-attention-filter="kind"]')
+    .selectOption("pending_inbox_item");
+  await operations
+    .locator('[data-runtime-attention-filter="age"]')
+    .selectOption("under_24_hours");
+  await operations
+    .locator('[data-runtime-attention-filter="team"]')
+    .selectOption("team-beta");
+  await operations
+    .locator('[data-runtime-attention-filter="project"]')
+    .selectOption("beta-project");
+  await operations
+    .locator('[data-runtime-attention-filter="agent"]')
+    .selectOption("beta-lead");
+  assert.equal(await activeGroup.locator("[data-attention-id]").count(), 1);
+  await activeGroup
+    .locator('[data-attention-id="attention-active-inbox"]')
+    .waitFor({ state: "visible" });
+  await failedGroup
+    .getByText("No failed attempts match these filters.")
+    .waitFor({ state: "visible" });
+  await operations.getByRole("button", { name: "Clear filters" }).click();
+  await activeGroup.getByText("22 visible", { exact: true }).waitFor({ state: "visible" });
+
+  const blockerRow = activeGroup.locator(
+    '[data-attention-id="attention-active-blocker"]',
+  );
+  await blockerRow.locator(".runtime-attention-kind-label", { hasText: "Blocker" }).waitFor({
+    state: "visible",
+  });
+  assert.match(
+    (await blockerRow.getAttribute("class")) || "",
+    /runtime-attention-kind-blocker/,
+  );
+  const blockerSummaryText = await blockerRow.locator("summary").first().innerText();
+  assert.match(blockerSummaryText, /Packaging approval is blocked/);
+  assert.match(blockerSummaryText, /Alpha Project/);
+  assert.match(blockerSummaryText, /Plan alpha delivery/);
+  assert.match(blockerSummaryText, /Owner: Grace Lead/);
+  assert.match(blockerSummaryText, /30 minutes ago/);
+  assert.match(blockerSummaryText, /critical urgency/i);
+  assert.doesNotMatch(
+    blockerSummaryText,
+    /attention-active-blocker|alpha-project|alpha-lead|task-planned/,
+  );
+  assert.equal(
+    await blockerRow.locator('time[datetime="2026-07-27T11:30:00Z"]').count(),
+    1,
+  );
+
+  const inboxRow = activeGroup.locator('[data-attention-id="attention-active-inbox"]');
+  assert.match(
+    (await inboxRow.getAttribute("class")) || "",
+    /runtime-attention-kind-awaiting-response/,
+  );
+  await inboxRow
+    .locator(".runtime-attention-kind-label", { hasText: "Awaiting agent response" })
+    .waitFor({ state: "visible" });
+  await inboxRow.locator(":scope > details > summary").click();
+  const activeInboxBody = await inboxRow.locator(".compact-record-body").innerText();
+  assert.match(activeInboxBody, /response or explicit inbox reconciliation is still outstanding/i);
+  assert.doesNotMatch(activeInboxBody, /does not by itself prove an active operational issue/i);
+
+  const failedRow = failedGroup.locator(
+    '[data-attention-id="attention-promotion-failed"]',
+  );
+  assert.match(
+    (await failedRow.getAttribute("class")) || "",
+    /runtime-attention-kind-failed-operation/,
+  );
+  const failedSummaryText = await failedRow.locator("summary").first().innerText();
+  assert.match(failedSummaryText, /Git promotion failed/);
+  assert.match(failedSummaryText, /Beta Project/);
+  assert.match(failedSummaryText, /Owner: Beta Lead/);
+  assert.doesNotMatch(
+    failedSummaryText,
+    /attention-promotion-failed|beta-project|beta-lead|promotion-invalid-candidate|deadbeef/,
+  );
+  await failedRow.locator(":scope > details > summary").click();
+  for (const heading of [
+    "Problem",
+    "Impact",
+    "Owner",
+    "Recommended next action",
+    "Related work",
+    "Technical details",
+  ]) {
+    await failedRow.getByRole("heading", { name: heading, exact: true }).waitFor({
+      state: "visible",
+    });
+  }
+  const failedBodyText = await failedRow.locator(".compact-record-body").innerText();
+  assert.equal(
+    failedBodyText.match(/Candidate commit is not reachable from the approved branch\./g)
+      ?.length,
+    1,
+  );
+  assert.match(failedBodyText, /Inspect the promotion target and candidate/);
+  assert.match(failedBodyText, /Blocked delivery/);
+
+  const technicalDetails = failedRow.locator(
+    ".runtime-technical-section details.technical-details",
+  );
+  assert.equal(
+    await technicalDetails
+      .getByText("attention-promotion-failed", { exact: true })
+      .isVisible(),
+    false,
+  );
+  await technicalDetails.locator("summary").click();
+  await technicalDetails
+    .getByText("attention-promotion-failed", { exact: true })
+    .waitFor({ state: "visible" });
+  await technicalDetails
+    .getByText("agents/beta-lead/release-candidate", { exact: true })
+    .waitFor({ state: "visible" });
+  await technicalDetails.getByText("deadbeefbadc0de", { exact: true }).waitFor({
+    state: "visible",
+  });
+  const copyAttentionId = technicalDetails.getByRole("button", {
+    name: "Copy ID: attention-promotion-failed",
+  });
+  await copyAttentionId.click();
+  await copyAttentionId.getByText("Copied", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await page.evaluate(() => navigator.clipboard.readText()),
+    "attention-promotion-failed",
+  );
+
+  await historyGroup.getByRole("button", { name: "Show retained history (1)" }).click();
+  const historyRow = historyGroup.locator(
+    '[data-attention-id="attention-terminal-inbox"]',
+  );
+  await historyRow.waitFor({ state: "visible" });
+  await historyRow.locator(":scope > details > summary").click();
+  await historyRow.getByText("Terminal Task: Accepted", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  await historyRow.getByText("Reconciliation required", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await historyRow.locator('time[datetime="2026-07-20T12:00:00Z"]').count(),
+    1,
+  );
+  const mailLink = historyRow.getByRole("button", { name: "Open Agent Mail" });
+  await mailLink.waitFor({ state: "visible" });
+  await mailLink.click();
+  await page.locator("#team-mail-page").waitFor({ state: "visible" });
+
+  await page.getByRole("tab", { name: "Workspace" }).click();
+  const workspace = page.locator("#team-workspace-page");
+  await workspace.waitFor({ state: "visible" });
+  await workspace
+    .getByText("Release candidate promotion failed", { exact: true })
+    .waitFor({ state: "visible" });
+  assert.equal(
+    await workspace.getByText(
+      "Accepted delivery still has pending correspondence",
+      { exact: true },
+    ).count(),
+    0,
+  );
+});
+
 test("team add-on runtime attention escapes state and error text exactly once", async (t) => {
   const initialState = seededGitState();
   initialState.runtime_operations.attention.push({
@@ -7069,15 +8457,16 @@ test("team add-on runtime attention escapes state and error text exactly once", 
     .locator("#team-operations-page")
     .getByRole("button", { name: "Needs attention" })
     .click();
-  const row = page.locator("#team-operations-page .runtime-item-compact", {
-    hasText: "Failed action with validation details",
-  });
-  await row.locator("summary").click();
+  const row = page.locator(
+    '#team-operations-page [data-attention-id="failed-action-special-characters"]',
+  );
+  await row.locator(":scope > details > summary").click();
   const bodyText = await row.locator(".compact-record-body").innerText();
 
-  assert.match(bodyText, /Error invalid \{'key': '<value>&'\}/);
+  assert.match(bodyText, /invalid \{'key': '<value>&'\}/);
   assert.match(bodyText, /retry isn't allowed/);
   assert.doesNotMatch(bodyText, /&#(?:39|x27);|&lt;|&amp;/);
+  assert.equal(bodyText.match(/invalid \{'key': '<value>&'\}/g)?.length, 1);
 });
 
 test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
@@ -7104,7 +8493,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Mail",
     "Governance",
     "Planning",
-    "Timeline",
+    "Activity timeline",
     "Org chart",
   ]) {
     await page.getByRole("tab", { name: tabName }).waitFor({ state: "visible" });
@@ -7122,9 +8511,13 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-operations-page .runtime-item-compact").first().waitFor({
     state: "visible",
   });
-  await page.locator("#team-operations-page").getByText("Expired session for alpha-lead").waitFor({
-    state: "visible",
-  });
+  const runtimeAttentionText = await page
+    .locator("#team-operations-page .runtime-item-compact")
+    .allInnerTexts();
+  assert.ok(
+    runtimeAttentionText.some((value) => value.includes("Session expired for Grace Lead")),
+    `expected the expired session attention card: ${JSON.stringify(runtimeAttentionText)}`,
+  );
   await page.locator("#team-operations-page").getByText("session expired").first().waitFor({
     state: "visible",
   });
@@ -7132,7 +8525,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Delivery" }).click();
   await page.locator("#team-delivery-page").waitFor({ state: "visible" });
-  await page.locator("#team-delivery-page").getByRole("heading", { name: "Alpha Team (team-alpha)" }).waitFor({
+  await page.locator("#team-delivery-page").getByRole("heading", { name: "Alpha Team", exact: true }).waitFor({
     state: "visible",
   });
   assert.equal(await page.locator(".delivery-row").count(), 5);
@@ -7167,6 +8560,14 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator(".task-board-lane-reviewing").getByText("Await review").waitFor({
     state: "visible",
   });
+  await page.locator(".task-board-lane-done").getByText("1 completed task hidden.").waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await page.locator(".task-board-lane-done").getByText("Ship accepted delivery").count(),
+    0,
+  );
+  await page.locator(".task-board-lane-done").getByRole("button", { name: "Show completed" }).click();
   await page.locator(".task-board-lane-done").getByText("Ship accepted delivery").waitFor({
     state: "visible",
   });
@@ -7340,17 +8741,28 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     .waitFor({
     state: "visible",
   });
-  await page.locator("#team-planning-page").getByText("Draft pending delivery").waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator("#team-planning-page").getByText("Ship accepted delivery").count(), 0);
+  await page
+    .locator('#team-planning-page [data-planning-task-id="task-pending"]')
+    .getByText("Draft pending delivery", { exact: true })
+    .waitFor({
+      state: "visible",
+    });
+  assert.equal(
+    await page.locator(
+      '#team-planning-page [data-planning-task-id="task-accepted"]',
+    ).count(),
+    0,
+  );
   await page.locator("#planning-status-accepted").check();
   await alphaProjectCard.locator(":scope > details > summary").click();
-  await page.locator("#team-planning-page").getByText("Ship accepted delivery").waitFor({
-    state: "visible",
-  });
+  await page
+    .locator('#team-planning-page [data-planning-task-id="task-accepted"]')
+    .getByText("Ship accepted delivery", { exact: true })
+    .waitFor({
+      state: "visible",
+    });
 
-  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
   assert.equal(await page.locator("#team-timeline-page .timeline-entry").count(), 10);
@@ -7358,7 +8770,11 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
   assert.equal(await page.locator("#team-timeline-page .timeline-entry details[open]").count(), 0);
-  await page.locator("#team-timeline-page .timeline-entry").first().locator("summary").click();
+  await page
+    .locator("#team-timeline-page .timeline-entry")
+    .first()
+    .locator(":scope > details > summary")
+    .click();
   await page.locator("#team-timeline-page .timeline-entry details[open]").first().waitFor({
     state: "visible",
   });
@@ -7484,12 +8900,20 @@ test("team add-on UI renders git refs and releases and submits a review decision
 
   await waitForRevision(page, 4);
   const timelineRequestsBeforeTabRefresh = timelineRequests.length;
-  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
   const timelinePage = page.locator("#team-timeline-page");
   await timelinePage.waitFor({ state: "visible" });
-  await timelinePage.getByText("Derived from the current TeamState snapshot, not a persisted audit log.").waitFor({
-    state: "visible",
-  });
+  const retentionNote = timelinePage.locator(".timeline-note");
+  await retentionNote.waitFor({ state: "visible" });
+  const retentionCopy = await retentionNote.innerText();
+  assert.match(
+    retentionCopy,
+    /reconstructed from records still present in the current Team\s+snapshot/i,
+  );
+  assert.match(
+    retentionCopy,
+    /may omit earlier changes, deleted or compacted records, and previous\s+field values/i,
+  );
   await timelinePage.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
   await timelinePage.locator(".timeline-entry").first().waitFor({ state: "visible" });
   assert.ok((await timelinePage.locator(".timeline-entry").count()) >= 10);
@@ -7509,41 +8933,45 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await workspace.getByRole("heading", { name: "Review & Delivery" }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Alpha Team (team-alpha)" }).waitFor({
+  await workspace.getByRole("heading", { name: "Alpha Team", exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Beta Team (team-beta)" }).waitFor({
+  await workspace.getByRole("heading", { name: "Beta Team", exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Alpha Project (alpha-project)" }).waitFor({
+  await workspace.getByRole("heading", { name: "Alpha Project", exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Beta Project (beta-project)" }).waitFor({
+  await workspace.getByRole("heading", { name: "Beta Project", exact: true }).waitFor({
     state: "visible",
   });
   assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
 
   const pendingRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]');
   await openDeliveryRow(pendingRow);
-  await pendingRow.getByText("deliverable-pending", { exact: true }).first().waitFor({
+  await pendingRow.getByText("Draft pending delivery", { exact: true }).first().waitFor({
     state: "visible",
   });
-  await pendingRow.getByText("task-pending - Draft pending delivery - In Progress").waitFor({
+  await pendingRow.getByRole("heading", { name: "Task and producer" }).waitFor({
     state: "visible",
   });
-  await pendingRow.getByText("Artifacts: artifacts/pending.tar.gz").waitFor({
+  await pendingRow.getByText("artifacts/pending.tar.gz", { exact: true }).waitFor({
     state: "visible",
   });
-  await pendingRow.getByText("Promotions: promo-pending review:succeeded").waitFor({
+  const pendingTechnicalDetails = pendingRow.locator(
+    ":scope > .delivery-row-body > section.deliverable-detail-group > details.technical-details",
+  ).last();
+  await pendingTechnicalDetails.locator("summary").click();
+  await pendingTechnicalDetails.getByText("promo-pending", { exact: true }).waitFor({
     state: "visible",
   });
 
   const waitingRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-waiting"]');
   await openDeliveryRow(waitingRow);
-  await waitingRow.getByText("review-waiting", { exact: true }).first().waitFor({
+  await waitingRow.getByText("Review by alpha-manager", { exact: true }).waitFor({
     state: "visible",
   });
-  await waitingRow.getByText("Reviewer id alpha-manager - profile profile-alpha (Alpha review profile)").waitFor({
+  await waitingRow.getByText(/Profile Alpha review profile/).waitFor({
     state: "visible",
   });
   await waitingRow.getByText("Profile criteria:").waitFor({ state: "visible" });
@@ -7554,20 +8982,32 @@ test("team add-on UI renders git refs and releases and submits a review decision
 
   const acceptedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
   await openDeliveryRow(acceptedRow);
-  await acceptedRow.getByText("release-accepted", { exact: true }).first().waitFor({
+  const relatedRelease = acceptedRow.locator('[data-release-id="release-accepted"]');
+  await relatedRelease.getByText("Release: Ship accepted delivery", { exact: true }).waitFor({
     state: "visible",
   });
-  await acceptedRow.getByText("Promotions: promo-accepted review:succeeded, promo-release release:succeeded").waitFor({
+  const acceptedTechnicalDetails = acceptedRow.locator(
+    ":scope > .delivery-row-body > section.deliverable-detail-group > details.technical-details",
+  ).last();
+  await acceptedTechnicalDetails.locator("summary").click();
+  await acceptedTechnicalDetails.getByText("promo-accepted", { exact: true }).waitFor({
     state: "visible",
   });
-  await acceptedRow.getByText("Release team/alpha/releases/accepted", { exact: true }).first().waitFor({
+  await acceptedTechnicalDetails.getByText("promo-release", { exact: true }).waitFor({
     state: "visible",
   });
-  await acceptedRow.getByText("Verification waivers:").waitFor({ state: "visible" });
-  await acceptedRow.getByText(/deliverable-accepted \(partial\).*release-admin/).waitFor({
+  await acceptedTechnicalDetails.getByText("team/alpha/releases/accepted", { exact: true }).waitFor({
     state: "visible",
   });
-  await acceptedRow.getByText("Scope validation: passed").waitFor({ state: "visible" });
+  await relatedRelease
+    .getByText("Release notes, included work, and technical details", { exact: true })
+    .click();
+  await relatedRelease
+    .getByText("Ship the accepted delivery after targeted verification.", { exact: true })
+    .waitFor({ state: "visible" });
+  await relatedRelease.locator(".release-included-work").getByText("Ship accepted delivery").waitFor({
+    state: "visible",
+  });
   await acceptedRow.getByText("tests: passed - Targeted tests passed").waitFor({
     state: "visible",
   });
@@ -7581,7 +9021,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const blockedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]');
   await openDeliveryRow(blockedRow);
   await blockedRow.locator(".state-pill.blocked").first().waitFor({ state: "visible" });
-  await blockedRow.getByText("Promotions: promo-blocked review:failed").waitFor({
+  const blockedTechnicalDetails = blockedRow.locator(
+    ":scope > .delivery-row-body > section.deliverable-detail-group > details.technical-details",
+  ).last();
+  await blockedTechnicalDetails.locator("summary").click();
+  await blockedTechnicalDetails.getByText("promo-blocked", { exact: true }).waitFor({
     state: "visible",
   });
   assert.equal(
@@ -7707,13 +9151,15 @@ test("team add-on UI renders git refs and releases and submits a review decision
     },
   ]);
   await openDeliveryRow(waitingRow);
-  await waitingRow.getByText("decided 2026-06-09T00:00:00Z").waitFor({ state: "visible" });
+  await waitingRow.locator('time[datetime="2026-06-09T00:00:00Z"]').waitFor({
+    state: "visible",
+  });
   await waitingRow.getByText("Findings: Looks good to me.").waitFor({ state: "visible" });
   await waitingRow.getByText("tests: passed - Added acceptance notes").waitFor({
     state: "visible",
   });
 
-  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
   await timelinePage.waitFor({ state: "visible" });
   await waitForSelectOption(page, "#focused-timeline-type-filter", "review");
   const timelineTypeFilter = page.locator("#focused-timeline-type-filter");
@@ -7727,10 +9173,10 @@ test("team add-on UI renders git refs and releases and submits a review decision
   assert.equal(filteredTimelineSearch.get("limit"), "10");
   assert.equal(filteredTimelineSearch.get("offset"), "0");
   assert.equal(await timelinePage.locator(".timeline-entry").count(), 4);
-  await timelinePage.getByText(/Review requested for deliverable deliverable-waiting/).first().waitFor({
+  await timelinePage.getByText(/Requested review — Await review/).first().waitFor({
     state: "visible",
   });
-  await page.getByText(/Review review-waiting accepted/).first().waitFor({
+  await timelinePage.getByText(/Review decided accepted — Await review/).first().waitFor({
     state: "visible",
   });
 });
@@ -7741,7 +9187,8 @@ test("team add-on timeline filter options use full-history facets", async (t) =>
     derived: true,
     audit_log: false,
     source: "derived_from_current_team_state",
-    description: "Derived timeline from the current TeamState snapshot.",
+    description:
+      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
     filters: {},
     timestampless_count: 0,
     total_count: 30,
@@ -7769,7 +9216,7 @@ test("team add-on timeline filter options use full-history facets", async (t) =>
   const { port } = await createTeamAddonServer(t, { timelinePayload });
   const page = await openBrowserPage(t, port);
 
-  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   await waitForSelectOption(page, "#focused-timeline-type-filter", "review");
   await waitForSelectOption(page, "#focused-timeline-type-filter", "inbox_item");
@@ -7785,12 +9232,260 @@ test("team add-on timeline filter options use full-history facets", async (t) =>
   );
 });
 
+test("team add-on Activity timeline renders snapshot-only updates without a state flow", async (t) => {
+  const initialState = seededGitState();
+  const timelinePayload = {
+    revision: 4,
+    derived: true,
+    audit_log: false,
+    source: "derived_from_current_team_state",
+    description:
+      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
+    filters: {},
+    timestampless_count: 0,
+    total_count: 1,
+    limit: 10,
+    offset: 0,
+    has_more: false,
+    facets: {
+      types: ["task"],
+      statuses: ["in_progress"],
+    },
+    entries: [
+      timelineEntry({
+        id: "task:task-pending:updated",
+        type: "task",
+        category: "updated",
+        timestamp: "2026-07-27T11:00:00Z",
+        timestamp_source: "updated_at",
+        actor_agent_id: null,
+        actor_subject: null,
+        related_agent_ids: [],
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        task_id: "task-pending",
+        status: "in_progress",
+        attention_needed: false,
+        subject: "Draft pending delivery",
+        change: null,
+        summary: "Task snapshot updated: Draft pending delivery",
+      }),
+    ],
+  };
+  const { port } = await createTeamAddonServer(t, {
+    initialState,
+    timelinePayload,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
+  const entry = page.locator("#team-timeline-page .timeline-entry").first();
+  await entry.waitFor({ state: "visible" });
+  await entry.locator(":scope > details > summary").click();
+
+  const changeSection = entry.locator(".timeline-change-section");
+  await changeSection
+    .getByText(
+      "Operation: Snapshot updated; no state transition is implied.",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  assert.equal(await changeSection.locator(".timeline-change-flow").count(), 0);
+  assert.equal(
+    await changeSection.getByText("Before", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await changeSection.getByText("After", { exact: true }).count(),
+    0,
+  );
+});
+
+test("team add-on activity timeline leads with human context and explains retained-history limits", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  Object.assign(initialState.tasks["task-pending"], {
+    title: "Restore customer export",
+    state: "blocked",
+    waiting_reason: "Upstream schema verification failed.",
+    state_entered_at: "2026-07-27T10:45:00Z",
+    updated_at: "2026-07-27T10:45:00Z",
+  });
+
+  const targetEntryId = "task:task-pending:updated";
+  const timelinePayload = (state, url) => {
+    const payload = buildTimelinePayload(state, url);
+    return {
+      ...payload,
+      description:
+        "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
+      entries: payload.entries.map((entry) =>
+        entry.id === targetEntryId
+          ? {
+              ...entry,
+              actor_agent_id: "alpha-lead",
+              actor_subject: "Grace Lead · Project Lead",
+              subject: "Restore customer export",
+              change: {
+                field: "State",
+                before: null,
+                after: "Blocked",
+                before_known: false,
+              },
+              reason: "Upstream schema verification failed.",
+              summary: "Task entered blocked: Restore customer export",
+            }
+          : entry,
+      ),
+    };
+  };
+  const { port, timelineRequests } = await createTeamAddonServer(t, {
+    initialState,
+    timelinePayload,
+  });
+  const page = await openBrowserPage(t, port, {
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
+  const timelinePage = page.locator("#team-timeline-page");
+  await timelinePage.waitFor({ state: "visible" });
+  await timelinePage
+    .getByRole("heading", { name: "Activity timeline", exact: true })
+    .waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("tab", { name: "Audit", exact: true }).count(), 0);
+  const retentionNote = timelinePage.locator(".timeline-note");
+  await retentionNote.waitFor({ state: "visible" });
+  const retentionCopy = await retentionNote.innerText();
+  assert.match(
+    retentionCopy,
+    /reconstructed from records still present in the current Team\s+snapshot/i,
+  );
+  assert.match(
+    retentionCopy,
+    /may omit earlier changes, deleted or compacted records, and previous\s+field values/i,
+  );
+
+  await waitForSelectOption(page, "#focused-timeline-team-filter", "team-alpha");
+  await waitForSelectOption(page, "#focused-timeline-project-filter", "alpha-project");
+  await waitForSelectOption(page, "#focused-timeline-agent-filter", "alpha-lead");
+  const teamOptions = await page
+    .locator("#focused-timeline-team-filter option")
+    .allTextContents();
+  const projectOptions = await page
+    .locator("#focused-timeline-project-filter option")
+    .allTextContents();
+  const agentOptions = await page
+    .locator("#focused-timeline-agent-filter option")
+    .allTextContents();
+  assert.ok(teamOptions.includes("Alpha Team"));
+  assert.ok(projectOptions.includes("Alpha Project"));
+  assert.ok(agentOptions.includes("Grace Lead · Project Lead"));
+  assert.equal(teamOptions.some((label) => label.includes("team-alpha")), false);
+  assert.equal(projectOptions.some((label) => label.includes("alpha-project")), false);
+  assert.equal(agentOptions.some((label) => label.includes("alpha-lead")), false);
+
+  await timelinePage.locator(".timeline-pagination").waitFor({ state: "visible" });
+  const requestsBeforeNextPage = timelineRequests.length;
+  await timelinePage
+    .locator(".timeline-pagination")
+    .getByRole("button", { name: "Next" })
+    .click();
+  await waitForCondition(
+    () => timelineRequests.length > requestsBeforeNextPage,
+    "expected the activity timeline next-page request",
+  );
+  const nextPageSearch = new URLSearchParams(timelineRequests.at(-1));
+  assert.equal(nextPageSearch.get("limit"), "10");
+  assert.equal(nextPageSearch.get("offset"), "10");
+
+  for (const [selector, value] of [
+    ["#focused-timeline-team-filter", "team-alpha"],
+    ["#focused-timeline-project-filter", "alpha-project"],
+    ["#focused-timeline-agent-filter", "alpha-lead"],
+    ["#focused-timeline-type-filter", "task"],
+    ["#focused-timeline-status-filter", "blocked"],
+    ["#focused-timeline-attention-filter", "true"],
+  ]) {
+    const requestsBeforeFilter = timelineRequests.length;
+    await page.locator(selector).selectOption(value);
+    await waitForCondition(
+      () => timelineRequests.length > requestsBeforeFilter,
+      `expected an activity timeline request after selecting ${value}`,
+    );
+  }
+
+  const filteredSearch = new URLSearchParams(timelineRequests.at(-1));
+  assert.equal(filteredSearch.get("team_id"), "team-alpha");
+  assert.equal(filteredSearch.get("project_id"), "alpha-project");
+  assert.equal(filteredSearch.get("agent_id"), "alpha-lead");
+  assert.equal(filteredSearch.get("type"), "task");
+  assert.equal(filteredSearch.get("status"), "blocked");
+  assert.equal(filteredSearch.get("attention_needed"), "true");
+  assert.equal(filteredSearch.get("limit"), "10");
+  assert.equal(filteredSearch.get("offset"), "0");
+
+  const entry = timelinePage.locator(".timeline-entry").first();
+  await entry.waitFor({ state: "visible" });
+  const collapsedText = await entry.locator(":scope > details > summary").innerText();
+  assert.match(collapsedText, /Task entered blocked: Restore customer export/);
+  assert.doesNotMatch(
+    collapsedText,
+    /task-pending|team-alpha|alpha-project|alpha-lead/,
+  );
+  const technicalDetails = entry.locator("details.technical-details");
+  assert.equal(await technicalDetails.count(), 1);
+  assert.equal(await technicalDetails.evaluate((element) => element.open), false);
+
+  await entry.locator(":scope > details > summary").click();
+  const domainGrid = entry.locator(".timeline-domain-grid");
+  await domainGrid.getByText("Task entered blocked: Restore customer export", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await domainGrid.getByText("Grace Lead · Project Lead", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await domainGrid.getByText("Restore customer export", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await domainGrid.getByText("Alpha Team · Alpha Project", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await entry.getByRole("heading", { name: "Change · State", exact: true }).waitFor({
+    state: "visible",
+  });
+  await entry.getByText("Earlier value not retained", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await entry.getByText("Blocked", { exact: true }).last().waitFor({
+    state: "visible",
+  });
+  await entry.getByText("Reason: Upstream schema verification failed.", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await technicalDetails.evaluate((element) => element.open), false);
+
+  await technicalDetails.locator("summary").click();
+  const copyTaskId = technicalDetails.getByRole("button", {
+    name: "Copy ID: task-pending",
+  });
+  await copyTaskId.click();
+  await copyTaskId.getByText("Copied", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "task-pending");
+  const expandedText = await entry.innerText();
+  assert.equal(expandedText.match(/task-pending/g)?.length, 1);
+});
+
 test("team add-on timeline keeps naive timestamps in server UTC order", async (t) => {
   const timelinePayload = {
     revision: 1,
     derived: true,
     audit_log: false,
-    description: "Derived timeline from the current TeamState snapshot.",
+    description:
+      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
     filters: {},
     timestampless_count: 0,
     entries: [
@@ -7802,6 +9497,7 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
         timestamp_source: "decision_at",
         status: "accepted",
         attention_needed: false,
+        event: "Aware UTC event",
         summary: "Aware UTC event",
       }),
       timelineEntry({
@@ -7812,6 +9508,7 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
         timestamp_source: "created_at",
         status: "pending",
         attention_needed: false,
+        event: "Naive UTC event",
         summary: "Naive UTC event",
       }),
     ],
@@ -7819,7 +9516,7 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
   const { port } = await createTeamAddonServer(t, { timelinePayload });
   const page = await openBrowserPage(t, port, { timezoneId: "America/Los_Angeles" });
 
-  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.getByRole("tab", { name: "Activity timeline", exact: true }).click();
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({
     state: "visible",
   });
@@ -7828,6 +9525,391 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
     .locator("#team-timeline-page .timeline-summary-text")
     .allTextContents();
   assert.deepEqual(summaries.slice(0, 2), ["Aware UTC event", "Naive UTC event"]);
+});
+
+test("team add-on task board coordinates hierarchy focus and bounds completed history", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  const planned = initialState.tasks["task-planned"];
+  const pending = initialState.tasks["task-pending"];
+  const activeSibling = initialState.tasks["task-active-later"];
+  const waiting = initialState.tasks["task-waiting"];
+  const accepted = initialState.tasks["task-accepted"];
+  Object.assign(planned, {
+    readiness: "waiting_on_children",
+    resolution_status: "unresolved",
+    integration_ready: false,
+    assessment: {
+      readiness: "waiting_on_children",
+      resolution_status: "unresolved",
+      integration_ready: false,
+      direct_child_ids: [pending.id, activeSibling.id],
+      unresolved_descendant_ids: [pending.id, activeSibling.id, waiting.id],
+    },
+  });
+  Object.assign(pending, {
+    parent_task_id: planned.id,
+    readiness: "blocked",
+    resolution_status: "unresolved",
+    integration_ready: false,
+    blocked_by_task_ids: [waiting.id],
+    assessment: {
+      readiness: "blocked",
+      resolution_status: "unresolved",
+      integration_ready: false,
+      direct_child_ids: [waiting.id],
+      unresolved_descendant_ids: [waiting.id],
+    },
+  });
+  Object.assign(activeSibling, {
+    parent_task_id: planned.id,
+    owner_agent_id: "alpha-manager",
+    readiness: "actionable",
+  });
+  Object.assign(waiting, {
+    parent_task_id: pending.id,
+    readiness: "waiting_for_review",
+    assessment: {
+      readiness: "waiting_for_review",
+      resolution_status: "unresolved",
+      integration_ready: false,
+      direct_child_ids: [accepted.id],
+      unresolved_descendant_ids: [],
+    },
+  });
+  Object.assign(accepted, {
+    parent_task_id: waiting.id,
+    readiness: "resolved",
+    resolution_status: "resolved",
+    integration_ready: true,
+    assessment: {
+      readiness: "resolved",
+      resolution_status: "resolved",
+      integration_ready: true,
+      direct_child_ids: [],
+      unresolved_descendant_ids: [],
+    },
+  });
+  initialState.tasks["task-independent"] = {
+    id: "task-independent",
+    owner_agent_id: "alpha-lead",
+    project_id: "alpha-project",
+    priority: 9,
+    state: "pending",
+    state_entered_at: "2026-06-10T08:00:00Z",
+    title: "Independent active root",
+    description: "A separate hierarchy used to exercise root filtering.",
+    created_by_agent_id: "alpha-manager",
+    readiness: "actionable",
+    created_at: "2026-06-10T08:00:00Z",
+    updated_at: "2026-06-10T08:00:00Z",
+  };
+  const terminalStates = ["finished", "accepted", "rejected", "cancelled"];
+  for (let index = 1; index <= 24; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const completedDay = index <= 12 ? "10" : "12";
+    const taskId = `task-history-${suffix}`;
+    initialState.tasks[taskId] = {
+      id: taskId,
+      owner_agent_id: index % 2 ? "alpha-lead" : "alpha-manager",
+      project_id: "alpha-project",
+      priority: 20 + index,
+      state: terminalStates[(index - 1) % terminalStates.length],
+      state_entered_at: `2026-06-${completedDay}T12:00:00Z`,
+      title: `Historical task ${suffix}`,
+      description: `Durable completed history ${suffix}.`,
+      created_by_agent_id: "alpha-manager",
+      readiness: "resolved",
+      resolution_status: "resolved",
+      integration_ready: true,
+      cancellation:
+        terminalStates[(index - 1) % terminalStates.length] === "cancelled"
+          ? {
+              reason_code: "superseded",
+              reason: "Replaced by later work.",
+              actor_id: "alpha-manager",
+              cancelled_at: `2026-06-${completedDay}T12:00:00Z`,
+            }
+          : null,
+      created_at: `2026-06-${completedDay}T08:00:00Z`,
+      updated_at: `2026-06-${completedDay}T12:00:00Z`,
+    };
+  }
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  const boardPanel = page.locator("#team-task-board-page");
+  await boardPanel.getByRole("tab", { name: "Board" }).waitFor({ state: "visible" });
+  assert.equal(
+    await boardPanel.getByRole("tab", { name: "Board" }).getAttribute("aria-selected"),
+    "true",
+  );
+  await boardPanel.getByText("25 completed tasks hidden.").waitFor({ state: "visible" });
+  assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 0);
+
+  await boardPanel.getByRole("button", { name: "Show completed" }).click();
+  assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 20);
+  await boardPanel
+    .locator(".task-board-lane-done")
+    .getByText("Showing 1–20 of 25")
+    .waitFor({ state: "visible" });
+  await boardPanel.locator(".task-board-lane-done").getByRole("button", { name: "Next" }).click();
+  assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 5);
+  await boardPanel
+    .locator(".task-board-lane-done")
+    .getByText("Showing 21–25 of 25")
+    .waitFor({ state: "visible" });
+
+  const searchForm = boardPanel.locator("[data-task-board-search-form]");
+  await searchForm.locator('[name="task_board_query"]').fill("Historical task 24");
+  await searchForm.getByRole("button", { name: "Search" }).click();
+  assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 1);
+  await boardPanel.getByRole("button", { name: "Historical task 24" }).waitFor({
+    state: "visible",
+  });
+
+  await boardPanel.getByRole("button", { name: "Clear filters" }).click();
+  await boardPanel
+    .locator('[data-task-board-filter="assignee"]')
+    .selectOption("alpha-manager");
+  await boardPanel.getByRole("button", { name: "Review new runtime signal" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await boardPanel.getByRole("button", { name: "Draft pending delivery" }).count(),
+    0,
+  );
+
+  await boardPanel.getByRole("button", { name: "Clear filters" }).click();
+  await boardPanel.locator('[data-task-board-filter="readiness"]').selectOption("blocked");
+  await boardPanel.locator('[data-task-board-primary-task-id="task-pending"]').waitFor({
+    state: "visible",
+  });
+  assert.equal(await boardPanel.getByRole("button", { name: "Plan alpha delivery" }).count(), 1);
+
+  await boardPanel.getByRole("button", { name: "Clear filters" }).click();
+  await boardPanel.locator('[data-task-board-filter="root"]').selectOption("task-planned");
+  await boardPanel.locator('[data-task-board-primary-task-id="task-planned"]').waitFor({
+    state: "visible",
+  });
+  assert.equal(await boardPanel.getByRole("button", { name: "Independent active root" }).count(), 0);
+
+  await boardPanel.getByRole("button", { name: "Clear filters" }).click();
+  await boardPanel.locator('[data-task-board-filter="state"]').selectOption("accepted");
+  await boardPanel.locator('[data-task-board-primary-task-id="task-accepted"]').waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await boardPanel.locator(".task-board-card .state-pill", { hasText: "Accepted" }).count() > 0,
+    true,
+  );
+
+  await boardPanel.getByRole("button", { name: "Clear filters" }).click();
+  await boardPanel.getByRole("button", { name: "Show completed" }).click();
+  await boardPanel
+    .locator('[data-task-board-filter="completed-since"]')
+    .fill("2026-06-12");
+  await boardPanel
+    .locator('[data-task-board-filter="completed-through"]')
+    .fill("2026-06-12");
+  assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 12);
+  assert.equal(await boardPanel.getByRole("button", { name: "Ship accepted delivery" }).count(), 0);
+
+  await boardPanel.getByRole("button", { name: "Clear filters" }).click();
+  await boardPanel.getByRole("tab", { name: "Hierarchy" }).click();
+  assert.equal(
+    await boardPanel.getByRole("tab", { name: "Hierarchy" }).getAttribute("aria-selected"),
+    "true",
+  );
+  const plannedNode = boardPanel.locator(
+    '.task-board-hierarchy-branch[data-task-board-task-id="task-planned"]',
+  );
+  await plannedNode.getByRole("button", { name: "Plan alpha delivery", exact: true }).click();
+  assert.equal(
+    await plannedNode
+      .getByRole("button", { name: /Collapse children of Plan alpha delivery/ })
+      .getAttribute("aria-expanded"),
+    "true",
+  );
+  assert.equal(
+    await plannedNode.locator(
+      ':scope > .task-board-hierarchy-children > [data-task-board-task-id="task-pending"].task-board-task-direct-child',
+    ).count(),
+    1,
+  );
+  assert.equal(
+    await plannedNode
+      .locator(":scope > .task-board-hierarchy-children")
+      .evaluate((element) => getComputedStyle(element).borderLeftStyle),
+    "solid",
+  );
+  await plannedNode
+    .getByRole("button", { name: /Collapse children of Plan alpha delivery/ })
+    .click();
+  assert.equal(
+    await plannedNode.locator(
+      ':scope > .task-board-hierarchy-children > [data-task-board-task-id="task-pending"]',
+    ).count(),
+    0,
+  );
+  await plannedNode
+    .getByRole("button", { name: /Expand children of Plan alpha delivery/ })
+    .click();
+
+  const pendingNode = boardPanel.locator(
+    '.task-board-hierarchy-branch[data-task-board-task-id="task-pending"]',
+  );
+  await pendingNode.getByRole("button", { name: /Expand children of Draft pending delivery/ }).click();
+  const waitingNode = boardPanel.locator(
+    '.task-board-hierarchy-branch[data-task-board-task-id="task-waiting"]',
+  );
+  await waitingNode.getByRole("button", { name: /Expand children of Await review/ }).click();
+  const acceptedNode = boardPanel.locator(
+    '.task-board-hierarchy-branch[data-task-board-task-id="task-accepted"]',
+  );
+  await acceptedNode.getByRole("button", { name: "Ship accepted delivery", exact: true }).waitFor({
+    state: "visible",
+  });
+  const pendingNodeCard = pendingNode.locator(":scope > .task-board-hierarchy-node");
+  await pendingNodeCard.getByText("Readiness: Blocked").waitFor({ state: "visible" });
+  await pendingNodeCard.getByText("Assignee: Grace Lead").waitFor({ state: "visible" });
+  await pendingNodeCard.getByText(/1 blocker/).waitFor({ state: "visible" });
+  await pendingNodeCard.getByRole("button", { name: "Await review", exact: true }).waitFor({ state: "visible" });
+
+  await acceptedNode.getByRole("button", { name: "Ship accepted delivery", exact: true }).click();
+  await boardPanel.getByRole("tab", { name: "Board" }).click();
+  const acceptedCard = boardPanel.locator(
+    '.task-board-card[data-task-board-task-id="task-accepted"]',
+  );
+  await acceptedCard.waitFor({ state: "visible" });
+  assert.equal(await acceptedCard.evaluate((element) => element.classList.contains("task-board-task-selected")), true);
+
+  const pendingCard = boardPanel.locator(
+    '.task-board-card[data-task-board-task-id="task-pending"]',
+  );
+  await pendingCard.getByRole("button", { name: "Plan alpha delivery" }).click();
+  const plannedCard = boardPanel.locator(
+    '.task-board-card[data-task-board-task-id="task-planned"]',
+  );
+  assert.equal(await plannedCard.evaluate((element) => element.classList.contains("task-board-task-selected")), true);
+  assert.equal(await pendingCard.evaluate((element) => element.classList.contains("task-board-task-direct-child")), true);
+});
+
+test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {
+  const initialState = seededGitState();
+  const reasonFixtures = [
+    {
+      taskId: "task-planned",
+      readiness: "actionable",
+      resolution: "unresolved",
+      reason: "task_actionable",
+      expected: "The task is ready for its next action.",
+    },
+    {
+      taskId: "task-pending",
+      readiness: "waiting_on_children",
+      resolution: "unresolved",
+      reason: "unresolved_descendants",
+      expected: "One or more descendant tasks are still unresolved.",
+      unresolvedDescendantIds: ["task-waiting"],
+    },
+    {
+      taskId: "task-waiting",
+      readiness: "waiting_for_review",
+      resolution: "unresolved",
+      reason: "active_formal_review",
+      expected: "A formal review is still in progress.",
+    },
+    {
+      taskId: "task-blocked",
+      readiness: "blocked",
+      resolution: "unresolved",
+      reason: "intrinsic_blocker_open",
+      expected: "An active blocker is preventing this task from progressing.",
+    },
+    {
+      taskId: "task-active-later",
+      readiness: "waiting_on_dependencies",
+      resolution: "unresolved",
+      reason: "future_operator_state",
+      expected: "Future operator state.",
+    },
+    {
+      taskId: "task-rejected",
+      readiness: "invalid",
+      resolution: "invalid",
+      reason:
+        "invalid:terminal_task_with_active_review,active_deliverable_without_acceptance_path",
+      expected:
+        "Lifecycle data needs repair: Terminal task with active review; Active deliverable without acceptance path.",
+    },
+  ];
+  reasonFixtures.forEach((fixture) => {
+    const task = initialState.tasks[fixture.taskId];
+    Object.assign(task, {
+      readiness: fixture.readiness,
+      resolution_status: fixture.resolution,
+      integration_ready: false,
+      assessment: {
+        readiness: fixture.readiness,
+        resolution_status: fixture.resolution,
+        resolution_reason: fixture.reason,
+        integration_ready: false,
+        direct_child_ids: [],
+        unresolved_descendant_ids: fixture.unresolvedDescendantIds || [],
+      },
+    });
+  });
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Planning" }).click();
+  for (const projectName of ["Alpha Project", "Beta Project"]) {
+    const projectCard = page.locator("#team-planning-page .planning-project-card", {
+      hasText: projectName,
+    });
+    await projectCard.locator(":scope > details > summary").click();
+  }
+  for (const fixture of reasonFixtures) {
+    const taskCard = page.locator(
+      `#team-planning-page [data-planning-task-id="${fixture.taskId}"]`,
+    );
+    await taskCard.waitFor({ state: "visible" });
+    assert.equal(
+      await taskCard.locator(".planning-task-reason-preview").innerText(),
+      fixture.expected,
+    );
+    assert.equal((await taskCard.textContent()).includes(fixture.reason), false);
+  }
+
+  await page.getByRole("tab", { name: "Teams" }).click();
+  const alphaGroup = page.locator(
+    '#team-people-page [data-team-record-group-id="team-alpha"]',
+  );
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator('[data-team-record-tab="project"]').click();
+  await alphaGroup
+    .locator('[data-project-id="alpha-project"]')
+    .getByRole("button")
+    .click();
+  const taskGraphItem = page
+    .locator("#people-agent-detail-view .task-item")
+    .filter({ hasText: "Plan alpha delivery" });
+  await taskGraphItem.locator("summary").click();
+  await taskGraphItem
+    .getByText("Lifecycle reason: The task is ready for its next action.", {
+      exact: true,
+    })
+    .waitFor({ state: "visible" });
+  assert.equal((await taskGraphItem.textContent()).includes("task_actionable"), false);
 });
 
 test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and worktree identity", async (t) => {
@@ -8031,12 +10113,8 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await page.getByRole("tab", { name: "Task board" }).click();
   await page.locator("#task-board-team-select").selectOption("team-alpha");
   await page.locator("#task-board-project-select").selectOption("alpha-project");
-  const childCard = page.locator(".task-board-card").filter({
-    has: page.locator(".task-board-card-title-row strong", {
-      hasText: /^↳ Draft pending delivery$/,
-    }),
-  });
-  await childCard.getByText("Parent: Plan alpha delivery - depth 1").waitFor({ state: "visible" });
+  const childCard = page.locator('.task-board-card[data-task-board-task-id="task-pending"]');
+  await childCard.getByRole("button", { name: "Plan alpha delivery" }).waitFor({ state: "visible" });
   await childCard
     .getByText("Readiness: blocked - resolution: unresolved - integration not ready")
     .waitFor({ state: "visible" });
@@ -8046,10 +10124,11 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await childCard
     .getByText("Worktree: /home/agent/worktrees/task-pending")
     .waitFor({ state: "visible" });
-  await childCard
-    .getByText(
-      /dependency task-waiting: blocker blocker-upstream-contract \[upstream_contract_unsigned\] The upstream runtime contract is not signed\./,
-    )
+  const childBlockers = childCard.locator(".task-board-card-blockers");
+  await childBlockers.getByText("Dependency:", { exact: true }).waitFor({ state: "visible" });
+  await childBlockers.getByRole("button", { name: "Await review" }).first().waitFor({ state: "visible" });
+  await childBlockers
+    .getByText("The upstream runtime contract is not signed.", { exact: true })
     .waitFor({ state: "visible" });
   assert.equal(await childCard.evaluate((element) => element.classList.contains("task-board-card-blocked")), true);
 });
@@ -8264,16 +10343,12 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await page.locator('[data-my-human-reviews][aria-pressed="true"]').waitFor({
     state: "visible",
   });
-  await page
-    .locator("#team-delivery-page [data-releases-view]")
-    .getByText("release-human", { exact: true })
-    .first()
-    .waitFor({ state: "visible" });
+  const releasesView = page.locator("#team-delivery-page [data-releases-view]");
+  await releasesView.locator('li.release-card[data-release-id="release-human"]').waitFor({
+    state: "visible",
+  });
   assert.equal(
-    await page
-      .locator("#team-delivery-page [data-releases-view]")
-      .getByText("release-not-assigned", { exact: true })
-      .count(),
+    await releasesView.locator('[data-release-id="release-not-assigned"]').count(),
     0,
   );
   const queueRequest = requests.find(
@@ -8297,31 +10372,50 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     await page.evaluate(() => document.activeElement?.id),
     "human-review-human-review-release-human",
   );
-  await detail.getByText(/base base000 - candidate candidate111 - tree tree222/).waitFor({
+  await detail.getByText("Pinned candidate prepared", { exact: true }).waitFor({
     state: "visible",
   });
-  await detail.getByText("Alpha Project (alpha-project)", { exact: true }).waitFor({
+  await detail.getByText("Alpha Project", { exact: true }).waitFor({
     state: "visible",
   });
-  await detail.getByRole("heading", { name: "release-human" }).waitFor({
+  await detail.getByRole("heading", { name: "Release: Ship accepted delivery" }).waitFor({
     state: "visible",
   });
-  await detail.getByRole("heading", { name: "Release notes and included work" }).waitFor({
+  await detail.getByRole("heading", { name: "Included work evidence" }).waitFor({
     state: "visible",
   });
-  await detail.getByText(/deliverable-accepted - Accepted delivery\./).waitFor({
+  const includedWorkSection = detail
+    .getByRole("heading", { name: "Included work evidence" })
+    .locator("..");
+  await includedWorkSection.getByText("Ship accepted delivery", { exact: true }).waitFor({
     state: "visible",
   });
-  await detail
-    .getByText(/Feature team\/alpha\/features\/accepted @ ccc333 - verification passed/)
+  await includedWorkSection.getByText("Accepted delivery.", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await includedWorkSection
+    .getByText("Verification Passed · 1 accepted agent review", { exact: true })
     .waitFor({ state: "visible" });
-  await detail
-    .getByText("Accepted agent reviews: review-accepted by alpha-manager")
+  const includedWorkTechnicalDetails = includedWorkSection.locator(
+    "details.technical-details",
+  );
+  assert.equal(
+    await includedWorkTechnicalDetails
+      .getByText("deliverable-accepted", { exact: true })
+      .isVisible(),
+    false,
+  );
+  await includedWorkTechnicalDetails.locator("summary").click();
+  await includedWorkTechnicalDetails
+    .getByText("team/alpha/features/accepted", { exact: true })
     .waitFor({ state: "visible" });
-  await detail.getByRole("heading", { name: "Recursive contribution graph" }).waitFor({
+  await includedWorkTechnicalDetails.getByText("review-accepted", { exact: true }).waitFor({
     state: "visible",
   });
-  await detail.getByText(/deliverable-accepted ← deliverable-child-a, deliverable-child-b/).waitFor({
+  await detail.getByRole("heading", { name: "Contribution lineage" }).waitFor({
+    state: "visible",
+  });
+  await detail.getByText("Direct contribution", { exact: true }).waitFor({
     state: "visible",
   });
   await detail.getByRole("heading", { name: "Automated verification" }).waitFor({
@@ -8460,9 +10554,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     state: "visible",
   });
   await page
-    .locator("#team-delivery-page [data-releases-view]")
-    .getByText("release-human", { exact: true })
-    .first()
+    .locator('#team-delivery-page [data-releases-view] li.release-card[data-release-id="release-human"]')
     .waitFor({ state: "visible" });
 });
 
@@ -8493,8 +10585,7 @@ test("team add-on reports published release regressions without implying rollbac
     "release-commit-only",
   ]) {
     const incompleteCard = page.locator(
-      "#team-delivery-page .releases-view .record-item",
-      { hasText: incompleteReleaseId },
+      `#team-delivery-page .releases-view li.release-card[data-release-id="${incompleteReleaseId}"]`,
     );
     await incompleteCard.waitFor({ state: "visible" });
     assert.equal(
@@ -8503,9 +10594,9 @@ test("team add-on reports published release regressions without implying rollbac
       `${incompleteReleaseId} must not expose post-release reporting`,
     );
   }
-  const releaseCard = page.locator("#team-delivery-page .releases-view .record-item", {
-    hasText: "release-accepted",
-  });
+  const releaseCard = page.locator(
+    '#team-delivery-page .releases-view li.release-card[data-release-id="release-accepted"]',
+  );
   await releaseCard.waitFor({ state: "visible" });
   await releaseCard.locator(":scope > details > summary").click();
 
@@ -8641,9 +10732,25 @@ test("team add-on project editor keeps human release policy in bounded controls"
     await form.locator('[name="human_reviewer_group_ids"]').inputValue(),
     "release-approvers",
   );
-  assert.match(
-    await form.locator('[name="human_review_checklist"]').inputValue(),
-    /operator-smoke \| Operator smoke test \| Run the primary operator flow\. \| required/,
+  assert.equal(await form.locator('[name="human_review_checklist"]').count(), 0);
+  const checklistEditor = form.locator("[data-human-review-checklist-editor]");
+  const checklistRows = checklistEditor.locator("[data-human-review-checklist-row]");
+  assert.equal(await checklistRows.count(), 1);
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_label"]').inputValue(),
+    "Operator smoke test",
+  );
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_description"]').inputValue(),
+    "Run the primary operator flow.",
+  );
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_id"]').inputValue(),
+    "operator-smoke",
+  );
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_required"]').isChecked(),
+    true,
   );
   assert.equal(
     await form.locator('[name="human_review_preparation_mode"]').inputValue(),
@@ -8660,6 +10767,61 @@ test("team add-on project editor keeps human release policy in bounded controls"
   await form
     .locator('[name="human_reviewer_group_ids"]')
     .fill("release-approvers\nrelease-qa");
+  await checklistEditor.getByRole("button", { name: "Add check" }).click();
+  assert.equal(await checklistRows.count(), 2);
+  const newChecklistRow = checklistRows.nth(1);
+  await newChecklistRow
+    .locator('[name="human_review_checklist_label"]')
+    .fill("Release confidence");
+  await newChecklistRow
+    .locator('[name="human_review_checklist_description"]')
+    .fill("Confirm the candidate | remaining risk is acceptable.");
+  await newChecklistRow
+    .locator('[name="human_review_checklist_id"]')
+    .fill("operator-smoke");
+  await newChecklistRow
+    .locator('[name="human_review_checklist_required"]')
+    .uncheck();
+
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page
+    .getByText("Fix the highlighted human review requirement before saving.")
+    .waitFor({ state: "visible" });
+  assert.match(
+    await newChecklistRow
+      .locator('[name="human_review_checklist_id"]')
+      .evaluate((field) => field.validationMessage),
+    /Checklist keys must be unique/,
+  );
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "PATCH" &&
+        request.pathname === "/api/addons/team-addon/projects/alpha-project",
+    ).length,
+    0,
+  );
+
+  await newChecklistRow
+    .locator('[name="human_review_checklist_id"]')
+    .fill("");
+  await checklistEditor.getByRole("button", { name: "Add check" }).click();
+  assert.equal(await checklistRows.count(), 3);
+  await checklistRows
+    .nth(2)
+    .locator('[name="human_review_checklist_label"]')
+    .fill("Temporary check");
+  await checklistRows.nth(2).getByRole("button", { name: "Remove" }).click();
+  assert.equal(await checklistRows.count(), 2);
+  await checklistRows
+    .nth(1)
+    .getByRole("button", { name: "Move checklist item up" })
+    .click();
+  assert.equal(
+    await checklistRows.nth(0).locator('[name="human_review_checklist_label"]').inputValue(),
+    "Release confidence",
+  );
+
   await form.getByRole("button", { name: "Save changes" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
 
@@ -8677,9 +10839,22 @@ test("team add-on project editor keeps human release policy in bounded controls"
     patchRequest.payload.release_policy.human_review_requirement.preparation_mode,
     "workflow",
   );
-  assert.equal(
-    patchRequest.payload.release_policy.human_review_requirement.checklist[0].id,
-    "operator-smoke",
+  assert.deepEqual(
+    patchRequest.payload.release_policy.human_review_requirement.checklist,
+    [
+      {
+        id: "release-confidence",
+        label: "Release confidence",
+        description: "Confirm the candidate | remaining risk is acceptable.",
+        required: false,
+      },
+      {
+        id: "operator-smoke",
+        label: "Operator smoke test",
+        description: "Run the primary operator flow.",
+        required: true,
+      },
+    ],
   );
   assert.equal(
     JSON.stringify(patchRequest.payload.release_policy).includes("injected-user-control"),
@@ -8688,5 +10863,464 @@ test("team add-on project editor keeps human release policy in bounded controls"
   assert.equal(
     "reviewer_user_ids" in patchRequest.payload.release_policy.human_review_requirement,
     false,
+  );
+});
+
+test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+
+  initialState.tasks["task-starship-root"] = {
+    id: "task-starship-root",
+    owner_agent_id: "alpha-lead",
+    project_id: "alpha-project",
+    priority: -10,
+    state: "in_progress",
+    state_entered_at: "2026-07-26T12:00:00Z",
+    title: "Prepare the Starship launch",
+    description: [
+      "=== THE GAME ===",
+      "Build the **Starship** launch console without exposing storage identifiers.",
+      "",
+      "MISSION CONTROL",
+      "Coordinate the named flight teams and preserve `telemetry` evidence.",
+      "",
+      "- Verify the launch window",
+      "- Reconcile every child contribution",
+      "",
+      "# Acceptance",
+      "1. Review the composed delivery",
+      "2. Publish the operator handoff",
+      "",
+      "<script>window.__unsafePlanningBrief = true</script>",
+    ].join("\n"),
+    created_by_agent_id: "alpha-manager",
+    child_task_ids: [
+      "task-starship-missing",
+      "task-starship-submitted",
+      "task-starship-reviewed",
+      "task-starship-accepted",
+    ],
+    dependency_status: "waiting",
+    readiness: "waiting",
+    resolution_status: "unresolved",
+    assessment: {
+      readiness: "waiting",
+      resolution_status: "unresolved",
+      resolution_reason: "Waiting for two unresolved child contributions.",
+      direct_child_ids: [
+        "task-starship-missing",
+        "task-starship-submitted",
+        "task-starship-reviewed",
+        "task-starship-accepted",
+      ],
+      unresolved_descendant_ids: [
+        "task-starship-missing",
+        "task-starship-submitted",
+      ],
+      contribution_coverage: {
+        status: "incomplete",
+        complete: false,
+        required_source_deliverable_ids: [
+          "deliverable-starship-missing",
+          "deliverable-starship-submitted",
+          "deliverable-starship-reviewed",
+          "deliverable-starship-accepted",
+        ],
+        missing_source_deliverable_ids: ["deliverable-starship-missing"],
+        provided_source_deliverable_ids: [
+          "deliverable-starship-submitted",
+          "deliverable-starship-reviewed",
+          "deliverable-starship-accepted",
+        ],
+        unexpected_source_deliverable_ids: [],
+      },
+    },
+    created_at: "2026-07-25T09:00:00Z",
+    updated_at: "2026-07-26T12:00:00Z",
+  };
+
+  const childTasks = [
+    {
+      id: "task-starship-missing",
+      title: "Specify engine telemetry",
+      state: "pending",
+      deliverableId: "deliverable-starship-missing",
+    },
+    {
+      id: "task-starship-submitted",
+      title: "Implement flight controls",
+      state: "finished",
+      deliverableId: "deliverable-starship-submitted",
+    },
+    {
+      id: "task-starship-reviewed",
+      title: "Review navigation safeguards",
+      state: "waiting_for_review",
+      deliverableId: "deliverable-starship-reviewed",
+    },
+    {
+      id: "task-starship-accepted",
+      title: "Approve the launch checklist",
+      state: "accepted",
+      deliverableId: "deliverable-starship-accepted",
+    },
+  ];
+  childTasks.forEach((child, index) => {
+    initialState.tasks[child.id] = {
+      id: child.id,
+      owner_agent_id: "alpha-lead",
+      project_id: "alpha-project",
+      priority: index,
+      state: child.state,
+      state_entered_at: `2026-07-26T1${index}:00:00Z`,
+      title: child.title,
+      description: `${child.title} task brief.`,
+      created_by_agent_id: "alpha-manager",
+      parent_task_id: "task-starship-root",
+      deliverable_ids: [child.deliverableId],
+      created_at: "2026-07-25T09:00:00Z",
+      updated_at: `2026-07-26T1${index}:00:00Z`,
+    };
+  });
+  initialState.tasks["task-starship-cancelled"] = {
+    id: "task-starship-cancelled",
+    owner_agent_id: "alpha-lead",
+    project_id: "alpha-project",
+    priority: 20,
+    state: "cancelled",
+    state_entered_at: "2026-07-26T15:00:00Z",
+    title: "Retire the superseded launch rehearsal",
+    description: "This rehearsal was cancelled before review.",
+    created_by_agent_id: "alpha-manager",
+    dependency_status: "satisfied",
+    readiness: "resolved",
+    resolution_status: "resolved",
+    integration_ready: false,
+    assessment: {
+      readiness: "resolved",
+      resolution_status: "resolved",
+      integration_ready: false,
+      direct_child_ids: [],
+      unresolved_descendant_ids: [],
+    },
+    cancellation: {
+      reason_code: "superseded",
+      reason: "Replaced by the production launch rehearsal.",
+      actor_id: "alpha-manager",
+      cancelled_at: "2026-07-26T15:00:00Z",
+    },
+    deliverable_ids: [],
+    created_at: "2026-07-25T10:00:00Z",
+    updated_at: "2026-07-26T15:00:00Z",
+  };
+
+  initialState.deliverables["deliverable-starship-missing"] = {
+    id: "deliverable-starship-missing",
+    task_id: "task-starship-missing",
+    producer_agent_id: "alpha-lead",
+    summary: "Engine telemetry specification.",
+    state: "pending",
+    artifact_refs: [],
+    review_request_ids: [],
+  };
+  initialState.deliverables["deliverable-starship-submitted"] = {
+    id: "deliverable-starship-submitted",
+    task_id: "task-starship-submitted",
+    producer_agent_id: "alpha-lead",
+    summary: "Flight controls implementation.",
+    state: "pending",
+    artifact_refs: ["artifact-space:starship/flight-controls"],
+    review_request_ids: [],
+  };
+  initialState.deliverables["deliverable-starship-reviewed"] = {
+    id: "deliverable-starship-reviewed",
+    task_id: "task-starship-reviewed",
+    producer_agent_id: "alpha-lead",
+    summary: "Navigation safeguards review.",
+    state: "pending",
+    artifact_refs: ["artifact-space:starship/navigation"],
+    review_request_ids: ["review-starship-navigation"],
+  };
+  initialState.deliverables["deliverable-starship-accepted"] = {
+    id: "deliverable-starship-accepted",
+    task_id: "task-starship-accepted",
+    producer_agent_id: "alpha-lead",
+    summary: "Accepted launch checklist.",
+    state: "accepted",
+    artifact_refs: ["artifact-space:starship/launch-checklist"],
+    review_request_ids: [],
+  };
+  initialState.review_requests["review-starship-navigation"] = {
+    id: "review-starship-navigation",
+    deliverable_id: "deliverable-starship-reviewed",
+    reviewer_agent_id: "alpha-manager",
+    state: "accepted",
+    findings: [],
+    decision_at: "2026-07-26T14:00:00Z",
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Planning" }).click();
+  const alphaProjectCard = page.locator(
+    "#team-planning-page .planning-project-card",
+    { hasText: "Alpha Project" },
+  );
+  await alphaProjectCard.locator(":scope > details > summary").click();
+
+  const rootTask = page.locator(
+    '#team-planning-page [data-planning-task-id="task-starship-root"]',
+  );
+  await rootTask.waitFor({ state: "visible" });
+  const compactOverview = await rootTask
+    .locator(":scope > .planning-task-details > .planning-task-summary")
+    .innerText();
+  assert.match(compactOverview, /Prepare the Starship launch/);
+  assert.match(compactOverview, /Grace Lead · state for (?:just now|\d+ (?:minute|hour|day)s?)/);
+  assert.match(compactOverview, /Waiting for two unresolved child contributions\./);
+  assert.match(compactOverview, /In Progress/);
+  assert.doesNotMatch(
+    compactOverview,
+    /task-starship-root|task-starship-missing|alpha-lead|alpha-project/,
+  );
+
+  await rootTask.locator(":scope > .planning-task-details > summary").click();
+  const rootBody = rootTask.locator(".planning-task-body");
+  for (const heading of [
+    "Overview",
+    "Lifecycle",
+    "Hierarchy",
+    "Delivery / contribution",
+    "Task brief",
+    "Technical details",
+  ]) {
+    await rootBody.getByRole("heading", { name: heading, exact: true }).waitFor({
+      state: "visible",
+    });
+  }
+  await rootBody.getByText("Owner", { exact: true }).waitFor({ state: "visible" });
+  await rootBody.getByText("Grace Lead", { exact: true }).first().waitFor({
+    state: "visible",
+  });
+  await rootBody.getByText("State age", { exact: true }).waitFor({ state: "visible" });
+  await rootBody
+    .locator(".planning-lifecycle-reason", {
+      hasText: "Waiting for two unresolved child contributions.",
+    })
+    .waitFor({ state: "visible" });
+
+  const lifecycle = rootBody.locator('ol[aria-label="Task lifecycle"]');
+  await lifecycle.waitFor({ state: "visible" });
+  assert.deepEqual(
+    await lifecycle.locator("li strong").allTextContents(),
+    ["Created", "Dependencies", "Execution", "Review / acceptance", "Resolved"],
+  );
+
+  const hierarchySection = rootBody
+    .getByRole("heading", { name: "Hierarchy", exact: true })
+    .locator("..");
+  const hierarchySummary = await hierarchySection
+    .locator(".planning-hierarchy-summary")
+    .innerText();
+  assert.match(hierarchySummary, /4 direct children/);
+  assert.match(hierarchySummary, /2 unresolved descendants/);
+  const namedHierarchy = hierarchySection.locator(".planning-hierarchy-details");
+  assert.equal(await namedHierarchy.getAttribute("open"), null);
+  await namedHierarchy.locator("summary").click();
+  for (const child of childTasks) {
+    await namedHierarchy.getByText(child.title, { exact: true }).waitFor({
+      state: "visible",
+    });
+  }
+
+  const contributionSection = rootBody
+    .getByRole("heading", {
+      name: "Delivery / contribution",
+      exact: true,
+    })
+    .locator("..");
+  const expectedContributionRows = [
+    [".planning-contribution-missing", "Specify engine telemetry", "Missing"],
+    [".planning-contribution-submitted", "Implement flight controls", "Submitted"],
+    [".planning-contribution-reviewed", "Review navigation safeguards", "Reviewed"],
+    [".planning-contribution-accepted", "Approve the launch checklist", "Accepted"],
+  ];
+  for (const [selector, title, status] of expectedContributionRows) {
+    const row = contributionSection.locator(selector);
+    await row.getByText(title, { exact: true }).waitFor({ state: "visible" });
+    await row.getByText(status, { exact: true }).waitFor({ state: "visible" });
+  }
+
+  const briefDetails = rootBody.locator(".planning-task-brief-details");
+  assert.equal(await briefDetails.getAttribute("open"), null);
+  assert.equal(
+    await briefDetails.locator(".planning-task-brief-content").isVisible(),
+    false,
+  );
+  await briefDetails.locator("summary", { hasText: "Show full brief" }).click();
+  await briefDetails.getByRole("heading", { name: "THE GAME", exact: true }).waitFor({
+    state: "visible",
+  });
+  await briefDetails
+    .getByRole("heading", { name: "MISSION CONTROL", exact: true })
+    .waitFor({ state: "visible" });
+  await briefDetails.getByRole("heading", { name: "Acceptance", exact: true }).waitFor({
+    state: "visible",
+  });
+  await briefDetails.locator("strong", { hasText: "Starship" }).waitFor({
+    state: "visible",
+  });
+  await briefDetails.locator("code", { hasText: "telemetry" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await briefDetails.locator("ul > li").count(), 2);
+  assert.equal(await briefDetails.locator("ol > li").count(), 2);
+  assert.equal(await briefDetails.locator("script").count(), 0);
+  assert.equal(
+    await briefDetails.getByText("=== THE GAME ===", { exact: true }).count(),
+    0,
+  );
+
+  for (const identifier of [
+    "task-starship-root",
+    "task-starship-missing",
+    "alpha-lead",
+    "alpha-project",
+  ]) {
+    const identifierLocations = await rootBody
+      .getByText(identifier, { exact: true })
+      .evaluateAll((nodes) => ({
+        count: nodes.length,
+        outsideTechnical: nodes.filter(
+          (node) =>
+            !node.closest(
+              ".planning-task-technical-section details.technical-details",
+            ),
+        ).length,
+      }));
+    assert.ok(
+      identifierLocations.count > 0,
+      `${identifier} should remain available in technical details`,
+    );
+    assert.equal(
+      identifierLocations.outsideTechnical,
+      0,
+      `${identifier} should be confined to technical details`,
+    );
+  }
+  const technicalIdentifiers = rootBody.locator(
+    ".planning-task-technical-section details.technical-details",
+  );
+  assert.equal(await technicalIdentifiers.getAttribute("open"), null);
+  await technicalIdentifiers.locator("summary").click();
+  for (const identifier of [
+    "task-starship-root",
+    "task-starship-missing",
+    "alpha-lead",
+    "alpha-project",
+  ]) {
+    await technicalIdentifiers.getByText(identifier, { exact: true }).first().waitFor({
+      state: "visible",
+    });
+  }
+
+  await page.locator("#planning-status-cancelled").check();
+  const refreshedAlphaProjectCard = page.locator(
+    "#team-planning-page .planning-project-card",
+    { hasText: "Alpha Project" },
+  );
+  await refreshedAlphaProjectCard.locator(":scope > details > summary").click();
+  const cancelledTask = page.locator(
+    '#team-planning-page [data-planning-task-id="task-starship-cancelled"]',
+  );
+  await cancelledTask.locator(":scope > .planning-task-details > summary").click();
+  const cancelledLifecycle = cancelledTask.locator('ol[aria-label="Task lifecycle"]');
+  assert.equal(
+    await cancelledLifecycle.locator(".planning-lifecycle-cancelled").count(),
+    1,
+  );
+  const skippedReview = cancelledLifecycle.locator(".planning-lifecycle-skipped", {
+    hasText: "Review / acceptance",
+  });
+  assert.equal(await skippedReview.count(), 1);
+  await skippedReview
+    .getByText("Skipped — task cancelled", { exact: true })
+    .waitFor({ state: "visible" });
+});
+
+test("team add-on Planning skips review for resolved support tasks", async (t) => {
+  const initialState = seededGitState();
+  initialState.tasks = {
+    "task-support-finished": {
+      id: "task-support-finished",
+      owner_agent_id: "alpha-lead",
+      project_id: "alpha-project",
+      priority: 1,
+      task_kind: "support",
+      state: "finished",
+      state_entered_at: "2026-07-27T10:00:00Z",
+      title: "Reconcile the deployment checklist",
+      description: "Confirm the checklist state without producing a durable deliverable.",
+      created_by_agent_id: "alpha-manager",
+      dependency_status: "satisfied",
+      readiness: "resolved",
+      resolution_status: "resolved",
+      integration_ready: true,
+      assessment: {
+        readiness: "resolved",
+        resolution_status: "resolved",
+        integration_ready: true,
+        resolution_reason: "support_task_finished",
+        direct_child_ids: [],
+        unresolved_descendant_ids: [],
+      },
+      deliverable_ids: [],
+      created_at: "2026-07-27T09:00:00Z",
+      updated_at: "2026-07-27T10:00:00Z",
+    },
+  };
+  initialState.deliverables = {};
+  initialState.review_requests = {};
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Planning" }).click();
+  await page.locator("#planning-status-finished").check();
+  const projectCard = page.locator(
+    "#team-planning-page .planning-project-card",
+    { hasText: "Alpha Project" },
+  );
+  await projectCard.locator(":scope > details > summary").click();
+  const supportTask = projectCard.locator(
+    '[data-planning-task-id="task-support-finished"]',
+  );
+  await supportTask.waitFor({ state: "visible" });
+  await supportTask.locator(":scope > .planning-task-details > summary").click();
+
+  const lifecycle = supportTask.locator('ol[aria-label="Task lifecycle"]');
+  const reviewStage = lifecycle.locator(".planning-lifecycle-skipped", {
+    hasText: "Review / acceptance",
+  });
+  assert.equal(await reviewStage.count(), 1);
+  assert.equal(
+    await lifecycle.locator(".planning-lifecycle-current", {
+      hasText: "Review / acceptance",
+    }).count(),
+    0,
+  );
+  await reviewStage
+    .getByText("Not required — support task finished", { exact: true })
+    .waitFor({ state: "visible" });
+  assert.equal(
+    await lifecycle.locator(".planning-lifecycle-complete", {
+      hasText: "Resolved",
+    }).count(),
+    1,
   );
 });

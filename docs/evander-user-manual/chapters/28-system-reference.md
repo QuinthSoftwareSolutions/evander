@@ -205,7 +205,7 @@ The Team Add-on contributes one navigation area with fifteen current views. Ther
 | Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |
 | Planning | Goals, deliverables, and status-filtered task context for planning work |
-| Timeline | Time-ordered domain activity |
+| Activity timeline | Time-ordered domain activity |
 | Org chart | Visual team, reporting, and governance relationships |
 
 UI state is a projection. For a disputed operational fact, prefer the Team Admin API payload and then `runtime/addons/team-addon/state.db` over what a stale browser tab last rendered.

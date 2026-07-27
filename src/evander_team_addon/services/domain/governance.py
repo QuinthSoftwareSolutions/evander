@@ -45,13 +45,21 @@ def _governance_goals_with_generated_ids(
         if goal_id is None:
             goal_id = _generated_id(
                 prefix="governance-goal",
-                labels=[governance_group_id, payload.get("description")],
+                labels=[
+                    governance_group_id,
+                    payload.get("name") or payload.get("description"),
+                ],
                 existing_ids=used_ids,
             )
         if goal_id in used_ids:
             raise ValueError(f"duplicate governance goal id: {goal_id}")
         used_ids.add(goal_id)
         payload["id"] = goal_id
+        payload["name"] = (
+            _optional_text(payload.get("name"))
+            or _optional_text(payload.get("description"))
+            or goal_id
+        )
         normalized.append(GovernanceGoal.model_validate(payload))
     return normalized
 

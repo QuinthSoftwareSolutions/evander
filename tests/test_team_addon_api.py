@@ -2849,6 +2849,62 @@ def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
     assert missing_view.json() == {"error": "view not found"}
 
 
+def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    _team_admin_service(repo).create_review_profile(
+        profile_id="planning-readiness",
+        team_id="team",
+        project_id="project",
+        name="Planning readiness",
+    )
+    client = _client(tmp_path)
+
+    planning = client.get("/api/addons/team-addon/views/planning")
+
+    assert planning.status_code == 200
+    planning_payload = planning.json()
+    planning_state = planning_payload["data"]["state"]
+    assert set(planning_state["blockers"]) == set(repo.read().blockers)
+    assert set(planning_state["blocker_events"]) == set(repo.read().blocker_events)
+    assert planning_state["review_profiles"]["planning-readiness"]["name"] == (
+        "Planning readiness"
+    )
+    assert set(planning_payload["resource_tokens"]["review_profiles"]) == {
+        "planning-readiness"
+    }
+    assert all(
+        event["blocker_id"] in planning_state["blockers"]
+        for event in planning_state["blocker_events"].values()
+    )
+
+    operations = client.get("/api/addons/team-addon/views/operations")
+
+    assert operations.status_code == 200
+    operations_state = operations.json()["data"]["state"]
+    assert set(operations_state["deliverables"]) == {"deliverable"}
+    assert set(operations_state["release_packages"]) == {"release-1"}
+    assert set(operations_state["ephemeral_assignments"]) == {
+        "ephemeral-cleanup",
+        "ephemeral-failed",
+    }
+    attention = operations_state["runtime_operations"]["attention"]
+    blocked_release = next(
+        row for row in attention if row["kind"] == "blocked_release_package"
+    )
+    assert blocked_release["release_package_id"] in operations_state["release_packages"]
+    ephemeral_rows = [
+        row
+        for row in attention
+        if row["kind"]
+        in {"failed_ephemeral_assignment", "cleanup_pending_ephemeral_assignment"}
+    ]
+    assert {
+        row["assignment_id"] for row in ephemeral_rows
+    } == set(operations_state["ephemeral_assignments"])
+
+
 def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     now = datetime(2026, 1, 2, tzinfo=UTC)
@@ -3978,7 +4034,17 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
         "facets": {"types": [], "statuses": []},
         "entries": [],
         "source": "derived_from_current_team_state",
-        "description": "Derived timeline from the current TeamState snapshot.",
+        "kind": "activity_timeline",
+        "completeness": "retained_current_state_only",
+        "retention_boundary": (
+            "Only records and timestamps retained in the current TeamState snapshot are "
+            "represented."
+        ),
+        "description": (
+            "Activity reconstructed from records retained in the current TeamState snapshot; "
+            "earlier transitions, deleted or compacted records, and previous field values may "
+            "be unavailable. This is not an audit log."
+        ),
         "filters": {},
     }
 
@@ -4298,6 +4364,29 @@ def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
     assert state["governance_groups"]["portfolio"]["goals"][0]["id"].startswith(
         "governance-goal-portfolio"
     )
+    assert (
+        state["governance_groups"]["portfolio"]["goals"][0]["name"]
+        == "Keep the team under budget"
+    )
+
+    updated = client.patch(
+        "/api/addons/team-addon/governance-groups/portfolio",
+        json={
+            "expected_revision": state["revision"],
+            "goals": [
+                {
+                    "name": "Budget stewardship",
+                    "description": "Keep the team within its approved budget.",
+                }
+            ],
+        },
+    )
+    assert updated.status_code == 200
+    state = updated.json()
+    updated_goal = state["governance_groups"]["portfolio"]["goals"][0]
+    assert updated_goal["id"].startswith("governance-goal-portfolio-budget-stewardship")
+    assert updated_goal["name"] == "Budget stewardship"
+    assert updated_goal["description"] == "Keep the team within its approved budget."
 
     agenda = client.post(
         "/api/addons/team-addon/governance-agenda",
@@ -4487,6 +4576,7 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert attention["failed_action_record"]["error"] == "build failed"
     assert attention["failed_git_promotion"]["promotion_id"] == "promotion-1"
     assert attention["failed_git_promotion"]["release_package_id"] == "release-1"
+    assert attention["failed_git_promotion"]["commit_sha"] == "abc123"
     assert attention["blocked_release_package"]["release_package_id"] == "release-1"
     assert attention["blocked_release_package"]["state"] == "blocked"
     assert attention["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
@@ -5019,6 +5109,17 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     assert payload["derived"] is True
     assert payload["audit_log"] is False
     assert payload["source"] == "derived_from_current_team_state"
+    assert payload["kind"] == "activity_timeline"
+    assert payload["completeness"] == "retained_current_state_only"
+    assert payload["retention_boundary"] == (
+        "Only records and timestamps retained in the current TeamState snapshot are "
+        "represented."
+    )
+    assert payload["description"] == (
+        "Activity reconstructed from records retained in the current TeamState snapshot; "
+        "earlier transitions, deleted or compacted records, and previous field values may "
+        "be unavailable. This is not an audit log."
+    )
     assert payload["filters"] == {
         "agent_id": "lead",
         "type": ["task", "review"],
@@ -6545,12 +6646,17 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "id": "release",
             "project_id": "project",
             "deliverable_ids": ["deliverable"],
+            "summary": "Publish the reviewed backend delivery.",
             "expected_revision": 9,
         },
     )
     assert response.status_code == 201
     payload = response.json()
     assert payload["release_packages"]["release"]["deliverable_ids"] == ["deliverable"]
+    assert (
+        payload["release_packages"]["release"]["summary"]
+        == "Publish the reviewed backend delivery."
+    )
     assert len(payload["published_event_ids"]) == 1
     events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
     assert len(events) == 1
@@ -6561,10 +6667,15 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     response = client.get("/api/addons/team-addon/release-packages")
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["release_packages"]] == ["release"]
+    assert (
+        response.json()["release_packages"][0]["summary"]
+        == "Publish the reviewed backend delivery."
+    )
 
     response = client.get("/api/addons/team-addon/release-packages/release")
     assert response.status_code == 200
     assert response.json()["project_id"] == "project"
+    assert response.json()["summary"] == "Publish the reviewed backend delivery."
 
     response = client.get("/api/addons/team-addon/release-packages/missing")
     assert response.status_code == 404

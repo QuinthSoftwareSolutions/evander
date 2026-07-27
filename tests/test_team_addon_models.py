@@ -346,6 +346,7 @@ def _state_with_runtime_operations() -> TeamState:
         target_branch="team/team/releases/release",
         promotion_kind="release",
         state="failed",
+        commit_sha="failed-commit-sha",
         error="merge conflict",
     )
     state.ephemeral_assignments["ephemeral-failed"] = EphemeralAssignment(
@@ -1331,6 +1332,7 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_action_record"]["error"] == "build failed"
     assert rows["failed_git_promotion"]["promotion_id"] == "promotion-1"
     assert rows["failed_git_promotion"]["release_package_id"] == "release"
+    assert rows["failed_git_promotion"]["commit_sha"] == "failed-commit-sha"
     assert rows["blocked_release_package"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["state"] == "blocked"
     assert rows["blocked_release_package"]["next_action"] == "resolve_blocked_release"
@@ -1344,6 +1346,139 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_ephemeral_assignment"]["state"] == "failed"
     assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
     assert rows["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_runtime_attention_derives_age_links_and_terminal_reconciliation() -> None:
+    state = _state_with_runtime_operations()
+    now = datetime(2026, 8, 1, 12, tzinfo=UTC)
+    occurred_at = now - timedelta(days=10)
+    state.tasks["waiting-task"].state = TeamTaskState.ACCEPTED
+    state.tasks["waiting-task"].state_entered_at = occurred_at
+    state.deliverables["deliverable"].state = TeamRecordState.ACCEPTED
+    state.release_packages["release"].state = TeamRecordState.ACCEPTED
+    state.release_packages["release"].error = None
+    state.inbox["inbox-1"].task_id = None
+    state.inbox["inbox-1"].created_at = occurred_at
+    state.inbox["inbox-1"].payload = {
+        "legacy_context": [
+            {"task_id": "waiting-task"},
+            {
+                "nested": {
+                    "deliverable_id": "deliverable",
+                    "release_package_id": "release",
+                }
+            },
+        ]
+    }
+    state.inbox["passive-note"] = AgentInboxItem(
+        id="passive-note",
+        recipient_agent_id="ui",
+        item_type=TeamInboxItemType.PROGRESS_REPORT,
+        response_requested=False,
+        state=TeamInboxItemState.PENDING,
+        created_at=now - timedelta(hours=2),
+    )
+
+    payload = runtime_operations_payload(state, now=now)
+    inbox_row = next(
+        row for row in payload["attention"] if row.get("inbox_item_id") == "inbox-1"
+    )
+    passive_row = next(
+        row for row in payload["attention"] if row.get("inbox_item_id") == "passive-note"
+    )
+
+    assert inbox_row["occurred_at"] == occurred_at.isoformat()
+    assert inbox_row["age_seconds"] == 10 * 24 * 60 * 60
+    assert inbox_row["age_bucket"] == "gte_7d"
+    assert inbox_row["attention_group"] == "retained_history"
+    assert inbox_row["attention_reason"] == "terminal_work_pending_reconciliation"
+    assert inbox_row["reconciliation_required"] is True
+    assert inbox_row["project_id"] == "project"
+    assert inbox_row["project_ids"] == ["project"]
+    assert inbox_row["team_id"] == "team"
+    assert {"waiting-task", "task"}.issubset(inbox_row["links"]["task_ids"])
+    assert inbox_row["links"]["deliverable_ids"] == ["deliverable"]
+    assert inbox_row["links"]["release_package_ids"] == ["release"]
+    terminal_context = {
+        (context["kind"], context["id"], context["state"])
+        for context in inbox_row["terminal_context"]
+    }
+    assert ("task", "waiting-task", "accepted") in terminal_context
+    assert ("deliverable", "deliverable", "accepted") in terminal_context
+    assert ("release_package", "release", "accepted") in terminal_context
+
+    assert passive_row["attention_group"] == "retained_history"
+    assert passive_row["attention_reason"] == "pending_without_response_obligation"
+    assert passive_row["reconciliation_required"] is False
+
+    group_ranks = {
+        "active_obligation": 0,
+        "failed_attempt": 1,
+        "retained_history": 2,
+    }
+    ranked_groups = [group_ranks[row["attention_group"]] for row in payload["attention"]]
+    assert ranked_groups == sorted(ranked_groups)
+    assert all(row["occurred_at"] for row in payload["attention"])
+
+
+def test_runtime_attention_reconciles_pending_inbox_from_its_primary_target() -> None:
+    state = _state_with_runtime_operations()
+    state.deliverables["deliverable"].state = TeamRecordState.ACCEPTED
+    state.release_packages["release"].state = TeamRecordState.PENDING
+    state.release_packages["release"].error = None
+    state.review_requests["release-review"] = ReviewRequest(
+        id="release-review",
+        release_package_id="release",
+        candidate_commit_sha="candidate-sha",
+        reviewer_agent_id="ui",
+        state=TeamRecordState.PENDING,
+    )
+    state.inbox["release-review-inbox"] = AgentInboxItem(
+        id="release-review-inbox",
+        recipient_agent_id="ui",
+        sender_agent_id="lead",
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        response_requested=True,
+        state=TeamInboxItemState.PENDING,
+        payload={
+            "kind": "release_review_request",
+            "review_request_id": "release-review",
+            "release_package_id": "release",
+        },
+    )
+
+    payload = runtime_operations_payload(
+        state,
+        now=datetime(2026, 8, 1, 12, tzinfo=UTC),
+    )
+    row = next(
+        item
+        for item in payload["attention"]
+        if item.get("inbox_item_id") == "release-review-inbox"
+    )
+
+    assert row["links"]["deliverable_ids"] == ["deliverable"]
+    assert {
+        (context["kind"], context["id"], context["state"])
+        for context in row["terminal_context"]
+    } == {("deliverable", "deliverable", "accepted")}
+    assert row["attention_group"] == "active_obligation"
+    assert row["attention_reason"] == "awaiting_response"
+    assert row["reconciliation_required"] is False
+
+    state.review_requests["release-review"].state = TeamRecordState.ACCEPTED
+    reconciled_payload = runtime_operations_payload(
+        state,
+        now=datetime(2026, 8, 1, 12, tzinfo=UTC),
+    )
+    reconciled = next(
+        item
+        for item in reconciled_payload["attention"]
+        if item.get("inbox_item_id") == "release-review-inbox"
+    )
+    assert reconciled["attention_group"] == "retained_history"
+    assert reconciled["attention_reason"] == "terminal_work_pending_reconciliation"
+    assert reconciled["reconciliation_required"] is True
 
 
 def test_runtime_operations_ignores_failed_promotion_for_terminal_release() -> None:

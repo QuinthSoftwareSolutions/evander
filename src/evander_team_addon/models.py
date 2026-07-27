@@ -143,6 +143,16 @@ class TeamCaseStatus(str, Enum):
     CLOSED = "closed"
 
 
+ACTIVE_TEAM_CASE_STATUS_VALUES = frozenset(
+    {
+        TeamCaseStatus.OPEN.value,
+        TeamCaseStatus.TRIAGE.value,
+        TeamCaseStatus.IN_PROGRESS.value,
+        TeamCaseStatus.WAITING.value,
+    }
+)
+
+
 class EphemeralAssignmentState(str, Enum):
     REQUESTED = "requested"
     SPAWN_PENDING = "spawn_pending"
@@ -410,10 +420,24 @@ class ProjectGoal(TeamModel):
 
 class GovernanceGoal(TeamModel):
     id: str
+    name: str
     description: str
     state: TeamRecordState = TeamRecordState.PENDING
 
-    @field_validator("id", "description", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_name(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        payload = dict(value)
+        if _optional_text(payload.get("name")) is None:
+            payload["name"] = (
+                _optional_text(payload.get("id"))
+                or _optional_text(payload.get("description"))
+            )
+        return payload
+
+    @field_validator("id", "name", "description", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
@@ -2943,6 +2967,7 @@ class ReleaseCandidateManifest(TeamModel):
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
+    summary: str | None = None
     supersedes_release_package_id: str | None = None
     deliverable_ids: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
@@ -2995,6 +3020,7 @@ class ReleasePackage(TeamModel):
         "candidate_commit_sha",
         "candidate_tree_hash",
         "approved_commit_sha",
+        "summary",
         "error",
         mode="before",
     )
@@ -6160,6 +6186,7 @@ def runtime_operations_payload(
         state,
         session_health=session_health,
         agent_ids=included_agent_ids,
+        now=effective_now,
     )
     return {
         "generated_at": effective_now.isoformat(),
@@ -6583,7 +6610,9 @@ def _runtime_attention_payload(
     *,
     session_health: list[dict[str, Any]] | None = None,
     agent_ids: set[str] | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    effective_now = _ensure_utc(now or utc_now())
     rows: list[dict[str, Any]] = []
     rows.extend(_expired_session_rows(state, session_health or []))
     rows.extend(_blocker_rows(state))
@@ -6594,9 +6623,18 @@ def _runtime_attention_payload(
     rows.extend(_failed_promotion_rows(state))
     rows.extend(_blocked_release_rows(state))
     rows.extend(_ephemeral_assignment_rows(state))
+    rows = [
+        _runtime_attention_metadata(
+            state,
+            row,
+            now=effective_now,
+            session_health=session_health or [],
+        )
+        for row in rows
+    ]
     if agent_ids is not None:
         rows = [row for row in rows if _runtime_attention_row_in_agent_scope(row, agent_ids)]
-    rows.sort(key=lambda row: (_severity_rank(row["severity"]), row["kind"], row["id"]))
+    rows.sort(key=_runtime_attention_sort_key)
     return rows
 
 
@@ -6636,6 +6674,7 @@ def _expired_session_rows(
                 project_ids=project_ids,
                 session_id=session_id,
                 session_expires_at=health.get("expires_at"),
+                occurred_at=health.get("expires_at"),
             )
         )
     return rows
@@ -6704,6 +6743,7 @@ def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
                 escalation_depth=blocker.escalation_depth,
                 active_dispatch_id=blocker.active_dispatch_id,
                 follow_up_at=_json_datetime(blocker.follow_up_at),
+                occurred_at=_json_datetime(blocker.created_at),
             )
         )
     return rows
@@ -6729,6 +6769,7 @@ def _blocked_task_rows(state: TeamState) -> list[dict[str, Any]]:
                 deliverable_id=_first_deliverable_id(state, task.id),
                 dependency_status=dependency_status,
                 blocked_by_task_ids=state.blocked_by_task_ids(task.id),
+                occurred_at=_json_datetime(task.state_entered_at),
             )
         )
     return rows
@@ -6754,6 +6795,7 @@ def _waiting_dependency_rows(state: TeamState) -> list[dict[str, Any]]:
                 deliverable_id=_first_deliverable_id(state, task.id),
                 dependency_status=dependency_status,
                 blocked_by_task_ids=state.blocked_by_task_ids(task.id),
+                occurred_at=_json_datetime(task.state_entered_at),
             )
         )
     return rows
@@ -6787,6 +6829,8 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
                 item_type=item.item_type.value,
                 response_requested=item.response_requested,
                 priority=item.priority.value,
+                occurred_at=_json_datetime(item.created_at),
+                links=_runtime_attention_payload_links(item.payload),
             )
         )
     return rows
@@ -6804,10 +6848,11 @@ def _failed_action_rows(state: TeamState) -> list[dict[str, Any]]:
                 detail=_action_record_detail(record),
                 state="failed",
                 agent_id=record.agent_id,
-                project_id=_agent_project_id(state, record.agent_id),
                 dispatch_id=record.dispatch_id,
                 action_record_id=record.id,
                 error=record.error,
+                occurred_at=_json_datetime(record.created_at),
+                links=_runtime_attention_payload_links(record.action),
             )
         )
     return rows
@@ -6860,7 +6905,9 @@ def _failed_promotion_rows(state: TeamState) -> list[dict[str, Any]]:
                 promotion_kind=promotion.promotion_kind,
                 source_branch=promotion.source_branch,
                 target_branch=promotion.target_branch,
+                commit_sha=promotion.commit_sha,
                 error=promotion.error,
+                occurred_at=_json_datetime(promotion.updated_at),
             )
         )
     return rows
@@ -6889,6 +6936,7 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
                 error=release.error,
                 next_action="resolve_blocked_release" if next_action_hint else None,
                 next_action_hint=next_action_hint,
+                occurred_at=_json_datetime(release.updated_at or release.created_at),
             )
         )
     return rows
@@ -6926,6 +6974,7 @@ def _ephemeral_assignment_rows(state: TeamState) -> list[dict[str, Any]]:
                 assignment_id=assignment.id,
                 session_id=assignment.session_id,
                 error=assignment.error,
+                occurred_at=_json_datetime(assignment.updated_at),
             )
         )
     return rows
@@ -6963,9 +7012,623 @@ def _runtime_row(**row: Any) -> dict[str, Any]:
         "session_id": None,
         "project_ids": [],
         "session_expires_at": None,
+        "occurred_at": None,
+        "age_seconds": 0,
+        "age_bucket": "lt_1h",
+        "attention_group": "active_obligation",
+        "attention_reason": None,
+        "terminal_context": [],
+        "reconciliation_required": False,
+        "links": {},
     }
     base.update(row)
     return base
+
+
+_RUNTIME_ATTENTION_LINK_KEYS = {
+    "team_id": "team_ids",
+    "team_ids": "team_ids",
+    "project_id": "project_ids",
+    "project_ids": "project_ids",
+    "agent_id": "agent_ids",
+    "agent_ids": "agent_ids",
+    "recipient_agent_id": "agent_ids",
+    "sender_agent_id": "agent_ids",
+    "owner_agent_id": "agent_ids",
+    "delegate_agent_id": "agent_ids",
+    "actor_agent_id": "agent_ids",
+    "producer_agent_id": "agent_ids",
+    "reviewer_agent_id": "agent_ids",
+    "parent_agent_id": "agent_ids",
+    "task_id": "task_ids",
+    "task_ids": "task_ids",
+    "parent_task_id": "task_ids",
+    "child_task_id": "task_ids",
+    "child_task_ids": "task_ids",
+    "affected_task_ids": "task_ids",
+    "deliverable_id": "deliverable_ids",
+    "deliverable_ids": "deliverable_ids",
+    "release_package_id": "release_package_ids",
+    "release_package_ids": "release_package_ids",
+    "review_request_id": "review_request_ids",
+    "review_request_ids": "review_request_ids",
+    "blocker_id": "blocker_ids",
+    "blocker_ids": "blocker_ids",
+    "dispatch_id": "dispatch_ids",
+    "dispatch_ids": "dispatch_ids",
+    "active_dispatch_id": "dispatch_ids",
+    "session_id": "session_ids",
+    "session_ids": "session_ids",
+    "requesting_session_id": "session_ids",
+    "assignment_id": "assignment_ids",
+    "assignment_ids": "assignment_ids",
+    "promotion_id": "promotion_ids",
+    "promotion_ids": "promotion_ids",
+    "inbox_item_id": "inbox_item_ids",
+    "inbox_item_ids": "inbox_item_ids",
+}
+_RUNTIME_ATTENTION_FAILED_KINDS = {
+    "failed_action_record",
+    "failed_git_promotion",
+    "failed_ephemeral_assignment",
+}
+_RUNTIME_ATTENTION_GROUP_RANK = {
+    "active_obligation": 0,
+    "failed_attempt": 1,
+    "retained_history": 2,
+}
+
+
+def _runtime_attention_payload_links(payload: object) -> dict[str, list[str]]:
+    """Extract only well-known durable IDs from nested action/inbox payloads."""
+
+    links: dict[str, set[str]] = {}
+    pending: list[tuple[object, int]] = [(payload, 0)]
+    visited = 0
+    while pending and visited < 1000:
+        value, depth = pending.pop()
+        visited += 1
+        if depth > 8:
+            continue
+        if isinstance(value, Mapping):
+            for raw_key, nested in value.items():
+                key = str(raw_key)
+                target = _RUNTIME_ATTENTION_LINK_KEYS.get(key)
+                if target is not None:
+                    values = (
+                        nested
+                        if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes))
+                        else [nested]
+                    )
+                    for candidate in values:
+                        if isinstance(candidate, Mapping) or (
+                            isinstance(candidate, Sequence)
+                            and not isinstance(candidate, (str, bytes))
+                        ):
+                            continue
+                        text = _optional_text(candidate)
+                        if text is not None:
+                            links.setdefault(target, set()).add(text)
+                if isinstance(nested, Mapping) or (
+                    isinstance(nested, Sequence) and not isinstance(nested, (str, bytes))
+                ):
+                    pending.append((nested, depth + 1))
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            pending.extend((nested, depth + 1) for nested in value)
+    return {key: sorted(values) for key, values in sorted(links.items()) if values}
+
+
+def _runtime_attention_metadata(
+    state: TeamState,
+    row: Mapping[str, Any],
+    *,
+    now: datetime,
+    session_health: list[dict[str, Any]],
+) -> dict[str, Any]:
+    enriched = dict(row)
+    occurred_at = _runtime_attention_datetime(enriched.get("occurred_at")) or now
+    age_seconds = max(0, int((now - occurred_at).total_seconds()))
+    links = _runtime_attention_links(state, enriched)
+    terminal_context = _runtime_attention_terminal_context(
+        state,
+        links,
+        session_health=session_health,
+    )
+    kind = _optional_text(enriched.get("kind")) or "attention"
+    response_requested = bool(enriched.get("response_requested"))
+    primary_target = _runtime_attention_primary_target(state, enriched)
+    if primary_target is None:
+        reconciliation_context = [
+            context
+            for context in terminal_context
+            if context["kind"]
+            in {"task", "deliverable", "release_package", "dispatch", "session"}
+        ]
+    else:
+        reconciliation_context = [
+            context
+            for context in terminal_context
+            if (context["kind"], context["id"]) == primary_target
+        ]
+    reconciliation_required = bool(
+        kind in {"pending_inbox_item", "pending_escalation"} and reconciliation_context
+    )
+    if kind in _RUNTIME_ATTENTION_FAILED_KINDS:
+        attention_group = "failed_attempt"
+    elif kind in {"pending_inbox_item", "pending_escalation"} and (
+        reconciliation_required or not response_requested
+    ):
+        attention_group = "retained_history"
+    else:
+        attention_group = "active_obligation"
+
+    enriched.update(
+        {
+            "occurred_at": occurred_at.isoformat(),
+            "age_seconds": age_seconds,
+            "age_bucket": _runtime_attention_age_bucket(age_seconds),
+            "attention_group": attention_group,
+            "attention_reason": _runtime_attention_reason(
+                kind,
+                response_requested=response_requested,
+                reconciliation_required=reconciliation_required,
+            ),
+            "terminal_context": terminal_context,
+            "reconciliation_required": reconciliation_required,
+            "links": links,
+        }
+    )
+
+    project_ids = links.get("project_ids", [])
+    team_ids = links.get("team_ids", [])
+    enriched["project_ids"] = project_ids
+    if _optional_text(enriched.get("project_id")) is None and len(project_ids) == 1:
+        enriched["project_id"] = project_ids[0]
+    if _optional_text(enriched.get("team_id")) is None and len(team_ids) == 1:
+        enriched["team_id"] = team_ids[0]
+    return enriched
+
+
+def _runtime_attention_primary_target(
+    state: TeamState,
+    row: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    """Return the response target rather than a transitively related record."""
+
+    inbox_id = _optional_text(row.get("inbox_item_id"))
+    item = state.inbox.get(inbox_id or "")
+    if item is None:
+        return None
+    payload = item.payload if isinstance(item.payload, Mapping) else {}
+    for field, kind in (
+        ("review_request_id", "review_request"),
+        ("release_package_id", "release_package"),
+        ("deliverable_id", "deliverable"),
+        ("task_id", "task"),
+        ("dispatch_id", "dispatch"),
+        ("session_id", "session"),
+    ):
+        target_id = _optional_text(payload.get(field))
+        if target_id is not None:
+            return kind, target_id
+    if item.task_id is not None:
+        return "task", item.task_id
+    return None
+
+
+def _runtime_attention_links(
+    state: TeamState,
+    row: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    scope_team_ids = _runtime_attention_source_team_ids(state, row)
+    extracted = _runtime_attention_payload_links(row)
+    links: dict[str, set[str]] = {
+        key: set(values) for key, values in extracted.items()
+    }
+
+    def add(key: str, *values: object) -> None:
+        for value in values:
+            text = _optional_text(value)
+            if text is not None:
+                links.setdefault(key, set()).add(text)
+
+    # Resolve durable relationships without copying arbitrary payload data into
+    # the operator/read-tool projection.
+    for _ in range(5):
+        previous_size = sum(len(values) for values in links.values())
+        for task_id in list(links.get("task_ids", ())):
+            task = state.tasks.get(task_id)
+            if task is None:
+                continue
+            add("project_ids", task.project_id)
+            add("agent_ids", task.owner_agent_id, task.created_by_agent_id)
+            for deliverable_id in task.deliverable_ids:
+                add("deliverable_ids", deliverable_id)
+        for deliverable_id in list(links.get("deliverable_ids", ())):
+            deliverable = state.deliverables.get(deliverable_id)
+            if deliverable is None:
+                continue
+            add("task_ids", deliverable.task_id)
+            add("agent_ids", deliverable.producer_agent_id)
+            for review_id in deliverable.review_request_ids:
+                add("review_request_ids", review_id)
+        for review_id in list(links.get("review_request_ids", ())):
+            review = state.review_requests.get(review_id)
+            if review is None:
+                continue
+            add("deliverable_ids", review.deliverable_id)
+            add("release_package_ids", review.release_package_id)
+            add("agent_ids", review.reviewer_agent_id)
+        for release_id in list(links.get("release_package_ids", ())):
+            release = state.release_packages.get(release_id)
+            if release is None:
+                continue
+            add("project_ids", release.project_id)
+            for deliverable_id in release.deliverable_ids:
+                add("deliverable_ids", deliverable_id)
+        for blocker_id in list(links.get("blocker_ids", ())):
+            blocker = state.blockers.get(blocker_id)
+            if blocker is None:
+                continue
+            add("team_ids", blocker.team_id)
+            add("project_ids", blocker.project_id)
+            add("task_ids", blocker.task_id)
+            add(
+                "agent_ids",
+                blocker.reporter_agent_id,
+                blocker.owner_agent_id,
+                blocker.delegate_agent_id,
+            )
+            if blocker.source_kind == TeamBlockerSourceKind.TASK:
+                add("task_ids", blocker.source_id)
+            elif blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+                add("deliverable_ids", blocker.source_id)
+            elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+                add("review_request_ids", blocker.source_id)
+            elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
+                add("release_package_ids", blocker.source_id)
+        for promotion_id in list(links.get("promotion_ids", ())):
+            promotion = state.git_promotions.get(promotion_id)
+            if promotion is None:
+                continue
+            add("project_ids", promotion.project_id)
+            add("agent_ids", promotion.actor_agent_id)
+            add("task_ids", promotion.task_id)
+            add("deliverable_ids", promotion.deliverable_id)
+            add("release_package_ids", promotion.release_package_id)
+        for assignment_id in list(links.get("assignment_ids", ())):
+            assignment = state.ephemeral_assignments.get(assignment_id)
+            if assignment is None:
+                continue
+            add("project_ids", assignment.project_id)
+            add("agent_ids", assignment.parent_agent_id)
+            add("task_ids", assignment.task_id)
+            add("session_ids", assignment.session_id)
+        for inbox_id in list(links.get("inbox_item_ids", ())):
+            item = state.inbox.get(inbox_id)
+            if item is None:
+                continue
+            add("agent_ids", item.recipient_agent_id, item.sender_agent_id)
+            add("task_ids", item.task_id)
+            for key, values in _runtime_attention_payload_links(item.payload).items():
+                for value in values:
+                    add(key, value)
+        for dispatch_id in list(links.get("dispatch_ids", ())):
+            dispatch = state.dispatches.get(dispatch_id)
+            if dispatch is None:
+                continue
+            add("agent_ids", dispatch.agent_id)
+            add("session_ids", dispatch.session_id)
+            for project_id in dispatch.project_ids:
+                add("project_ids", project_id)
+            for task_id in dispatch.task_ids:
+                add("task_ids", task_id)
+            for blocker_id in dispatch.blocker_ids:
+                add("blocker_ids", blocker_id)
+            for review_id in dispatch.review_request_ids:
+                add("review_request_ids", review_id)
+            for inbox_id in dispatch.inbox_item_ids:
+                add("inbox_item_ids", inbox_id)
+        if sum(len(values) for values in links.values()) == previous_size:
+            break
+
+    if scope_team_ids:
+        for key, values in links.items():
+            links[key] = {
+                value
+                for value in values
+                if not (
+                    linked_team_ids := _runtime_attention_link_team_ids(
+                        state,
+                        key=key,
+                        id=value,
+                    )
+                )
+                or bool(linked_team_ids.intersection(scope_team_ids))
+            }
+    for agent_id in list(links.get("agent_ids", ())):
+        agent = state.agents.get(agent_id)
+        if agent is not None:
+            add("team_ids", agent.team_id)
+    if not links.get("project_ids"):
+        for agent_id in list(links.get("agent_ids", ())):
+            for project_id in agent_project_ids(state, agent_id):
+                add("project_ids", project_id)
+    for project_id in list(links.get("project_ids", ())):
+        project = state.projects.get(project_id)
+        if project is not None:
+            add("team_ids", project.team_id)
+
+    return {key: sorted(values) for key, values in sorted(links.items()) if values}
+
+
+def _runtime_attention_source_team_ids(
+    state: TeamState,
+    row: Mapping[str, Any],
+) -> set[str]:
+    team_ids: set[str] = set()
+    direct_team_id = _optional_text(row.get("team_id"))
+    if direct_team_id is not None:
+        team_ids.add(direct_team_id)
+    agent_id = _optional_text(row.get("agent_id"))
+    if agent_id is not None and (agent := state.agents.get(agent_id)) is not None:
+        if agent.team_id is not None:
+            team_ids.add(agent.team_id)
+    direct_project_ids = [
+        project_id
+        for value in [row.get("project_id"), *_sequence_values(row.get("project_ids"))]
+        if (project_id := _optional_text(value)) is not None
+    ]
+    for project_id in direct_project_ids:
+        project = state.projects.get(project_id)
+        if project is not None:
+            team_ids.add(project.team_id)
+    return team_ids
+
+
+def _runtime_attention_link_team_ids(
+    state: TeamState,
+    *,
+    key: str,
+    id: str,
+) -> set[str]:
+    if key == "team_ids":
+        return {id} if id in state.teams else set()
+    if key == "project_ids":
+        project = state.projects.get(id)
+        return {project.team_id} if project is not None else set()
+    if key == "agent_ids":
+        agent = state.agents.get(id)
+        return {agent.team_id} if agent is not None and agent.team_id is not None else set()
+    if key == "task_ids":
+        task = state.tasks.get(id)
+        if task is not None and (project := state.projects.get(task.project_id)) is not None:
+            return {project.team_id}
+    elif key == "deliverable_ids":
+        deliverable = state.deliverables.get(id)
+        if (
+            deliverable is not None
+            and (task := state.tasks.get(deliverable.task_id)) is not None
+            and (project := state.projects.get(task.project_id)) is not None
+        ):
+            return {project.team_id}
+    elif key == "release_package_ids":
+        release = state.release_packages.get(id)
+        if release is not None and (project := state.projects.get(release.project_id)) is not None:
+            return {project.team_id}
+    elif key == "review_request_ids":
+        review = state.review_requests.get(id)
+        if review is not None:
+            return _runtime_attention_link_team_ids(
+                state,
+                key="deliverable_ids",
+                id=review.deliverable_id,
+            )
+    elif key == "blocker_ids":
+        blocker = state.blockers.get(id)
+        if blocker is not None:
+            return {blocker.team_id}
+    elif key == "dispatch_ids":
+        dispatch = state.dispatches.get(id)
+        if dispatch is not None:
+            return {
+                state.projects[project_id].team_id
+                for project_id in dispatch.project_ids
+                if project_id in state.projects
+            } or _runtime_attention_link_team_ids(
+                state,
+                key="agent_ids",
+                id=dispatch.agent_id,
+            )
+    elif key == "assignment_ids":
+        assignment = state.ephemeral_assignments.get(id)
+        if assignment is not None:
+            return _runtime_attention_link_team_ids(
+                state,
+                key="project_ids",
+                id=assignment.project_id,
+            )
+    elif key == "promotion_ids":
+        promotion = state.git_promotions.get(id)
+        if promotion is not None:
+            return _runtime_attention_link_team_ids(
+                state,
+                key="project_ids",
+                id=promotion.project_id,
+            )
+    elif key == "inbox_item_ids":
+        item = state.inbox.get(id)
+        if item is not None:
+            return _runtime_attention_link_team_ids(
+                state,
+                key="agent_ids",
+                id=item.recipient_agent_id,
+            )
+    elif key == "session_ids":
+        return {
+            agent.team_id
+            for agent in state.agents.values()
+            if agent.session_id == id and agent.team_id is not None
+        }
+    return set()
+
+
+def _sequence_values(value: object) -> list[object]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return list(value)
+    return []
+
+
+def _runtime_attention_terminal_context(
+    state: TeamState,
+    links: Mapping[str, list[str]],
+    *,
+    session_health: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    contexts: dict[tuple[str, str], dict[str, str]] = {}
+
+    def add(kind: str, id: str, state_value: str) -> None:
+        contexts[(kind, id)] = {"kind": kind, "id": id, "state": state_value}
+
+    terminal_task_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }
+    for task_id in links.get("task_ids", []):
+        task = state.tasks.get(task_id)
+        if task is not None and task.state in terminal_task_states:
+            add("task", task.id, task.state.value)
+    for deliverable_id in links.get("deliverable_ids", []):
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            continue
+        if deliverable.superseded_by_deliverable_id is not None:
+            add("deliverable", deliverable.id, "superseded")
+        elif deliverable.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+            add("deliverable", deliverable.id, deliverable.state.value)
+    for release_id in links.get("release_package_ids", []):
+        release = state.release_packages.get(release_id)
+        if release is not None and release.state in {
+            TeamRecordState.ACCEPTED,
+            TeamRecordState.REJECTED,
+        }:
+            add("release_package", release.id, release.state.value)
+    for review_id in links.get("review_request_ids", []):
+        review = state.review_requests.get(review_id)
+        if review is not None and review.state in {
+            TeamRecordState.ACCEPTED,
+            TeamRecordState.REJECTED,
+        }:
+            add("review_request", review.id, review.state.value)
+    for blocker_id in links.get("blocker_ids", []):
+        blocker = state.blockers.get(blocker_id)
+        if blocker is not None and blocker.state == TeamBlockerState.RESOLVED:
+            add("blocker", blocker.id, blocker.state.value)
+    for dispatch_id in links.get("dispatch_ids", []):
+        dispatch = state.dispatches.get(dispatch_id)
+        if dispatch is not None and dispatch.status in {
+            TeamDispatchStatus.COMPLETED,
+            TeamDispatchStatus.EXPIRED,
+            TeamDispatchStatus.FAILED,
+        }:
+            add("dispatch", dispatch.id, dispatch.status.value)
+    health_by_session = {
+        session_id: health
+        for health in session_health
+        if (session_id := _optional_text(health.get("session_id"))) is not None
+    }
+    for session_id in links.get("session_ids", []):
+        health = health_by_session.get(session_id)
+        if health is not None and bool(health.get("is_expired")):
+            add("session", session_id, "expired")
+    terminal_assignment_states = {
+        EphemeralAssignmentState.COMPLETED,
+        EphemeralAssignmentState.ACCEPTED,
+        EphemeralAssignmentState.REJECTED,
+        EphemeralAssignmentState.CLEANED_UP,
+        EphemeralAssignmentState.FAILED,
+    }
+    for assignment_id in links.get("assignment_ids", []):
+        assignment = state.ephemeral_assignments.get(assignment_id)
+        if assignment is not None and assignment.state in terminal_assignment_states:
+            add("ephemeral_assignment", assignment.id, assignment.state.value)
+    for promotion_id in links.get("promotion_ids", []):
+        promotion = state.git_promotions.get(promotion_id)
+        if promotion is not None and promotion.state in {"succeeded", "failed"}:
+            add("git_promotion", promotion.id, promotion.state)
+    for project_id in links.get("project_ids", []):
+        project = state.projects.get(project_id)
+        if project is not None and project.status in {
+            ProjectStatus.COMPLETED,
+            ProjectStatus.ARCHIVED,
+        }:
+            add("project", project.id, project.status.value)
+    for agent_id in links.get("agent_ids", []):
+        agent = state.agents.get(agent_id)
+        if agent is not None and agent.status == AgentStatus.ARCHIVED:
+            add("agent", agent.id, agent.status.value)
+    return [contexts[key] for key in sorted(contexts)]
+
+
+def _runtime_attention_reason(
+    kind: str,
+    *,
+    response_requested: bool,
+    reconciliation_required: bool,
+) -> str:
+    if kind in {"pending_inbox_item", "pending_escalation"}:
+        if reconciliation_required:
+            return "terminal_work_pending_reconciliation"
+        if not response_requested:
+            return "pending_without_response_obligation"
+        return "awaiting_response"
+    return {
+        "expired_agent_session": "agent_session_expired",
+        "team_blocker": "open_blocker",
+        "blocked_task": "task_blocked",
+        "waiting_dependency_task": "waiting_on_dependency",
+        "failed_action_record": "undismissed_failed_attempt",
+        "failed_git_promotion": "failed_git_promotion",
+        "blocked_release_package": "release_blocked",
+        "failed_ephemeral_assignment": "failed_ephemeral_assignment",
+        "cleanup_pending_ephemeral_assignment": "cleanup_pending",
+    }.get(kind, "attention_required")
+
+
+def _runtime_attention_age_bucket(age_seconds: int) -> str:
+    if age_seconds < 60 * 60:
+        return "lt_1h"
+    if age_seconds < 24 * 60 * 60:
+        return "lt_1d"
+    if age_seconds < 7 * 24 * 60 * 60:
+        return "lt_7d"
+    return "gte_7d"
+
+
+def _runtime_attention_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return _ensure_utc(value)
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return _ensure_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _runtime_attention_sort_key(row: Mapping[str, Any]) -> tuple[int, float, int, str, str]:
+    occurred_at = _runtime_attention_datetime(row.get("occurred_at"))
+    timestamp = occurred_at.timestamp() if occurred_at is not None else 0.0
+    return (
+        _RUNTIME_ATTENTION_GROUP_RANK.get(str(row.get("attention_group")), 9),
+        -timestamp,
+        _severity_rank(row.get("severity")),
+        str(row.get("kind") or ""),
+        str(row.get("id") or ""),
+    )
 
 
 def _severity_rank(severity: object) -> int:
@@ -6997,11 +7660,6 @@ def _project_id_for_task(state: TeamState, task_id: str | None) -> str | None:
         return None
     task = state.tasks.get(task_id)
     return task.project_id if task is not None else None
-
-
-def _agent_project_id(state: TeamState, agent_id: str) -> str | None:
-    project_ids = agent_project_ids(state, agent_id)
-    return project_ids[0] if project_ids else None
 
 
 def _task_attention_detail(task: AgentTask, *, dependency_status: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from ..models import (
@@ -403,14 +404,17 @@ class TeamReadService:
         offset: int | None = None,
     ) -> dict[str, Any]:
         attention = runtime_operations_payload(self._state).get("attention") or []
-        rows = [
-            self._runtime_attention_row(row)
-            for row in attention
-            if isinstance(row, Mapping)
-            and self._runtime_attention_visible(row)
-            and _matches(kind, row.get("kind"))
-            and _matches(severity, row.get("severity"))
-        ]
+        rows = sorted(
+            (
+                self._runtime_attention_row(row)
+                for row in attention
+                if isinstance(row, Mapping)
+                and self._runtime_attention_visible(row)
+                and _matches(kind, row.get("kind"))
+                and _matches(severity, row.get("severity"))
+            ),
+            key=_runtime_attention_read_sort_key,
+        )
         return _page(rows, limit=limit, cursor=cursor, offset=offset)
 
     def _managed_team_ids_for_actor(self) -> set[str]:
@@ -550,16 +554,25 @@ class TeamReadService:
 
     def _review_request_visible(self, request: ReviewRequest) -> bool:
         deliverable = self._state.deliverables.get(request.deliverable_id)
-        return self._agent_visible(request.reviewer_agent_id) or (
-            deliverable is not None and self._deliverable_visible(deliverable)
+        release = self._state.release_packages.get(request.release_package_id)
+        return (
+            self._agent_visible(request.reviewer_agent_id)
+            or (deliverable is not None and self._deliverable_visible(deliverable))
+            or (release is not None and self._release_visible(release))
         )
 
     def _release_visible(self, release: ReleasePackage) -> bool:
         return self._project_visible(release.project_id)
 
     def _runtime_attention_visible(self, row: Mapping[str, Any]) -> bool:
-        if self._agent_visible(_maybe_text(row.get("agent_id"))):
-            return True
+        agent_id = _maybe_text(row.get("agent_id"))
+        if agent_id is not None:
+            # The row's durable owner is authoritative for scope. Derived links
+            # may quote payload IDs, but must never broaden who can read it.
+            return self._agent_visible(agent_id)
+        team_id = _maybe_text(row.get("team_id"))
+        if team_id is not None:
+            return team_id in self._visible_team_ids
         if self._project_visible(_maybe_text(row.get("project_id"))):
             return True
         project_ids = row.get("project_ids")
@@ -585,6 +598,78 @@ class TeamReadService:
             if release is not None and self._release_visible(release):
                 return True
         return False
+
+    def _runtime_attention_link_visible(self, kind: str, link_id: str) -> bool:
+        if kind == "team_ids":
+            return link_id in self._visible_team_ids
+        if kind == "project_ids":
+            return self._project_visible(link_id)
+        if kind == "agent_ids":
+            return self._agent_visible(link_id)
+        if kind == "task_ids":
+            task = self._state.tasks.get(link_id)
+            return task is not None and self._task_visible(task)
+        if kind == "deliverable_ids":
+            deliverable = self._state.deliverables.get(link_id)
+            return deliverable is not None and self._deliverable_visible(deliverable)
+        if kind == "release_package_ids":
+            release = self._state.release_packages.get(link_id)
+            return release is not None and self._release_visible(release)
+        if kind == "review_request_ids":
+            request = self._state.review_requests.get(link_id)
+            return request is not None and self._review_request_visible(request)
+        if kind == "blocker_ids":
+            blocker = self._state.blockers.get(link_id)
+            return blocker is not None and self._blocker_visible(blocker)
+        if kind == "inbox_item_ids":
+            item = self._state.inbox.get(link_id)
+            return item is not None and self._inbox_visible(item)
+        if kind == "dispatch_ids":
+            dispatch = self._state.dispatches.get(link_id)
+            return dispatch is not None and (
+                self._agent_visible(dispatch.agent_id)
+                or any(self._project_visible(project_id) for project_id in dispatch.project_ids)
+            )
+        if kind == "assignment_ids":
+            assignment = self._state.ephemeral_assignments.get(link_id)
+            return assignment is not None and (
+                self._agent_visible(assignment.parent_agent_id)
+                or self._project_visible(assignment.project_id)
+            )
+        if kind == "promotion_ids":
+            promotion = self._state.git_promotions.get(link_id)
+            return promotion is not None and (
+                self._agent_visible(promotion.actor_agent_id)
+                or self._project_visible(promotion.project_id)
+            )
+        if kind == "session_ids":
+            # Agent detail reads expose a session only for the actor's own
+            # identity; attention-link expansion must keep the same boundary.
+            return self._actor.session_id == link_id
+        return False
+
+    def _runtime_attention_primary_target(
+        self,
+        row: Mapping[str, Any],
+    ) -> tuple[str, str] | None:
+        inbox_id = _maybe_text(row.get("inbox_item_id"))
+        item = self._state.inbox.get(inbox_id or "")
+        if item is None:
+            return None
+        for field, kind in (
+            ("review_request_id", "review_request"),
+            ("release_package_id", "release_package"),
+            ("deliverable_id", "deliverable"),
+            ("task_id", "task"),
+            ("dispatch_id", "dispatch"),
+            ("session_id", "session"),
+        ):
+            target_id = _maybe_text(item.payload.get(field))
+            if target_id is not None:
+                return kind, target_id
+        if item.task_id is not None:
+            return "task", item.task_id
+        return None
 
     def _git_work_context_rows_for_task(self, task_id: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -760,6 +845,7 @@ class TeamReadService:
                 "id": release.id,
                 "project_id": release.project_id,
                 "state": release.state.value,
+                "summary": _compact_text(release.summary, 360),
                 "release_branch": release.release_branch,
                 "canonical_branch": release.canonical_branch,
                 "published_commit_sha": release.published_commit_sha,
@@ -941,36 +1027,230 @@ class TeamReadService:
         )
 
     def _runtime_attention_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        raw_links = row.get("links")
+        raw_session_ids = {
+            session_id
+            for value in (
+                _sequence(raw_links.get("session_ids"))
+                if isinstance(raw_links, Mapping)
+                else []
+            )
+            if (session_id := _maybe_text(value)) is not None
+        }
+        if direct_session_id := _maybe_text(row.get("session_id")):
+            raw_session_ids.add(direct_session_id)
+        hidden_session_ids = {
+            session_id
+            for session_id in raw_session_ids
+            if not self._runtime_attention_link_visible("session_ids", session_id)
+        }
+        links = (
+            {
+                str(kind): [
+                    link_id
+                    for value in _sequence(values)
+                    if (link_id := _maybe_text(value)) is not None
+                    and self._runtime_attention_link_visible(str(kind), link_id)
+                ]
+                for kind, values in raw_links.items()
+                if str(kind) in _RUNTIME_ATTENTION_LINK_FIELDS
+            }
+            if isinstance(raw_links, Mapping)
+            else {}
+        )
+        links = {kind: values for kind, values in links.items() if values}
+        terminal_context = []
+        for context in _sequence(row.get("terminal_context")):
+            if not isinstance(context, Mapping):
+                continue
+            context_kind = _maybe_text(context.get("kind"))
+            context_id = _maybe_text(context.get("id"))
+            link_kind = _RUNTIME_ATTENTION_CONTEXT_LINK_FIELDS.get(context_kind or "")
+            if (
+                context_kind is None
+                or context_id is None
+                or link_kind is None
+                or not self._runtime_attention_link_visible(link_kind, context_id)
+            ):
+                continue
+            terminal_context.append(
+                _without_none(
+                    {
+                        "kind": context_kind,
+                        "id": context_id,
+                        "state": _maybe_text(context.get("state")),
+                    }
+                )
+            )
+        reconciliation_required = bool(row.get("reconciliation_required"))
+        if reconciliation_required:
+            primary_target = self._runtime_attention_primary_target(row)
+            if primary_target is None:
+                reconciliation_required = any(
+                    context.get("kind")
+                    in {"task", "deliverable", "release_package", "dispatch", "session"}
+                    for context in terminal_context
+                )
+            else:
+                reconciliation_required = any(
+                    (context.get("kind"), context.get("id")) == primary_target
+                    for context in terminal_context
+                )
+        attention_group = _maybe_text(row.get("attention_group"))
+        attention_reason = _maybe_text(row.get("attention_reason"))
+        if bool(row.get("reconciliation_required")) and not reconciliation_required:
+            if bool(row.get("response_requested")):
+                attention_group = "active_obligation"
+                attention_reason = "awaiting_response"
+            else:
+                attention_group = "retained_history"
+                attention_reason = "pending_without_response_obligation"
+        team_id = _maybe_text(row.get("team_id"))
+        if team_id not in self._visible_team_ids:
+            team_id = None
+        project_id = _maybe_text(row.get("project_id"))
+        if not self._project_visible(project_id):
+            project_id = None
+
+        def visible_link_id(field: str, link_kind: str) -> str | None:
+            link_id = _maybe_text(row.get(field))
+            if link_id is None or not self._runtime_attention_link_visible(
+                link_kind,
+                link_id,
+            ):
+                return None
+            return link_id
+
+        def projected_narrative(field: str, limit: int) -> str | None:
+            narrative = _maybe_text(row.get(field))
+            if narrative is None:
+                return None
+            for session_id in sorted(hidden_session_ids, key=len, reverse=True):
+                narrative = narrative.replace(session_id, "[not visible]")
+            return _compact_text(narrative, limit)
+
+        visible_promotion_id = visible_link_id("promotion_id", "promotion_ids")
+        visible_session_id = visible_link_id("session_id", "session_ids")
         return _without_none(
             {
                 "id": _maybe_text(row.get("id")),
                 "kind": _maybe_text(row.get("kind")),
                 "severity": _maybe_text(row.get("severity")),
-                "title": _compact_text(row.get("title"), 180),
-                "detail": _compact_text(row.get("detail"), 360),
+                "title": projected_narrative("title", 180),
+                "detail": projected_narrative("detail", 360),
                 "state": _maybe_text(row.get("state")),
-                "agent_id": _maybe_text(row.get("agent_id")),
-                "project_id": _maybe_text(row.get("project_id")),
-                "project_ids": [
-                    project_id
-                    for value in _sequence(row.get("project_ids"))
-                    if (project_id := _maybe_text(value)) is not None
-                ],
-                "task_id": _maybe_text(row.get("task_id")),
-                "inbox_item_id": _maybe_text(row.get("inbox_item_id")),
-                "deliverable_id": _maybe_text(row.get("deliverable_id")),
-                "release_package_id": _maybe_text(row.get("release_package_id")),
-                "review_request_id": _maybe_text(row.get("review_request_id")),
-                "blocker_id": _maybe_text(row.get("blocker_id")),
+                "occurred_at": _maybe_text(row.get("occurred_at")),
+                "age_seconds": row.get("age_seconds"),
+                "age_bucket": _maybe_text(row.get("age_bucket")),
+                "attention_group": attention_group,
+                "attention_reason": attention_reason,
+                "reconciliation_required": reconciliation_required,
+                "terminal_context": terminal_context,
+                "links": links,
+                "team_id": team_id,
+                "agent_id": visible_link_id("agent_id", "agent_ids"),
+                "project_id": project_id,
+                "project_ids": links.get("project_ids", []),
+                "task_id": visible_link_id("task_id", "task_ids"),
+                "inbox_item_id": visible_link_id("inbox_item_id", "inbox_item_ids"),
+                "deliverable_id": visible_link_id("deliverable_id", "deliverable_ids"),
+                "release_package_id": visible_link_id(
+                    "release_package_id",
+                    "release_package_ids",
+                ),
+                "review_request_id": visible_link_id(
+                    "review_request_id",
+                    "review_request_ids",
+                ),
+                "blocker_id": visible_link_id("blocker_id", "blocker_ids"),
+                "assignment_id": visible_link_id("assignment_id", "assignment_ids"),
+                "promotion_id": visible_promotion_id,
+                "commit_sha": (
+                    _maybe_text(row.get("commit_sha"))
+                    if visible_promotion_id is not None
+                    and _maybe_text(row.get("kind")) == "failed_git_promotion"
+                    else None
+                ),
+                "action_record_id": _maybe_text(row.get("action_record_id")),
+                "dispatch_id": visible_link_id("dispatch_id", "dispatch_ids"),
+                "session_id": visible_session_id,
                 "source_kind": _maybe_text(row.get("source_kind")),
                 "source_id": _maybe_text(row.get("source_id")),
-                "owner_agent_id": _maybe_text(row.get("owner_agent_id")),
-                "delegate_agent_id": _maybe_text(row.get("delegate_agent_id")),
+                "owner_agent_id": visible_link_id("owner_agent_id", "agent_ids"),
+                "delegate_agent_id": visible_link_id("delegate_agent_id", "agent_ids"),
                 "route": _maybe_text(row.get("route")),
                 "escalation_depth": row.get("escalation_depth"),
-                "blocked_by_task_ids": _sequence(row.get("blocked_by_task_ids")),
+                "blocked_by_task_ids": [
+                    task_id
+                    for value in _sequence(row.get("blocked_by_task_ids"))
+                    if (task_id := _maybe_text(value)) is not None
+                    and self._runtime_attention_link_visible("task_ids", task_id)
+                ],
             }
         )
+
+
+_RUNTIME_ATTENTION_LINK_FIELDS = frozenset(
+    {
+        "team_ids",
+        "project_ids",
+        "agent_ids",
+        "task_ids",
+        "deliverable_ids",
+        "release_package_ids",
+        "review_request_ids",
+        "blocker_ids",
+        "dispatch_ids",
+        "session_ids",
+        "assignment_ids",
+        "promotion_ids",
+        "inbox_item_ids",
+    }
+)
+_RUNTIME_ATTENTION_CONTEXT_LINK_FIELDS = {
+    "agent": "agent_ids",
+    "blocker": "blocker_ids",
+    "deliverable": "deliverable_ids",
+    "dispatch": "dispatch_ids",
+    "ephemeral_assignment": "assignment_ids",
+    "git_promotion": "promotion_ids",
+    "project": "project_ids",
+    "release_package": "release_package_ids",
+    "review_request": "review_request_ids",
+    "session": "session_ids",
+    "task": "task_ids",
+}
+
+
+def _runtime_attention_read_sort_key(
+    row: Mapping[str, Any],
+) -> tuple[int, float, int, str, str]:
+    group_rank = {
+        "active_obligation": 0,
+        "failed_attempt": 1,
+        "retained_history": 2,
+    }.get(_maybe_text(row.get("attention_group")) or "", 9)
+    occurred_at = _maybe_text(row.get("occurred_at"))
+    timestamp = 0.0
+    if occurred_at is not None:
+        try:
+            parsed = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+            timestamp = (
+                parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            ).timestamp()
+        except ValueError:
+            pass
+    severity_rank = {"critical": 0, "warning": 1, "info": 2}.get(
+        _maybe_text(row.get("severity")) or "",
+        9,
+    )
+    return (
+        group_rank,
+        -timestamp,
+        severity_rank,
+        _maybe_text(row.get("kind")) or "",
+        _maybe_text(row.get("id")) or "",
+    )
 
 
 def _page(

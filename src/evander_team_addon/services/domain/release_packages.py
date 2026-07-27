@@ -669,6 +669,7 @@ def _build_release_package(
     state.release_packages[release_id] = ReleasePackage(
         id=release_id,
         project_id=project.id,
+        summary=_optional_text(request.get("summary")),
         supersedes_release_package_id=(
             predecessor.id if predecessor is not None else None
         ),
