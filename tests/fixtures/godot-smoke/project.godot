@@ -1,0 +1,19 @@
+; Minimal project used for manual container-image smoke checks.
+config_version=5
+
+[application]
+
+config/name="Evander Godot Runner Smoke"
+run/main_scene="res://main.tscn"
+
+[display]
+
+window/size/viewport_width=64
+window/size/viewport_height=64
+window/size/window_width_override=64
+window/size/window_height_override=64
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

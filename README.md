@@ -276,6 +276,11 @@ sudo systemctl start evander-managed-git-refresh.service
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
 including the dedicated container-worker VM playbook, see `ansible/README.md`.
 
+Optional Godot container-runner images can be built manually with
+`scripts/build_evander_godot_runner_images.sh`; see
+`docs/container-worker-backend.md`. They are intentionally excluded from the default worker
+deployment and image catalog.
+
 `evander-admin-web` binds to localhost by default. Keep active Admin Web
 passwords and session secrets in `/etc/evander/local-secrets.env` or another
 service-manager secret source rather than `config/admin-web.env`. When you
