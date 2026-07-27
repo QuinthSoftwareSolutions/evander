@@ -44,6 +44,9 @@ from ..domain.common import (
     _ensure_utc,
     _optional_text,
 )
+from ..domain.manager_fallback import (
+    _manager_fallback_review_routing_authority_error,
+)
 from ..domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
@@ -1176,6 +1179,26 @@ def _validate_request_review_dispatch_scope(
                 and authority.task_id == task.id
                 and authority.project_id == task.project_id
             ):
+                authority_error = (
+                    _manager_fallback_review_routing_authority_error(
+                        state,
+                        dispatch_agent_id=dispatch.agent_id,
+                        authority=authority,
+                    )
+                )
+                if authority_error is not None:
+                    raise TeamCommandValidationError(
+                        code="dispatch_scope_stale",
+                        message=(
+                            "manager-fallback review routing authority is no "
+                            f"longer actionable: {authority_error}"
+                        ),
+                        correction_context={
+                            "dispatch_id": dispatch.id,
+                            "reviewer_agent_id": reviewer_agent_id,
+                            "deliverable_id": deliverable.id,
+                        },
+                    )
                 return {task.project_id}
 
     raise _dispatch_scope_error(

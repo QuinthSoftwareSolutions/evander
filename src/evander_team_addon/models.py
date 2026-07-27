@@ -1924,6 +1924,8 @@ class TeamDispatchReviewRoutingAuthority(TeamModel):
     project_id: str
     task_id: str
     deliverable_id: str
+    consumed_at: datetime | None = None
+    consumed_by_review_request_id: str | None = None
 
     @field_validator(
         "reviewer_agent_id",
@@ -1935,6 +1937,22 @@ class TeamDispatchReviewRoutingAuthority(TeamModel):
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
+
+    @field_validator("consumed_by_review_request_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_consumption(self) -> "TeamDispatchReviewRoutingAuthority":
+        if (self.consumed_at is None) != (
+            self.consumed_by_review_request_id is None
+        ):
+            raise ValueError(
+                "dispatch review routing authority consumption requires both "
+                "consumed_at and consumed_by_review_request_id"
+            )
+        return self
 
 
 class TeamDispatch(TeamModel):
@@ -4775,19 +4793,16 @@ class TeamState(TeamModel):
 
     def _validate_dispatches(self, errors: list[str]) -> None:
         for dispatch in self.dispatches.values():
+            dispatch_is_live = dispatch.status in {
+                TeamDispatchStatus.PREPARING,
+                TeamDispatchStatus.LEASED,
+            }
             agent = self.agents.get(dispatch.agent_id)
             if agent is None:
                 errors.append(
                     f"dispatch {dispatch.id} references missing agent {dispatch.agent_id}"
                 )
-            elif (
-                dispatch.status
-                in {
-                    TeamDispatchStatus.PREPARING,
-                    TeamDispatchStatus.LEASED,
-                }
-                and agent.session_id != dispatch.session_id
-            ):
+            elif dispatch_is_live and agent.session_id != dispatch.session_id:
                 errors.append(f"dispatch {dispatch.id} session does not match agent {agent.id}")
             for task_id in dispatch.task_ids:
                 task = self.tasks.get(task_id)
@@ -4844,8 +4859,35 @@ class TeamState(TeamModel):
                         f"dispatch {dispatch.id} review routing deliverable "
                         f"{deliverable.id} does not belong to task {authority.task_id}"
                     )
+                consumed_review = (
+                    self.review_requests.get(
+                        authority.consumed_by_review_request_id
+                    )
+                    if authority.consumed_by_review_request_id is not None
+                    else None
+                )
                 if (
-                    reviewer is not None
+                    authority.consumed_by_review_request_id is not None
+                    and consumed_review is None
+                ):
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing authority references "
+                        "missing consuming review "
+                        f"{authority.consumed_by_review_request_id}"
+                    )
+                elif consumed_review is not None and (
+                    consumed_review.deliverable_id != authority.deliverable_id
+                    or consumed_review.reviewer_agent_id
+                    != authority.reviewer_agent_id
+                    or consumed_review.requested_by_agent_id != dispatch.agent_id
+                ):
+                    errors.append(
+                        f"dispatch {dispatch.id} review routing authority has "
+                        f"invalid consuming review {consumed_review.id}"
+                    )
+                if (
+                    dispatch_is_live
+                    and reviewer is not None
                     and project is not None
                     and reviewer.team_id != project.team_id
                 ):

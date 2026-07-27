@@ -96,6 +96,7 @@ from .domain.git_work_contexts import (
     reconcile_git_work_context_lifecycle,
 )
 from .domain.manager_fallback import (
+    _manager_fallback_review_routing_authority_error,
     _manager_fallback_review_routing_authorities,
     _manager_fallback_summary_payload,
 )
@@ -1765,6 +1766,14 @@ def _dispatch_staleness_errors(
     for project_id in dispatch.project_ids:
         if project_id not in state.projects:
             errors.append(f"project {project_id} no longer exists")
+    for authority in dispatch.review_routing_authorities:
+        authority_error = _manager_fallback_review_routing_authority_error(
+            state,
+            dispatch_agent_id=dispatch.agent_id,
+            authority=authority,
+        )
+        if authority_error is not None:
+            errors.append(authority_error)
     current_managed_repo_ids = {
         state.projects[project_id].git.managed_repo_id
         for project_id in dispatch.project_ids

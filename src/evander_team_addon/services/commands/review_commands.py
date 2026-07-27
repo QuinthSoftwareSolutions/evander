@@ -160,7 +160,31 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 [created_id] if _review_request_was_created(review_result, created_id) else []
             )
             if created_review_ids:
-                _mark_agent_work_due(state, agent_id=review.reviewer_agent_id, now=utc_now())
+                if review.created_at is None:  # pragma: no cover - construction invariant
+                    raise RuntimeError("new review request requires created_at")
+                created_at = review.created_at
+                _mark_agent_work_due(
+                    state,
+                    agent_id=review.reviewer_agent_id,
+                    now=created_at,
+                )
+                dispatch = (
+                    state.dispatches.get(resolved.dispatch_id)
+                    if resolved.dispatch_id is not None
+                    else None
+                )
+                if dispatch is not None and dispatch.cause_kind == "manager_fallback":
+                    for authority in dispatch.review_routing_authorities:
+                        if (
+                            authority.reviewer_agent_id
+                            == review.reviewer_agent_id
+                            and authority.deliverable_id
+                            == review.deliverable_id
+                            and authority.consumed_at is None
+                        ):
+                            authority.consumed_at = created_at
+                            authority.consumed_by_review_request_id = review.id
+                            break
             created_inbox_ids = list(review_result["created_inbox_item_ids"])
             if existing_review_ids:
                 next_action_hints = [

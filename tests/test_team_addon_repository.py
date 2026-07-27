@@ -49,6 +49,7 @@ from evander_team_addon.models import (
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
     TeamDispatch,
+    TeamDispatchReviewRoutingAuthority,
     TeamDispatchStatus,
     TeamBlocker,
     TeamBlockerEventType,
@@ -17390,6 +17391,93 @@ def test_remove_unreferenced_agent_from_team(tmp_path: Path) -> None:
     agent = state.agents["observer"]
     assert agent.team_id is None
     assert agent.role_id is None
+
+
+def test_terminal_dispatch_authority_preserves_reviewer_team_history(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_role(
+        role_id="project__reviewer",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+        expected_revision=repo.read().revision,
+    )
+    admin.register_agent(
+        agent_id="reviewer",
+        team_id="team",
+        project_id="project",
+        role_id="project__reviewer",
+        session_id="session-reviewer",
+        expected_revision=repo.read().revision,
+    )
+    _seed_task(repo, task_id="review-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="review-deliverable",
+        task_id="review-task",
+    )
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _add_live_dispatch(state):
+        state.dispatches["manager-fallback"] = TeamDispatch(
+            id="manager-fallback",
+            agent_id="manager",
+            session_id="session-manager",
+            cause_kind="manager_fallback",
+            review_routing_authorities=[
+                TeamDispatchReviewRoutingAuthority(
+                    kind="reviewer_without_assigned_review_work",
+                    reviewer_agent_id="reviewer",
+                    project_id="project",
+                    task_id="review-task",
+                    deliverable_id="review-deliverable",
+                )
+            ],
+            status=TeamDispatchStatus.LEASED,
+            prepared_at=leased_at,
+            leased_at=leased_at,
+            lease_expires_at=leased_at + timedelta(minutes=15),
+        )
+        return state
+
+    repo.update(_add_live_dispatch)
+
+    with pytest.raises(
+        ValidationError,
+        match="review routing agent reviewer does not belong to project team team",
+    ):
+        admin.update_agent(
+            agent_id="reviewer",
+            team_id=None,
+            set_team_id=True,
+            expected_revision=repo.read().revision,
+        )
+
+    assert repo.read().agents["reviewer"].team_id == "team"
+
+    def _complete_dispatch(state):
+        dispatch = state.dispatches["manager-fallback"]
+        dispatch.status = TeamDispatchStatus.COMPLETED
+        dispatch.completed_at = leased_at + timedelta(minutes=1)
+        return state
+
+    repo.update(_complete_dispatch)
+    state = admin.update_agent(
+        agent_id="reviewer",
+        team_id=None,
+        set_team_id=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.agents["reviewer"].team_id is None
+    assert state.dispatches["manager-fallback"].status == TeamDispatchStatus.COMPLETED
+    assert (
+        state.dispatches["manager-fallback"].review_routing_authorities[0].reviewer_agent_id
+        == "reviewer"
+    )
 
 
 def test_remove_agent_from_team_preserves_terminal_task_history(tmp_path: Path) -> None:

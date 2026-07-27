@@ -70,6 +70,7 @@ from evander_team_addon.models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    TaskCancellation,
     _runtime_agent_payload,
 )
 from evander_team_addon.provider_schemas import (
@@ -121,6 +122,9 @@ from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import (
     TeamEphemeralCommandService,
     TeamReviewCommandService,
+)
+from evander_team_addon.services.domain.manager_fallback import (
+    _manager_fallback_review_routing_authority_error,
 )
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
@@ -742,9 +746,28 @@ def _add_luke_reviewer(
         )
 
 
+def _add_backend_task(
+    repo: TeamStateRepository,
+    *,
+    task_id: str,
+    priority: int,
+) -> None:
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id=task_id,
+        owner_agent_id="backend",
+        project_id="project",
+        priority=priority,
+        title=f"Build backend slice {task_id}",
+        description=f"Implement backend work for {task_id}.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+
 def _seed_manager_review_stall(
     repo: TeamStateRepository,
     *,
+    task_id: str = "task",
     deliverable_id: str = "deliverable-stalled",
     review_id: str = "review-manager",
     make_review_non_actionable: bool = False,
@@ -755,7 +778,7 @@ def _seed_manager_review_stall(
             "deliverables": [
                 {
                     "id": deliverable_id,
-                    "task_id": "task",
+                    "task_id": task_id,
                     "summary": "Backend slice ready for review.",
                 }
             ],
@@ -3041,6 +3064,8 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
             "project_id": "project",
             "task_id": "task",
             "deliverable_id": "deliverable-stalled",
+            "consumed_at": None,
+            "consumed_by_review_request_id": None,
         }
     ]
     assert len(prompt.encode("utf-8")) < 32_000
@@ -3075,6 +3100,449 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
         state.review_requests["review-routed-to-luke"].reviewer_agent_id
         == "luke"
     )
+    authority = state.dispatches[lease["dispatch_id"]].review_routing_authorities[0]
+    assert authority.consumed_by_review_request_id == "review-routed-to-luke"
+    assert authority.consumed_at is not None
+    persisted_authority = TeamStateRepository(tmp_path).read().dispatches[
+        lease["dispatch_id"]
+    ].review_routing_authorities[0]
+    assert (
+        persisted_authority.consumed_by_review_request_id
+        == "review-routed-to-luke"
+    )
+    assert persisted_authority.consumed_at == authority.consumed_at
+
+    replay_state, replayed = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-routed-to-luke",
+        instructions="Review the stalled backend slice.",
+        request_id="manager-fallback-route-review",
+    )
+
+    assert replayed == requested
+    assert set(replay_state.review_requests) == set(state.review_requests)
+
+    def _accept_routed_review(state: TeamState) -> TeamState:
+        state.review_requests["review-routed-to-luke"].state = (
+            TeamRecordState.ACCEPTED
+        )
+        state.deliverables["deliverable-stalled"].state = TeamRecordState.ACCEPTED
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        for item in state.inbox.values():
+            if item.payload.get("review_request_id") == "review-routed-to-luke":
+                item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_accept_routed_review)
+    state, repeated = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-routed-to-luke-again",
+        instructions="Review the already accepted backend slice again.",
+        request_id="manager-fallback-route-review-again",
+    )
+
+    assert repeated["success"] is False
+    assert repeated["errors"][0]["code"] == "dispatch_scope_stale"
+    assert "already consumed" in repeated["errors"][0]["message"]
+    assert "review-routed-to-luke-again" not in state.review_requests
+    assert state.deliverables["deliverable-stalled"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
+def test_manager_fallback_can_consume_multiple_authorities_for_same_reviewer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(
+        repo,
+        deliverable_id="deliverable-a",
+        review_id="review-manager-a",
+        make_review_non_actionable=True,
+    )
+    _add_backend_task(repo, task_id="task-b", priority=2)
+    _seed_manager_review_stall(
+        repo,
+        task_id="task-b",
+        deliverable_id="deliverable-b",
+        review_id="review-manager-b",
+        make_review_non_actionable=True,
+    )
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    lease = _lease_manager_fallback(repo, now=leased_at)
+    assert {
+        (authority["reviewer_agent_id"], authority["deliverable_id"])
+        for authority in lease["dispatch"]["review_routing_authorities"]
+    } == {
+        ("luke", "deliverable-a"),
+        ("luke", "deliverable-b"),
+    }
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: leased_at + timedelta(minutes=1),
+    )
+
+    for suffix in ("a", "b"):
+        _state, result = TeamReviewCommandService(repo).request_review_command(
+            session_id="session-manager",
+            deliverable_id=f"deliverable-{suffix}",
+            reviewer_agent_id="luke",
+            id=f"review-luke-{suffix}",
+            instructions=f"Review backend slice {suffix}.",
+            request_id=f"manager-fallback-route-{suffix}",
+        )
+        assert result["success"] is True, json.dumps(
+            result,
+            indent=2,
+            sort_keys=True,
+        )
+
+    authorities = repo.read().dispatches[
+        lease["dispatch_id"]
+    ].review_routing_authorities
+    assert {
+        authority.consumed_by_review_request_id for authority in authorities
+    } == {"review-luke-a", "review-luke-b"}
+
+
+def test_manager_fallback_authority_is_not_evicted_by_new_shortlist_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-0",
+                    "task_id": "task",
+                    "summary": "Earlier backend slice not yet routed for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _prepare_earlier_deliverable(state: TeamState) -> TeamState:
+        state.deliverables["deliverable-0"].created_at = datetime(
+            2025,
+            1,
+            1,
+            tzinfo=UTC,
+        )
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_prepare_earlier_deliverable)
+    for index in range(1, 6):
+        task_id = f"task-{index}"
+        _add_backend_task(repo, task_id=task_id, priority=index + 1)
+        _seed_manager_review_stall(
+            repo,
+            task_id=task_id,
+            deliverable_id=f"deliverable-{index}",
+            review_id=f"review-manager-{index}",
+            make_review_non_actionable=True,
+        )
+
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    lease = _lease_manager_fallback(repo, now=leased_at)
+    assert {
+        authority["deliverable_id"]
+        for authority in lease["dispatch"]["review_routing_authorities"]
+    } == {f"deliverable-{index}" for index in range(1, 6)}
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager-0",
+                    "deliverable_id": "deliverable-0",
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    _block_review_for_manager_fallback(repo, review_id="review-manager-0")
+
+    def _handle_new_review_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_new_review_inbox)
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: leased_at + timedelta(minutes=1),
+    )
+
+    state, routed = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-5",
+        reviewer_agent_id="luke",
+        id="review-luke-5",
+        instructions="Review the fifth backend slice.",
+        request_id="manager-fallback-route-5",
+    )
+
+    assert routed["success"] is True, json.dumps(routed, indent=2, sort_keys=True)
+    authority = next(
+        authority
+        for authority in state.dispatches[
+            lease["dispatch_id"]
+        ].review_routing_authorities
+        if authority.deliverable_id == "deliverable-5"
+    )
+    assert authority.consumed_by_review_request_id == "review-luke-5"
+
+
+def test_manager_fallback_review_routing_authority_stays_consumed_after_retirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(now=leased_at)
+    lease = next(item for item in leases if item["agent"]["id"] == "manager")
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: leased_at + timedelta(minutes=1),
+    )
+
+    state, requested = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-routed-before-retirement",
+        instructions="Review the stalled backend slice.",
+        request_id="manager-fallback-route-before-retirement",
+    )
+    assert requested["success"] is True
+    assert (
+        state.dispatches[lease["dispatch_id"]]
+        .review_routing_authorities[0]
+        .consumed_by_review_request_id
+        == "review-routed-before-retirement"
+    )
+
+    retired_at = leased_at + timedelta(minutes=2)
+
+    def _retire_routed_review(state: TeamState) -> TeamState:
+        review = state.review_requests["review-routed-before-retirement"]
+        review.state = TeamRecordState.BLOCKED
+        review.findings = ["Reviewer became unavailable."]
+        review.decision_at = retired_at
+        review.retired_at = retired_at
+        review.retired_by = "manager"
+        review.retirement_reason = "Reviewer became unavailable."
+        for item in state.inbox.values():
+            if item.payload.get("review_request_id") == review.id:
+                item.state = TeamInboxItemState.HANDLED
+        return state
+
+    state = repo.update(_retire_routed_review)
+    consumed_authority = state.dispatches[
+        lease["dispatch_id"]
+    ].review_routing_authorities[0]
+    unconsumed_authority = consumed_authority.model_copy(
+        update={
+            "consumed_at": None,
+            "consumed_by_review_request_id": None,
+        }
+    )
+    assert (
+        _manager_fallback_review_routing_authority_error(
+            state,
+            dispatch_agent_id="manager",
+            authority=unconsumed_authority,
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: retired_at + timedelta(seconds=1),
+    )
+    state, repeated = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-routed-after-retirement",
+        instructions="Route the same review again.",
+        request_id="manager-fallback-route-after-retirement",
+    )
+
+    assert repeated["success"] is False
+    assert repeated["errors"][0]["code"] == "dispatch_scope_stale"
+    assert "already consumed" in repeated["errors"][0]["message"]
+    assert "review-routed-after-retirement" not in state.review_requests
+
+
+def test_manager_fallback_review_routing_authority_rejects_cancelled_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(now=leased_at)
+    lease = next(item for item in leases if item["agent"]["id"] == "manager")
+    assert lease["dispatch"]["review_routing_authorities"]
+
+    def _cancel_task(state: TeamState) -> TeamState:
+        state.tasks["task"].state = TeamTaskState.CANCELLED
+        state.tasks["task"].cancellation = TaskCancellation(
+            reason_code="superseded",
+            reason="The review work was cancelled after dispatch.",
+            actor_kind="system",
+            actor_id="test",
+        )
+        return state
+
+    repo.update(_cancel_task)
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: leased_at + timedelta(minutes=1),
+    )
+    state, result = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-after-task-cancelled",
+        instructions="Review the cancelled task deliverable.",
+        request_id="manager-fallback-route-after-task-cancelled",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "dispatch_scope_stale"
+    assert "review-after-task-cancelled" not in state.review_requests
+
+
+def test_manager_fallback_does_not_generate_review_authority_for_cancelled_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
+
+    def _cancel_task(state: TeamState) -> TeamState:
+        state.tasks["task"].state = TeamTaskState.CANCELLED
+        state.tasks["task"].cancellation = TaskCancellation(
+            reason_code="superseded",
+            reason="The review work was cancelled before dispatch.",
+            actor_kind="system",
+            actor_id="test",
+        )
+        return state
+
+    repo.update(_cancel_task)
+    lease = _lease_manager_fallback(
+        repo,
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    fallback_summary = _team_context_from_prompt(_build_prompt(lease))[
+        "manager_fallback_summary"
+    ]
+
+    assert lease["dispatch"]["review_routing_authorities"] == []
+    assert not fallback_summary["routing_gaps"]
+
+
+def test_manager_fallback_review_routing_authority_is_stale_before_activation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        now=leased_at,
+        defer_activation=True,
+    )
+    lease = next(item for item in leases if item["agent"]["id"] == "manager")
+    assert lease["dispatch"]["review_routing_authorities"]
+
+    runtime.stand_down_agent(
+        agent_id="luke",
+        reason="Reviewer is unavailable.",
+        set_by="operator",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="no longer an actionable manager-fallback routing gap",
+    ):
+        runtime.mark_agent_dispatch_leased(
+            agent_id="manager",
+            dispatch_id=lease["dispatch_id"],
+            now=leased_at,
+        )
+
+    state = repo.read()
+    assert state.dispatches[lease["dispatch_id"]].status == TeamDispatchStatus.FAILED
+    assert state.agent_runtimes["manager"].active_dispatch_id is None
+
+
+def test_manager_fallback_authority_matches_compact_prompt_routing_gaps(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_review_profile(
+        profile_id="backend-review-profile",
+        team_id="team",
+        project_id="project",
+        name="Backend review",
+        description="Review backend deliverables.",
+        applicable_role_ids=["project__backend"],
+        expected_revision=repo.read().revision,
+    )
+    for index in range(9):
+        admin.register_agent(
+            agent_id=f"reviewer-{index:02d}",
+            team_id="team",
+            project_id="project",
+            role_id="project__backend",
+            session_id=f"session-reviewer-{index:02d}",
+            reports_to_agent_id="lead",
+            expected_revision=repo.read().revision,
+        )
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
+
+    lease = _lease_manager_fallback(
+        repo,
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    fallback_summary = _team_context_from_prompt(_build_prompt(lease))[
+        "manager_fallback_summary"
+    ]
+    prompt_pairs = {
+        (gap["agent"], deliverable_id)
+        for gap in fallback_summary["routing_gaps"]
+        for deliverable_id in gap["deliverable_ids"]
+    }
+    authority_pairs = {
+        (authority["reviewer_agent_id"], authority["deliverable_id"])
+        for authority in lease["dispatch"]["review_routing_authorities"]
+    }
+
+    assert authority_pairs == prompt_pairs
+    assert len(prompt_pairs) == 8
+    assert fallback_summary["omitted_counts"]["routing_gaps"] == 1
 
 
 def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(
@@ -3352,7 +3820,7 @@ def test_direct_review_dispatch_allows_assigned_manager_decision(
     assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
 
 
-def test_manager_fallback_blocks_self_review_for_terminal_task_deliverable(
+def test_manager_fallback_does_not_route_terminal_task_deliverable_for_review(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -3380,7 +3848,7 @@ def test_manager_fallback_blocks_self_review_for_terminal_task_deliverable(
 
     assert result["success"] is False
     assert result["applied"] is False
-    assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
+    assert "invalid task state" in result["errors"][0]
     reread = repo.read()
     assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
 
