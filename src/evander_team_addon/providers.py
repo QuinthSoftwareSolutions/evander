@@ -223,7 +223,10 @@ from .services.domain.review import (
     _review_request_was_created,
     create_sealed_review_cohort,
 )
-from .services.domain.project_status import project_blocking_sources
+from .services.domain.project_status import (
+    _recalculate_project_status,
+    project_blocking_sources,
+)
 from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _case_payloads_for_agent,
@@ -3459,6 +3462,7 @@ class TeamCreateReviewCohortEffectProvider(EffectProviderBase):
 
             def _mutate(state: TeamState) -> TeamState:
                 nonlocal review_cohort_id, created_review_ids, existing_review_ids
+                projects_to_recalc: set[str] = set()
                 actor_id = _required_text(
                     payload.get("actor_agent_id"),
                     "actor_agent_id",
@@ -3502,7 +3506,10 @@ class TeamCreateReviewCohortEffectProvider(EffectProviderBase):
                     deliverable_id=requested_deliverable_id,
                     reviews=reviews,
                     result=review_result,
+                    projects_to_recalc=projects_to_recalc,
                 )
+                for project_id in sorted(projects_to_recalc):
+                    _recalculate_project_status(state, project_id)
                 return state
 
             state = repo.update(

@@ -451,6 +451,7 @@ def create_sealed_review_cohort(
     deliverable_id: str,
     reviews: Sequence[Mapping[str, Any]],
     result: dict[str, Any],
+    projects_to_recalc: set[str] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Attach every requested reviewer to one immutable deliverable atomically.
 
@@ -514,6 +515,12 @@ def create_sealed_review_cohort(
             )
         existing_ids = sorted(review.id for review in current_reviews)
         result.setdefault("existing_review_request_ids", []).extend(existing_ids)
+        _align_task_with_sealed_review_cohort(
+            deliverable=deliverable,
+            task=task,
+            now=utc_now(),
+            projects_to_recalc=projects_to_recalc,
+        )
         return deliverable.review_cohort_id or "", [], existing_ids
 
     if deliverable.review_cohort_id is not None:
@@ -543,6 +550,7 @@ def create_sealed_review_cohort(
             actor=actor,
             request=request_payload,
             result=result,
+            projects_to_recalc=projects_to_recalc,
         )
         if created_id is None:
             raise ValueError(
@@ -552,7 +560,14 @@ def create_sealed_review_cohort(
         if _review_request_was_created(result, created_id):
             created_ids.append(created_id)
 
-    deliverable.review_cohort_sealed_at = utc_now()
+    now = utc_now()
+    deliverable.review_cohort_sealed_at = now
+    _align_task_with_sealed_review_cohort(
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        projects_to_recalc=projects_to_recalc,
+    )
     return cohort_id, created_ids, []
 
 
@@ -1418,6 +1433,36 @@ def _reopen_accepted_deliverable_for_pending_review(
     if reopened and task is not None and projects_to_recalc is not None:
         projects_to_recalc.add(task.project_id)
     return reopened
+
+
+def _align_task_with_sealed_review_cohort(
+    *,
+    deliverable: Deliverable,
+    task: AgentTask | None,
+    now: datetime,
+    projects_to_recalc: set[str] | None = None,
+) -> None:
+    changed = _reopen_accepted_deliverable_for_pending_review(
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        projects_to_recalc=projects_to_recalc,
+    )
+    if task is not None and task.state in {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+    }:
+        changed = (
+            _set_task_state(
+                task,
+                TeamTaskState.WAITING_FOR_REVIEW,
+                now=now,
+            )
+            or changed
+        )
+        task.updated_at = now
+    if changed and task is not None and projects_to_recalc is not None:
+        projects_to_recalc.add(task.project_id)
 
 
 def _active_review_request_for_reviewer(

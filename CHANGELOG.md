@@ -23,6 +23,9 @@
   reviewer set for an existing immutable deliverable in one state transaction.
   Exact workflow retries are idempotent, while mismatched membership and
   pre-existing independent reviews fail closed.
+- Moved the deliverable task into `waiting_for_review` when the cohort is
+  sealed, preventing its owner from being dispatched against a candidate under
+  review, and recalculated completed projects when accepted work is reopened.
 - Exposed the cohort effect and its outputs in the workflow catalog so
   integration-boundary deliverables can request one coordinated code-and-test
   acceptance pass without reviewing every intermediate contribution.

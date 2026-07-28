@@ -5,7 +5,14 @@ from pathlib import Path
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.triggers.providers.base import TriggerRuntimeContext
-from evander_team_addon.models import AgentStatus, ProjectGoal, TeamInboxItemType
+from evander_team_addon.models import (
+    AgentStatus,
+    ProjectGoal,
+    ProjectStatus,
+    TeamInboxItemType,
+    TeamRecordState,
+    TeamTaskState,
+)
 from evander_team_addon.provider_schemas import (
     TeamCreateReviewCohortEffectDefinition,
     TeamCreateReviewRequestEffectDefinition,
@@ -341,6 +348,7 @@ def test_create_review_cohort_effect_seals_all_reviewers_atomically(
         reread.review_requests[review_id].review_cohort_id
         for review_id in result["created_review_request_ids"]
     } == {result["review_cohort_id"]}
+    assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
     _set_agent_status(repo, "tester", AgentStatus.PAUSED)
     duplicate = provider.execute(
@@ -357,6 +365,48 @@ def test_create_review_cohort_effect_seals_all_reviewers_atomically(
     )
     assert duplicate["created_inbox_item_ids"] == []
     assert len(repo.read().review_requests) == 2
+
+
+def test_create_review_cohort_effect_reopens_completed_project(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "deliverable")
+
+    def _complete_project(state):
+        state.deliverables["deliverable"].state = TeamRecordState.ACCEPTED
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        state.projects["project"].goals[0].state = TeamRecordState.ACCEPTED
+        state.projects["project"].status = ProjectStatus.COMPLETED
+        return state
+
+    repo.update(_complete_project, expected_revision=repo.read().revision)
+    provider = TeamCreateReviewCohortEffectProvider()
+    provider.initialize(
+        TeamCreateReviewCohortEffectDefinition(
+            id="reopen-review-cohort",
+            display_name="Reopen review cohort",
+            type="effect:team:create-review-cohort",
+            actor_agent_id="lead",
+            deliverable_id="deliverable",
+            reviews=[
+                {
+                    "reviewer_agent_id": "reviewer",
+                    "review_profile_id": "code-review",
+                }
+            ],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    assert reread.projects["project"].status == ProjectStatus.ACTIVE
 
 
 def test_create_review_request_effect_validates_wake_flag_before_mutating(
