@@ -26,6 +26,9 @@
 - Moved the deliverable task into `waiting_for_review` when the cohort is
   sealed, preventing its owner from being dispatched against a candidate under
   review, and recalculated completed projects when accepted work is reopened.
+- Preserved accepted and rejected cohort lifecycle state on exact workflow
+  retries instead of reopening immutable terminal reviews with no remaining
+  decision capable of advancing the task.
 - Exposed the cohort effect and its outputs in the workflow catalog so
   integration-boundary deliverables can request one coordinated code-and-test
   acceptance pass without reviewing every intermediate contribution.

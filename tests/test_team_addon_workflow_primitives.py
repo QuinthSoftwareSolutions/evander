@@ -409,6 +409,102 @@ def test_create_review_cohort_effect_reopens_completed_project(
     assert reread.projects["project"].status == ProjectStatus.ACTIVE
 
 
+def test_create_review_cohort_effect_retry_preserves_accepted_cohort(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "deliverable")
+    provider = TeamCreateReviewCohortEffectProvider()
+    provider.initialize(
+        TeamCreateReviewCohortEffectDefinition(
+            id="retry-accepted-review-cohort",
+            display_name="Retry accepted review cohort",
+            type="effect:team:create-review-cohort",
+            actor_agent_id="lead",
+            deliverable_id="deliverable",
+            reviews=[
+                {
+                    "reviewer_agent_id": "reviewer",
+                    "review_profile_id": "code-review",
+                }
+            ],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    created = provider.execute()
+    review_id = created["created_review_request_ids"][0]
+
+    def _accept_cohort(state):
+        state.review_requests[review_id].state = TeamRecordState.ACCEPTED
+        state.deliverables["deliverable"].state = TeamRecordState.ACCEPTED
+        state.tasks["task"].state = TeamTaskState.FINISHED
+        state.projects["project"].goals[0].state = TeamRecordState.ACCEPTED
+        state.projects["project"].status = ProjectStatus.COMPLETED
+        return state
+
+    repo.update(_accept_cohort, expected_revision=repo.read().revision)
+
+    replayed = provider.execute(
+        resolved_config={"expected_revision": repo.read().revision}
+    )
+
+    assert replayed["success"] is True
+    assert replayed["created"] is False
+    assert replayed["existing_review_request_ids"] == [review_id]
+    reread = repo.read()
+    assert reread.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert reread.tasks["task"].state == TeamTaskState.FINISHED
+    assert reread.projects["project"].status == ProjectStatus.COMPLETED
+
+
+def test_create_review_cohort_effect_retry_preserves_rejected_cohort(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "deliverable")
+    provider = TeamCreateReviewCohortEffectProvider()
+    provider.initialize(
+        TeamCreateReviewCohortEffectDefinition(
+            id="retry-rejected-review-cohort",
+            display_name="Retry rejected review cohort",
+            type="effect:team:create-review-cohort",
+            actor_agent_id="lead",
+            deliverable_id="deliverable",
+            reviews=[
+                {
+                    "reviewer_agent_id": "reviewer",
+                    "review_profile_id": "code-review",
+                }
+            ],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    created = provider.execute()
+    review_id = created["created_review_request_ids"][0]
+
+    def _reject_cohort(state):
+        state.review_requests[review_id].state = TeamRecordState.REJECTED
+        state.deliverables["deliverable"].state = TeamRecordState.REJECTED
+        state.tasks["task"].state = TeamTaskState.IN_PROGRESS
+        return state
+
+    repo.update(_reject_cohort, expected_revision=repo.read().revision)
+
+    replayed = provider.execute(
+        resolved_config={"expected_revision": repo.read().revision}
+    )
+
+    assert replayed["success"] is True
+    assert replayed["created"] is False
+    assert replayed["existing_review_request_ids"] == [review_id]
+    reread = repo.read()
+    assert reread.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert reread.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    assert reread.projects["project"].status == ProjectStatus.ACTIVE
+
+
 def test_create_review_request_effect_validates_wake_flag_before_mutating(
     tmp_path: Path,
 ) -> None:

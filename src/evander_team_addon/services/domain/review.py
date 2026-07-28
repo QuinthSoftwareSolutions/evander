@@ -515,12 +515,16 @@ def create_sealed_review_cohort(
             )
         existing_ids = sorted(review.id for review in current_reviews)
         result.setdefault("existing_review_request_ids", []).extend(existing_ids)
-        _align_task_with_sealed_review_cohort(
-            deliverable=deliverable,
-            task=task,
-            now=utc_now(),
-            projects_to_recalc=projects_to_recalc,
-        )
+        if any(
+            review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+            for review in current_reviews
+        ):
+            _align_task_with_sealed_review_cohort(
+                deliverable=deliverable,
+                task=task,
+                now=utc_now(),
+                projects_to_recalc=projects_to_recalc,
+            )
         return deliverable.review_cohort_id or "", [], existing_ids
 
     if deliverable.review_cohort_id is not None:
