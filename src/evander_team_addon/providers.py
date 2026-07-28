@@ -157,6 +157,7 @@ from .provider_schemas import (
     TeamConsolidateGitBranchesEffectDefinition,
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
+    TeamCreateReviewCohortEffectDefinition,
     TeamCreateReviewRequestEffectDefinition,
     TeamCreateTaskEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
@@ -216,7 +217,11 @@ from .services.domain.preparation_failures import (
 )
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
-from .services.domain.review import _apply_review_request, _review_request_was_created
+from .services.domain.review import (
+    _apply_review_request,
+    _review_request_was_created,
+    create_sealed_review_cohort,
+)
 from .services.domain.project_status import project_blocking_sources
 from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
@@ -928,6 +933,56 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Publish wake events",
                 "boolean",
                 description="Publish reviewer wake events created by this request immediately.",
+                default_value=True,
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:create-review-cohort",
+        "Create Team review cohort",
+        (
+            "Atomically create and seal every required review request for one "
+            "deliverable, then wake all assigned reviewers."
+        ),
+        [
+            _catalog_field(
+                "actor_agent_id",
+                "Actor agent ID",
+                "string",
+                required=True,
+                description=(
+                    "Team agent whose authority is used to request the complete "
+                    "review cohort."
+                ),
+                placeholder="${{team-deliverable-created.producer_agent_id}}",
+            ),
+            _catalog_field(
+                "deliverable_id",
+                "Deliverable ID",
+                "string",
+                required=True,
+                description="Immutable deliverable reviewed by the cohort.",
+                placeholder="${{team-deliverable-created.deliverable_id}}",
+            ),
+            _catalog_field(
+                "reviews",
+                "Reviews",
+                "json",
+                required=True,
+                description=(
+                    "Complete reviewer list. Each object requires reviewer_agent_id "
+                    "and may include review_profile_id, review_request_id, and "
+                    "instructions."
+                ),
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "publish_wake_events",
+                "Publish wake events",
+                "boolean",
+                description="Publish all reviewer wake events after the cohort commits.",
                 default_value=True,
             ),
             _revision_field(),
@@ -3361,6 +3416,138 @@ class TeamCreateReviewRequestEffectProvider(EffectProviderBase):
         )
 
 
+class TeamCreateReviewCohortEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateReviewCohortEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "actor_agent_id",
+            "deliverable_id",
+            "reviews",
+            "publish_wake_events",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        current_state: TeamState | None = None
+        review_result: dict[str, Any] = {
+            "errors": [],
+            "created_inbox_item_ids": [],
+            "existing_review_request_ids": [],
+            "events": [],
+        }
+        actor_agent_id = _optional_text(payload.get("actor_agent_id"))
+        deliverable_id = _optional_text(payload.get("deliverable_id"))
+        review_cohort_id: str | None = None
+        created_review_ids: list[str] = []
+        existing_review_ids: list[str] = []
+        publish_wake_events = True
+        try:
+            current_state = repo.read()
+            reviews = _list_of_mappings(payload.get("reviews"), "reviews")
+            publish_wake_events = _optional_bool(
+                payload.get("publish_wake_events"),
+                default=True,
+            )
+
+            def _mutate(state: TeamState) -> TeamState:
+                nonlocal review_cohort_id, created_review_ids, existing_review_ids
+                actor_id = _required_text(
+                    payload.get("actor_agent_id"),
+                    "actor_agent_id",
+                )
+                actor = state.agents.get(actor_id)
+                if actor is None:
+                    raise ValueError(f"actor agent {actor_id} does not exist")
+                requested_deliverable_id = _required_text(
+                    payload.get("deliverable_id"),
+                    "deliverable_id",
+                )
+                deliverable = state.deliverables.get(requested_deliverable_id)
+                already_sealed = bool(
+                    deliverable is not None
+                    and deliverable.review_cohort_id is not None
+                    and deliverable.review_cohort_sealed_at is not None
+                )
+                if not already_sealed:
+                    for index, review in enumerate(reviews):
+                        reviewer_id = _required_text(
+                            review.get("reviewer_agent_id"),
+                            f"reviews[{index}].reviewer_agent_id",
+                        )
+                        reviewer = state.agents.get(reviewer_id)
+                        if reviewer is None:
+                            raise ValueError(
+                                f"reviewer agent {reviewer_id} does not exist"
+                            )
+                        if reviewer.status != AgentStatus.ACTIVE:
+                            raise ValueError(
+                                f"recipient agent {reviewer.id} is "
+                                f"{reviewer.status.value}"
+                            )
+                (
+                    review_cohort_id,
+                    created_review_ids,
+                    existing_review_ids,
+                ) = create_sealed_review_cohort(
+                    state,
+                    actor=actor,
+                    deliverable_id=requested_deliverable_id,
+                    reviews=reviews,
+                    result=review_result,
+                )
+                return state
+
+            state = repo.update(
+                _mutate,
+                expected_revision=_optional_int(
+                    payload.get("expected_revision"),
+                    default=None,
+                ),
+            )
+        except TeamStateConflictError as exc:
+            return _review_cohort_effect_error_result(
+                revision=exc.current_revision,
+                review_cohort_id=review_cohort_id,
+                actor_agent_id=actor_agent_id,
+                deliverable_id=deliverable_id,
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            revision = current_state.revision if current_state is not None else repo.read().revision
+            return _review_cohort_effect_error_result(
+                revision=revision,
+                review_cohort_id=review_cohort_id,
+                actor_agent_id=actor_agent_id,
+                deliverable_id=deliverable_id,
+                error=str(exc),
+            )
+
+        published_event_ids: list[str] = []
+        if publish_wake_events:
+            published_event_ids = _publish_team_events(
+                self.runtime_context,
+                review_result["events"],
+            )
+        return _review_cohort_effect_success_result(
+            state,
+            review_cohort_id=review_cohort_id,
+            actor_agent_id=actor_agent_id,
+            created_review_ids=created_review_ids,
+            existing_review_ids=existing_review_ids,
+            result=review_result,
+            published_event_ids=published_event_ids,
+        )
+
+
 class TeamCreateTaskEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -5579,6 +5766,7 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:create-operator-directive": (TeamCreateOperatorDirectiveEffectProvider),
             "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
+            "effect:team:create-review-cohort": TeamCreateReviewCohortEffectProvider,
             "effect:team:create-task": TeamCreateTaskEffectProvider,
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
@@ -5646,6 +5834,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:create-review-request": (
                 lambda node: _materialize(TeamCreateReviewRequestEffectDefinition, node)
+            ),
+            "effect:team:create-review-cohort": (
+                lambda node: _materialize(TeamCreateReviewCohortEffectDefinition, node)
             ),
             "effect:team:create-task": (
                 lambda node: _materialize(TeamCreateTaskEffectDefinition, node)
@@ -8768,6 +8959,95 @@ def _review_request_effect_error_result(
         "published_event_ids": [],
         "events": [],
         "review_request": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
+
+
+def _review_cohort_effect_success_result(
+    state: TeamState,
+    *,
+    review_cohort_id: str | None,
+    actor_agent_id: str | None,
+    created_review_ids: Sequence[str],
+    existing_review_ids: Sequence[str],
+    result: Mapping[str, Any],
+    published_event_ids: list[str],
+) -> dict[str, Any]:
+    review_ids = [*created_review_ids, *existing_review_ids]
+    reviews = [
+        state.review_requests[review_id]
+        for review_id in review_ids
+        if review_id in state.review_requests
+    ]
+    deliverable = (
+        state.deliverables.get(reviews[0].deliverable_id)
+        if reviews
+        else next(
+            (
+                candidate
+                for candidate in state.deliverables.values()
+                if candidate.review_cohort_id == review_cohort_id
+            ),
+            None,
+        )
+    )
+    return {
+        "success": bool(
+            deliverable is not None
+            and review_cohort_id
+            and deliverable.review_cohort_id == review_cohort_id
+            and deliverable.review_cohort_sealed_at is not None
+        ),
+        "revision": state.revision,
+        "review_cohort_id": review_cohort_id,
+        "review_cohort_sealed_at": (
+            deliverable.review_cohort_sealed_at.isoformat()
+            if deliverable is not None
+            and deliverable.review_cohort_sealed_at is not None
+            else None
+        ),
+        "deliverable_id": deliverable.id if deliverable is not None else None,
+        "actor_agent_id": actor_agent_id,
+        "created": bool(created_review_ids),
+        "created_review_request_ids": list(created_review_ids),
+        "existing_review_request_ids": list(existing_review_ids),
+        "created_inbox_item_ids": list(result.get("created_inbox_item_ids") or []),
+        "published_event_ids": published_event_ids,
+        "events": list(result.get("events") or []),
+        "review_requests": [review.model_dump(mode="json") for review in reviews],
+        "error": None,
+    }
+
+
+def _review_cohort_effect_error_result(
+    *,
+    revision: int,
+    review_cohort_id: str | None,
+    actor_agent_id: str | None,
+    deliverable_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "review_cohort_id": review_cohort_id,
+        "review_cohort_sealed_at": None,
+        "deliverable_id": deliverable_id,
+        "actor_agent_id": actor_agent_id,
+        "created": False,
+        "created_review_request_ids": [],
+        "existing_review_request_ids": [],
+        "created_inbox_item_ids": [],
+        "published_event_ids": [],
+        "events": [],
+        "review_requests": [],
         "error": error,
     }
     if expected_revision is not None:

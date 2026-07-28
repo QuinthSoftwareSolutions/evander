@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-28 - Workflow-created Team Review Cohorts
+
+- Added an atomic Team workflow effect that creates and seals the complete
+  reviewer set for an existing immutable deliverable in one state transaction.
+  Exact workflow retries are idempotent, while mismatched membership and
+  pre-existing independent reviews fail closed.
+- Exposed the cohort effect and its outputs in the workflow catalog so
+  integration-boundary deliverables can request one coordinated code-and-test
+  acceptance pass without reviewing every intermediate contribution.
+
 ## 2026-07-28 - Lifecycle-aware Team Wake Contexts
 
 - Made first, manually rotated, `every_wake`, and explicitly new-context Team

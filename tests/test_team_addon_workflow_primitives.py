@@ -7,11 +7,13 @@ from evander.queries.providers.base import QueryRuntimeContext
 from evander.triggers.providers.base import TriggerRuntimeContext
 from evander_team_addon.models import AgentStatus, ProjectGoal, TeamInboxItemType
 from evander_team_addon.provider_schemas import (
+    TeamCreateReviewCohortEffectDefinition,
     TeamCreateReviewRequestEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
     TeamMemoryQueryDefinition,
 )
 from evander_team_addon.providers import (
+    TeamCreateReviewCohortEffectProvider,
     TeamCreateReviewRequestEffectProvider,
     TeamDeliverableCreatedTriggerProvider,
     TeamIndexMemoryEffectProvider,
@@ -143,6 +145,10 @@ def test_team_workflow_provider_registration_includes_review_primitives() -> Non
     assert (
         registration.effect_providers["effect:team:create-review-request"]
         is TeamCreateReviewRequestEffectProvider
+    )
+    assert (
+        registration.effect_providers["effect:team:create-review-cohort"]
+        is TeamCreateReviewCohortEffectProvider
     )
     assert (
         registration.effect_providers["effect:team:index-memory"] is TeamIndexMemoryEffectProvider
@@ -280,6 +286,77 @@ def test_create_review_request_effect_uses_team_review_handoff(tmp_path: Path) -
     assert duplicate["review_request_id"] == review.id
     assert duplicate["existing_review_request_ids"] == [review.id]
     assert duplicate["created_inbox_item_ids"] == []
+
+
+def test_create_review_cohort_effect_seals_all_reviewers_atomically(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _admin(repo).register_agent(
+        agent_id="tester",
+        team_id="team",
+        project_id="project",
+        role_id="project__reviewer",
+        session_id="session-tester",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+    _record_deliverable(repo, "deliverable")
+    provider = TeamCreateReviewCohortEffectProvider()
+    provider.initialize(
+        TeamCreateReviewCohortEffectDefinition(
+            id="create-review-cohort",
+            display_name="Create review cohort",
+            type="effect:team:create-review-cohort",
+            actor_agent_id="lead",
+            deliverable_id="deliverable",
+            reviews=[
+                {
+                    "reviewer_agent_id": "reviewer",
+                    "review_profile_id": "code-review",
+                },
+                {
+                    "reviewer_agent_id": "tester",
+                    "review_profile_id": "code-review",
+                },
+            ],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["created"] is True
+    assert len(result["created_review_request_ids"]) == 2
+    assert result["existing_review_request_ids"] == []
+    assert len(result["created_inbox_item_ids"]) == 2
+    assert len(result["published_event_ids"]) == 2
+    reread = repo.read()
+    deliverable = reread.deliverables["deliverable"]
+    assert deliverable.review_cohort_id == result["review_cohort_id"]
+    assert deliverable.review_cohort_sealed_at is not None
+    assert {
+        reread.review_requests[review_id].review_cohort_id
+        for review_id in result["created_review_request_ids"]
+    } == {result["review_cohort_id"]}
+
+    _set_agent_status(repo, "tester", AgentStatus.PAUSED)
+    duplicate = provider.execute(
+        resolved_config={
+            "expected_revision": repo.read().revision,
+        }
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["created"] is False
+    assert duplicate["created_review_request_ids"] == []
+    assert set(duplicate["existing_review_request_ids"]) == set(
+        result["created_review_request_ids"]
+    )
+    assert duplicate["created_inbox_item_ids"] == []
+    assert len(repo.read().review_requests) == 2
 
 
 def test_create_review_request_effect_validates_wake_flag_before_mutating(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import (
     UTC,
     datetime,
@@ -442,6 +442,118 @@ def _apply_review_request(
         now=now,
     )
     return review.id
+
+
+def create_sealed_review_cohort(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    deliverable_id: str,
+    reviews: Sequence[Mapping[str, Any]],
+    result: dict[str, Any],
+) -> tuple[str, list[str], list[str]]:
+    """Attach every requested reviewer to one immutable deliverable atomically.
+
+    The caller must abort its state transaction when this function raises. A
+    repeated request with the same reviewer/profile membership is idempotent.
+    """
+
+    normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
+    deliverable = _require_present(
+        state.deliverables,
+        normalized_deliverable_id,
+        "deliverable",
+    )
+    task = state.tasks.get(deliverable.task_id)
+    project_id = task.project_id if task is not None else None
+    permitted = (
+        actor.id == deliverable.producer_agent_id
+        or _supervises(state, actor.id, deliverable.producer_agent_id)
+        or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
+        or _is_team_manager(state, actor)
+    )
+    if not permitted:
+        raise ValueError(
+            f"agent {actor.id} is not permitted to request review of "
+            f"deliverable {deliverable.id}"
+        )
+    normalized_reviews = [dict(review) for review in reviews]
+    if not normalized_reviews:
+        raise ValueError("reviews must contain at least one review request")
+
+    requested_members: dict[str, str | None] = {}
+    for index, review in enumerate(normalized_reviews):
+        reviewer_id = _required_text(
+            review.get("reviewer_agent_id"),
+            f"reviews[{index}].reviewer_agent_id",
+        )
+        if reviewer_id in requested_members:
+            raise ValueError(
+                "a sealed review cohort requires one review slot per reviewer; "
+                f"duplicate reviewer: {reviewer_id}"
+            )
+        requested_members[reviewer_id] = _optional_text(
+            review.get("review_profile_id")
+        )
+
+    current_reviews = _current_deliverable_reviews(state, deliverable)
+    if _has_sealed_review_cohort(deliverable):
+        current_members = {
+            review.reviewer_agent_id: review.review_profile_id
+            for review in current_reviews
+        }
+        profiles_match = all(
+            requested_profile is None
+            or current_members.get(reviewer_id) == requested_profile
+            for reviewer_id, requested_profile in requested_members.items()
+        )
+        if set(current_members) != set(requested_members) or not profiles_match:
+            raise ValueError(
+                f"deliverable {deliverable.id} already has sealed review cohort "
+                f"{deliverable.review_cohort_id} with different membership"
+            )
+        existing_ids = sorted(review.id for review in current_reviews)
+        result.setdefault("existing_review_request_ids", []).extend(existing_ids)
+        return deliverable.review_cohort_id or "", [], existing_ids
+
+    if deliverable.review_cohort_id is not None:
+        raise ValueError(
+            f"deliverable {deliverable.id} has an unsealed review cohort "
+            f"{deliverable.review_cohort_id}; recover that cohort before retrying"
+        )
+    if current_reviews:
+        raise ValueError(
+            f"deliverable {deliverable.id} already has independent review requests; "
+            "a sealed cohort must be created before any individual review request"
+        )
+
+    cohort_id = f"review-cohort-{deliverable.id}"
+    deliverable.review_cohort_id = cohort_id
+    created_ids: list[str] = []
+    for index, review in enumerate(normalized_reviews):
+        request_payload = {
+            **review,
+            "deliverable_id": deliverable.id,
+            "review_cohort_id": cohort_id,
+        }
+        if "review_request_id" in request_payload:
+            request_payload["id"] = request_payload.pop("review_request_id")
+        created_id = _apply_review_request(
+            state,
+            actor=actor,
+            request=request_payload,
+            result=result,
+        )
+        if created_id is None:
+            raise ValueError(
+                "; ".join(str(error) for error in result.get("errors") or [])
+                or f"reviews[{index}] could not be created"
+            )
+        if _review_request_was_created(result, created_id):
+            created_ids.append(created_id)
+
+    deliverable.review_cohort_sealed_at = utc_now()
+    return cohort_id, created_ids, []
 
 
 def retry_blocked_review(

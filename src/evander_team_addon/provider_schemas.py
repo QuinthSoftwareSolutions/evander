@@ -126,6 +126,22 @@ class TeamCreateReviewRequestEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamCreateReviewCohortEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-review-cohort"]
+    actor_agent_id: ConfigValue
+    deliverable_id: ConfigValue
+    reviews: ConfigValue
+    publish_wake_events: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("reviews")
+    @classmethod
+    def validate_reviews(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:create-review-cohort reviews must be a JSON array")
+
+
 class TeamCreateTaskEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-task"]
     team_id: ConfigValue
@@ -557,6 +573,22 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "published_event_ids": {"type": "array"},
         "events": {"type": "array"},
         "review_request": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-review-cohort": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "review_cohort_id": {"type": ["string", "null"]},
+        "review_cohort_sealed_at": {"type": ["string", "null"]},
+        "deliverable_id": {"type": ["string", "null"]},
+        "actor_agent_id": {"type": ["string", "null"]},
+        "created": {"type": "boolean"},
+        "created_review_request_ids": {"type": "array"},
+        "existing_review_request_ids": {"type": "array"},
+        "created_inbox_item_ids": {"type": "array"},
+        "published_event_ids": {"type": "array"},
+        "events": {"type": "array"},
+        "review_requests": {"type": "array"},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-task": {
