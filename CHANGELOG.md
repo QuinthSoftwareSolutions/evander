@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-28 - Hierarchy-aware Team Review Wakes
+
+- Required assigned deliverable reviewers to fetch and read the complete task
+  specification before deciding. Leaf reviews compare directly against that
+  task, while composite and integration reviews recursively inspect declared
+  contribution tasks, their current accepted source deliverables, and actual
+  integrated behavior rather than relying on source-ID coverage alone.
+
 ## 2026-07-28 - Workflow-created Team Review Cohorts
 
 - Added an atomic Team workflow effect that creates and seals the complete

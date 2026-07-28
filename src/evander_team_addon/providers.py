@@ -104,6 +104,7 @@ from .mcp import (
     TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
     TEAM_GET_DELIVERABLE_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_GET_TASK_TOOL,
     TEAM_LIST_OUTCOME_KINDS_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
@@ -6288,6 +6289,7 @@ def _build_prompt(
         else ""
     )
     superior_acceptance_section = _superior_acceptance_guidance(context)
+    assigned_review_section = _assigned_deliverable_review_guidance(context)
     context_json = json.dumps(context, sort_keys=True, indent=2)
     mode_section = (
         "This wake starts with a fresh conversation context. The JSON below is "
@@ -6326,10 +6328,58 @@ def _build_prompt(
         f"{manager_fallback_section}"
         f"{blocker_section}"
         f"{superior_acceptance_section}"
+        f"{assigned_review_section}"
         f"Team context JSON:\n{context_json}\n\n"
         "MCP action surface:\n"
         "- Use the appropriate Team MCP tool for each state change. A note is "
         "optional; handle completed inbox obligations explicitly.\n"
+    )
+
+
+def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
+    assignments: list[tuple[str, str]] = []
+    for review in context.get("reviews") or []:
+        if not isinstance(review, Mapping):
+            continue
+        review_id = _optional_text(review.get("id"))
+        deliverable_id = _optional_text(review.get("deliverable_id"))
+        if review_id is None or deliverable_id is None:
+            continue
+        assignments.append((review_id, deliverable_id))
+    if not assignments:
+        return ""
+    labels = ", ".join(
+        f"{review_id} (deliverable {deliverable_id})"
+        for review_id, deliverable_id in assignments
+    )
+    return (
+        "Assigned deliverable review procedure for this wake:\n"
+        f"- Pending assigned reviews: {labels}.\n"
+        f"- Before deciding each review, call {TEAM_GET_DELIVERABLE_TOOL} for the "
+        f"complete deliverable, resolve its task_id, and call {TEAM_GET_TASK_TOOL}. "
+        "Read the complete task description/specification, outcome_contract, "
+        "deliverable_contract, derived assessment, review instructions/profile, "
+        "candidate implementation, artifacts, and verification evidence.\n"
+        "- Leaf review path: when the task is not an integration boundary and has "
+        "no constituent child or contribution tasks, compare the deliverable "
+        "directly with that task's complete specification and the review profile.\n"
+        "- Composite review path: when integration_boundary is true or the task "
+        "exposes required_contribution_task_ids or child_task_ids, treat the "
+        "specification as distributed. For an integration boundary, use "
+        "deliverable_contract.required_contribution_task_ids as the declared "
+        "contribution set; for a legacy non-integration parent, use its direct "
+        "child_task_ids. Fetch every declared contribution task and every required "
+        "current accepted source deliverable named by "
+        "assessment.contribution_coverage.required_source_deliverable_ids. If a "
+        "contribution task is itself composite, repeat this procedure recursively "
+        "until you have inspected the leaf specifications and evidence.\n"
+        "- Verify the aggregate's actual behavior and provenance against the parent "
+        "intent and every contributing specification. Complete source_deliverable_ids "
+        "coverage alone is not proof of correct integration; also investigate "
+        "missing, unexpected, or invalid contribution coverage.\n"
+        f"- Only then decide with {TEAM_DECIDE_REVIEW_TOOL}. If required task, "
+        "deliverable, artifact, or verification context cannot be inspected, decide "
+        "blocked and name the missing record IDs instead of guessing.\n\n"
     )
 
 

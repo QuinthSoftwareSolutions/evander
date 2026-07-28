@@ -35,6 +35,7 @@ from evander_team_addon.mcp import (
     READ_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
+    TEAM_DECIDE_REVIEW_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
@@ -3740,6 +3741,70 @@ def test_build_prompt_instructs_superior_to_decide_direct_deliverable_notice(
     payload = context["inbox"][0]["payload"]
     assert payload["available_decisions"] == ["accepted", "rejected"]
     assert payload["available_alternatives"] == ["request_review", "report_blocker"]
+
+
+def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec(
+    tmp_path: Path,
+) -> None:
+    state = _seed_team(tmp_path).read()
+    lease = {
+        "agent": state.agents["lead"].model_dump(mode="json"),
+        "reason": "review",
+        "dispatch": {
+            "id": "dispatch-review",
+            "cause_kind": "review",
+            "cause_id": "review-integration",
+            "review_request_ids": ["review-integration"],
+            "project_ids": ["project"],
+        },
+        "tasks": [],
+        "projects": [state.projects["project"].model_dump(mode="json")],
+        "inbox": [],
+        "reviews": [
+            {
+                "id": "review-integration",
+                "deliverable_id": "deliverable-integration",
+                "reviewer_agent_id": "lead",
+                "state": "pending",
+                "instructions": "Review the consolidated implementation.",
+            }
+        ],
+        "release_packages": [],
+    }
+
+    prompt = _build_prompt(lease)
+
+    assert "Assigned deliverable review procedure for this wake:" in prompt
+    assert "review-integration (deliverable deliverable-integration)" in prompt
+    assert (
+        "call team_get_deliverable for the complete deliverable, resolve its task_id, "
+        "and call team_get_task"
+    ) in prompt
+    assert "Leaf review path:" in prompt
+    assert "Composite review path:" in prompt
+    assert "deliverable_contract.required_contribution_task_ids" in prompt
+    assert "for a legacy non-integration parent, use its direct child_task_ids" in prompt
+    assert (
+        "assessment.contribution_coverage.required_source_deliverable_ids"
+    ) in prompt
+    assert "repeat this procedure recursively" in prompt
+    assert "coverage alone is not proof of correct integration" in prompt
+    assert "decide blocked and name the missing record IDs" in prompt
+    assert TEAM_DECIDE_REVIEW_TOOL in prompt
+
+    non_review_prompt = _build_prompt(
+        {
+            **lease,
+            "reason": "scheduled",
+            "dispatch": {
+                **lease["dispatch"],
+                "cause_kind": "scheduled",
+                "review_request_ids": [],
+            },
+            "reviews": [],
+        }
+    )
+    assert "Assigned deliverable review procedure for this wake:" not in non_review_prompt
 
 
 def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
