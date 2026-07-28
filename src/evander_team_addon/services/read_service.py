@@ -67,12 +67,20 @@ class TeamReadService:
         rows = [self._task_row(task) for task in sorted(tasks, key=_task_sort_key)]
         return _page(rows, limit=limit, cursor=cursor, offset=offset)
 
-    def get_task(self, task_id: str) -> dict[str, Any] | None:
+    def get_task(
+        self,
+        task_id: str,
+        *,
+        dispatch_id: str | None = None,
+    ) -> dict[str, Any] | None:
         task = self._state.tasks.get(_text(task_id))
         if task is None or not self._task_visible(task):
             return None
         payload = task_payload_with_assessment(self._state, task)
-        git_contexts = self._git_work_context_rows_for_task(task.id)
+        git_contexts = self._git_work_context_rows_for_task(
+            task.id,
+            dispatch_id=dispatch_id,
+        )
         if git_contexts:
             payload["git_work_contexts"] = git_contexts
         return _without_none(payload)
@@ -301,6 +309,67 @@ class TeamReadService:
 
     def get_my_identity(self) -> dict[str, Any]:
         return self._agent_detail_payload(self._actor, full_identity=True)
+
+    def get_current_dispatch_context(self) -> dict[str, Any] | None:
+        """Hydrate the caller's active immutable dispatch scope on demand."""
+
+        runtime = self._state.agent_runtimes.get(self._actor_id)
+        dispatch_id = runtime.active_dispatch_id if runtime is not None else None
+        if dispatch_id is None:
+            return None
+        dispatch = self._state.dispatches.get(dispatch_id)
+        if dispatch is None or dispatch.agent_id != self._actor_id:
+            return None
+
+        tasks = [
+            payload
+            for task_id in dispatch.task_ids
+            if (
+                payload := self.get_task(
+                    task_id,
+                    dispatch_id=dispatch.id,
+                )
+            )
+            is not None
+        ]
+        blockers = [
+            payload
+            for blocker_id in dispatch.blocker_ids
+            if (payload := self.get_blocker(blocker_id)) is not None
+        ]
+        reviews = [
+            payload
+            for review_id in dispatch.review_request_ids
+            if (payload := self.get_review_request(review_id)) is not None
+        ]
+        inbox = [
+            payload
+            for inbox_item_id in dispatch.inbox_item_ids
+            if (payload := self.get_inbox_item(inbox_item_id)) is not None
+        ]
+        projects = [
+            payload
+            for project_id in dispatch.project_ids
+            if (payload := self.get_project(project_id)) is not None
+        ]
+        return _without_none(
+            {
+                "dispatch": dispatch.model_dump(mode="json"),
+                "tasks": tasks,
+                "blockers": blockers,
+                "reviews": reviews,
+                "inbox": inbox,
+                "projects": projects,
+                "git_work_contexts": [
+                    row
+                    for task_id in dispatch.task_ids
+                    for row in self._git_work_context_rows_for_task(
+                        task_id,
+                        dispatch_id=dispatch.id,
+                    )
+                ],
+            }
+        )
 
     def list_projects(
         self,
@@ -671,12 +740,19 @@ class TeamReadService:
             return "task", item.task_id
         return None
 
-    def _git_work_context_rows_for_task(self, task_id: str) -> list[dict[str, Any]]:
+    def _git_work_context_rows_for_task(
+        self,
+        task_id: str,
+        *,
+        dispatch_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for context in self._state.git_work_contexts.values():
             if context.task_id != task_id:
                 continue
             if context.agent_id != self._actor_id:
+                continue
+            if dispatch_id is not None and context.dispatch_id != dispatch_id:
                 continue
             if _enum_value(context.state) != "active":
                 continue

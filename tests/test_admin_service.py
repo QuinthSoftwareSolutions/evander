@@ -1972,6 +1972,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
         "image": "runner-dotnet-playwright:2026-06-05",
         "image_alias": "dotnet-playwright",
     }
+    assert manifest.metadata["playwright"] is True
     agents = service.vm_agent_admin.list_agents(
         directory_path=team_path,
         direct_only=True,

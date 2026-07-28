@@ -26,6 +26,7 @@ from evander.effects.providers.agent_session import (
     container_prompt_command,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     default_agent_model_for_provider,
     default_agent_provider_for_config,
     gateway_url_with_session_context,
@@ -705,6 +706,7 @@ class HostWakeDispatcher:
             prompt=prompt,
             model=resolved_model,
             resume_thread_id=None,
+            session=session,
             agent_provider=agent_provider,
             resume_mode=effective_resume_mode,
             mcp_gateway_url=mcp_gateway_url,
@@ -730,6 +732,7 @@ class HostWakeDispatcher:
                         session_id=session_id,
                         directory_path=directory_path,
                         image=container_worker_image_for_session(session, base_config),
+                        resource_limits=container_worker_resource_limits_for_session(session),
                         command=command,
                         codex_turn=codex_turn,
                         metadata={

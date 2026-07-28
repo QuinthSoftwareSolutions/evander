@@ -49,6 +49,7 @@ def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
         branch_context_id=branch_context_id,
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
+        submitted_commit_sha=_optional_text(payload.get("submitted_commit_sha")),
     )
 
 
@@ -220,12 +221,45 @@ def _superseded_deliverable_for_rework(
             f"{deliverable.producer_agent_id}; only that producer or current "
             f"task owner {task.owner_agent_id} may supersede it"
         )
-    if deliverable.state not in {
-        TeamRecordState.REJECTED,
-        TeamRecordState.BLOCKED,
-    }:
+    if (
+        deliverable.review_cohort_id is not None
+        and deliverable.review_cohort_sealed_at is not None
+    ):
+        unresolved_cohort_review_ids = sorted(
+            review.id
+            for review_id in deliverable.review_request_ids
+            if (review := state.review_requests.get(review_id)) is not None
+            and review.review_cohort_id == deliverable.review_cohort_id
+            and review.superseded_by_review_request_id is None
+            and review.retired_at is None
+            and review.state
+            in {
+                TeamRecordState.PENDING,
+                TeamRecordState.IN_PROGRESS,
+                TeamRecordState.BLOCKED,
+            }
+        )
+        if unresolved_cohort_review_ids:
+            raise ValueError(
+                f"supersedes_deliverable_id {deliverable.id} belongs to sealed "
+                f"review cohort {deliverable.review_cohort_id} with unresolved "
+                "review slots; complete or retry the cohort before replacing "
+                f"the deliverable: {', '.join(unresolved_cohort_review_ids)}"
+            )
+    if (
+        deliverable.state
+        not in {
+            TeamRecordState.REJECTED,
+            TeamRecordState.BLOCKED,
+        }
+        and not (
+            deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.rework_requested_at is not None
+        )
+    ):
         raise ValueError(
-            f"supersedes_deliverable_id {deliverable.id} is not rejected or blocked"
+            f"supersedes_deliverable_id {deliverable.id} is not rejected, blocked, "
+            "or explicitly reopened for rework"
         )
     if deliverable.superseded_by_deliverable_id is not None:
         raise ValueError(
@@ -233,6 +267,24 @@ def _superseded_deliverable_for_rework(
             f"{deliverable.superseded_by_deliverable_id}"
         )
     return deliverable
+
+
+def _open_accepted_rework_deliverables(
+    state: TeamState,
+    *,
+    task: AgentTask,
+) -> list[Deliverable]:
+    return sorted(
+        (
+            deliverable
+            for deliverable_id in task.deliverable_ids
+            if (deliverable := state.deliverables.get(deliverable_id)) is not None
+            and deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.rework_requested_at is not None
+            and deliverable.superseded_by_deliverable_id is None
+        ),
+        key=lambda deliverable: (deliverable.rework_requested_at, deliverable.id),
+    )
 
 
 def _active_task_deliverables(
@@ -283,6 +335,8 @@ def _accept_deliverable_and_maybe_task(
     if not task_deliverables or not all(
         item.state == TeamRecordState.ACCEPTED for item in task_deliverables
     ):
+        return False
+    if _open_accepted_rework_deliverables(state, task=task):
         return False
     if task.task_kind == TeamTaskKind.OUTCOME:
         noop_completions = [
@@ -338,6 +392,7 @@ __all__ = [
     "_deliverable_submission_next_action_hints",
     "_validate_deliverable_outcomes_against_task_contract",
     "_superseded_deliverable_for_rework",
+    "_open_accepted_rework_deliverables",
     "_active_task_deliverables",
     "_active_deliverable_acceptance_blocker_ids",
     "_accept_deliverable_and_maybe_task",

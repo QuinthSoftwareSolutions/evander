@@ -374,13 +374,14 @@ class TeamWorktreeCleanupService:
                         and existing.expected_head != expected_head
                         and expected_head is not None
                     ):
+                        # Refreshing Git safety metadata must not erase a
+                        # prior attempt's durable backoff or failure evidence.
+                        # Historical contexts can share this candidate identity
+                        # and otherwise toggle the expected head on every
+                        # maintenance pass.
                         existing.expected_head = expected_head
                         existing.retained_commit_sha = retained_commit
-                        existing.state = WorktreeCleanupState.PENDING
                         existing.reason = reason
-                        existing.eligible_at = effective_now
-                        existing.last_safety_check = None
-                        existing.last_error = None
                         existing.updated_at = effective_now
                         counts["refreshed"] += 1
                     continue
@@ -421,7 +422,7 @@ class TeamWorktreeCleanupService:
         grace_seconds: int = DEFAULT_CLEANUP_GRACE_SECONDS,
         retry_seconds: int = DEFAULT_CLEANUP_RETRY_SECONDS,
         recovery_seconds: int = DEFAULT_CLEANUP_RECOVERY_SECONDS,
-        dry_run: bool = False,
+        dry_run: bool | None = False,
     ) -> WorktreeCleanupReconcileResult:
         effective_now = _ensure_utc(now or datetime.now(UTC))
         _state, enqueue_counts = self.enqueue_candidates(
@@ -446,11 +447,14 @@ class TeamWorktreeCleanupService:
                 break
             attempted += 1
             candidate_ids.append(candidate.id)
+            candidate_dry_run = (
+                candidate.last_safety_check != "dry_run_safe" if dry_run is None else dry_run
+            )
             status, reclaimed, error = self._reconcile_claimed_candidate(
                 candidate,
                 now=effective_now,
                 retry_seconds=retry_seconds,
-                dry_run=dry_run,
+                dry_run=candidate_dry_run,
             )
             if status == "succeeded":
                 succeeded += 1
@@ -794,13 +798,15 @@ class TeamWorktreeCleanupService:
             current.updated_at = now
             return state
 
-        self._repository.update(_mutate)
-        self._append_audit(
-            candidate,
-            status=TeamDispatchActivityStatus.SUCCESS,
-            failed_check=None,
-            message=str(outcome.get("message") or "task worktree dry-run passed"),
-            now=now,
+        self._repository.update_with_dispatch_activity(
+            _mutate,
+            activity=self._audit_activity(
+                candidate,
+                status=TeamDispatchActivityStatus.SUCCESS,
+                failed_check=None,
+                message=str(outcome.get("message") or "task worktree dry-run passed"),
+                now=now,
+            ),
         )
 
     def _audit_activity(

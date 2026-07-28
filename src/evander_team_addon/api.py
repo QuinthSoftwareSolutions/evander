@@ -1994,6 +1994,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 reason=_required(payload, "reason"),
                 set_by=_optional(payload, "set_by")
                 or _operator_actor_from_request(context.auth, request),
+                scope=_optional(payload, "scope") or "subtree",
                 expected_revision=expected_revision,
             ),
             target_collection="agents",
@@ -2119,6 +2120,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 task_kind=_optional(payload, "task_kind"),
                 outcome_contract=_optional_object(payload, "outcome_contract"),
                 set_outcome_contract="outcome_contract" in payload,
+                integration_boundary=_optional_bool(
+                    payload,
+                    "integration_boundary",
+                ),
+                deliverable_contract=_optional_object(
+                    payload,
+                    "deliverable_contract",
+                ),
+                set_deliverable_contract="deliverable_contract" in payload,
                 expected_revision=expected_revision,
             ),
             create_collection="tasks",
@@ -2148,6 +2158,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 parent_task_id=_optional(payload, "parent_task_id"),
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
+                integration_boundary=_optional_bool(
+                    payload,
+                    "integration_boundary",
+                ),
+                deliverable_contract=_optional_object(
+                    payload,
+                    "deliverable_contract",
+                ),
+                set_deliverable_contract="deliverable_contract" in payload,
                 expected_revision=expected_revision,
             ),
             target_collection="tasks",

@@ -35,6 +35,7 @@ from evander_team_addon.mcp import (
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_RETIRE_REVIEW_TOOL,
     TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -53,6 +54,7 @@ from evander_team_addon.mcp import (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    _team_mcp_git_candidate_commit_resolver,
 )
 from evander_team_addon.chat_attachments import (
     TeamChatAttachmentPolicyService,
@@ -464,6 +466,70 @@ def _install_leased_dispatch(
     )
 
 
+def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "d9b05522b48d4515c40537f6c6e6701f688f1575"
+    build_calls: list[Path] = []
+    resolve_calls: list[tuple[str, str, str]] = []
+
+    class _ManagedGit:
+        def resolve_branch_commit(
+            self,
+            managed_repo_id: str,
+            *,
+            directory_path: str,
+            branch: str,
+        ) -> str:
+            resolve_calls.append((managed_repo_id, directory_path, branch))
+            return expected_commit
+
+    def _build_admin_runtime(runtime_dir: Path):
+        build_calls.append(runtime_dir)
+        return SimpleNamespace(managed_git_admin=_ManagedGit())
+
+    monkeypatch.setattr(
+        "evander.admin.composition.build_admin_runtime",
+        _build_admin_runtime,
+    )
+    context = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        service=SimpleNamespace(),
+    )
+    resolver = _team_mcp_git_candidate_commit_resolver(context)
+
+    assert (
+        resolver(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            agent_branch="agents/local-coder-2/tasks/task",
+        )
+        == expected_commit
+    )
+    assert (
+        resolver(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            agent_branch="agents/local-coder-2/tasks/task",
+        )
+        == expected_commit
+    )
+    assert build_calls == [tmp_path / "runtime"]
+    assert resolve_calls == [
+        (
+            "mr_0123456789abcdefabcd",
+            "root",
+            "agents/local-coder-2/tasks/task",
+        ),
+        (
+            "mr_0123456789abcdefabcd",
+            "root",
+            "agents/local-coder-2/tasks/task",
+        ),
+    ]
+
+
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tmp_path: Path,
 ) -> None:
@@ -495,6 +561,9 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     replacement_description = (
         tools[TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL].description or ""
     )
+    reopen_rework_description = (
+        tools[TEAM_REOPEN_TASK_FOR_REWORK_TOOL].description or ""
+    )
     finding_resolution_description = (
         tools[TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL].description or ""
     )
@@ -506,6 +575,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     )
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
+    assert "use commit_sha, not commit" in submit_description
     assert "does not make the human decision" in finding_resolution_description
     assert "independent correction root" in correction_root_description
     assert "does not roll back" in post_release_close_description
@@ -522,6 +592,8 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "pending non-release review" in withdraw_review_description
     assert "project lead or team manager" in retire_review_description
     assert "open findings are not resolved or waived" in retire_review_description
+    assert "old acceptance and reviews remain immutable" in reopen_rework_description
+    assert "fresh formally reviewed deliverable" in reopen_rework_description
     assert "accepted replacement in the same project" in replacement_description
 
 
@@ -1282,6 +1354,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
             "agent_id": "backend",
             "reason": "Pause backend.",
             "request_id": "request-mcp-stand-down",
+            "scope": "agent",
         },
         _make_request_context(session_id="session-lead"),
     )
@@ -1328,9 +1401,194 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert stood_down["created_stand_down_ids"]
     assert revoked["revoked_stand_down_ids"] == stood_down["created_stand_down_ids"]
     state = repo.read()
+    assert state.stand_downs[stood_down["stand_down_id"]].scope == "agent"
     assert state.cases["case-mcp"].title == "MCP case updated"
     assert state.tasks["task-mcp"].state.value == "in_progress"
     assert state.projects["project"].goals[0].state == TeamRecordState.IN_PROGRESS
+
+
+def test_team_addon_mcp_reopens_finished_task_for_reviewed_rework(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    _upsert_session(
+        context,
+        session_id="session-manager",
+        allowed_tools=[TEAM_REOPEN_TASK_FOR_REWORK_TOOL],
+    )
+    repo = _seed_slice8_state(context.config.runtime_dir)
+
+    def _finish_task(state):
+        state.tasks["task"].state = TeamTaskState.FINISHED
+        return state
+
+    repo.update(_finish_task)
+    _lease_agent(
+        repo,
+        agent_id="manager",
+        dispatch_id="dispatch-mcp-reopen-rework",
+    )
+    server = create_server(context)
+
+    result = _call_tool_with_context(
+        server,
+        TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
+        {
+            "task_id": "task",
+            "accepted_deliverable_id": "deliverable",
+            "reason": "The accepted candidate lacks immutable provenance.",
+            "request_id": "request-mcp-reopen-rework",
+        },
+        _make_request_context(session_id="session-manager"),
+    )
+
+    assert result["success"] is True
+    assert result["supersedes_deliverable_id"] == "deliverable"
+    state = repo.read()
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert (
+        state.deliverables["deliverable"].rework_requested_by_agent_id
+        == "manager"
+    )
+    assert state.review_requests["review-deliverable"].state == TeamRecordState.ACCEPTED
+    rework_item = state.inbox[result["created_inbox_item_ids"][0]]
+    assert rework_item.recipient_agent_id == "backend"
+    assert rework_item.payload["required_tool"] == (
+        "team_submit_deliverable_for_review"
+    )
+
+
+def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="clarification",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Clarify and integrate",
+        description="Coordinate the implementation.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="implementation",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Implement",
+        description="Produce the contribution.",
+        created_by_agent_id="lead",
+        parent_task_id="clarification",
+    )
+    admin.update_task(
+        task_id="implementation",
+        state=TeamTaskState.FINISHED,
+    )
+    _upsert_session(
+        context,
+        session_id="session-lead",
+        allowed_tools=[TEAM_CREATE_TASK_TOOL, TEAM_UPDATE_TASK_TOOL],
+    )
+    _lease_agent(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-mcp-integration-boundary",
+    )
+    server = create_server(context)
+
+    result = _call_tool_with_context(
+        server,
+        TEAM_UPDATE_TASK_TOOL,
+        {
+            "task_id": "clarification",
+            "integration_boundary": True,
+            "deliverable_contract": {
+                "require_git_provenance": True,
+                "required_contribution_task_ids": ["implementation"],
+            },
+            "request_id": "request-mcp-integration-boundary",
+        },
+        _make_request_context(session_id="session-lead"),
+    )
+
+    assert result["success"] is True, result
+    task = repo.read().tasks["clarification"]
+    assert task.integration_boundary is True
+    assert task.deliverable_contract is not None
+    assert task.deliverable_contract.require_git_provenance is True
+    assert task.deliverable_contract.required_contribution_task_ids == [
+        "implementation"
+    ]
+
+    admin.create_or_reprioritize_task(
+        task_id="ordinary-after-submission",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=2,
+        title="Ordinary task",
+        description="Edit after a deliverable exists.",
+        created_by_agent_id="lead",
+    )
+    admin.record_deliverable(
+        deliverable_id="ordinary-deliverable",
+        task_id="ordinary-after-submission",
+        producer_agent_id="lead",
+        summary="Ordinary deliverable.",
+        state=TeamRecordState.REJECTED,
+    )
+    admin.update_task(
+        task_id="ordinary-after-submission",
+        state=TeamTaskState.IN_PROGRESS,
+    )
+    _lease_agent(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-mcp-echo-unchanged-contract",
+    )
+    echoed_noop = _call_tool_with_context(
+        server,
+        TEAM_UPDATE_TASK_TOOL,
+        {
+            "task_id": "ordinary-after-submission",
+            "description": "Description edited after submission.",
+            "integration_boundary": False,
+            "deliverable_contract": None,
+            "request_id": "request-mcp-echo-unchanged-contract",
+        },
+        _make_request_context(session_id="session-lead"),
+    )
+    assert echoed_noop["success"] is True, echoed_noop.get("errors")
+    ordinary_task = repo.read().tasks["ordinary-after-submission"]
+    assert ordinary_task.description == "Description edited after submission."
+    assert ordinary_task.integration_boundary is False
+    assert ordinary_task.deliverable_contract is None
+
+    created = _call_tool_with_context(
+        server,
+        TEAM_CREATE_TASK_TOOL,
+        {
+            "task_id": "final-integration",
+            "owner_agent_id": "lead",
+            "project_id": "project",
+            "priority": 1,
+            "title": "Final integration",
+            "description": "Compose the accepted implementation.",
+            "dependency_task_ids": ["implementation"],
+            "integration_boundary": True,
+            "deliverable_contract": {
+                "require_git_provenance": True,
+                "required_contribution_task_ids": ["implementation"],
+            },
+            "request_id": "request-mcp-create-integration-boundary",
+        },
+        _make_request_context(session_id="session-lead"),
+    )
+    assert created["success"] is True, created
+    assert repo.read().tasks["final-integration"].integration_boundary is True
 
 
 def test_team_addon_mcp_slice6_tool_requires_active_lease_without_mutation(

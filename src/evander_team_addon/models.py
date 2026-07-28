@@ -1070,6 +1070,16 @@ class TaskOutcomeContract(TeamModel):
         return self
 
 
+class TaskDeliverableContract(TeamModel):
+    require_git_provenance: bool = False
+    required_contribution_task_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("required_contribution_task_ids", mode="before")
+    @classmethod
+    def _required_contribution_task_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "required_contribution_task_ids")
+
+
 class TaskCompletion(TeamModel):
     kind: TaskCompletionKind
     summary: str
@@ -1158,6 +1168,8 @@ class AgentTask(TeamModel):
     state: TeamTaskState = TeamTaskState.PENDING
     task_kind: TeamTaskKind = TeamTaskKind.SUPPORT
     outcome_contract: TaskOutcomeContract | None = None
+    integration_boundary: bool = False
+    deliverable_contract: TaskDeliverableContract | None = None
     completion: TaskCompletion | None = None
     state_entered_at: datetime = Field(default_factory=utc_now)
     title: str
@@ -1230,6 +1242,22 @@ class AgentTask(TeamModel):
             raise ValueError("support task cannot define outcome_contract")
         if self.task_kind == TeamTaskKind.SUPPORT and self.completion is not None:
             raise ValueError("support task cannot define structured completion")
+        if self.integration_boundary and self.deliverable_contract is None:
+            raise ValueError(
+                "integration boundary task requires deliverable_contract"
+            )
+        if not self.integration_boundary and self.deliverable_contract is not None:
+            raise ValueError(
+                "deliverable_contract requires integration_boundary"
+            )
+        if (
+            self.deliverable_contract is not None
+            and self.id
+            in self.deliverable_contract.required_contribution_task_ids
+        ):
+            raise ValueError(
+                "task cannot require itself as a deliverable contribution"
+            )
         if self.state == TeamTaskState.CANCELLED and self.cancellation is None:
             raise ValueError("cancelled task requires a cancellation disposition")
         if self.state != TeamTaskState.CANCELLED and self.cancellation is not None:
@@ -1425,6 +1453,11 @@ class Deliverable(TeamModel):
     supersession_reason: str | None = None
     superseded_at: datetime | None = None
     superseded_by_actor: str | None = None
+    review_cohort_id: str | None = None
+    review_cohort_sealed_at: datetime | None = None
+    rework_requested_at: datetime | None = None
+    rework_requested_by_agent_id: str | None = None
+    rework_reason: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("id", "task_id", "producer_agent_id", "summary", mode="before")
@@ -1437,6 +1470,9 @@ class Deliverable(TeamModel):
         "superseded_by_deliverable_id",
         "supersession_reason",
         "superseded_by_actor",
+        "review_cohort_id",
+        "rework_requested_by_agent_id",
+        "rework_reason",
         "acceptance_recipient_agent_id",
         mode="before",
     )
@@ -1470,6 +1506,34 @@ class Deliverable(TeamModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_rework_request(self) -> "Deliverable":
+        values = (
+            self.rework_requested_at,
+            self.rework_requested_by_agent_id,
+            self.rework_reason,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError(
+                "deliverable rework request requires rework_requested_at, "
+                "rework_requested_by_agent_id, and rework_reason"
+            )
+        if self.rework_requested_at is not None and self.state != TeamRecordState.ACCEPTED:
+            raise ValueError("only an accepted deliverable can carry a rework request")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_review_cohort(self) -> "Deliverable":
+        if (self.review_cohort_id is None) != (
+            self.review_cohort_sealed_at is None
+        ):
+            raise ValueError(
+                "review_cohort_id and review_cohort_sealed_at must be set together"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_completion(self) -> "Deliverable":
         if self.id in self.source_deliverable_ids:
             raise ValueError("deliverable cannot name itself as a source")
@@ -1483,6 +1547,32 @@ class Deliverable(TeamModel):
         return self
 
 
+class DependencyGitSource(TeamModel):
+    dependency_task_id: str
+    deliverable_id: str
+    branch: str
+    commit_sha: str
+
+    @field_validator(
+        "dependency_task_id",
+        "deliverable_id",
+        "branch",
+        "commit_sha",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _full_commit_sha(cls, value: str) -> str:
+        normalized = value.casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError("commit_sha must be a full Git object ID")
+        return normalized
+
+
 class GitWorkContext(TeamModel):
     id: str
     agent_id: str
@@ -1493,6 +1583,7 @@ class GitWorkContext(TeamModel):
     commit_sha: str | None = None
     dispatch_id: str | None = None
     worktree_path: str | None = None
+    dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
     state: GitWorkContextState = GitWorkContextState.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1593,6 +1684,7 @@ class ReviewRequest(TeamModel):
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
+    review_cohort_id: str | None = None
     supersedes_review_request_id: str | None = None
     superseded_by_review_request_id: str | None = None
     retry_reason: str | None = None
@@ -1618,6 +1710,7 @@ class ReviewRequest(TeamModel):
         "review_profile_id",
         "instructions",
         "reviewed_commit_sha",
+        "review_cohort_id",
         "deliverable_id",
         "release_package_id",
         "candidate_commit_sha",
@@ -1648,6 +1741,13 @@ class ReviewRequest(TeamModel):
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
+        if (
+            self.release_package_id is not None
+            and self.review_cohort_id is not None
+        ):
+            raise ValueError(
+                "release review request cannot carry review_cohort_id"
+            )
         if self.supersedes_review_request_id is not None and (
             self.retry_reason is None or self.retry_requested_by is None
         ):
@@ -2534,7 +2634,7 @@ class TeamChatAttachmentPolicy(TeamModel):
 class AgentStandDown(TeamModel):
     id: str
     agent_id: str
-    scope: Literal["subtree"] = "subtree"
+    scope: Literal["agent", "subtree"] = "subtree"
     reason: str
     source: AgentStandDownSource = AgentStandDownSource.OPERATOR
     set_by: str
@@ -4125,6 +4225,14 @@ class TeamState(TeamModel):
                     f"deliverable {deliverable.id} references missing producer "
                     f"{deliverable.producer_agent_id}"
                 )
+            if (
+                deliverable.rework_requested_by_agent_id is not None
+                and deliverable.rework_requested_by_agent_id not in self.agents
+            ):
+                errors.append(
+                    f"deliverable {deliverable.id} references missing rework requester "
+                    f"{deliverable.rework_requested_by_agent_id}"
+                )
             for review_request_id in deliverable.review_request_ids:
                 review = self.review_requests.get(review_request_id)
                 if review is None:
@@ -4186,13 +4294,21 @@ class TeamState(TeamModel):
                             f"deliverable {deliverable.id} supersedes deliverable "
                             f"{previous.id} without a reciprocal superseded_by link"
                         )
-                    if previous.state not in {
-                        TeamRecordState.REJECTED,
-                        TeamRecordState.BLOCKED,
-                    }:
+                    if (
+                        previous.state
+                        not in {
+                            TeamRecordState.REJECTED,
+                            TeamRecordState.BLOCKED,
+                        }
+                        and not (
+                            previous.state == TeamRecordState.ACCEPTED
+                            and previous.rework_requested_at is not None
+                        )
+                    ):
                         errors.append(
-                            f"deliverable {deliverable.id} supersedes non-rejected/non-blocked "
-                            f"deliverable {previous.id}"
+                            f"deliverable {deliverable.id} supersedes a deliverable "
+                            f"{previous.id} that was neither rejected, blocked, nor "
+                            "explicitly reopened for rework"
                         )
             if deliverable.superseded_by_deliverable_id is not None:
                 replacement = self.deliverables.get(deliverable.superseded_by_deliverable_id)
@@ -4220,13 +4336,20 @@ class TeamState(TeamModel):
                             f"deliverable {deliverable.id} is superseded by deliverable "
                             f"{replacement.id} without a reciprocal supersedes link"
                         )
-                    if deliverable.state not in {
-                        TeamRecordState.REJECTED,
-                        TeamRecordState.BLOCKED,
-                    }:
+                    if (
+                        deliverable.state
+                        not in {
+                            TeamRecordState.REJECTED,
+                            TeamRecordState.BLOCKED,
+                        }
+                        and not (
+                            deliverable.state == TeamRecordState.ACCEPTED
+                            and deliverable.rework_requested_at is not None
+                        )
+                    ):
                         errors.append(
-                            f"non-rejected/non-blocked deliverable {deliverable.id} "
-                            "cannot be superseded"
+                            f"deliverable {deliverable.id} cannot be superseded without "
+                            "rejection, a block, or an explicit rework request"
                         )
 
     def _validate_outcome_kind_definitions(self, errors: list[str]) -> None:
@@ -4308,12 +4431,59 @@ class TeamState(TeamModel):
                     )
 
     def _validate_reviews(self, errors: list[str]) -> None:
+        current_cohort_reviewers: set[tuple[str, str, str]] = set()
         for review in self.review_requests.values():
             if review.deliverable_id is not None and review.deliverable_id not in self.deliverables:
                 errors.append(
                     f"review request {review.id} references missing deliverable "
                     f"{review.deliverable_id}"
                 )
+            deliverable = (
+                self.deliverables.get(review.deliverable_id)
+                if review.deliverable_id is not None
+                else None
+            )
+            if (
+                review.review_cohort_id is not None
+                and deliverable is not None
+                and review.review_cohort_id
+                != deliverable.review_cohort_id
+            ):
+                errors.append(
+                    f"review request {review.id} cohort "
+                    f"{review.review_cohort_id} does not match deliverable "
+                    f"{deliverable.id} cohort {deliverable.review_cohort_id}"
+                )
+            if (
+                deliverable is not None
+                and deliverable.review_cohort_id is not None
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+                and review.review_cohort_id
+                != deliverable.review_cohort_id
+            ):
+                errors.append(
+                    f"current review request {review.id} must carry deliverable "
+                    f"{deliverable.id} cohort {deliverable.review_cohort_id}"
+                )
+            if (
+                review.deliverable_id is not None
+                and review.review_cohort_id is not None
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+            ):
+                cohort_reviewer_key = (
+                    review.deliverable_id,
+                    review.review_cohort_id,
+                    review.reviewer_agent_id,
+                )
+                if cohort_reviewer_key in current_cohort_reviewers:
+                    errors.append(
+                        f"deliverable {review.deliverable_id} cohort "
+                        f"{review.review_cohort_id} has duplicate current reviewer "
+                        f"{review.reviewer_agent_id}"
+                    )
+                current_cohort_reviewers.add(cohort_reviewer_key)
             if (
                 review.release_package_id is not None
                 and review.release_package_id not in self.release_packages
@@ -5805,7 +5975,10 @@ def _activity_active_stand_down_for_agent(state: TeamState, agent_id: str) -> Ag
         if stand_down.active
         and (
             stand_down.agent_id == agent_id
-            or _activity_agent_reports_under(state, agent_id, stand_down.agent_id)
+            or (
+                stand_down.scope == "subtree"
+                and _activity_agent_reports_under(state, agent_id, stand_down.agent_id)
+            )
         )
     ]
     if not candidates:
@@ -6273,7 +6446,11 @@ def _effective_stand_down_payloads(
         state.stand_downs.values(),
         key=lambda item: (item.set_at, item.id),
     ):
-        if not stand_down.active or stand_down.agent_id not in root_set:
+        if (
+            not stand_down.active
+            or stand_down.agent_id not in root_set
+            or (stand_down.scope == "agent" and stand_down.agent_id != agent_id)
+        ):
             continue
         row = stand_down.model_dump(mode="json")
         row["inherited"] = stand_down.agent_id != agent_id

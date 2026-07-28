@@ -96,6 +96,7 @@ logger = logging.getLogger(__name__)
 _CODEX_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
+_CODEX_REASONING_SUMMARY_LIMIT = 800
 _CODEX_TOOL_SUMMARY_LIMIT = 240
 _SESSION_MESSAGE_ARTIFACTS = {
     "no response requested",
@@ -108,6 +109,7 @@ _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE = "codex_no_final_message"
 _CODEX_OUTCOME_REASON_TURN_FAILED = "codex_turn_failed"
 _CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL = "codex_unsupported_tool_call"
 _CODEX_LOCAL_MODEL_PROVIDER_MODES = {"local_openai"}
+_CODEX_EMPTY_FINAL_COMPLETION_TOOLS = {"team_reply_to_chat"}
 _CODEX_CONTEXT_LIMIT_WARNING_TOTAL_TOKENS = 60_000
 _CODEX_UNSUPPORTED_TOOL_CALL_PATTERN = re.compile(
     r"codex_core::tools::router:\s+error=unsupported call:\s*(?P<tool>[^\r\n]+)",
@@ -615,8 +617,7 @@ class WorkerDaemon:
             self._codex_subscription_completion_marker(record).unlink(missing_ok=True)
         except (OSError, ValueError) as exc:
             logger.warning(
-                "codex_subscription_completion_marker_cleanup_failed "
-                "job_id=%s exception_class=%s",
+                "codex_subscription_completion_marker_cleanup_failed job_id=%s exception_class=%s",
                 record.job_id,
                 exc.__class__.__name__,
             )
@@ -962,7 +963,10 @@ class WorkerDaemon:
                     latest_event_timestamp,
                     event.get("timestamp"),
                 )
-                for message in _codex_messages_from_session_event(event):
+                for message in _codex_messages_from_session_event(
+                    event,
+                    active_tool_calls=active_tool_calls,
+                ):
                     if not message:
                         continue
                     if _is_session_message_artifact(message):
@@ -971,8 +975,6 @@ class WorkerDaemon:
                         continue
                     seen.add(message)
                     messages.append(message)
-                if include_running_context:
-                    _update_codex_active_tool_calls(event, active_tool_calls)
         if include_running_context:
             for message in _codex_running_context_messages(
                 latest_event_timestamp=latest_event_timestamp,
@@ -1071,9 +1073,7 @@ class WorkerDaemon:
         request: WorkerTaskWorktreeRequest,
     ) -> WorkerTaskWorktreeRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
-        with task_worktree_repository_lock(
-            self._task_worktree_lock_path(paths, request.repo_name)
-        ):
+        with task_worktree_repository_lock(self._task_worktree_lock_path(paths, request.repo_name)):
             return self._prepare_task_worktree_locked(paths, request)
 
     def _prepare_task_worktree_locked(
@@ -1098,8 +1098,22 @@ class WorkerDaemon:
         )
         env = _git_subprocess_env(paths.agent_home)
         self._validate_git_branch(repo_dir, request.branch, env=env)
+        subprocess.run(
+            ["git", "config", "extensions.worktreeConfig", "true"],
+            cwd=repo_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         created = False
+        base_commit_sha: str | None = None
         if target_dir.exists():
+            self._make_task_worktree_metadata_portable(
+                repo_dir=repo_dir,
+                target_dir=target_dir,
+                branch=request.branch,
+            )
             current_branch = subprocess.run(
                 ["git", "branch", "--show-current"],
                 cwd=target_dir,
@@ -1125,7 +1139,12 @@ class WorkerDaemon:
             if local_branch.returncode == 0:
                 args.extend([str(target_dir), request.branch])
             else:
-                args.extend(["-b", request.branch, str(target_dir), request.base_ref])
+                base_commit_sha = self._resolve_fresh_task_base_commit(
+                    repo_dir,
+                    request.base_ref,
+                    env=env,
+                )
+                args.extend(["-b", request.branch, str(target_dir), base_commit_sha])
             subprocess.run(
                 args,
                 cwd=repo_dir,
@@ -1135,20 +1154,88 @@ class WorkerDaemon:
                 text=True,
             )
             created = True
-        subprocess.run(
-            ["git", "config", "extensions.worktreeConfig", "true"],
-            cwd=repo_dir,
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+            self._make_task_worktree_metadata_portable(
+                repo_dir=repo_dir,
+                target_dir=target_dir,
+                branch=request.branch,
+            )
         for key, value in (
             ("evander.workBranch", request.branch),
             ("evander.baseBranch", request.base_ref),
         ):
             subprocess.run(
                 ["git", "config", "--worktree", key, value],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        configured_base_commit = subprocess.run(
+            ["git", "config", "--worktree", "--get", "evander.baseCommit"],
+            cwd=target_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if configured_base_commit.returncode == 0:
+            candidate = configured_base_commit.stdout.strip().casefold()
+            if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", candidate):
+                if (
+                    request.expected_base_commit_sha is not None
+                    and candidate != request.expected_base_commit_sha
+                ):
+                    raise ValueError(
+                        "task worktree base commit does not match authoritative "
+                        f"prior Team provenance: found {candidate}, expected "
+                        f"{request.expected_base_commit_sha}"
+                    )
+                base_commit_sha = candidate
+        if (
+            request.expected_base_commit_sha is not None
+            and base_commit_sha is not None
+            and base_commit_sha != request.expected_base_commit_sha
+        ):
+            raise ValueError(
+                "task worktree base commit does not match authoritative prior "
+                f"Team provenance: found {base_commit_sha}, expected "
+                f"{request.expected_base_commit_sha}"
+            )
+        if request.expected_base_commit_sha is not None:
+            expected_base_is_ancestor = subprocess.run(
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    request.expected_base_commit_sha,
+                    "HEAD",
+                ],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if expected_base_is_ancestor.returncode != 0:
+                raise ValueError(
+                    "authoritative prior Team base commit is not an ancestor of "
+                    "the retained task worktree; preserve the checkout for "
+                    "operator recovery"
+                )
+            if base_commit_sha is None:
+                base_commit_sha = request.expected_base_commit_sha
+        base_commit_sha = self._compose_task_dependency_git_sources(
+            repo_dir=repo_dir,
+            target_dir=target_dir,
+            dependency_git_sources=request.dependency_git_sources,
+            created=created,
+            base_commit_sha=base_commit_sha,
+            env=env,
+        )
+        if base_commit_sha is not None:
+            subprocess.run(
+                ["git", "config", "--worktree", "evander.baseCommit", base_commit_sha],
                 cwd=target_dir,
                 env=env,
                 check=True,
@@ -1165,8 +1252,255 @@ class WorkerDaemon:
             target_dir=(f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"),
             branch=request.branch,
             commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
+            base_commit_sha=base_commit_sha,
             created=created,
         )
+
+    @staticmethod
+    def _compose_task_dependency_git_sources(
+        *,
+        repo_dir: Path,
+        target_dir: Path,
+        dependency_git_sources: Sequence[Any],
+        created: bool,
+        base_commit_sha: str | None,
+        env: dict[str, str],
+    ) -> str | None:
+        """Merge exact dependency commits before exposing a task worktree.
+
+        The compact JSON stored in worktree-local Git configuration is immutable
+        provenance. A reused checkout must name precisely the same sources; an
+        older checkout that already contains task work cannot be retrofitted
+        silently.
+        """
+
+        expected_rows = [
+            source.model_dump(mode="json") if hasattr(source, "model_dump") else dict(source)
+            for source in dependency_git_sources
+        ]
+        expected_json = json.dumps(
+            expected_rows,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        configured = subprocess.run(
+            [
+                "git",
+                "config",
+                "--worktree",
+                "--get",
+                "evander.dependencyGitProvenance",
+            ],
+            cwd=target_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        configured_json = configured.stdout.strip() if configured.returncode == 0 else ""
+        if configured_json:
+            if configured_json != expected_json:
+                raise ValueError(
+                    "task worktree dependency Git provenance does not match the "
+                    "current direct dependencies; preserve the checkout and create "
+                    "an explicit correction or replacement task"
+                )
+            head = (
+                subprocess.run(
+                    ["git", "rev-parse", "HEAD^{commit}"],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
+            for source in expected_rows:
+                ancestor = subprocess.run(
+                    [
+                        "git",
+                        "merge-base",
+                        "--is-ancestor",
+                        str(source["commit_sha"]),
+                        head,
+                    ],
+                    cwd=target_dir,
+                    env=env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if ancestor.returncode != 0:
+                    raise ValueError(
+                        "task worktree dependency provenance is corrupt: accepted "
+                        f"commit {source['commit_sha']} for dependency "
+                        f"{source['dependency_task_id']} is not an ancestor of HEAD"
+                    )
+            return base_commit_sha
+        if not expected_rows:
+            return base_commit_sha
+
+        head_before = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD^{commit}"],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            .stdout.strip()
+            .casefold()
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=target_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        if status.strip():
+            raise ValueError(
+                "task worktree must be clean before adopting or composing dependency Git provenance"
+            )
+        all_dependencies_are_ancestors = True
+        for source in expected_rows:
+            branch = str(source["branch"])
+            expected_commit = str(source["commit_sha"])
+            subprocess.run(
+                ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            fetched = (
+                subprocess.run(
+                    ["git", "rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+                    cwd=repo_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
+            if fetched != expected_commit:
+                raise ValueError(
+                    f"dependency branch {branch!r} moved: expected accepted "
+                    f"commit {expected_commit}, found {fetched}"
+                )
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", expected_commit, head_before],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if ancestor.returncode != 0:
+                all_dependencies_are_ancestors = False
+        if all_dependencies_are_ancestors:
+            if base_commit_sha is None:
+                raise ValueError(
+                    "retained task worktree contains every accepted dependency "
+                    "commit but has no authoritative prior Team base commit; "
+                    "preserve it for operator recovery"
+                )
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "evander.dependencyGitProvenance",
+                    expected_json,
+                ],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return base_commit_sha
+        if not created and (base_commit_sha is None or head_before != base_commit_sha):
+            raise ValueError(
+                "existing task worktree has no dependency Git provenance and "
+                "does not already contain every accepted dependency commit; "
+                "preserve it for explicit recovery"
+            )
+        try:
+            for source in expected_rows:
+                expected_commit = str(source["commit_sha"])
+                merge = subprocess.run(
+                    ["git", "merge", "--no-ff", "--no-edit", expected_commit],
+                    cwd=target_dir,
+                    env={
+                        **env,
+                        "GIT_AUTHOR_NAME": "Evander Team Dependency Composer",
+                        "GIT_AUTHOR_EMAIL": "team-dependencies@evander.invalid",
+                        "GIT_COMMITTER_NAME": "Evander Team Dependency Composer",
+                        "GIT_COMMITTER_EMAIL": "team-dependencies@evander.invalid",
+                        "GIT_MERGE_AUTOEDIT": "no",
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if merge.returncode != 0:
+                    subprocess.run(
+                        ["git", "merge", "--abort"],
+                        cwd=target_dir,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    raise ValueError(
+                        "dependency Git composition conflict for dependency "
+                        f"{source['dependency_task_id']} deliverable "
+                        f"{source['deliverable_id']}"
+                    )
+        except Exception:
+            subprocess.run(
+                ["git", "reset", "--hard", head_before],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            raise
+
+        composed_base = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD^{commit}"],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            .stdout.strip()
+            .casefold()
+        )
+        for key, value in (
+            ("evander.dependencyGitProvenance", expected_json),
+            ("evander.baseCommit", composed_base),
+        ):
+            subprocess.run(
+                ["git", "config", "--worktree", key, value],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        return composed_base
 
     def cleanup_task_worktree(
         self,
@@ -1187,9 +1521,7 @@ class WorkerDaemon:
             candidate=target_dir,
             description="task worktree target",
         )
-        expected_target_dir = (
-            f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"
-        )
+        expected_target_dir = f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"
         if request.expected_target_dir != expected_target_dir:
             raise ValueError(
                 "expected_target_dir does not match the deterministic task worktree path"
@@ -1332,9 +1664,7 @@ class WorkerDaemon:
         )
 
     def revoke_git_key(self, session_id: str, key_name: str) -> WorkerGitKeyDeleteRecord:
-        normalized_key_name = str(
-            validate_worker_component_id(key_name, field_name="key_name")
-        )
+        normalized_key_name = str(validate_worker_component_id(key_name, field_name="key_name"))
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
         ssh_dir = paths.agent_home / ".ssh"
         key_path = ssh_dir / normalized_key_name
@@ -2197,6 +2527,194 @@ class WorkerDaemon:
         if result.returncode != 0:
             raise ValueError(f"invalid task branch: {branch!r}")
 
+    @classmethod
+    def _make_task_worktree_metadata_portable(
+        cls,
+        *,
+        repo_dir: Path,
+        target_dir: Path,
+        branch: str,
+    ) -> None:
+        """Keep task Git usable in its container mount and host control path."""
+
+        target_git_file = target_dir / ".git"
+        try:
+            pointer_text = cls._read_managed_text_file_no_follow(
+                target_git_file,
+                label="task worktree Git pointer",
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise cls._task_worktree_metadata_error(target_dir, branch) from exc
+        match = re.fullmatch(r"gitdir: ([^\r\n]+)\r?\n?", pointer_text)
+        if match is None:
+            raise cls._task_worktree_metadata_error(target_dir, branch)
+
+        try:
+            repo_git_dir = Path(
+                subprocess.run(
+                    ["git", "rev-parse", "--absolute-git-dir"],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            ).resolve(strict=True)
+            admin_root = (repo_git_dir / "worktrees").resolve(strict=True)
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            raise cls._task_worktree_metadata_error(target_dir, branch) from exc
+        raw_admin_path = Path(match.group(1))
+        if raw_admin_path.is_absolute():
+            admin_dir = raw_admin_path.resolve(strict=False)
+            if not admin_dir.is_dir():
+                guest_admin_prefix = (
+                    Path("/home/agent/repos") / repo_dir.name / ".git" / "worktrees"
+                )
+                try:
+                    admin_name = raw_admin_path.relative_to(guest_admin_prefix)
+                except ValueError as exc:
+                    raise cls._task_worktree_metadata_error(target_dir, branch) from exc
+                if len(admin_name.parts) != 1:
+                    raise cls._task_worktree_metadata_error(target_dir, branch)
+                admin_dir = (admin_root / admin_name).resolve(strict=False)
+        else:
+            admin_dir = (target_dir / raw_admin_path).resolve(strict=False)
+
+        try:
+            admin_dir.relative_to(admin_root)
+        except ValueError as exc:
+            raise cls._task_worktree_metadata_error(target_dir, branch) from exc
+        try:
+            admin_stat = admin_dir.lstat()
+        except OSError as exc:
+            raise cls._task_worktree_metadata_error(target_dir, branch) from exc
+        if not stat.S_ISDIR(admin_stat.st_mode) or stat.S_ISLNK(admin_stat.st_mode):
+            raise cls._task_worktree_metadata_error(target_dir, branch)
+
+        expected_head = f"ref: refs/heads/{branch}"
+        try:
+            actual_head = cls._read_managed_text_file_no_follow(
+                admin_dir / "HEAD",
+                label="task worktree HEAD",
+            ).strip()
+            common_dir_text = cls._read_managed_text_file_no_follow(
+                admin_dir / "commondir",
+                label="task worktree common-dir pointer",
+            ).strip()
+            common_dir = (admin_dir / common_dir_text).resolve(strict=True)
+            cls._read_managed_text_file_no_follow(
+                admin_dir / "gitdir",
+                label="task worktree back-pointer",
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise cls._task_worktree_metadata_error(target_dir, branch) from exc
+        if actual_head != expected_head or common_dir != repo_git_dir:
+            raise cls._task_worktree_metadata_error(target_dir, branch)
+
+        relative_admin = os.path.relpath(admin_dir, start=target_dir)
+        cls._write_managed_text_file_no_follow(
+            target_git_file,
+            f"gitdir: {relative_admin}\n",
+            mode=0o644,
+            label="task worktree Git pointer",
+        )
+        cls._write_managed_text_file_no_follow(
+            admin_dir / "gitdir",
+            f"{target_git_file.resolve(strict=False)}\n",
+            mode=0o644,
+            label="task worktree back-pointer",
+        )
+
+    @staticmethod
+    def _task_worktree_metadata_error(target_dir: Path, branch: str) -> ValueError:
+        return ValueError(
+            "task worktree cannot be reused because its linked Git administrative "
+            f"metadata is missing or invalid; retained checkout content at {target_dir} "
+            f"and branch {branch!r}. Restore the linked-worktree metadata or recover "
+            "the retained files before retrying."
+        )
+
+    @classmethod
+    def _resolve_fresh_task_base_commit(
+        cls,
+        repo_dir: Path,
+        base_ref: str,
+        *,
+        env: dict[str, str],
+    ) -> str:
+        local_commit = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        normalized_local_commit = local_commit.stdout.strip().casefold()
+        normalized_base_ref = base_ref.casefold()
+        if (
+            re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized_base_ref)
+            and local_commit.returncode == 0
+            and normalized_local_commit == normalized_base_ref
+        ):
+            return normalized_local_commit
+
+        fetch_ref = cls._task_base_fetch_ref(repo_dir, base_ref, env=env)
+        has_origin = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_ref is not None and has_origin.returncode == 0:
+            subprocess.run(
+                ["git", "fetch", "--no-tags", "origin", fetch_ref],
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return (
+                subprocess.run(
+                    ["git", "rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+                    cwd=repo_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
+
+        if local_commit.returncode != 0:
+            raise ValueError(f"task worktree base ref does not resolve: {base_ref!r}")
+        return normalized_local_commit
+
+    @staticmethod
+    def _task_base_fetch_ref(
+        repo_dir: Path,
+        base_ref: str,
+        *,
+        env: dict[str, str],
+    ) -> str | None:
+        symbolic = subprocess.run(
+            ["git", "rev-parse", "--symbolic-full-name", base_ref],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if symbolic.startswith("refs/heads/") or symbolic.startswith("refs/tags/"):
+            return symbolic
+        remote_prefix = "refs/remotes/origin/"
+        if symbolic.startswith(remote_prefix):
+            return f"refs/heads/{symbolic.removeprefix(remote_prefix)}"
+        return None
+
     def _sync_git_ssh_into_agent_home(
         self,
         paths: WorkerSessionPaths,
@@ -2258,9 +2776,7 @@ class WorkerDaemon:
         if isinstance(git_keys, dict):
             for value in git_keys:
                 try:
-                    key_names.add(
-                        str(validate_worker_component_id(value, field_name="key_name"))
-                    )
+                    key_names.add(str(validate_worker_component_id(value, field_name="key_name")))
                 except (TypeError, ValueError):
                     continue
         return any(
@@ -2916,6 +3432,8 @@ def _codex_session_outcome(
     last_token_usage: dict[str, int] | None = None
     model_context_window: int | None = None
     assistant_text_seen = False
+    successful_empty_final_completion_tool: str | None = None
+    task_completed_by_successful_empty_final_tool = False
     saw_event = False
 
     for event in _iter_codex_session_events(
@@ -2933,8 +3451,17 @@ def _codex_session_outcome(
             if context_window is not None:
                 model_context_window = context_window
             continue
-        if any(message.strip() for message in _codex_messages_from_session_event(event)):
+        if any(
+            message.strip()
+            for message in _codex_messages_from_session_event(
+                event,
+                include_progress=False,
+            )
+        ):
             assistant_text_seen = True
+        completion_tool = _codex_successful_empty_final_completion_tool(event)
+        if completion_tool is not None:
+            successful_empty_final_completion_tool = completion_tool
         if event_type in {"error", "turn.failed"}:
             message = _codex_event_error_message(event)
             if message:
@@ -2950,6 +3477,9 @@ def _codex_session_outcome(
             continue
         if not _codex_first_text(payload.get("last_agent_message")).strip():
             task_complete_without_final_message = True
+            task_completed_by_successful_empty_final_tool = (
+                successful_empty_final_completion_tool is not None
+            )
 
     if not saw_event:
         return None
@@ -2964,8 +3494,10 @@ def _codex_session_outcome(
             "message": f"Codex reported {explicit_failure_event_type}: {explicit_failure_message}",
         }
     elif (
-        task_complete_without_final_message or finished_at is not None
-    ) and not assistant_text_seen:
+        (task_complete_without_final_message or finished_at is not None)
+        and not assistant_text_seen
+        and not task_completed_by_successful_empty_final_tool
+    ):
         if unsupported_tool_calls:
             reason = _CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL
             message = (
@@ -3013,6 +3545,34 @@ def _codex_session_outcome(
     if unsupported_tool_calls:
         outcome["unsupported_tool_calls"] = unsupported_tool_calls
     return sanitize_metadata(outcome)
+
+
+def _codex_successful_empty_final_completion_tool(
+    event: dict[str, object],
+) -> str | None:
+    if str(event.get("type") or "") != "event_msg":
+        return None
+    payload = event.get("payload")
+    if not isinstance(payload, dict) or str(payload.get("type") or "") != "mcp_tool_call_end":
+        return None
+    invocation = payload.get("invocation")
+    if not isinstance(invocation, dict):
+        return None
+    if str(invocation.get("server") or "").strip() != "evander":
+        return None
+    tool_name = str(invocation.get("tool") or "").strip()
+    if tool_name not in _CODEX_EMPTY_FINAL_COMPLETION_TOOLS:
+        return None
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return None
+    successful_result = result.get("Ok")
+    if not isinstance(successful_result, dict) or successful_result.get("isError") is True:
+        return None
+    structured_content = successful_result.get("structuredContent")
+    if not isinstance(structured_content, dict) or structured_content.get("success") is not True:
+        return None
+    return tool_name
 
 
 def _failed_codex_outcome_from_metadata(
@@ -3457,7 +4017,12 @@ def _latest_codex_timestamp(current: str | None, candidate: object) -> str | Non
     return current
 
 
-def _codex_messages_from_session_event(event: object) -> list[str]:
+def _codex_messages_from_session_event(
+    event: object,
+    *,
+    include_progress: bool = True,
+    active_tool_calls: dict[str, str] | None = None,
+) -> list[str]:
     if not isinstance(event, dict):
         return []
     event_type = str(event.get("type") or "")
@@ -3468,21 +4033,76 @@ def _codex_messages_from_session_event(event: object) -> list[str]:
             return [_codex_first_text(payload.get("message"))]
         if payload_type == "task_complete":
             return [_codex_first_text(payload.get("last_agent_message"))]
+        if include_progress and payload_type == "agent_reasoning":
+            return _codex_reasoning_progress_messages(payload)
+        if include_progress and payload_type.endswith("_end"):
+            return _codex_completed_tool_messages(payload, active_tool_calls)
         return []
     if event_type == "response_item" and isinstance(payload, dict):
-        if str(payload.get("type") or "") != "message":
+        payload_type = str(payload.get("type") or "")
+        if payload_type == "message":
+            if str(payload.get("role") or "") != "assistant":
+                return []
+            return [
+                _codex_first_text(
+                    payload.get("text"),
+                    payload.get("message"),
+                    _codex_content_text(payload.get("content")),
+                    _codex_content_text(payload.get("formatted")),
+                )
+            ]
+        if not include_progress:
             return []
-        if str(payload.get("role") or "") != "assistant":
+        if payload_type == "reasoning":
+            return _codex_reasoning_progress_messages(payload)
+        if payload_type == "function_call":
+            summary = _codex_function_call_summary(payload)
+            call_id = _codex_first_text(payload.get("call_id"), payload.get("id"))
+            if active_tool_calls is not None and call_id:
+                active_tool_calls[call_id] = summary
+            return [f"tool started: {summary}"] if summary else []
+        if payload_type in {"function_call_output", "tool_call_output"}:
+            return _codex_completed_tool_messages(payload, active_tool_calls)
+        return []
+    if event_type in {"item.started", "item.completed"} and include_progress:
+        item = event.get("item")
+        if not isinstance(item, dict):
             return []
-        return [
-            _codex_first_text(
-                payload.get("text"),
-                payload.get("message"),
-                _codex_content_text(payload.get("content")),
-                _codex_content_text(payload.get("formatted")),
-            )
-        ]
+        item_type = str(item.get("type") or item.get("item_type") or "")
+        if item_type == "reasoning":
+            return _codex_reasoning_progress_messages(item)
+        if item_type in {"command_execution", "function_call", "mcp_tool_call", "tool_call"}:
+            call_id = _codex_first_text(item.get("call_id"), item.get("id"))
+            summary = _codex_function_call_summary(item)
+            if event_type == "item.started":
+                if active_tool_calls is not None and call_id:
+                    active_tool_calls[call_id] = summary
+                return [f"tool started: {summary}"] if summary else []
+            completed = _codex_completed_tool_messages(item, active_tool_calls)
+            return completed or ([f"tool completed: {summary}"] if summary else [])
     return []
+
+
+def _codex_reasoning_progress_messages(payload: dict[str, object]) -> list[str]:
+    text = _codex_first_text(
+        payload.get("text"),
+        payload.get("reasoning"),
+        _codex_content_text(payload.get("summary")),
+        _codex_content_text(payload.get("content")),
+    )
+    summary = _truncate_log_fragment(text, limit=_CODEX_REASONING_SUMMARY_LIMIT)
+    return [f"reasoning: {summary}"] if summary else []
+
+
+def _codex_completed_tool_messages(
+    payload: dict[str, object],
+    active_tool_calls: dict[str, str] | None,
+) -> list[str]:
+    call_id = _codex_first_text(payload.get("call_id"), payload.get("id"))
+    if active_tool_calls is None or not call_id:
+        return []
+    summary = active_tool_calls.pop(call_id, "")
+    return [f"tool completed: {summary}"] if summary else []
 
 
 def _is_session_message_artifact(message: str) -> bool:
@@ -3504,28 +4124,6 @@ def _claude_messages_from_session_event(event: object) -> list[str]:
     else:
         text = _claude_content_text(event.get("content"))
     return [text] if text else []
-
-
-def _update_codex_active_tool_calls(event: object, active_tool_calls: dict[str, str]) -> None:
-    if not isinstance(event, dict):
-        return
-    event_type = str(event.get("type") or "")
-    payload = event.get("payload")
-    if event_type == "response_item" and isinstance(payload, dict):
-        payload_type = str(payload.get("type") or "")
-        call_id = _codex_first_text(payload.get("call_id"), payload.get("id"))
-        if payload_type == "function_call":
-            if call_id:
-                active_tool_calls[call_id] = _codex_function_call_summary(payload)
-            return
-        if payload_type in {"function_call_output", "tool_call_output"} and call_id:
-            active_tool_calls.pop(call_id, None)
-            return
-    if event_type == "event_msg" and isinstance(payload, dict):
-        payload_type = str(payload.get("type") or "")
-        call_id = _codex_first_text(payload.get("call_id"), payload.get("id"))
-        if call_id and payload_type.endswith("_end"):
-            active_tool_calls.pop(call_id, None)
 
 
 def _codex_running_context_messages(
@@ -3554,7 +4152,10 @@ def _codex_function_call_summary(payload: dict[str, object]) -> str:
         or "tool"
     )
     arguments = _json_object_from_string(payload.get("arguments"))
-    command = _codex_command_from_arguments(arguments)
+    command = _codex_first_text(
+        payload.get("command"),
+        _codex_command_from_arguments(arguments),
+    )
     cwd = _codex_first_text(
         arguments.get("workdir"),
         arguments.get("cwd"),
@@ -3610,7 +4211,12 @@ def _codex_content_text(value: object) -> str:
             if not isinstance(part, dict):
                 continue
             part_type = str(part.get("type") or "")
-            if part_type and part_type not in {"text", "output_text", "assistant_message"}:
+            if part_type and part_type not in {
+                "text",
+                "output_text",
+                "assistant_message",
+                "summary_text",
+            }:
                 continue
             text = _codex_first_text(part.get("text"), part.get("content"), part.get("message"))
             if text:

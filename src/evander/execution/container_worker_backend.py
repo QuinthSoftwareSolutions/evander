@@ -22,6 +22,7 @@ from evander.worker.models import (
     WorkerResourceLimits,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskDependencyGitSource,
     WorkerTaskWorktreeCleanupRecord,
     WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRecord,
@@ -289,6 +290,8 @@ class ContainerWorkerVmExecutionBackend:
         worktree_name: str,
         branch: str,
         base_ref: str,
+        expected_base_commit_sha: str | None = None,
+        dependency_git_sources: list[dict[str, str]] | None = None,
     ) -> WorkerTaskWorktreeRecord:
         return self.client.prepare_task_worktree(
             session_id,
@@ -297,6 +300,11 @@ class ContainerWorkerVmExecutionBackend:
                 worktree_name=worktree_name,
                 branch=branch,
                 base_ref=base_ref,
+                expected_base_commit_sha=expected_base_commit_sha,
+                dependency_git_sources=[
+                    WorkerTaskDependencyGitSource.model_validate(source)
+                    for source in dependency_git_sources or []
+                ],
             ),
         )
 

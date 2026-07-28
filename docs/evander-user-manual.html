@@ -7430,6 +7430,15 @@ value in provider configuration.</p>
 <span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos list <span class="at">--directory-path</span> root/northstar-platform/mission-control</span>
 <span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos show <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span> --directory-path root/northstar-platform/mission-control</span></code></pre></div>
+<p>Set the identity for subsequent host-created consolidation commits on
+only that managed repository:</p>
+<div class="sourceCode" id="cb45"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb45-1"><a href="#cb45-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos set-host-identity <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span> <span class="dt">\</span></span>
+<span id="cb45-2"><a href="#cb45-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">--directory-path</span> root/northstar-platform/mission-control <span class="dt">\</span></span>
+<span id="cb45-3"><a href="#cb45-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">--name</span> <span class="st">&quot;Release Automation&quot;</span> <span class="dt">\</span></span>
+<span id="cb45-4"><a href="#cb45-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">--email</span> <span class="st">&quot;release-automation@example.com&quot;</span></span></code></pre></div>
+<p>This repository-locked operation does not change directory defaults,
+other managed repositories, agent checkout identities, or existing
+commits.</p>
 <p>Normal agent reads refresh automatically. The restricted SSH wrapper
 validates the exact repository, then asks
 <code>evander-managed-git-refresh.service</code> to fetch upstream
@@ -7439,13 +7448,13 @@ of silently returning stale refs; the agent never receives upstream
 credentials.</p>
 <p>Clone it into an existing VM session without exposing the host
 path:</p>
-<div class="sourceCode" id="cb45"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb45-1"><a href="#cb45-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> clone-repo-into-vm <span class="op">&lt;</span>vm-name<span class="op">&gt;</span> <span class="dt">\</span></span>
-<span id="cb45-2"><a href="#cb45-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">--managed-repo-id</span> <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span> <span class="dt">\</span></span>
-<span id="cb45-3"><a href="#cb45-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">--directory-path</span> root/northstar-platform/mission-control <span class="dt">\</span></span>
-<span id="cb45-4"><a href="#cb45-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">--session-id</span> <span class="op">&lt;</span>session-id<span class="op">&gt;</span></span></code></pre></div>
+<div class="sourceCode" id="cb46"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb46-1"><a href="#cb46-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> clone-repo-into-vm <span class="op">&lt;</span>vm-name<span class="op">&gt;</span> <span class="dt">\</span></span>
+<span id="cb46-2"><a href="#cb46-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">--managed-repo-id</span> <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span> <span class="dt">\</span></span>
+<span id="cb46-3"><a href="#cb46-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">--directory-path</span> root/northstar-platform/mission-control <span class="dt">\</span></span>
+<span id="cb46-4"><a href="#cb46-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">--session-id</span> <span class="op">&lt;</span>session-id<span class="op">&gt;</span></span></code></pre></div>
 <p>Run routine reconciliation and Git maintenance:</p>
-<div class="sourceCode" id="cb46"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb46-1"><a href="#cb46-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos maintenance</span>
-<span id="cb46-2"><a href="#cb46-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos maintenance <span class="at">--managed-repo-id</span> <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span></span></code></pre></div>
+<div class="sourceCode" id="cb47"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb47-1"><a href="#cb47-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos maintenance</span>
+<span id="cb47-2"><a href="#cb47-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos maintenance <span class="at">--managed-repo-id</span> <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span></span></code></pre></div>
 <p>Delete only after <code>git-repos show</code> confirms there are no
 issue, project, session, SSH, worktree, or migration bindings. There is
 no force-delete path.</p>
@@ -8180,8 +8189,8 @@ run.</p>
 <p><span class="sidebar-kicker">For administrators</span>
 <strong>Inspecting wake schedules</strong></p>
 <p>Useful commands include:</p>
-<div class="sourceCode" id="cb48"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb48-1"><a href="#cb48-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> wake-schedules list</span>
-<span id="cb48-2"><a href="#cb48-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> wake-schedules list <span class="at">--session-id</span> <span class="op">&lt;</span>session-id<span class="op">&gt;</span></span></code></pre></div>
+<div class="sourceCode" id="cb49"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb49-1"><a href="#cb49-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> wake-schedules list</span>
+<span id="cb49-2"><a href="#cb49-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> wake-schedules list <span class="at">--session-id</span> <span class="op">&lt;</span>session-id<span class="op">&gt;</span></span></code></pre></div>
 <p>Use <code>evander-cli wake-schedules --help</code> for the current
 create/edit/delete syntax; timestamps are interpreted as explicit
 instants and should include a timezone.</p>
@@ -8219,8 +8228,8 @@ operational control, not proof that a workflow saw a transcript.</p>
 <blockquote>
 <p><span class="sidebar-kicker">For administrators</span>
 <strong>Meeting bridge commands</strong></p>
-<div class="sourceCode" id="cb49"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb49-1"><a href="#cb49-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> teams-meeting start <span class="at">--help</span></span>
-<span id="cb49-2"><a href="#cb49-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> teams-meeting stop <span class="at">--help</span></span></code></pre></div>
+<div class="sourceCode" id="cb50"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb50-1"><a href="#cb50-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> teams-meeting start <span class="at">--help</span></span>
+<span id="cb50-2"><a href="#cb50-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> teams-meeting stop <span class="at">--help</span></span></code></pre></div>
 </blockquote>
 <h2 id="troubleshooting-2">Troubleshooting</h2>
 <p>Start in Admin Web with the communication, run, wake, call, or
@@ -8962,8 +8971,8 @@ interface to the matching service and durable record.</p>
 <h3 id="administrator-detail-health-and-capacity">Administrator detail:
 health and capacity</h3>
 <p>Start broad:</p>
-<div class="sourceCode" id="cb53"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb53-1"><a href="#cb53-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
-<span id="cb53-2"><a href="#cb53-2" aria-hidden="true" tabindex="-1"></a><span class="ex">systemctl</span> <span class="at">--failed</span></span></code></pre></div>
+<div class="sourceCode" id="cb54"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb54-1"><a href="#cb54-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
+<span id="cb54-2"><a href="#cb54-2" aria-hidden="true" tabindex="-1"></a><span class="ex">systemctl</span> <span class="at">--failed</span></span></code></pre></div>
 <p>The capacity endpoint, <code>/api/admin/capacity-health</code>,
 reports control-plane disk, known storage roots, session samples, and
 unavailable/permission-denied telemetry explicitly. Built-in disk
@@ -8973,9 +8982,9 @@ configured otherwise. “Unknown” is not healthy.</p>
 detail: journals and structured runtime records</h3>
 <p>Use service journals for process startup, reload, provider transport,
 and worker-loop failures:</p>
-<div class="sourceCode" id="cb54"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb54-1"><a href="#cb54-1" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> evander-admin-web.service <span class="at">--since</span> today</span>
-<span id="cb54-2"><a href="#cb54-2" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> evander-trigger-orchestrator.service <span class="at">--since</span> today</span>
-<span id="cb54-3"><a href="#cb54-3" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> evander-effect-orchestrator.service <span class="at">--since</span> today</span></code></pre></div>
+<div class="sourceCode" id="cb55"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb55-1"><a href="#cb55-1" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> evander-admin-web.service <span class="at">--since</span> today</span>
+<span id="cb55-2"><a href="#cb55-2" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> evander-trigger-orchestrator.service <span class="at">--since</span> today</span>
+<span id="cb55-3"><a href="#cb55-3" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> evander-effect-orchestrator.service <span class="at">--since</span> today</span></code></pre></div>
 <p>Then move to the durable domain record: session manifest, trigger
 event, orchestration row, effect attempt, wake dispatch, managed Git
 operation, or add-on database. Correlate by stable IDs and exact SHA,
@@ -8986,7 +8995,7 @@ tool-call and policy evidence by default. <code>runtime/audit.db</code>
 is a rebuildable search index used by Admin Web; it is imported
 incrementally from JSONL. If the index is corrupt or incomplete,
 preserve the JSONL and rebuild the index:</p>
-<div class="sourceCode" id="cb55"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb55-1"><a href="#cb55-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> rebuild-audit-index <span class="at">--config</span> runtime</span></code></pre></div>
+<div class="sourceCode" id="cb56"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb56-1"><a href="#cb56-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> rebuild-audit-index <span class="at">--config</span> runtime</span></code></pre></div>
 <p>Audit redaction intentionally removes configured sensitive fields.
 Absence of a secret from an audit row is expected, not evidence that no
 credential was used.</p>
@@ -9126,8 +9135,8 @@ store;</li>
 workers.</li>
 </ol>
 <p>After startup, verify:</p>
-<div class="sourceCode" id="cb56"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb56-1"><a href="#cb56-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
-<span id="cb56-2"><a href="#cb56-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./scripts/install_systemd_units.sh</span> <span class="at">--preflight</span></span></code></pre></div>
+<div class="sourceCode" id="cb57"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb57-1"><a href="#cb57-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
+<span id="cb57-2"><a href="#cb57-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./scripts/install_systemd_units.sh</span> <span class="at">--preflight</span></span></code></pre></div>
 <p>Check SQLite integrity with the SQLite tooling appropriate to each
 database, inspect migrations/import markers, and verify a read through
 the owning API. Rebuild only derived indexes such as
@@ -14767,17 +14776,17 @@ Python suite before treating the extension as ready. Add failure,
 replay, authorization, cleanup, and deployment coverage in proportion to
 the seam you changed.</p>
 <p>Run focused tests while developing, then the Python suite:</p>
-<div class="sourceCode" id="cb62"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb62-1"><a href="#cb62-1" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/pytest</span> <span class="at">-q</span> tests/test_workflow_plugins.py tests/test_workflow_validation.py</span>
-<span id="cb62-2"><a href="#cb62-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/pytest</span> <span class="at">-q</span></span></code></pre></div>
+<div class="sourceCode" id="cb63"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb63-1"><a href="#cb63-1" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/pytest</span> <span class="at">-q</span> tests/test_workflow_plugins.py tests/test_workflow_validation.py</span>
+<span id="cb63-2"><a href="#cb63-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/pytest</span> <span class="at">-q</span></span></code></pre></div>
 <p>For a new node, include registry and runtime-contract tests plus
 provider-specific failure/retry tests. For a service, include
 install/preflight and docs assertions. For UI/browser tests, apply
 explicit command timeouts; stop a hung process and report its last
 useful output rather than leaving it running.</p>
 <p>Before committing in a dirty tree:</p>
-<div class="sourceCode" id="cb63"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb63-1"><a href="#cb63-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> status <span class="at">--short</span></span>
-<span id="cb63-2"><a href="#cb63-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--check</span></span>
-<span id="cb63-3"><a href="#cb63-3" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--cached</span> <span class="at">--name-only</span></span></code></pre></div>
+<div class="sourceCode" id="cb64"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb64-1"><a href="#cb64-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> status <span class="at">--short</span></span>
+<span id="cb64-2"><a href="#cb64-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--check</span></span>
+<span id="cb64-3"><a href="#cb64-3" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--cached</span> <span class="at">--name-only</span></span></code></pre></div>
 <p>Preserve unrelated user changes. Record every feature and bug fix in
 <code>CHANGELOG.md</code>.</p>
 <h2 id="troubleshooting-an-extension">Troubleshooting an extension</h2>
@@ -16138,34 +16147,38 @@ commands.</p>
 <td><code>evander-cli git-repos list ...</code></td>
 </tr>
 <tr class="even">
+<td>Set one managed repository&#39;s host commit identity</td>
+<td><code>evander-cli git-repos set-host-identity ...</code></td>
+</tr>
+<tr class="odd">
 <td>Create an issue VM</td>
 <td><code>evander-cli create-issue-vm &lt;issue-id&gt; ...</code></td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Clone by managed identity</td>
 <td><code>evander-cli clone-repo-into-vm &lt;vm-name&gt; --managed-repo-id &lt;id&gt;</code></td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Smoke-test a container worker</td>
 <td><code>evander-cli execution smoke-container-worker --json</code></td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Start the MCP gateway outside systemd</td>
 <td><code>evander-gateway</code></td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Start Admin Web outside systemd</td>
 <td><code>evander-admin-web</code></td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Start the effect loop outside systemd</td>
 <td><code>evander-effect-orchestrator</code></td>
 </tr>
 </tbody>
 </table>
 <p>Service installation has its own preflight contract:</p>
-<div class="sourceCode" id="cb65"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb65-1"><a href="#cb65-1" aria-hidden="true" tabindex="-1"></a><span class="ex">./scripts/install_systemd_units.sh</span> <span class="at">--preflight</span></span>
-<span id="cb65-2"><a href="#cb65-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ./scripts/install_systemd_units.sh</span></code></pre></div>
+<div class="sourceCode" id="cb66"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb66-1"><a href="#cb66-1" aria-hidden="true" tabindex="-1"></a><span class="ex">./scripts/install_systemd_units.sh</span> <span class="at">--preflight</span></span>
+<span id="cb66-2"><a href="#cb66-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ./scripts/install_systemd_units.sh</span></code></pre></div>
 <h2 id="286-admin-web-area-map">28.6 Admin Web area map</h2>
 <p>Admin Web is the supported operator GUI. Its core areas answer
 different questions rather than presenting interchangeable views.</p>
@@ -16514,25 +16527,25 @@ narrow check below that corresponds to the reported layer.</p>
 migrate missing runtime configuration, and it reports a useful core
 subset rather than every installed service or endpoint. Run it as the
 intended host operator against the intended runtime directory.</p>
-<div class="sourceCode" id="cb66"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb66-1"><a href="#cb66-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Basic control-plane summary; may initialize/migrate missing runtime configuration</span></span>
-<span id="cb66-2"><a href="#cb66-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
-<span id="cb66-3"><a href="#cb66-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb66-4"><a href="#cb66-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Installed unit state</span></span>
-<span id="cb66-5"><a href="#cb66-5" aria-hidden="true" tabindex="-1"></a><span class="ex">systemctl</span> <span class="at">--no-pager</span> <span class="at">--full</span> status evander-gateway.service</span>
-<span id="cb66-6"><a href="#cb66-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb66-7"><a href="#cb66-7" aria-hidden="true" tabindex="-1"></a><span class="co"># MCP endpoint reachability: 406 is a valid liveness signal for a plain GET</span></span>
-<span id="cb66-8"><a href="#cb66-8" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-i</span> http://127.0.0.1:8000/mcp</span>
-<span id="cb66-9"><a href="#cb66-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb66-10"><a href="#cb66-10" aria-hidden="true" tabindex="-1"></a><span class="co"># NuGet relay health</span></span>
-<span id="cb66-11"><a href="#cb66-11" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-fsS</span> http://127.0.0.1:11666/healthz</span>
-<span id="cb66-12"><a href="#cb66-12" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb66-13"><a href="#cb66-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Team database shape without creating a missing database or exposing row contents</span></span>
-<span id="cb66-14"><a href="#cb66-14" aria-hidden="true" tabindex="-1"></a><span class="bu">test</span> <span class="at">-f</span> runtime/addons/team-addon/state.db <span class="kw">&amp;&amp;</span> <span class="dt">\</span></span>
-<span id="cb66-15"><a href="#cb66-15" aria-hidden="true" tabindex="-1"></a>  <span class="ex">sqlite3</span> <span class="at">-readonly</span> runtime/addons/team-addon/state.db <span class="st">&#39;.tables&#39;</span></span>
-<span id="cb66-16"><a href="#cb66-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb66-17"><a href="#cb66-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Repository and generated-document state</span></span>
-<span id="cb66-18"><a href="#cb66-18" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> status <span class="at">--short</span></span>
-<span id="cb66-19"><a href="#cb66-19" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/build_evander_user_manual.py <span class="at">--check</span></span></code></pre></div>
+<div class="sourceCode" id="cb67"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb67-1"><a href="#cb67-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Basic control-plane summary; may initialize/migrate missing runtime configuration</span></span>
+<span id="cb67-2"><a href="#cb67-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
+<span id="cb67-3"><a href="#cb67-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb67-4"><a href="#cb67-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Installed unit state</span></span>
+<span id="cb67-5"><a href="#cb67-5" aria-hidden="true" tabindex="-1"></a><span class="ex">systemctl</span> <span class="at">--no-pager</span> <span class="at">--full</span> status evander-gateway.service</span>
+<span id="cb67-6"><a href="#cb67-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb67-7"><a href="#cb67-7" aria-hidden="true" tabindex="-1"></a><span class="co"># MCP endpoint reachability: 406 is a valid liveness signal for a plain GET</span></span>
+<span id="cb67-8"><a href="#cb67-8" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-i</span> http://127.0.0.1:8000/mcp</span>
+<span id="cb67-9"><a href="#cb67-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb67-10"><a href="#cb67-10" aria-hidden="true" tabindex="-1"></a><span class="co"># NuGet relay health</span></span>
+<span id="cb67-11"><a href="#cb67-11" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-fsS</span> http://127.0.0.1:11666/healthz</span>
+<span id="cb67-12"><a href="#cb67-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb67-13"><a href="#cb67-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Team database shape without creating a missing database or exposing row contents</span></span>
+<span id="cb67-14"><a href="#cb67-14" aria-hidden="true" tabindex="-1"></a><span class="bu">test</span> <span class="at">-f</span> runtime/addons/team-addon/state.db <span class="kw">&amp;&amp;</span> <span class="dt">\</span></span>
+<span id="cb67-15"><a href="#cb67-15" aria-hidden="true" tabindex="-1"></a>  <span class="ex">sqlite3</span> <span class="at">-readonly</span> runtime/addons/team-addon/state.db <span class="st">&#39;.tables&#39;</span></span>
+<span id="cb67-16"><a href="#cb67-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb67-17"><a href="#cb67-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Repository and generated-document state</span></span>
+<span id="cb67-18"><a href="#cb67-18" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> status <span class="at">--short</span></span>
+<span id="cb67-19"><a href="#cb67-19" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/build_evander_user_manual.py <span class="at">--check</span></span></code></pre></div>
 <p>When a command reveals secrets or user content, prefer field names,
 counts, redacted identifiers, and status codes in incident notes. Do not
 paste raw runtime databases or environment files into tickets or
@@ -16614,7 +16627,7 @@ wake, or release happened.</li>
 <blockquote>
 <p><span class="sidebar-kicker">For administrators</span> <strong>The
 first broad host check</strong></p>
-<div class="sourceCode" id="cb67"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb67-1"><a href="#cb67-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span></code></pre></div>
+<div class="sourceCode" id="cb68"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb68-1"><a href="#cb68-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span></code></pre></div>
 <p>Then narrow the investigation. Avoid running broad smoke suites
 without an explicit timeout; UI and browser processes can retain open
 handles after nearby assertions have passed.</p>

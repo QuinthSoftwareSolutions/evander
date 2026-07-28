@@ -27,14 +27,48 @@ MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
 MAX_ACTION_FEEDBACK = 4
 MAX_SESSION_HEALTH = 12
-MAX_OPERATOR_CHAT_PARTICIPANTS = 12
-MAX_REVIEW_ARTIFACT_IMPORTS = 8
-MAX_REVIEW_ARTIFACT_IMPORT_ERRORS = 8
 MAX_MANAGER_FALLBACK_AGENTS = 12
 MAX_MANAGER_FALLBACK_ROWS = 8
 
 
-def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
+def wake_uses_fresh_context(
+    lease: Mapping[str, Any],
+    *,
+    effective_resume_mode: str | None = None,
+) -> bool:
+    """Return whether this wake will run without retained conversation context.
+
+    Runtime lifecycle state is authoritative. The effect/provider resume mode is
+    only needed when that explicit state does not already require a fresh
+    context. Agent display names and model/provider names are intentionally not
+    part of this decision.
+    """
+
+    runtime = lease.get("runtime")
+    runtime_behavior_available = False
+    if isinstance(runtime, Mapping):
+        runtime_behavior_available = (
+            "context_rotation_pending" in runtime
+            or "context_clearing_policy" in runtime
+        )
+        if bool(runtime.get("context_rotation_pending")):
+            return True
+        policy = _optional_text(runtime.get("context_clearing_policy"))
+        if policy == "every_wake":
+            return True
+    if lease.get("has_prior_successful_wake") is False:
+        return True
+    normalized_resume_mode = _optional_text(effective_resume_mode)
+    if normalized_resume_mode is not None:
+        return normalized_resume_mode == "new_context"
+    return not runtime_behavior_available
+
+
+def build_compact_wake_context(
+    lease: Mapping[str, Any],
+    *,
+    fresh_context: bool = True,
+) -> dict[str, Any]:
     """Build the small prompt context for a Team wake lease.
 
     The lease payload can contain large historical slices. This keeps only the
@@ -50,26 +84,38 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         omitted_counts,
         "subordinate_ids",
     )
-    compact_agent = _compact_agent(agent)
+    compact_agent = (
+        _compact_agent(agent)
+        if fresh_context
+        else _compact_fields(agent, ("id",))
+    )
     compact_agent.pop("display_name", None)
+    dispatch = _compact_current_dispatch(lease)
     context: dict[str, Any] = {
         "agent": compact_agent,
+        "context_mode": "fresh_full" if fresh_context else "retained_delta",
         "reason": _json_value(lease.get("reason")),
-        "superior_id": _optional_text(lease.get("superior_agent_id")),
-        "subordinate_ids": subordinate_ids,
+        "current_dispatch": dispatch,
     }
+    if fresh_context:
+        context["superior_id"] = _optional_text(lease.get("superior_agent_id"))
+        context["subordinate_ids"] = subordinate_ids
 
-    subordinates = sorted(
-        (_compact_agent(row, subordinate=True) for row in _mapping_rows(lease.get("subordinates"))),
-        key=lambda row: _sort_text(row.get("id")),
-    )
-    if subordinates:
-        context["subordinates"] = _limited_rows(
-            subordinates,
-            MAX_SUBORDINATES,
-            omitted_counts,
-            "subordinates",
+    if fresh_context:
+        subordinates = sorted(
+            (
+                _compact_agent(row, subordinate=True)
+                for row in _mapping_rows(lease.get("subordinates"))
+            ),
+            key=lambda row: _sort_text(row.get("id")),
         )
+        if subordinates:
+            context["subordinates"] = _limited_rows(
+                subordinates,
+                MAX_SUBORDINATES,
+                omitted_counts,
+                "subordinates",
+            )
 
     tasks = sorted(
         (_compact_task(row) for row in _mapping_rows(lease.get("tasks"))),
@@ -77,35 +123,37 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
     )
     context["tasks"] = _limited_rows(tasks, MAX_TASKS, omitted_counts, "tasks")
 
-    projects = sorted(
-        (_compact_project(row) for row in _mapping_rows(lease.get("projects"))),
-        key=lambda row: _sort_text(row.get("id")),
-    )
-    if projects:
-        context["projects"] = _limited_rows(
-            projects,
-            MAX_PROJECTS,
-            omitted_counts,
-            "projects",
+    if fresh_context:
+        projects = sorted(
+            (_compact_project(row) for row in _mapping_rows(lease.get("projects"))),
+            key=lambda row: _sort_text(row.get("id")),
         )
+        if projects:
+            context["projects"] = _limited_rows(
+                projects,
+                MAX_PROJECTS,
+                omitted_counts,
+                "projects",
+            )
 
-    outcome_kinds = sorted(
-        (
-            _compact_outcome_kind(row)
-            for row in _mapping_rows(lease.get("outcome_kinds"))
-        ),
-        key=lambda row: (
-            _sort_text(row.get("effective_project_id")),
-            _sort_text(row.get("kind")),
-        ),
-    )
-    if outcome_kinds:
-        context["outcome_kinds"] = _limited_rows(
-            outcome_kinds,
-            MAX_OUTCOME_KINDS,
-            omitted_counts,
-            "outcome_kinds",
+    if fresh_context:
+        outcome_kinds = sorted(
+            (
+                _compact_outcome_kind(row)
+                for row in _mapping_rows(lease.get("outcome_kinds"))
+            ),
+            key=lambda row: (
+                _sort_text(row.get("effective_project_id")),
+                _sort_text(row.get("kind")),
+            ),
         )
+        if outcome_kinds:
+            context["outcome_kinds"] = _limited_rows(
+                outcome_kinds,
+                MAX_OUTCOME_KINDS,
+                omitted_counts,
+                "outcome_kinds",
+            )
 
     inbox_rows, non_pending_inbox_count = _pending_inbox_rows(lease.get("inbox"))
     _add_omitted(omitted_counts, "inbox_non_pending", non_pending_inbox_count)
@@ -193,10 +241,18 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         omitted_counts,
     )
 
-    runtime_attention, hidden_attention_count = _runtime_attention_rows(
-        lease.get("runtime_attention")
+    runtime_attention, hidden_attention_count, out_of_scope_attention_count = (
+        _runtime_attention_rows(
+            lease.get("runtime_attention"),
+            dispatch=dispatch,
+        )
     )
     _add_omitted(omitted_counts, "runtime_attention_hidden_failed_actions", hidden_attention_count)
+    _add_omitted(
+        omitted_counts,
+        "runtime_attention_outside_dispatch",
+        out_of_scope_attention_count,
+    )
     if runtime_attention:
         context["runtime_attention"] = _limited_rows(
             sorted(
@@ -209,7 +265,11 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     session_health = sorted(
-        (_compact_session_health(row) for row in _mapping_rows(lease.get("session_health"))),
+        (
+            _compact_session_health(row)
+            for row in _mapping_rows(lease.get("session_health"))
+            if fresh_context or _session_health_requires_attention(row)
+        ),
         key=_session_health_sort_key,
     )
     if session_health:
@@ -231,12 +291,7 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         ),
     )
     if operator_chat_participants:
-        context["operator_chat_participants"] = _limited_rows(
-            operator_chat_participants,
-            MAX_OPERATOR_CHAT_PARTICIPANTS,
-            omitted_counts,
-            "operator_chat_participants",
-        )
+        context["operator_chat_participants"] = operator_chat_participants
 
     manager_fallback_summary = lease.get("manager_fallback_summary")
     if isinstance(manager_fallback_summary, Mapping):
@@ -244,13 +299,7 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
             manager_fallback_summary
         )
 
-    project_repo = lease.get("project_repo")
-    if isinstance(project_repo, Mapping):
-        context["project_repo"] = _compact_project_repo(project_repo)
-    project_repos = [
-        _compact_project_repo(row)
-        for row in _mapping_rows(lease.get("project_repos"))
-    ]
+    project_repos = _deduplicated_project_repos(lease)
     if project_repos:
         context["project_repos"] = project_repos
 
@@ -266,12 +315,7 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         ),
     )
     if review_artifact_imports:
-        context["review_artifact_imports"] = _limited_rows(
-            review_artifact_imports,
-            MAX_REVIEW_ARTIFACT_IMPORTS,
-            omitted_counts,
-            "review_artifact_imports",
-        )
+        context["review_artifact_imports"] = review_artifact_imports
 
     review_artifact_errors = sorted(
         (
@@ -285,16 +329,58 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         ),
     )
     if review_artifact_errors:
-        context["review_artifact_import_errors"] = _limited_rows(
-            review_artifact_errors,
-            MAX_REVIEW_ARTIFACT_IMPORT_ERRORS,
-            omitted_counts,
-            "review_artifact_import_errors",
-        )
+        context["review_artifact_import_errors"] = review_artifact_errors
 
     if omitted_counts:
         context["omitted_counts"] = dict(sorted(omitted_counts.items()))
     return _json_value(context)
+
+
+def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
+    source = lease.get("dispatch")
+    dispatch = source if isinstance(source, Mapping) else {}
+    row = _compact_fields(
+        dispatch,
+        (
+            "id",
+            "cause_kind",
+            "cause_id",
+            "task_ids",
+            "blocker_ids",
+            "review_request_ids",
+            "inbox_item_ids",
+            "project_ids",
+            "managed_repo_ids",
+            "review_routing_authorities",
+            "lease_expires_at",
+        ),
+    )
+    if "id" not in row:
+        dispatch_id = _optional_text(lease.get("dispatch_id"))
+        if dispatch_id is not None:
+            row["id"] = dispatch_id
+    if "cause_kind" not in row:
+        reason = _optional_text(lease.get("reason"))
+        if reason is not None:
+            row["cause_kind"] = reason
+    if "cause_id" not in row:
+        cause_id = _optional_text(lease.get("cause_id"))
+        if cause_id is not None:
+            row["cause_id"] = cause_id
+    return row
+
+
+def _deduplicated_project_repos(lease: Mapping[str, Any]) -> list[dict[str, Any]]:
+    candidates = list(_mapping_rows(lease.get("project_repos")))
+    project_repo = lease.get("project_repo")
+    if isinstance(project_repo, Mapping):
+        candidates.append(project_repo)
+    result: list[dict[str, Any]] = []
+    for candidate in candidates:
+        compact = _compact_project_repo(candidate)
+        if compact not in result:
+            result.append(compact)
+    return result
 
 
 def _compact_agent(agent: Mapping[str, Any], *, subordinate: bool = False) -> dict[str, Any]:
@@ -373,6 +459,7 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
             "updated_at",
             "state_entered_at",
             "task_kind",
+            "integration_boundary",
         ),
     )
     row["title"] = _trim_text(task.get("title"), TITLE_LIMIT)
@@ -388,6 +475,15 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
     )
     if isinstance(task.get("outcome_contract"), Mapping):
         row["outcome_contract"] = _json_value(task["outcome_contract"])
+    if isinstance(task.get("deliverable_contract"), Mapping):
+        contract = task["deliverable_contract"]
+        row["deliverable_contract"] = _compact_fields(
+            contract,
+            (
+                "require_git_provenance",
+                "required_contribution_task_ids",
+            ),
+        )
     if isinstance(task.get("completion"), Mapping):
         row["completion"] = _json_value(task["completion"])
     return row
@@ -704,13 +800,28 @@ def _compact_session_health(row: Mapping[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _session_health_requires_attention(row: Mapping[str, Any]) -> bool:
+    status = (_optional_text(row.get("status")) or "").casefold()
+    execution_status = (
+        _optional_text(row.get("agent_execution_status")) or ""
+    ).casefold()
+    lifecycle = (
+        _optional_text(row.get("container_lifecycle_state")) or ""
+    ).casefold()
+    return (
+        row.get("is_expired") is True
+        or row.get("session_present") is False
+        or status in {"missing", "expired", "failed", "error", "unhealthy"}
+        or execution_status in {"failed", "error", "stalled"}
+        or lifecycle in {"failed", "error", "stopped", "exited"}
+    )
+
+
 def _compact_operator_chat_participant(row: Mapping[str, Any]) -> dict[str, Any]:
     compact = _compact_fields(row, ("operator_user_id", "operator_display_name"))
     conversation_ids = _string_items(row.get("conversation_ids"))
     if conversation_ids:
-        compact["conversation_ids"] = conversation_ids[:ID_LIST_LIMIT]
-        if len(conversation_ids) > ID_LIST_LIMIT:
-            compact["conversation_ids_omitted_count"] = len(conversation_ids) - ID_LIST_LIMIT
+        compact["conversation_ids"] = conversation_ids
     return compact
 
 
@@ -979,11 +1090,6 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
     ]
     if git_contexts:
         row["git_work_contexts"] = git_contexts
-        row["branch_contexts_by_task_id"] = {
-            context["task_id"]: context
-            for context in git_contexts
-            if _optional_text(context.get("task_id")) is not None
-        }
     message = _optional_text(repo.get("message"))
     if message is not None:
         row["message"] = _trim_text(message)
@@ -1011,7 +1117,7 @@ def _compact_review(review: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _compact_git_work_context(context: Mapping[str, Any]) -> dict[str, Any]:
-    return _compact_fields(
+    row = _compact_fields(
         context,
         (
             "id",
@@ -1026,6 +1132,10 @@ def _compact_git_work_context(context: Mapping[str, Any]) -> dict[str, Any]:
             "state",
         ),
     )
+    dependency_sources = _mapping_rows(context.get("dependency_git_sources"))
+    if dependency_sources:
+        row["dependency_git_sources"] = dependency_sources
+    return row
 
 
 def _compact_review_artifact_import(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -1047,9 +1157,7 @@ def _compact_review_artifact_import(item: Mapping[str, Any]) -> dict[str, Any]:
     )
     imported_paths = _string_items(item.get("imported_paths"))
     if imported_paths:
-        row["imported_paths"] = imported_paths[:ID_LIST_LIMIT]
-        if len(imported_paths) > ID_LIST_LIMIT:
-            row["imported_paths_omitted_count"] = len(imported_paths) - ID_LIST_LIMIT
+        row["imported_paths"] = imported_paths
     return row
 
 
@@ -1205,16 +1313,86 @@ def _current_release_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
     return current, skipped
 
 
-def _runtime_attention_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
+def _runtime_attention_rows(
+    value: object,
+    *,
+    dispatch: Mapping[str, Any],
+) -> tuple[list[Mapping[str, Any]], int, int]:
     rows = _mapping_rows(value)
     visible: list[Mapping[str, Any]] = []
     hidden = 0
+    out_of_scope = 0
     for row in rows:
         if row.get("kind") == "failed_action_record":
             hidden += 1
             continue
+        if not _runtime_attention_matches_dispatch(row, dispatch):
+            out_of_scope += 1
+            continue
         visible.append(row)
-    return visible, hidden
+    return visible, hidden, out_of_scope
+
+
+def _runtime_attention_matches_dispatch(
+    row: Mapping[str, Any],
+    dispatch: Mapping[str, Any],
+) -> bool:
+    dispatch_id = _optional_text(dispatch.get("id"))
+    cause_id = _optional_text(dispatch.get("cause_id"))
+    scopes = {
+        "task": set(_string_items(dispatch.get("task_ids"))),
+        "blocker": set(_string_items(dispatch.get("blocker_ids"))),
+        "review_request": set(_string_items(dispatch.get("review_request_ids"))),
+        "inbox_item": set(_string_items(dispatch.get("inbox_item_ids"))),
+        "project": set(_string_items(dispatch.get("project_ids"))),
+        "managed_repo": set(_string_items(dispatch.get("managed_repo_ids"))),
+    }
+    if dispatch_id is None and cause_id is None and not any(scopes.values()):
+        return True
+    if dispatch_id is not None and dispatch_id in {
+        _optional_text(row.get("active_dispatch_id")),
+        _optional_text(row.get("dispatch_id")),
+        _optional_text(row.get("source_dispatch_id")),
+    }:
+        return True
+    if cause_id is not None and cause_id in {
+        _optional_text(row.get("id")),
+        _optional_text(row.get("source_id")),
+        _optional_text(row.get("inbox_item_id")),
+        _optional_text(row.get("blocker_id")),
+        _optional_text(row.get("review_request_id")),
+        _optional_text(row.get("task_id")),
+    }:
+        return True
+    for prefix, ids in scopes.items():
+        if not ids:
+            continue
+        singular = _optional_text(row.get(f"{prefix}_id"))
+        if singular in ids:
+            return True
+        if ids.intersection(_string_items(row.get(f"{prefix}_ids"))):
+            return True
+    links = row.get("links")
+    if isinstance(links, Mapping):
+        link_keys = {
+            "task": "task_ids",
+            "blocker": "blocker_ids",
+            "review_request": "review_request_ids",
+            "inbox_item": "inbox_item_ids",
+            "project": "project_ids",
+            "managed_repo": "managed_repo_ids",
+        }
+        if any(
+            ids.intersection(_string_items(links.get(link_keys[prefix])))
+            for prefix, ids in scopes.items()
+            if ids
+        ):
+            return True
+        if dispatch_id is not None and dispatch_id in _string_items(
+            links.get("dispatch_ids")
+        ):
+            return True
+    return False
 
 
 def _limited_release_packages(
@@ -1485,4 +1663,4 @@ def _open_subtask_count(row: Mapping[str, Any]) -> int:
     return _positive_int(counts.get("open"))
 
 
-__all__ = ["build_compact_wake_context"]
+__all__ = ["build_compact_wake_context", "wake_uses_fresh_context"]

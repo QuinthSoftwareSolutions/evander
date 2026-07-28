@@ -41,6 +41,21 @@ class ManagedGitRepositoryRegistrationRequest(BaseModel):
         return normalized or None
 
 
+class ManagedGitHostCommitIdentityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    email: str = Field(min_length=1)
+
+    @field_validator("name", "email", mode="before")
+    @classmethod
+    def _normalize_required_text(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("value is required")
+        return normalized
+
+
 class ManagedGitMaintenanceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -287,6 +302,38 @@ def git_repository_routes(
             return _service_error_response(exc)
         return JSONResponse({"repository": _jsonable(refreshed)})
 
+    async def set_host_commit_identity(request: Request) -> JSONResponse:
+        managed_repo_id = str(request.path_params.get("managed_repo_id") or "").strip()
+        try:
+            payload = ManagedGitHostCommitIdentityRequest.model_validate(
+                await _json_body(request)
+            )
+        except ValueError as exc:
+            message = _validation_error_text(exc) if isinstance(exc, ValidationError) else str(exc)
+            return json_error(message, status_code=400)
+        repository, error = await _repository_for_scoped_request(request, managed_repo_id)
+        if error is not None:
+            return error
+        assert repository is not None
+        directory_path = _directory_path_for_repository(repository)
+        access_error = _mutation_access_error(
+            request,
+            directory_path=directory_path,
+        )
+        if access_error is not None:
+            return access_error
+        try:
+            updated = await run_in_threadpool(
+                managed_git.set_host_commit_identity,
+                managed_repo_id,
+                directory_path=directory_path,
+                name=payload.name,
+                email=payload.email,
+            )
+        except Exception as exc:
+            return _service_error_response(exc)
+        return JSONResponse({"repository": _jsonable(updated)})
+
     async def delete_repository(request: Request) -> JSONResponse:
         managed_repo_id = str(request.path_params.get("managed_repo_id") or "").strip()
         repository, error = await _repository_for_scoped_request(request, managed_repo_id)
@@ -387,6 +434,11 @@ def git_repository_routes(
             methods=["POST"],
         ),
         Route(
+            "/api/admin/git-repositories/{managed_repo_id:str}/host-commit-identity",
+            set_host_commit_identity,
+            methods=["PUT"],
+        ),
+        Route(
             "/api/admin/git-repositories/{managed_repo_id:str}",
             get_repository,
             methods=["GET"],
@@ -400,6 +452,7 @@ def git_repository_routes(
 
 
 __all__ = [
+    "ManagedGitHostCommitIdentityRequest",
     "ManagedGitMaintenanceRequest",
     "ManagedGitMigrationRequest",
     "ManagedGitRepositoryRegistrationRequest",

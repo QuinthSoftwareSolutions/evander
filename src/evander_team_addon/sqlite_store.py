@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 37
+SQLITE_SCHEMA_VERSION = 40
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -949,6 +949,8 @@ class TeamStateSqliteStore:
                 for column_name, definition in (
                     ("task_kind", "TEXT NOT NULL DEFAULT 'support'"),
                     ("outcome_contract_json", "TEXT"),
+                    ("integration_boundary", "INTEGER NOT NULL DEFAULT 0"),
+                    ("deliverable_contract_json", "TEXT"),
                     ("completion_json", "TEXT"),
                     ("originating_task_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
@@ -981,6 +983,11 @@ class TeamStateSqliteStore:
                     ("supersession_reason", "TEXT"),
                     ("superseded_at", "TEXT"),
                     ("superseded_by_actor", "TEXT"),
+                    ("review_cohort_id", "TEXT"),
+                    ("review_cohort_sealed_at", "TEXT"),
+                    ("rework_requested_at", "TEXT"),
+                    ("rework_requested_by_agent_id", "TEXT"),
+                    ("rework_reason", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -988,6 +995,12 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition=definition,
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="review_cohort_id",
+                    definition="TEXT",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
@@ -1204,6 +1217,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_git_promotions",
                     column_name="sources_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="dependency_git_sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 connection.execute(
@@ -2134,6 +2153,12 @@ class TeamStateSqliteStore:
                     if row["outcome_contract_json"] is not None
                     else None
                 ),
+                "integration_boundary": _bool(row["integration_boundary"]),
+                "deliverable_contract": (
+                    _json_loads(row["deliverable_contract_json"])
+                    if row["deliverable_contract_json"] is not None
+                    else None
+                ),
                 "completion": (
                     _json_loads(row["completion_json"])
                     if row["completion_json"] is not None
@@ -2168,9 +2193,10 @@ class TeamStateSqliteStore:
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     originating_task_id, cancellation_json, task_kind,
-                    outcome_contract_json, completion_json, created_at, updated_at
+                    outcome_contract_json, integration_boundary,
+                    deliverable_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2195,6 +2221,12 @@ class TeamStateSqliteStore:
                     (
                         _json_dumps(task.get("outcome_contract"))
                         if task.get("outcome_contract") is not None
+                        else None
+                    ),
+                    _int_bool(task.get("integration_boundary")),
+                    (
+                        _json_dumps(task.get("deliverable_contract"))
+                        if task.get("deliverable_contract") is not None
                         else None
                     ),
                     (
@@ -2293,6 +2325,13 @@ class TeamStateSqliteStore:
                 "supersession_reason": row["supersession_reason"],
                 "superseded_at": row["superseded_at"],
                 "superseded_by_actor": row["superseded_by_actor"],
+                "review_cohort_id": row["review_cohort_id"],
+                "review_cohort_sealed_at": row["review_cohort_sealed_at"],
+                "rework_requested_at": row["rework_requested_at"],
+                "rework_requested_by_agent_id": row[
+                    "rework_requested_by_agent_id"
+                ],
+                "rework_reason": row["rework_reason"],
                 "created_at": row["created_at"],
             }
 
@@ -2310,9 +2349,12 @@ class TeamStateSqliteStore:
                     superseded_by_deliverable_id, carried_findings_json,
                     review_manifest_json, acceptance_recipient_agent_id,
                     acceptance_decision_json, supersession_reason, superseded_at,
-                    superseded_by_actor, outcomes_json, completion_json, created_at
+                    superseded_by_actor, review_cohort_id,
+                    review_cohort_sealed_at, rework_requested_at,
+                    rework_requested_by_agent_id, rework_reason, outcomes_json,
+                    completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2352,6 +2394,11 @@ class TeamStateSqliteStore:
                     deliverable.get("supersession_reason"),
                     deliverable.get("superseded_at"),
                     deliverable.get("superseded_by_actor"),
+                    deliverable.get("review_cohort_id"),
+                    deliverable.get("review_cohort_sealed_at"),
+                    deliverable.get("rework_requested_at"),
+                    deliverable.get("rework_requested_by_agent_id"),
+                    deliverable.get("rework_reason"),
                     _json_dumps(deliverable.get("outcomes", [])),
                     (
                         _json_dumps(deliverable.get("completion"))
@@ -2570,6 +2617,7 @@ class TeamStateSqliteStore:
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
                 "reviewed_commit_sha": row["reviewed_commit_sha"],
+                "review_cohort_id": row["review_cohort_id"],
                 "supersedes_review_request_id": row["supersedes_review_request_id"],
                 "superseded_by_review_request_id": row["superseded_by_review_request_id"],
                 "retry_reason": row["retry_reason"],
@@ -2592,12 +2640,13 @@ class TeamStateSqliteStore:
                     reviewer_agent_id, requested_by_agent_id, requested_by_actor,
                     state, review_profile_id, criteria_snapshot_json,
                     required_outcome_kind_definitions_json, instructions,
-                    reviewed_commit_sha, supersedes_review_request_id,
+                    reviewed_commit_sha, review_cohort_id,
+                    supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
                     retry_requested_by, block_kind, retired_at, retired_by,
                     retirement_reason, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2617,6 +2666,7 @@ class TeamStateSqliteStore:
                     _json_dumps(request.get("required_outcome_kind_definitions", [])),
                     request.get("instructions"),
                     request.get("reviewed_commit_sha"),
+                    request.get("review_cohort_id"),
                     request.get("supersedes_review_request_id"),
                     request.get("superseded_by_review_request_id"),
                     request.get("retry_reason"),
@@ -3998,6 +4048,9 @@ class TeamStateSqliteStore:
                 "base_commit": row["base_commit"],
                 "agent_branch": row["agent_branch"],
                 "commit_sha": row["commit_sha"],
+                "dependency_git_sources": _json_loads(
+                    row["dependency_git_sources_json"]
+                ),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -4010,9 +4063,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_git_work_contexts(
                     id, agent_id, task_id, dispatch_id, worktree_path, base_branch,
-                    base_commit, agent_branch, commit_sha, state, created_at, updated_at
+                    base_commit, agent_branch, commit_sha,
+                    dependency_git_sources_json, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -4024,6 +4078,7 @@ class TeamStateSqliteStore:
                     context.get("base_commit"),
                     context["agent_branch"],
                     context.get("commit_sha"),
+                    _json_dumps(context.get("dependency_git_sources", [])),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -5656,6 +5711,8 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
+    integration_boundary INTEGER NOT NULL DEFAULT 0,
+    deliverable_contract_json TEXT,
     completion_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -5709,6 +5766,11 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     supersession_reason TEXT,
     superseded_at TEXT,
     superseded_by_actor TEXT,
+    review_cohort_id TEXT,
+    review_cohort_sealed_at TEXT,
+    rework_requested_at TEXT,
+    rework_requested_by_agent_id TEXT,
+    rework_reason TEXT,
     completion_json TEXT,
     created_at TEXT NOT NULL
 );
@@ -5812,6 +5874,7 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     required_outcome_kind_definitions_json TEXT NOT NULL DEFAULT '[]',
     instructions TEXT,
     reviewed_commit_sha TEXT,
+    review_cohort_id TEXT,
     supersedes_review_request_id TEXT,
     superseded_by_review_request_id TEXT,
     retry_reason TEXT,
@@ -6426,6 +6489,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     base_commit TEXT,
     agent_branch TEXT NOT NULL,
     commit_sha TEXT,
+    dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

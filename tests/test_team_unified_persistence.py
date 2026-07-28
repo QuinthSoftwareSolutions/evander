@@ -29,6 +29,7 @@ from evander_team_addon.models import (
     TaskCancellation,
     TaskCompletion,
     TaskCompletionKind,
+    TaskDeliverableContract,
     TeamBlocker,
     TeamBlockerRoute,
     TeamBlockerSourceKind,
@@ -76,6 +77,50 @@ def _seed_team_repository(tmp_path: Path) -> TeamStateRepository:
         expected_revision=repository.read().revision,
     )
     return repository
+
+
+def test_repository_round_trips_integration_deliverable_contract_and_defaults_legacy_tasks(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="dependency",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=10,
+        title="Implement component",
+        description="Produce the component contribution.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=20,
+        title="Integrate candidate",
+        description="Compose and submit the final candidate.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dependency"],
+        integration_boundary=True,
+        deliverable_contract=TaskDeliverableContract(
+            require_git_provenance=True,
+            required_contribution_task_ids=["dependency"],
+        ).model_dump(mode="json"),
+    )
+
+    reloaded = TeamStateRepository(tmp_path).read()
+
+    legacy = reloaded.tasks["dependency"]
+    assert legacy.integration_boundary is False
+    assert legacy.deliverable_contract is None
+    integration = reloaded.tasks["integration"]
+    assert integration.integration_boundary is True
+    assert integration.deliverable_contract is not None
+    assert integration.deliverable_contract.require_git_provenance is True
+    assert integration.deliverable_contract.required_contribution_task_ids == [
+        "dependency"
+    ]
 
 
 def test_repository_round_trips_unified_hierarchy_human_review_records(
@@ -996,8 +1041,17 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
             """
         ).fetchone()[0]
 
-    assert {"originating_task_id", "cancellation_json"} <= task_columns
-    assert "completion_json" in deliverable_columns
+    assert {
+        "originating_task_id",
+        "cancellation_json",
+        "integration_boundary",
+        "deliverable_contract_json",
+    } <= task_columns
+    assert {
+        "completion_json",
+        "review_cohort_id",
+        "review_cohort_sealed_at",
+    } <= deliverable_columns
     assert {"reason_code", "reporter_actor"} <= blocker_columns
     assert "supersedes_release_package_id" in release_columns
     assert "resolved_by_human_review_request_id" in finding_columns

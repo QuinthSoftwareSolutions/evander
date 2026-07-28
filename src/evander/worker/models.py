@@ -324,6 +324,41 @@ class WorkerRepoCloneRecord(BaseModel):
     commit_sha: str | None = None
 
 
+class WorkerTaskDependencyGitSource(BaseModel):
+    """One server-authorized Git contribution required by a task dependency."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dependency_task_id: str
+    deliverable_id: str
+    branch: str
+    commit_sha: str
+
+    @field_validator("dependency_task_id", "deliverable_id", mode="before")
+    @classmethod
+    def normalize_identity(cls, value: object, info: ValidationInfo) -> str:
+        text = str(value or "").strip()
+        if not text or "\n" in text or "\r" in text:
+            raise ValueError(f"{info.field_name} must be non-empty single-line text")
+        return text
+
+    @field_validator("branch", mode="before")
+    @classmethod
+    def normalize_branch(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text or "\n" in text or "\r" in text:
+            raise ValueError("branch must be a non-empty single-line Git ref")
+        return text
+
+    @field_validator("commit_sha", mode="before")
+    @classmethod
+    def normalize_commit_sha(cls, value: object) -> str:
+        text = str(value or "").strip().casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
+            raise ValueError("commit_sha must be a full Git object ID")
+        return text
+
+
 class WorkerTaskWorktreeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -331,6 +366,8 @@ class WorkerTaskWorktreeRequest(BaseModel):
     worktree_name: str
     branch: str
     base_ref: str
+    expected_base_commit_sha: str | None = None
+    dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
 
     @field_validator("repo_name", "worktree_name", mode="before")
     @classmethod
@@ -345,6 +382,18 @@ class WorkerTaskWorktreeRequest(BaseModel):
             raise ValueError(f"{info.field_name} must be a non-empty single-line Git ref")
         return text
 
+    @field_validator("expected_base_commit_sha", mode="before")
+    @classmethod
+    def normalize_expected_base_commit_sha(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().casefold()
+        if not text:
+            return None
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
+            raise ValueError("expected_base_commit_sha must be a full Git object ID")
+        return text
+
 
 class WorkerTaskWorktreeRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -354,6 +403,7 @@ class WorkerTaskWorktreeRecord(BaseModel):
     target_dir: str
     branch: str
     commit_sha: str
+    base_commit_sha: str | None = None
     created: bool
 
 

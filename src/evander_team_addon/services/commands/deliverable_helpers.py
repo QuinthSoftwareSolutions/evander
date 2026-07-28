@@ -53,10 +53,12 @@ from ..domain.deliverables import (
     _deliverable_verification_from_payload,
     _deliverable_verification_payload,
     _normalize_deliverable_verification_mapping,
+    _open_accepted_rework_deliverables,
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
 )
 from ..domain.git_work_contexts import (
+    GitCandidateCommitResolver,
     GitWorkContextValidationError,
     bind_deliverable_git_refs_to_work_context,
     mark_git_work_context_submitted,
@@ -67,6 +69,7 @@ from ..domain.review import _review_profile_for_request
 from ..domain.task_assessment import (
     TaskAssessmentBoundaryError,
     require_deliverable_submission,
+    require_task_deliverable_contract_provenance,
     task_payload_with_assessment,
 )
 from ..domain.task_supervision import (
@@ -77,13 +80,49 @@ from ..domain.task_supervision import (
 from ..domain.work_due import _mark_agent_work_due
 
 
+_DELIVERABLE_GIT_REF_INPUT_FIELDS = frozenset(
+    {
+        "branch_context_id",
+        "agent_branch",
+        "commit_sha",
+    }
+)
+
+
+def _normalize_deliverable_git_ref_mapping(
+    value: object,
+    *,
+    field_name: str,
+) -> dict[str, str | None]:
+    payload = _optional_mapping(value, field_name) or {}
+    unsupported_fields = sorted(
+        str(key) for key in payload if key not in _DELIVERABLE_GIT_REF_INPUT_FIELDS
+    )
+    if unsupported_fields:
+        correction = "; use commit_sha instead of commit" if "commit" in unsupported_fields else ""
+        allowed = ", ".join(sorted(_DELIVERABLE_GIT_REF_INPUT_FIELDS))
+        raise ValueError(
+            f"{field_name} contains unsupported field(s): "
+            f"{', '.join(unsupported_fields)}{correction}; "
+            f"allowed fields are: {allowed}"
+        )
+    return {
+        "branch_context_id": _optional_text(payload.get("branch_context_id")),
+        "agent_branch": _optional_text(payload.get("agent_branch")),
+        "commit_sha": _optional_text(payload.get("commit_sha")),
+    }
+
+
 def _normalize_deliverable_submission_mapping(
     item: Mapping[str, Any],
     *,
     field_name: str,
 ) -> dict[str, Any]:
     payload = _mapping(item, field_name)
-    git_refs = _optional_mapping(payload.get("git_refs"), f"{field_name}.git_refs") or {}
+    git_refs = _normalize_deliverable_git_ref_mapping(
+        payload.get("git_refs"),
+        field_name=f"{field_name}.git_refs",
+    )
     normalized = {
         "id": _optional_text(payload.get("id")),
         "task_id": _required_text(payload.get("task_id"), f"{field_name}.task_id"),
@@ -99,11 +138,7 @@ def _normalize_deliverable_submission_mapping(
             f"{field_name}.artifact_refs",
         ),
         "artifact_space_ref": _optional_text(payload.get("artifact_space_ref")),
-        "git_refs": {
-            "branch_context_id": _optional_text(git_refs.get("branch_context_id")),
-            "agent_branch": _optional_text(git_refs.get("agent_branch")),
-            "commit_sha": _optional_text(git_refs.get("commit_sha")),
-        },
+        "git_refs": git_refs,
         "outcomes": [
             DeliverableOutcome.model_validate(outcome).model_dump(mode="json")
             for outcome in _list_of_mappings(
@@ -478,6 +513,7 @@ def _validate_command_deliverable_submission_pre_publication(
     deliverable: Mapping[str, Any],
     deliverable_id: str,
     dispatch_id: str | None,
+    candidate_commit_resolver: GitCandidateCommitResolver | None = None,
 ) -> None:
     if deliverable_id in state.deliverables:
         raise TeamCommandValidationError(
@@ -500,6 +536,28 @@ def _validate_command_deliverable_submission_pre_publication(
                 "supersedes_deliverable_id": supersedes_deliverable_id,
             },
         )
+    open_rework_deliverables = _open_accepted_rework_deliverables(
+        state,
+        task=task,
+    )
+    if open_rework_deliverables:
+        required_predecessor_ids = [
+            predecessor.id for predecessor in open_rework_deliverables
+        ]
+        if supersedes_deliverable_id not in required_predecessor_ids:
+            raise TeamCommandValidationError(
+                code="accepted_deliverable_rework_requires_replacement",
+                message=(
+                    f"task {task.id} was reopened for accepted-deliverable rework; "
+                    "the next deliverable must supersede its exact accepted predecessor"
+                ),
+                correction_context={
+                    "task_id": task.id,
+                    "required_supersedes_deliverable_ids": required_predecessor_ids,
+                    "supersedes_deliverable_id": supersedes_deliverable_id,
+                    "recommended_tool": "team_submit_deliverable_for_review",
+                },
+            )
     try:
         require_deliverable_submission(
             state,
@@ -533,8 +591,19 @@ def _validate_command_deliverable_submission_pre_publication(
             task_id=task.id,
             deliverable=deliverable,
             dispatch_id=dispatch_id,
+            candidate_commit_resolver=candidate_commit_resolver,
         )
-        _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
+        git_refs = _deliverable_git_refs_from_payload(
+            deliverable.get("git_refs")
+        )
+        require_task_deliverable_contract_provenance(
+            state,
+            task_id=task.id,
+            git_refs=git_refs,
+            producer_agent_id=agent.id,
+            deliverable_id=deliverable_id,
+            require_submitted_context=False,
+        )
         _deliverable_verification_from_payload(deliverable.get("verification"))
         outcomes = [
             DeliverableOutcome.model_validate(outcome)
@@ -559,6 +628,16 @@ def _validate_command_deliverable_submission_pre_publication(
             completion=completion,
         )
     except GitWorkContextValidationError as exc:
+        raise TeamCommandValidationError(
+            code=exc.code,
+            message=exc.message,
+            correction_context={
+                "deliverable_id": deliverable_id,
+                "task_id": task.id,
+                **exc.correction_context,
+            },
+        ) from None
+    except TaskAssessmentBoundaryError as exc:
         raise TeamCommandValidationError(
             code=exc.code,
             message=exc.message,

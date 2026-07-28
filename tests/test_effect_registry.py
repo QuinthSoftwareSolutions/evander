@@ -1064,9 +1064,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
     assert admin_service.create_vm_calls[0]["connector_grants"] is None
-    assert admin_service.create_vm_calls[0]["host_directory_grants"] == {
-        "shared": ["list"]
-    }
+    assert admin_service.create_vm_calls[0]["host_directory_grants"] == {"shared": ["list"]}
     assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
 
 
@@ -3229,6 +3227,136 @@ def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
     )
 
 
+def test_codex_json_log_filter_allows_successful_chat_reply_with_empty_final_message() -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "invocation": {"server": "evander", "tool": "team_reply_to_chat"},
+                "result": {
+                    "Ok": {
+                        "structuredContent": {
+                            "success": True,
+                            "applied": True,
+                            "chat_message_id": "chatmsg-reply",
+                        },
+                        "isError": False,
+                    }
+                },
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_message",
+                "message": "",
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "last_agent_message": None,
+            },
+        },
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout == "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_success"),
+    [
+        ("team_get_task", True),
+        ("team_reply_to_chat", False),
+    ],
+)
+def test_codex_json_log_filter_rejects_non_completion_or_failed_tool_with_empty_final_message(
+    tool_name: str,
+    tool_success: bool,
+) -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "invocation": {"server": "evander", "tool": tool_name},
+                "result": {
+                    "Ok": {
+                        "structuredContent": {"success": tool_success},
+                        "isError": False,
+                    }
+                },
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "last_agent_message": None,
+            },
+        },
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: task_complete did not include a final agent message\n"
+    )
+
+
+def test_codex_json_log_filter_rejects_successful_chat_reply_without_task_complete() -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "invocation": {"server": "evander", "tool": "team_reply_to_chat"},
+                "result": {
+                    "Ok": {
+                        "structuredContent": {"success": True},
+                        "isError": False,
+                    }
+                },
+            },
+        },
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: no agent message was emitted\n"
+    )
+
+
 def test_codex_json_log_filter_reports_missing_final_message() -> None:
     events = [
         {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
@@ -4387,6 +4515,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.web_search_enabled is True
     assert manifest.metadata["workflow"] == {"state": "active"}
     assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
+    assert manifest.metadata["playwright"] is True
     expected_git_write_access = {
         "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
         "managed_repo_id": _MANAGED_REPO_ID,
@@ -4517,6 +4646,10 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "CHROME_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "CHROMIUM_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert (
+        "Evander Playwright preflight failed"
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "/home/agent/.dotnet-cli/.keep" not in bootstrap_by_path
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
     nuget_config = bootstrap_by_path["/home/agent/.nuget/NuGet/NuGet.Config"]["content"]
@@ -4557,6 +4690,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     ) in (clone_config_command)
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
+    assert backend.started_specs[-1].resource_limits == {"pids_limit": 1024}
     assert backend.started_specs[-1].codex_turn is not None
     assert backend.started_specs[-1].codex_turn.auth_mode is CodexAuthMode.METERED_API
     assert "cd /home/agent" in str(backend.started_specs[-1].command)

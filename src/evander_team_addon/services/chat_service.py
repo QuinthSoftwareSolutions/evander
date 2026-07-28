@@ -10,6 +10,7 @@ from ..repository import (
     TeamStateRepository,
 )
 from ..models import (
+    AgentContextClearingPolicy,
     AgentRuntime,
     AgentStatus,
     ExternalChatDeliveryRecord,
@@ -38,6 +39,7 @@ from .domain.common import (
     _require_present,
     _required_text,
 )
+from .domain.context_rotation import _mark_context_rotation_pending
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
@@ -109,6 +111,28 @@ def _operator_chat_dispatch_scope(
         "project_ids": project_ids,
         "managed_repo_ids": managed_repo_ids,
     }
+
+
+def _prepare_chat_context_rotation(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+    now: datetime,
+) -> None:
+    if (
+        runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+        and not runtime.context_rotation_pending
+    ):
+        _mark_context_rotation_pending(
+            state,
+            agent=agent,
+            runtime=runtime,
+            reason="every_wake",
+            requested_by=None,
+            requested_at=now,
+            request_note=None,
+        )
 
 
 class TeamChatService:
@@ -568,6 +592,12 @@ class TeamChatService:
                     f"{runtime.active_dispatch_id}"
                 )
             now = utc_now()
+            _prepare_chat_context_rotation(
+                state,
+                agent=agent,
+                runtime=runtime,
+                now=now,
+            )
             lease_expires_at = now + timedelta(
                 seconds=max(1, int(lease_seconds))
             )
@@ -735,6 +765,12 @@ class TeamChatService:
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
                     continue
+                _prepare_chat_context_rotation(
+                    state,
+                    agent=agent,
+                    runtime=runtime,
+                    now=effective_now,
+                )
                 dispatch_id = message.dispatch_id or f"team-chat:{message.id}"
                 lease_expires_at = effective_now + timedelta(
                     seconds=max(1, int(lease_seconds))
@@ -851,6 +887,25 @@ class TeamChatService:
         if resolved_message_id is None:  # pragma: no cover - defensive guard
             raise RuntimeError("conversation message dispatch failure was not recorded")
         return state, state.conversation_messages[resolved_message_id]
+
+    def mark_chat_message_ordinary_context_seeded(
+        self,
+        *,
+        message_id: str,
+    ) -> TeamState:
+        normalized_message_id = _required_text(message_id, "message_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            message.metadata["ordinary_context_seeded"] = True
+            message.updated_at = utc_now()
+            return state
+
+        return self._repository.update(_mutate)
 
     def record_conversation_voice_call(
         self,

@@ -234,6 +234,11 @@ The worker playbook creates the cache directories under `evander_worker_toolchai
 and wires them into the daemon with repeated `--readonly-mount` flags. It also seeds the .NET,
 Node, and Playwright caches from the Ansible control machine and verifies them inside
 `evander-runner:latest`.
+Before replacing the live Playwright mounts, the playbook unpacks the proposed package and browser
+archives into an isolated staging cache and resolves `chromium.executablePath()` with downloads
+disabled. A missing or mismatched build fails provisioning while the existing live cache remains
+intact; the error reports both the expected executable and the Chromium build directories that were
+actually seeded.
 By default dotnet reads `HOST_DOTNET_ROOT` or `/usr/lib/dotnet`; set
 `evander_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. The worker
 role also installs `dotnet-ef` into a separate shared tools cache and verifies
@@ -598,7 +603,38 @@ settings disable commit-message attribution trailers. If `dotnet=true` or `playw
 profile points at the read-only worker cache mounts and keeps writable per-session cache paths
 under `/home/agent`.
 With `playwright=true`, the profile resolves the seeded Playwright Chromium binary and exports it as
-`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and `CHROMIUM_BIN`.
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and `CHROMIUM_BIN`. If that package-selected
+executable is absent, profile loading fails with a reprovisioning error rather than letting the
+agent hard-code a different cached browser. The session manifest also records the Playwright
+capability, and all container jobs for that session receive an explicit `pids_limit` of `1024`.
+Non-Playwright sessions continue to inherit the strict worker default of `512`.
+
+Repository-local Playwright packages keep resolving normally; the worker does not replace or
+shadow them. Because Playwright's ordinary `chromium.launch()` does not consume
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, Playwright-enabled agent prompts include the offline launch
+contract and the session writes a dependency-neutral helper at
+`$EVANDER_PLAYWRIGHT_LAUNCH_HELPER`:
+
+```js
+import { chromium } from "playwright";
+
+const { launchSeededChromium } = await import(
+  process.env.EVANDER_PLAYWRIGHT_LAUNCH_HELPER,
+);
+const browser = await launchSeededChromium(chromium, { headless: true });
+```
+
+The helper accepts the repository's own `chromium` export and adds the seeded executable path to
+its launch options. The equivalent direct form is
+`chromium.launch({ executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH })`. Do not hard-code
+a `chromium-<revision>` cache directory: package revisions can differ while the worker intentionally
+remains offline.
+
+After changing either `HOST_PLAYWRIGHT_NODE_MODULES` / the runtime archive or
+`HOST_PLAYWRIGHT_BROWSERS` / the browser archive, rerun the worker playbook so it can validate and
+promote the pair together. Existing sessions created before the Playwright capability marker was
+introduced must be recreated or reprovisioned with `playwright=true` before their jobs receive the
+UI-test PID budget.
 
 SQL Server for container workers is a controlled provisioning capability, not an automatic
 `effect:agent:create` bootstrap. Requests that set `mssql=true` or `mssql_init_root` still fail
@@ -746,6 +782,11 @@ configured allowed Git source prefix. Repository-specific managed Git SSH aliase
 only for their corresponding managed repository beneath that prefix.
 
 Task-worktree cleanup requires the deterministic target path, branch, and full expected commit.
+Task-worktree preparation may also carry ordered `dependency_git_sources`. The worker fetches
+each named managed branch, requires its tip to equal the accepted full commit ID, merges those
+commits before task work begins, and records compact immutable provenance in worktree-local Git
+configuration. Reuse requires the same provenance; conflicts roll the clean checkout back to its
+pre-composition base and return an error instead of exposing partial dependency state.
 The worker serializes preparation and cleanup for the session repository, rejects tracked changes,
 non-ignored untracked files, unexpected branches, commits, paths, or registrations, then repeats
 the safety inspection immediately before removal. Ignored files are inventoried with reclaimed

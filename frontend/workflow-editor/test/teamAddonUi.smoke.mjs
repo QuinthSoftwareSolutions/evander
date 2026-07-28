@@ -42,6 +42,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
   assert.match(script, /data-stand-down-agent-id/);
+  assert.match(script, /data-stand-down-scope="agent"/);
+  assert.match(script, /data-stand-down-scope="subtree"/);
+  assert.match(script, /data-stand-down-scope="agent">Stand down</);
+  assert.match(script, />Stand down subtree</);
+  assert.match(script, /and every subordinate in that agent's subtree/);
   assert.match(script, /data-stand-down-revoke-agent-id/);
   assert.match(markup, /id="task-cancellation-modal"/);
   assert.match(script, /data-task-cancel-id/);
@@ -10987,6 +10992,7 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
     state: "in_progress",
     title: "Retire the incorporated retry action",
     description: "The accepted parent deliverable already contains the corrected contribution.",
+    deliverable_ids: ["deliverable-existing"],
     assessment: {
       readiness: "actionable",
       resolution_status: "unresolved",
@@ -11066,10 +11072,43 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
   await editState.waitFor({ state: "visible" });
   assert.equal(await editState.locator('option[value="accepted"]').count(), 0);
   assert.equal(await editState.locator('option[value="cancelled"]').count(), 0);
-  await page
-    .locator("#edit-modal")
-    .getByRole("button", { name: "Close" })
-    .click();
+  let editForm = page.locator("#edit-record-form");
+  await editForm
+    .locator('[name="title"]')
+    .fill("Retire the incorporated retry action safely");
+  await editForm.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  const ordinaryEditRequest = requests.filter(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable",
+  ).at(-1);
+  assert.ok(ordinaryEditRequest, "expected ordinary task edit");
+  assert.equal("integration_boundary" in ordinaryEditRequest.payload, false);
+  assert.equal("deliverable_contract" in ordinaryEditRequest.payload, false);
+
+  await cancellableBody.getByRole("button", { name: "Edit" }).click();
+  editForm = page.locator("#edit-record-form");
+  await editForm.locator('[name="integration_boundary"]').check();
+  await editForm.locator('[name="require_git_provenance"]').check();
+  await editForm
+    .locator('[name="required_contribution_task_ids"]')
+    .fill("task-successor");
+  await editForm.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  const integrationEditRequest = requests.filter(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable",
+  ).at(-1);
+  assert.ok(integrationEditRequest, "expected integration-boundary task edit");
+  assert.equal(integrationEditRequest.payload.integration_boundary, true);
+  assert.deepEqual(integrationEditRequest.payload.deliverable_contract, {
+    require_git_provenance: true,
+    required_contribution_task_ids: ["task-successor"],
+  });
 
   const cancelButton = cancellableBody.getByRole("button", {
     name: "Cancel task",
@@ -11092,7 +11131,7 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
     .locator('[name="successor_task_id"]')
     .selectOption("task-successor");
   await cancellationForm.getByRole("button", { name: "Cancel task" }).click();
-  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
   const cancellationRequest = requests.find(
     (request) =>
@@ -11115,7 +11154,10 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
     },
   );
   assert.equal(await page.locator("#task-cancellation-modal").isHidden(), true);
-  await alphaProjectCard.locator(":scope > details > summary").click();
+  const projectDetails = alphaProjectCard.locator(":scope > details");
+  if (!(await projectDetails.evaluate((details) => details.open))) {
+    await projectDetails.locator(":scope > summary").click();
+  }
 
   const blockedParent = page.locator(
     '#team-planning-page [data-planning-task-id="task-with-child"]',

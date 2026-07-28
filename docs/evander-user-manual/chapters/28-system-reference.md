@@ -122,6 +122,7 @@ Run `evander-cli --help` and a subcommand's `--help` for the precise option set 
 | Run the trigger loop interactively | `evander-cli trigger-orchestrator` |
 | Register or refresh a managed repository | `evander-cli git-repos register ...` |
 | Inspect managed repositories | `evander-cli git-repos list ...` |
+| Set one managed repository's host commit identity | `evander-cli git-repos set-host-identity ...` |
 | Create an issue VM | `evander-cli create-issue-vm <issue-id> ...` |
 | Clone by managed identity | `evander-cli clone-repo-into-vm <vm-name> --managed-repo-id <id>` |
 | Smoke-test a container worker | `evander-cli execution smoke-container-worker --json` |

@@ -567,6 +567,12 @@ def test_worker_playwright_toolchain_role_seeds_and_verifies_runner_playwright_c
     assert "Pack local Playwright runtime packages" in role
     assert "Copy Playwright runtime archive to worker" in role
     assert "Copy Playwright browsers archive to worker" in role
+    assert "verify_seeded_playwright_runtime.mjs" in role
+    assert "Verify staged Playwright package and browser cache are compatible" in role
+    assert role.index("Verify staged Playwright package and browser cache are compatible") < (
+        role.index("Reset worker Playwright runtime cache")
+    )
+    assert ".playwright-preflight" in role
     assert "Unpack Playwright runtime into worker cache" in role
     assert "Unpack Playwright browsers into worker cache" in role
     assert "Verify worker Playwright runtime on host cache" in role

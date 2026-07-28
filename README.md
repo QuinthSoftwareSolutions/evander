@@ -667,6 +667,10 @@ Inspect and maintain long-lived repositories explicitly:
 evander-cli git-repos list --directory-path root
 evander-cli git-repos show mr_0123456789abcdef0123
 evander-cli git-repos refresh mr_0123456789abcdef0123
+evander-cli git-repos set-host-identity mr_0123456789abcdef0123 \
+  --directory-path root \
+  --name "Release Automation" \
+  --email "release-automation@example.com"
 evander-cli git-repos maintenance --managed-repo-id mr_0123456789abcdef0123
 ```
 

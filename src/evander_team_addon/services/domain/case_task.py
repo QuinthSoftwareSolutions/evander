@@ -15,6 +15,7 @@ from ...models import (
     TeamState,
     TeamTaskState,
     TeamTaskKind,
+    TaskDeliverableContract,
     TaskOutcomeContract,
     TaskResolutionStatus,
     _unique_text_list,
@@ -71,6 +72,8 @@ class _TaskCreationPlan:
     description: str
     task_kind: TeamTaskKind
     outcome_contract: TaskOutcomeContract | None
+    integration_boundary: bool
+    deliverable_contract: TaskDeliverableContract | None
 
 
 def _validate_case_status_transition(
@@ -654,6 +657,30 @@ def _plan_task_creation(
             raise ValueError("outcome task requires outcome_contract")
         if task_kind == TeamTaskKind.SUPPORT and outcome_contract is not None:
             raise ValueError("support task cannot define outcome_contract")
+        integration_boundary = creation.get("integration_boundary", False)
+        if not isinstance(integration_boundary, bool):
+            raise ValueError("integration_boundary must be a boolean")
+        raw_deliverable_contract = creation.get("deliverable_contract")
+        deliverable_contract = (
+            TaskDeliverableContract.model_validate(raw_deliverable_contract)
+            if raw_deliverable_contract is not None
+            else None
+        )
+        if integration_boundary and deliverable_contract is None:
+            raise ValueError(
+                "integration boundary task requires deliverable_contract"
+            )
+        if not integration_boundary and deliverable_contract is not None:
+            raise ValueError(
+                "deliverable_contract requires integration_boundary"
+            )
+        if (
+            deliverable_contract is not None
+            and task_id in deliverable_contract.required_contribution_task_ids
+        ):
+            raise ValueError(
+                "task cannot require itself as a deliverable contribution"
+            )
     except ValueError as exc:
         result["errors"].append(str(exc))
         return None
@@ -671,6 +698,8 @@ def _plan_task_creation(
         description=_required_text(creation.get("description"), "description"),
         task_kind=task_kind,
         outcome_contract=outcome_contract,
+        integration_boundary=integration_boundary,
+        deliverable_contract=deliverable_contract,
     )
 
 
@@ -690,6 +719,8 @@ def _apply_task_creation_plan(
         state=plan.task_state,
         task_kind=plan.task_kind,
         outcome_contract=plan.outcome_contract,
+        integration_boundary=plan.integration_boundary,
+        deliverable_contract=plan.deliverable_contract,
         title=plan.title,
         description=plan.description,
         created_by_agent_id=actor.id,
@@ -879,6 +910,29 @@ def _task_creation_plan_graph_error(
             return f"task references missing dependency {dependency_id}"
         if dependency_project_id != plan.project_id:
             return f"task dependency {dependency_id} belongs to project {dependency_project_id}"
+    if plan.deliverable_contract is not None:
+        for contribution_task_id in (
+            plan.deliverable_contract.required_contribution_task_ids
+        ):
+            contribution_project_id = task_projects.get(contribution_task_id)
+            if contribution_project_id is None:
+                return (
+                    "deliverable contract references missing contribution task "
+                    f"{contribution_task_id}"
+                )
+            if contribution_project_id != plan.project_id:
+                return (
+                    f"deliverable contribution task {contribution_task_id} belongs "
+                    f"to project {contribution_project_id}"
+                )
+            if (
+                contribution_task_id not in plan.dependency_task_ids
+                and parent_map.get(contribution_task_id) != plan.task_id
+            ):
+                return (
+                    f"deliverable contribution task {contribution_task_id} must be "
+                    f"a direct child or dependency of integration task {plan.task_id}"
+                )
     current = plan.parent_task_id
     seen: set[str] = set()
     while current is not None:
@@ -1009,6 +1063,37 @@ def _task_graph_edit_error(
             return f"task references missing dependency {dependency_id}"
         if dependency.project_id != project_id:
             return f"task dependency {dependency_id} belongs to project {dependency.project_id}"
+    proposed_parent_map = {
+        existing_id: existing_task.parent_task_id
+        for existing_id, existing_task in state.tasks.items()
+    }
+    proposed_dependency_map = {
+        existing_id: list(existing_task.dependency_task_ids)
+        for existing_id, existing_task in state.tasks.items()
+    }
+    if task_id is not None:
+        proposed_parent_map[task_id] = parent_task_id
+        proposed_dependency_map[task_id] = list(dependency_task_ids)
+    for integration_task in state.tasks.values():
+        contract = integration_task.deliverable_contract
+        if contract is None:
+            continue
+        effective_dependency_ids = set(
+            proposed_dependency_map.get(integration_task.id, ())
+        )
+        for contribution_task_id in (
+            contract.required_contribution_task_ids
+        ):
+            if (
+                contribution_task_id not in effective_dependency_ids
+                and proposed_parent_map.get(contribution_task_id)
+                != integration_task.id
+            ):
+                return (
+                    f"deliverable contribution task {contribution_task_id} must "
+                    f"remain a direct child or dependency of integration task "
+                    f"{integration_task.id}"
+                )
     # Walk up the parent chain from the proposed parent; reaching task_id is a cycle.
     if task_id is not None and parent_task_id is not None:
         seen: set[str] = set()
@@ -1044,6 +1129,54 @@ def _task_graph_edit_error(
             wait_map.setdefault(task_id, list(dependency_task_ids))
         if _has_dependency_cycle(wait_map):
             return f"task hierarchy/dependency cycle includes {task_id}"
+    return None
+
+
+def _task_deliverable_contract_scope_error(
+    state: TeamState,
+    *,
+    task_id: str,
+    project_id: str,
+    dependency_task_ids: list[str],
+    integration_boundary: bool,
+    deliverable_contract: TaskDeliverableContract | None,
+) -> str | None:
+    if integration_boundary and deliverable_contract is None:
+        return "integration boundary task requires deliverable_contract"
+    if not integration_boundary and deliverable_contract is not None:
+        return "deliverable_contract requires integration_boundary"
+    if deliverable_contract is None:
+        return None
+    if task_id in deliverable_contract.required_contribution_task_ids:
+        return "task cannot require itself as a deliverable contribution"
+    direct_child_ids = {
+        candidate.id
+        for candidate in state.tasks.values()
+        if candidate.parent_task_id == task_id
+    }
+    dependency_ids = set(dependency_task_ids)
+    for contribution_task_id in (
+        deliverable_contract.required_contribution_task_ids
+    ):
+        contribution_task = state.tasks.get(contribution_task_id)
+        if contribution_task is None:
+            return (
+                "deliverable contract references missing contribution task "
+                f"{contribution_task_id}"
+            )
+        if contribution_task.project_id != project_id:
+            return (
+                f"deliverable contribution task {contribution_task_id} belongs "
+                f"to project {contribution_task.project_id}"
+            )
+        if (
+            contribution_task_id not in direct_child_ids
+            and contribution_task_id not in dependency_ids
+        ):
+            return (
+                f"deliverable contribution task {contribution_task_id} must be "
+                f"a direct child or dependency of integration task {task_id}"
+            )
     return None
 
 
@@ -1108,5 +1241,6 @@ __all__ = [
     "_dependency_path_exists",
     "_has_dependency_cycle",
     "_task_graph_edit_error",
+    "_task_deliverable_contract_scope_error",
     "_apply_goal_update",
 ]

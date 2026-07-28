@@ -962,6 +962,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_archive_outcome_kind`
 - `team_update_task`
 - `team_cancel_task`
+- `team_reopen_task_for_rework`
 - `team_report_blocker`
 - `team_update_blocker`
 - `team_update_goal`
@@ -1343,10 +1344,13 @@ an accepted cross-task replacement with `team_link_deliverable_replacement`.
 Migrations never infer these relationships.
 
 Terminal commands reject a stale dispatch snapshot when a newer high-priority
-inbox item arrived after the agent woke. The agent must read the item and include
-its ID in `handled_inbox_item_ids` in the same command. Re-sending already handled
-IDs and resolving an already-resolved blocker with compatible evidence are
-successful no-ops, with `applied: false` and no Team-state revision bump.
+inbox item arrived after the agent woke. The item is intentionally outside the
+current immutable dispatch scope, so the agent must not retry the command with
+that item ID. It ends the stale turn instead; dispatch finalization requests a
+fresh wake, and the replacement dispatch can include the new item. Re-sending
+already handled IDs and resolving an already-resolved blocker with compatible
+evidence are successful no-ops, with `applied: false` and no Team-state revision
+bump.
 
 #### Durable Dispatch Scope And Execution Stalls
 
@@ -1367,6 +1371,20 @@ project, managed repository, worktree, branch, and context, and label the base
 checkout as a control checkout. If any preparation fails, the complete dispatch
 fails, created contexts are finalized, and the runtime reservation is released;
 Team never silently drops one scoped task.
+
+For a Git-backed task, direct dependency edges also define code inheritance.
+Before exposing the successor worktree, Team resolves every accepted, current
+Git deliverable on those direct dependencies against the server-owned managed
+branch tip, then merges the exact commits in dependency-list and deliverable-ID
+order. The post-composition commit becomes the successor's immutable
+`base_commit`, while `dependency_git_sources` records the dependency task,
+deliverable, branch, and commit. A reused pristine worktree may receive this
+composition before its next lease; a worktree with authored or dirty work and
+no matching provenance fails closed. Missing, ambiguous, unaccepted, moved, or
+conflicting Git dependency state likewise fails preparation before the agent is
+woken and opens one routed high-priority preparation blocker. Parent/child
+containment does not imply inheritance, and direct
+dependencies without Git deliverables remain lifecycle-only.
 
 No-progress accounting remains agent-wide. At the configured limit, Team opens
 or reuses one blocker with `source_kind: agent_execution_stall` and the agent ID
@@ -1405,7 +1423,8 @@ tools record intent; the packaged pack routes each event on its
 Git work contexts are optional Team state records for coding worktrees. They are
 created only by host/runtime setup for tasks that actually involve Git, and they
 bind an agent, task, optional dispatch, worktree path, base branch/base commit,
-expected agent branch, and last verified commit. Artifact-only deliverables,
+expected agent branch, exact dependency Git sources, and last verified commit.
+Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
 deliverable do not need Git contexts. Once a deliverable includes Git metadata,
 `team_submit_deliverable` and `team_submit_deliverable_for_review` require a

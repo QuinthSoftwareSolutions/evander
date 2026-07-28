@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import re
 from typing import Iterable
 
 from ...models import (
@@ -10,13 +11,22 @@ from ...models import (
     PersistentAgent,
     ReviewRequest,
     TaskAssessmentReadiness,
+    TeamBlockerRoute,
     TeamBlocker,
     TeamBlockerSourceKind,
     TeamBlockerState,
+    TeamInboxItemState,
+    TeamInboxItemType,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
 )
 from .agent_access import _visible_project_ids_for_agent
+from .preparation_failures import (
+    EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
+    TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
+    task_has_current_preparation_blocker,
+)
 from .task_assessment import TaskAssessmentService
 
 
@@ -58,10 +68,18 @@ def actionable_dispatch_tasks(
         and task.project_id in state.projects
         and state.projects[task.project_id].team_id == agent.team_id
         and task.id not in stalled_task_ids
+        and not _task_has_open_execution_preparation_blocker(state, task.id)
         and assessments.assess(task.id).readiness == TaskAssessmentReadiness.ACTIONABLE
     ]
     rows.sort(key=lambda item: (item.priority, item.created_at, item.id))
     return rows
+
+
+def _task_has_open_execution_preparation_blocker(
+    state: TeamState,
+    task_id: str,
+) -> bool:
+    return task_has_current_preparation_blocker(state, task_id=task_id)
 
 
 def actionable_dispatch_reviews(
@@ -92,10 +110,28 @@ def build_agent_dispatch_scope(
     reviews: Iterable[ReviewRequest],
     inbox_items: Iterable[AgentInboxItem],
 ) -> AgentDispatchScope:
-    task_rows = _unique_by_id(tasks)
-    blocker_rows = _unique_by_id(blockers)
-    review_rows = _unique_by_id(reviews)
     inbox_rows = _unique_by_id(inbox_items)
+    blocker_rows = _unique_by_id(
+        [
+            *blockers,
+            *_actionable_blockers_referenced_by_inbox(
+                state,
+                agent=agent,
+                inbox_items=inbox_rows,
+            ),
+        ]
+    )
+    task_rows = _unique_by_id(
+        [
+            *tasks,
+            *_assigned_blocker_recovery_tasks(
+                state,
+                agent=agent,
+                blockers=blocker_rows,
+            ),
+        ]
+    )
+    review_rows = _unique_by_id(reviews)
 
     project_ids: set[str] = set()
     for task in task_rows:
@@ -111,8 +147,7 @@ def build_agent_dispatch_scope(
         sorted(
             project_id
             for project_id in project_ids
-            if project_id in state.projects
-            and state.projects[project_id].team_id == agent.team_id
+            if project_id in state.projects and state.projects[project_id].team_id == agent.team_id
         )
     )
     managed_repo_ids = tuple(
@@ -134,6 +169,183 @@ def build_agent_dispatch_scope(
     )
 
 
+def build_preparation_recovery_dispatch_scope(
+    *,
+    blockers: Iterable[TeamBlocker],
+    inbox_items: Iterable[AgentInboxItem],
+) -> AgentDispatchScope:
+    """Freeze a preparation incident without retrying the failed preparation.
+
+    Generic blocker scope intentionally infers an owned source task and its
+    project so an assignee can repair the underlying product. Preparation
+    blockers are different: repository or artifact setup already failed before
+    inference, so re-adding that task/project would repeat the same setup before
+    the recovery owner can inspect, resolve, or reroute the incident.
+    """
+
+    blocker_rows = [
+        blocker
+        for blocker in _unique_by_id(blockers)
+        if blocker.reason_code in EXECUTION_PREPARATION_BLOCKER_REASON_CODES
+    ]
+    inbox_rows = _unique_by_id(inbox_items)
+    return AgentDispatchScope(
+        task_ids=(),
+        blocker_ids=tuple(row.id for row in blocker_rows),
+        review_request_ids=(),
+        inbox_item_ids=tuple(row.id for row in inbox_rows),
+        project_ids=(),
+        managed_repo_ids=(),
+    )
+
+
+def _actionable_blockers_referenced_by_inbox(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    inbox_items: Iterable[AgentInboxItem],
+) -> list[TeamBlocker]:
+    """Return only blockers an actionable inbox item asks this agent to handle.
+
+    Generated blocker notices already carry a structured ``blocker_id``. Agent
+    questions may instead quote the durable identifier in prose, so match only
+    exact, known IDs and retain the blocker's current owner/delegate boundary.
+    The command layer still applies the action-specific blocker policy.
+    """
+
+    rows: dict[str, TeamBlocker] = {}
+    for item in inbox_items:
+        if (
+            item.recipient_agent_id != agent.id
+            or item.state != TeamInboxItemState.PENDING
+            or not item.response_requested
+        ):
+            continue
+        referenced_ids = _structured_inbox_blocker_ids(item)
+        if item.item_type == TeamInboxItemType.QUESTION:
+            referenced_ids.update(_question_text_blocker_ids(state, item))
+        for blocker_id in referenced_ids:
+            blocker = state.blockers.get(blocker_id)
+            if (
+                blocker is not None
+                and blocker.state == TeamBlockerState.OPEN
+                and _blocker_is_assigned_to_agent(blocker, agent_id=agent.id)
+            ):
+                rows[blocker.id] = blocker
+    return [rows[blocker_id] for blocker_id in sorted(rows)]
+
+
+def _structured_inbox_blocker_ids(item: AgentInboxItem) -> set[str]:
+    values: list[object] = [item.payload.get("blocker_id")]
+    blocker_ids = item.payload.get("blocker_ids")
+    if isinstance(blocker_ids, (list, tuple, set)):
+        values.extend(blocker_ids)
+    return {text for value in values if (text := str(value or "").strip())}
+
+
+def _question_text_blocker_ids(
+    state: TeamState,
+    item: AgentInboxItem,
+) -> set[str]:
+    text = "\n".join(str(item.payload.get(key) or "") for key in ("question", "message", "summary"))
+    return {
+        blocker_id
+        for blocker_id in state.blockers
+        if re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(blocker_id)}(?![A-Za-z0-9_-])",
+            text,
+        )
+    }
+
+
+def _blocker_is_assigned_to_agent(
+    blocker: TeamBlocker,
+    *,
+    agent_id: str,
+) -> bool:
+    return (
+        blocker.route == TeamBlockerRoute.DELEGATED and blocker.delegate_agent_id == agent_id
+    ) or (
+        blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+        and blocker.owner_agent_id == agent_id
+    )
+
+
+def _assigned_blocker_recovery_tasks(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    blockers: Iterable[TeamBlocker],
+) -> list[AgentTask]:
+    """Freeze only owned, visible source tasks needed for assigned recovery.
+
+    A blocked task is intentionally absent from the ordinary actionable-task
+    list. When a dispatch assigns its blocker back to the task owner, retaining
+    that omission prevents the owner from submitting the corrective product.
+    The blocker relationship supplies the missing task ID, but never expands
+    scope to a foreign task merely because that task is related to the blocker.
+    """
+
+    if agent.team_id is None:
+        return []
+    visible_project_ids = _visible_project_ids_for_agent(state, agent)
+    active_task_states = {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_REVIEW,
+        TeamTaskState.REJECTED,
+    }
+    rows: dict[str, AgentTask] = {}
+    for blocker in blockers:
+        if (
+            blocker.state != TeamBlockerState.OPEN
+            or blocker.reason_code
+            in EXECUTION_PREPARATION_BLOCKER_REASON_CODES
+            or not _blocker_is_assigned_to_agent(
+                blocker,
+                agent_id=agent.id,
+            )
+        ):
+            continue
+        for task_id in _blocker_recovery_task_ids(state, blocker):
+            task = state.tasks.get(task_id)
+            if (
+                task is None
+                or task.owner_agent_id != agent.id
+                or task.state not in active_task_states
+                or task.project_id not in visible_project_ids
+                or task.project_id not in state.projects
+                or state.projects[task.project_id].team_id != agent.team_id
+            ):
+                continue
+            rows[task.id] = task
+    return [rows[task_id] for task_id in sorted(rows)]
+
+
+def _blocker_recovery_task_ids(
+    state: TeamState,
+    blocker: TeamBlocker,
+) -> set[str]:
+    task_ids = set(blocker.affected_task_ids)
+    if blocker.task_id is not None:
+        task_ids.add(blocker.task_id)
+    if blocker.source_kind == TeamBlockerSourceKind.TASK:
+        task_ids.add(blocker.source_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+        deliverable = state.deliverables.get(blocker.source_id)
+        if deliverable is not None:
+            task_ids.add(deliverable.task_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+        review = state.review_requests.get(blocker.source_id)
+        deliverable = (
+            state.deliverables.get(review.deliverable_id or "") if review is not None else None
+        )
+        if deliverable is not None:
+            task_ids.add(deliverable.task_id)
+    return task_ids
+
+
 def _unique_by_id(rows: Iterable[object]) -> list:
     by_id = {str(getattr(row, "id")): row for row in rows}
     return [by_id[row_id] for row_id in sorted(by_id)]
@@ -149,18 +361,10 @@ def _stalled_task_ids(state: TeamState, *, agent_id: str) -> set[str]:
     ]
     if not active_stalls:
         return set()
-    affected = {
-        task_id
-        for blocker in active_stalls
-        for task_id in blocker.affected_task_ids
-    }
+    affected = {task_id for blocker in active_stalls for task_id in blocker.affected_task_ids}
     if affected:
         return affected
-    return {
-        task.id
-        for task in state.tasks.values()
-        if task.owner_agent_id == agent_id
-    }
+    return {task.id for task in state.tasks.values() if task.owner_agent_id == agent_id}
 
 
 def _task_project_id(state: TeamState, task_id: object) -> str | None:
@@ -170,11 +374,7 @@ def _task_project_id(state: TeamState, task_id: object) -> str | None:
 
 def _deliverable_project_id(state: TeamState, deliverable_id: object) -> str | None:
     deliverable = state.deliverables.get(str(deliverable_id or ""))
-    return (
-        _task_project_id(state, deliverable.task_id)
-        if deliverable is not None
-        else None
-    )
+    return _task_project_id(state, deliverable.task_id) if deliverable is not None else None
 
 
 def _release_project_id(state: TeamState, release_id: object) -> str | None:
@@ -195,6 +395,17 @@ def _review_project_ids(state: TeamState, review: ReviewRequest) -> set[str]:
 
 
 def _blocker_project_ids(state: TeamState, blocker: TeamBlocker) -> set[str]:
+    if blocker.reason_code in {
+        *TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
+        "inbox_execution_preparation_failed",
+        "review_preparation_failed",
+    }:
+        # Recovery for a setup incident must remain possible even when the
+        # repository itself is the unavailable resource. The durable blocker
+        # still carries project/task identity in Team context, but it does not
+        # ask the wake provider to repeat the failed setup merely to discuss or
+        # resolve that blocker.
+        return set()
     project_ids = {
         project_id
         for project_id in (
@@ -227,6 +438,13 @@ def _blocker_project_ids(state: TeamState, blocker: TeamBlocker) -> set[str]:
 
 
 def _inbox_project_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
+    blocker = state.blockers.get(str(item.payload.get("blocker_id") or ""))
+    if blocker is not None and blocker.reason_code in {
+        *TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
+        "inbox_execution_preparation_failed",
+        "review_preparation_failed",
+    }:
+        return set()
     project_ids = {
         project_id
         for project_id in (
@@ -238,12 +456,9 @@ def _inbox_project_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
         )
         if project_id is not None
     }
-    blocker = state.blockers.get(str(item.payload.get("blocker_id") or ""))
     if blocker is not None:
         project_ids.update(_blocker_project_ids(state, blocker))
-    review = state.review_requests.get(
-        str(item.payload.get("review_request_id") or "")
-    )
+    review = state.review_requests.get(str(item.payload.get("review_request_id") or ""))
     if review is not None:
         project_ids.update(_review_project_ids(state, review))
     return project_ids

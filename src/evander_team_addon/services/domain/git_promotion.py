@@ -594,24 +594,42 @@ def _attach_promotion_success(
         # A feature consolidation has no deliverable yet; capture the consolidated
         # branch on a new deliverable so later release requests can find it.
         task = state.tasks[promotion.task_id]
-        deliverable_id = f"deliverable-{uuid4().hex}"
-        new_deliverable = Deliverable(
-            id=deliverable_id,
-            task_id=task.id,
-            producer_agent_id=promotion.actor_agent_id,
-            summary=f"Consolidated feature branch {promotion.target_branch}",
-            state=TeamRecordState.PENDING,
-            git_refs=DeliverableGitRefs(
-                feature_branch=promotion.target_branch,
-                commit_sha=commit_sha,
-                promotion_record_ids=[promotion.id],
-            ),
-        )
-        state.deliverables[deliverable_id] = new_deliverable
-        task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable_id)
-        task.updated_at = utc_now()
-        promotion.deliverable_id = deliverable_id
-        result["created_deliverable_ids"].append(deliverable_id)
+        if task.integration_boundary:
+            result.setdefault("diagnostics", []).append(
+                {
+                    "code": "integration_deliverable_submission_required",
+                    "task_id": task.id,
+                    "promotion_id": promotion.id,
+                    "message": (
+                        "Feature promotion succeeded, but an integration-boundary "
+                        "deliverable must be submitted explicitly so its full "
+                        "deliverable contract can be validated."
+                    ),
+                    "recommended_tool": "team_submit_deliverable_for_review",
+                }
+            )
+        else:
+            deliverable_id = f"deliverable-{uuid4().hex}"
+            new_deliverable = Deliverable(
+                id=deliverable_id,
+                task_id=task.id,
+                producer_agent_id=promotion.actor_agent_id,
+                summary=f"Consolidated feature branch {promotion.target_branch}",
+                state=TeamRecordState.PENDING,
+                git_refs=DeliverableGitRefs(
+                    feature_branch=promotion.target_branch,
+                    commit_sha=commit_sha,
+                    promotion_record_ids=[promotion.id],
+                ),
+            )
+            state.deliverables[deliverable_id] = new_deliverable
+            task.deliverable_ids = _append_unique(
+                task.deliverable_ids,
+                deliverable_id,
+            )
+            task.updated_at = utc_now()
+            promotion.deliverable_id = deliverable_id
+            result["created_deliverable_ids"].append(deliverable_id)
 
     release = (
         state.release_packages.get(promotion.release_package_id)

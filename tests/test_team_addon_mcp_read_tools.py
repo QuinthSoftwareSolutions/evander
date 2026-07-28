@@ -32,6 +32,7 @@ from evander_team_addon.models import (
     ReleasePackage,
     ReviewRequest,
     RolePermission,
+    TeamDispatch,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
@@ -96,6 +97,11 @@ TEAM_GET_MY_IDENTITY_TOOL = getattr(
     "TEAM_GET_MY_IDENTITY_TOOL",
     "team_get_my_identity",
 )
+TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL = getattr(
+    team_mcp,
+    "TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL",
+    "team_get_current_dispatch_context",
+)
 TEAM_LIST_PROJECTS_TOOL = getattr(
     team_mcp,
     "TEAM_LIST_PROJECTS_TOOL",
@@ -138,6 +144,7 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_LIST_AGENTS_TOOL,
     TEAM_GET_AGENT_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_OUTCOME_KINDS_TOOL,
@@ -450,6 +457,55 @@ def test_team_addon_mcp_registers_read_tool_names_as_addon_tools(tmp_path: Path)
     assert set(EXPECTED_READ_TOOL_NAMES).issubset(registered)
     assert set(EXPECTED_READ_TOOL_NAMES).issubset(context.policy.extra_mcp_tool_names)
     assert set(EXPECTED_READ_TOOL_NAMES).issubset(visible)
+
+
+def test_current_dispatch_context_hydrates_only_exact_dispatch_git_rows(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=list(EXPECTED_READ_TOOL_NAMES))
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+
+    def _activate_dispatch(state):
+        dispatch_id = "alpha-current-dispatch"
+        state.dispatches[dispatch_id] = TeamDispatch(
+            id=dispatch_id,
+            agent_id="alpha-dev",
+            session_id="session-alpha-dev",
+            cause_kind="scheduled",
+            task_ids=["alpha-task-a"],
+            project_ids=["alpha-project"],
+        )
+        state.agent_runtimes["alpha-dev"].active_dispatch_id = dispatch_id
+        state.git_work_contexts["alpha-current-context"] = GitWorkContext(
+            id="alpha-current-context",
+            agent_id="alpha-dev",
+            task_id="alpha-task-a",
+            dispatch_id=dispatch_id,
+            agent_branch="agents/session-alpha-dev/current",
+            base_branch="main",
+            worktree_path="/worktrees/alpha-current",
+        )
+        return state
+
+    repo.update(_activate_dispatch)
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
+        {"session_id": "session-alpha-dev"},
+    )
+
+    _assert_read_success(result)
+    record = _item(result)
+    assert record["dispatch"]["id"] == "alpha-current-dispatch"
+    assert [row["id"] for row in record["git_work_contexts"]] == [
+        "alpha-current-context"
+    ]
+    assert [
+        row["id"] for row in record["tasks"][0]["git_work_contexts"]
+    ] == ["alpha-current-context"]
+    assert "alpha-context" not in json.dumps(record, sort_keys=True)
 
 
 def test_team_addon_read_tools_do_not_require_active_dispatch_lease(

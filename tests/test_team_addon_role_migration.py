@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from evander_team_addon.models import RolePermission, TeamState
+from evander_team_addon.models import SCHEMA_VERSION, RolePermission, TeamState
 
 
 def _load_migrate_payload():
@@ -89,7 +89,7 @@ def test_migrate_payload_converts_legacy_role_strings() -> None:
     assert migrate_payload(payload) is True
     state = TeamState.model_validate(payload)
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == SCHEMA_VERSION
     assert "role" not in payload["agents"]["release"]
     assert state.roles["team__manager"].permissions == [RolePermission.CREATE_ROOT_TASK]
     assert state.roles["project__project-lead"].permissions == [RolePermission.CREATE_ROOT_TASK]

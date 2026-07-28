@@ -126,6 +126,8 @@ def _normalize_task_creation_command_payload(
     dependency_task_ids: Sequence[str] | None,
     task_kind: str = "support",
     outcome_contract: Mapping[str, Any] | None = None,
+    integration_boundary: bool = False,
+    deliverable_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _normalize_task_creation_mapping(
         {
@@ -143,6 +145,12 @@ def _normalize_task_creation_command_payload(
             "task_kind": task_kind,
             "outcome_contract": (
                 dict(outcome_contract) if outcome_contract is not None else None
+            ),
+            "integration_boundary": integration_boundary,
+            "deliverable_contract": (
+                dict(deliverable_contract)
+                if deliverable_contract is not None
+                else None
             ),
         },
         field_name="task",
@@ -176,6 +184,12 @@ def _normalize_task_creation_mapping(
             dict(item["outcome_contract"])
             if isinstance(item.get("outcome_contract"), Mapping)
             else item.get("outcome_contract")
+        ),
+        "integration_boundary": item.get("integration_boundary", False),
+        "deliverable_contract": (
+            dict(item["deliverable_contract"])
+            if isinstance(item.get("deliverable_contract"), Mapping)
+            else item.get("deliverable_contract")
         ),
     }
 
@@ -242,6 +256,12 @@ def _normalize_task_update_command_fields(**fields: object) -> dict[str, Any]:
         elif name in {"title", "description", "owner_agent_id"}:
             normalized[name] = _optional_text(value)
         elif name == "completion":
+            normalized[name] = dict(value) if isinstance(value, Mapping) else value
+        elif name == "integration_boundary":
+            if not isinstance(value, bool):
+                raise ValueError("integration_boundary must be a boolean")
+            normalized[name] = value
+        elif name == "deliverable_contract":
             normalized[name] = dict(value) if isinstance(value, Mapping) else value
         elif name == "dependency_task_ids":
             normalized[name] = _unique_text_list(value, "dependency_task_ids")

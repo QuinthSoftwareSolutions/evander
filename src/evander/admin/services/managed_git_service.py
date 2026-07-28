@@ -149,6 +149,15 @@ def _normalize_branch(value: str, *, field_name: str) -> str:
     return branch
 
 
+def _normalize_commit_identity_value(value: str, *, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    if any(character in normalized for character in ("\0", "\r", "\n", "<", ">")):
+        raise ValueError(f"{field_name} contains characters Git does not permit in an identity")
+    return normalized
+
+
 def _safe_checkout_name(value: object, *, fallback: str) -> str:
     candidate = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
     candidate = candidate[:-4] if candidate.casefold().endswith(".git") else candidate
@@ -749,6 +758,62 @@ class ManagedGitAdminService:
             else self._require_record(managed_repo_id)
         )
         return self._public_record(record)
+
+    def resolve_branch_commit(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+    ) -> str | None:
+        """Resolve a directory-authorized branch through the managed bare repository."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_branch = _normalize_branch(branch, field_name="branch")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            return self._resolve_ref(
+                bare_path,
+                f"refs/heads/{normalized_branch}",
+            )
+
+    def set_host_commit_identity(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        name: str,
+        email: str,
+    ) -> dict[str, Any]:
+        identity = {
+            "name": _normalize_commit_identity_value(
+                name,
+                field_name="name",
+            ),
+            "email": _normalize_commit_identity_value(
+                email,
+                field_name="email",
+            ),
+        }
+        self._require_scoped_record(managed_repo_id, directory_path)
+        with self._repo_lock(managed_repo_id, exclusive=True):
+            self._require_scoped_record(managed_repo_id, directory_path)
+            now = _utc_now()
+
+            def update(payload: dict[str, Any]) -> dict[str, Any]:
+                current = payload["repositories"].get(managed_repo_id)
+                if not isinstance(current, dict):
+                    raise ManagedGitNotFoundError(
+                        f"Unknown managed repository: {managed_repo_id}"
+                    )
+                current["host_commit_identity"] = dict(identity)
+                current["updated_at"] = now
+                return dict(current)
+
+            updated = self._update_registry(update)
+        return self._public_record(updated)
 
     def refresh_repository(self, managed_repo_id: str) -> dict[str, Any]:
         return self._refresh_repository_with_override(managed_repo_id, None)

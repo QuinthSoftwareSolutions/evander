@@ -3247,6 +3247,180 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
     asyncio.run(_exercise())
 
 
+def test_team_addon_admin_api_designates_explicit_integration_boundary(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    async def _exercise() -> None:
+        app = create_app(
+            build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            unlock = await client.post("/api/admin/privileged/unlock")
+            assert unlock.status_code == 200
+
+            ordinary = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "ordinary-edit",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 20,
+                    "title": "Ordinary task",
+                    "description": "Submit then edit this task.",
+                    "created_by_agent_id": "lead",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert ordinary.status_code == 201, ordinary.text
+            ordinary_deliverable = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "ordinary-deliverable",
+                    "task_id": "ordinary-edit",
+                    "producer_agent_id": "backend",
+                    "summary": "Ordinary submission.",
+                    "artifact_refs": ["artifact:ordinary"],
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert ordinary_deliverable.status_code == 201, (
+                ordinary_deliverable.text
+            )
+            ordinary_title_edit = await client.patch(
+                "/api/addons/team-addon/tasks/ordinary-edit",
+                json={
+                    "title": "Ordinary task renamed",
+                    "integration_boundary": False,
+                    "deliverable_contract": None,
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert ordinary_title_edit.status_code == 200, (
+                ordinary_title_edit.text
+            )
+            assert ordinary_title_edit.json()["tasks"]["ordinary-edit"][
+                "title"
+            ] == "Ordinary task renamed"
+
+            parent = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "clarification",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 10,
+                    "title": "Clarify and integrate",
+                    "description": "Coordinate implementation contributions.",
+                    "created_by_agent_id": "lead",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert parent.status_code == 201, parent.text
+            child = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "implementation",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "parent_task_id": "clarification",
+                    "priority": 10,
+                    "title": "Implement",
+                    "description": "Produce the implementation contribution.",
+                    "created_by_agent_id": "lead",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert child.status_code == 201, child.text
+
+            designated = await client.patch(
+                "/api/addons/team-addon/tasks/clarification",
+                json={
+                    "integration_boundary": True,
+                    "deliverable_contract": {
+                        "require_git_provenance": True,
+                        "required_contribution_task_ids": ["implementation"],
+                    },
+                    "expected_revision": repo.read().revision,
+                },
+            )
+
+            assert designated.status_code == 200, designated.text
+            task = designated.json()["tasks"]["clarification"]
+            assert task["integration_boundary"] is True
+            assert task["deliverable_contract"] == {
+                "require_git_provenance": True,
+                "required_contribution_task_ids": ["implementation"],
+            }
+
+            detach_contribution = await client.patch(
+                "/api/addons/team-addon/tasks/implementation",
+                json={
+                    "parent_task_id": None,
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert detach_contribution.status_code == 400
+            assert "must remain a direct child or dependency" in (
+                detach_contribution.text
+            )
+
+            contribution = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "implementation-deliverable",
+                    "task_id": "implementation",
+                    "producer_agent_id": "backend",
+                    "summary": "Accepted implementation contribution.",
+                    "artifact_refs": ["artifact:implementation"],
+                    "state": "accepted",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert contribution.status_code == 201, contribution.text
+            finished_child = await client.patch(
+                "/api/addons/team-addon/tasks/implementation",
+                json={
+                    "state": "finished",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert finished_child.status_code == 200, finished_child.text
+
+            artifact_only = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "integration-artifact-only",
+                    "task_id": "clarification",
+                    "producer_agent_id": "backend",
+                    "summary": "Aggregate without authoritative Git provenance.",
+                    "artifact_refs": ["artifact:aggregate"],
+                    "source_deliverable_ids": ["implementation-deliverable"],
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert artifact_only.status_code == 400
+            assert "cannot bind server-verified git_refs" in artifact_only.text
+            assert "integration-artifact-only" not in repo.read().deliverables
+
+            direct_finish = await client.patch(
+                "/api/addons/team-addon/tasks/clarification",
+                json={
+                    "state": "finished",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert direct_finish.status_code == 400
+            assert "accepted deliverable" in direct_finish.text
+
+    asyncio.run(_exercise())
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:
@@ -5632,7 +5806,8 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["auto_context_clearing_enabled"] is True
     assert runtime["context_rotation_pending"] is True
     assert runtime["context_rotation_reason"] == "idle"
-    assert "Active tasks: none." in runtime["last_handoff_summary"]
+    assert "Context continuity checkpoint" in runtime["last_handoff_summary"]
+    assert "Active tasks:" not in runtime["last_handoff_summary"]
 
     response = client.patch(
         "/api/addons/team-addon/agents/backend",
@@ -5727,7 +5902,8 @@ def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) ->
     assert runtime["context_rotation_reason"] == "manual"
     assert runtime["context_rotation_requested_by"] == "operator:test"
     assert runtime["context_rotation_request_note"] == "controlled smoke"
-    assert "active-work" in runtime["last_handoff_summary"]
+    assert "controlled smoke" in runtime["last_handoff_summary"]
+    assert "active-work" not in runtime["last_handoff_summary"]
 
 
 def test_team_addon_admin_api_manual_context_rotation_rejects_archived_agent(
@@ -5816,6 +5992,7 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
     assert len(body["stand_downs"]) == 1
     stand_down = next(iter(body["stand_downs"].values()))
     assert stand_down["agent_id"] == "lead"
+    assert stand_down["scope"] == "subtree"
     assert stand_down["source"] == "operator"
     assert body["agents"]["lead"]["stand_down_active"] is True
     assert body["agents"]["backend"]["stand_down_active"] is True
@@ -5831,6 +6008,26 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
     stand_down = next(iter(body["stand_downs"].values()))
     assert stand_down["cleared_at"] is not None
     assert body["agents"]["lead"]["stand_down_active"] is False
+    assert body["agents"]["backend"]["stand_down_active"] is False
+
+    response = client.post(
+        "/api/addons/team-addon/agents/lead/stand-down",
+        json={
+            "reason": "Pause only the lead.",
+            "scope": "agent",
+            "expected_revision": 6,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    active_stand_down = next(
+        stand_down
+        for stand_down in body["stand_downs"].values()
+        if stand_down["cleared_at"] is None
+    )
+    assert active_stand_down["scope"] == "agent"
+    assert body["agents"]["lead"]["stand_down_active"] is True
     assert body["agents"]["backend"]["stand_down_active"] is False
 
 

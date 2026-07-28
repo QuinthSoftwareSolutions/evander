@@ -417,6 +417,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             metadata["worker_url"] = worker_url
         metadata = _deep_merge_metadata(metadata, _metadata_patch(payload.get("metadata")))
         metadata["container_worker"] = container_image_selection
+        metadata["playwright"] = bool(payload.get("playwright", False))
         requested_web_search_enabled = as_bool_or_none(payload.get("web_search_enabled"))
         effective_web_search_enabled = (
             requested_web_search_enabled

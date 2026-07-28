@@ -118,6 +118,82 @@ def test_registration_deduplicates_ancestor_and_isolates_siblings(tmp_path: Path
         service.get_repository(owner["managed_repo_id"], "root/team-b")
 
 
+def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    branch = "agents/session-backend/tasks/task"
+    _run(
+        "git",
+        f"--git-dir={bare}",
+        "update-ref",
+        f"refs/heads/{branch}",
+        first,
+    )
+
+    assert (
+        service.resolve_branch_commit(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch=branch,
+        )
+        == first
+    )
+    assert (
+        service.resolve_branch_commit(
+            repo_id,
+            directory_path="root/team-a",
+            branch="agents/session-backend/tasks/missing",
+        )
+        is None
+    )
+    with pytest.raises(LookupError):
+        service.resolve_branch_commit(
+            repo_id,
+            directory_path="root/team-b",
+            branch=branch,
+        )
+
+
+def test_host_commit_identity_update_is_repository_scoped(tmp_path: Path) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+
+    updated = service.set_host_commit_identity(
+        repo_id,
+        directory_path="root/team-a/project",
+        name=" Jonathan Quinth ",
+        email=" operator@example.invalid ",
+    )
+
+    assert updated["host_commit_identity"] == {
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
+    assert _internal_record(service, repo_id)["host_commit_identity"] == {
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
+    with pytest.raises(LookupError):
+        service.set_host_commit_identity(
+            repo_id,
+            directory_path="root/team-b",
+            name="Other Team",
+            email="other-team@example.invalid",
+        )
+    with pytest.raises(ValueError, match="characters Git does not permit"):
+        service.set_host_commit_identity(
+            repo_id,
+            directory_path="root/team-a",
+            name="Invalid <Identity>",
+            email="invalid@example.invalid",
+        )
+
+
 def test_descendant_cannot_override_ancestor_default_branch_without_owner_authorization(
     tmp_path: Path,
 ) -> None:
@@ -1826,6 +1902,12 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
     record = service.register_repository("root", str(source))
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
+    service.set_host_commit_identity(
+        repo_id,
+        directory_path="root",
+        name="Jonathan Quinth",
+        email="operator@example.invalid",
+    )
     feature_a = tmp_path / "feature-a.txt"
     _run("git", "checkout", "-b", "agents/session-1/a", cwd=source)
     first_feature = _commit(source, feature_a.name, "a\n", "feature a")
@@ -1879,6 +1961,20 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
     assert (
         _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/releases/release-1")
         == result["commit_sha"]
+    )
+    assert (
+        _run(
+            "git",
+            f"--git-dir={bare}",
+            "show",
+            "-s",
+            "--format=%an <%ae>|%cn <%ce>",
+            result["commit_sha"],
+        )
+        == (
+            "Jonathan Quinth <operator@example.invalid>"
+            "|Jonathan Quinth <operator@example.invalid>"
+        )
     )
     assert (
         _run(

@@ -64,6 +64,13 @@ NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
 NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
 DEFAULT_CODEX_AGENT_MODEL = "gpt-5.4"
 DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-6"
+PLAYWRIGHT_CONTAINER_JOB_PIDS_LIMIT = 1024
+PLAYWRIGHT_CONTAINER_PROMPT_MARKER = "[Evander seeded Playwright]"
+PLAYWRIGHT_CONTAINER_PROMPT_GUIDANCE = """[Evander seeded Playwright]
+Browser downloads are disabled. Repository-local Playwright does not automatically use PLAYWRIGHT_MCP_EXECUTABLE_PATH and may request an unseeded browser revision. Keep the repository's own Playwright import, then either pass executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH to chromium.launch(...) or use:
+const { launchSeededChromium } = await import(process.env.EVANDER_PLAYWRIGHT_LAUNCH_HELPER);
+const browser = await launchSeededChromium(chromium, { headless: true });
+Do not hard-code a cache revision or download a browser."""
 _CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
@@ -269,6 +276,32 @@ def container_worker_image_for_session(
     if default_image is None:
         raise ValueError("container_worker_default_image cannot be empty")
     return default_image
+
+
+def container_worker_resource_limits_for_session(
+    session: SessionManifest | Any | None,
+) -> dict[str, int] | None:
+    if not container_worker_playwright_enabled(session):
+        return None
+    return {"pids_limit": PLAYWRIGHT_CONTAINER_JOB_PIDS_LIMIT}
+
+
+def container_worker_playwright_enabled(
+    session: SessionManifest | Any | None,
+) -> bool:
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    return isinstance(metadata, Mapping) and metadata.get("playwright") is True
+
+
+def container_prompt_with_session_capabilities(
+    prompt: str,
+    session: SessionManifest | Any | None,
+) -> str:
+    if not container_worker_playwright_enabled(session):
+        return prompt
+    if PLAYWRIGHT_CONTAINER_PROMPT_MARKER in prompt:
+        return prompt
+    return f"{PLAYWRIGHT_CONTAINER_PROMPT_GUIDANCE}\n\n{prompt}"
 
 
 def execution_backend_for_session(
@@ -489,9 +522,7 @@ def build_container_session_manifest(
     resolved_tools = normalize_allowed_tools(allowed_tools)
     if ToolName.STAGE_ARTIFACT not in resolved_tools:
         resolved_tools.append(ToolName.STAGE_ARTIFACT)
-    resolved_host_directory_grants = normalize_host_directory_grants(
-        host_directory_grants or {}
-    )
+    resolved_host_directory_grants = normalize_host_directory_grants(host_directory_grants or {})
     host_directory_tool_by_capability = {
         "list": ToolName.HOST_DIRECTORY_LIST,
         "import": ToolName.HOST_DIRECTORY_IMPORT,
@@ -919,6 +950,14 @@ def build_container_session_files(
             "content": _claude_mcp_config_content(gateway_url=session_gateway_url),
         },
     ]
+    if playwright:
+        files.append(
+            {
+                "destination_path": "/home/agent/.evander/playwright-launch.mjs",
+                "mode": "0644",
+                "content": _playwright_launch_helper_content(),
+            }
+        )
     if dotnet:
         files.extend(
             [
@@ -1012,11 +1051,13 @@ def container_prompt_command(
     prompt: str,
     model: str,
     resume_thread_id: str | None,
+    session: object | None = None,
     agent_provider: str | None = None,
     resume_mode: str | None = None,
     mcp_gateway_url: str | None = None,
     web_search_enabled: bool = False,
 ) -> str:
+    prompt = container_prompt_with_session_capabilities(prompt, session)
     provider = normalize_optional_string(agent_provider) or "codex"
     if provider == "claude":
         return _container_claude_prompt_command(
@@ -1084,6 +1125,7 @@ def container_codex_turn_spec(
     mcp_gateway_url: str | None = None,
     web_search_enabled: bool = False,
 ) -> CodexTurnSpec | None:
+    prompt = container_prompt_with_session_capabilities(prompt, session)
     provider = normalize_optional_string(agent_provider) or "codex"
     if provider != "codex":
         # Directory Codex defaults do not apply to other agent harnesses. A
@@ -1242,6 +1284,7 @@ from pathlib import Path
 
 TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
 ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
+EMPTY_FINAL_COMPLETION_TOOLS = {"team_reply_to_chat"}
 try:
     FILTER_STARTED_AT = float(os.environ.get("EVANDER_CODEX_JSON_FILTER_STARTED_AT", ""))
 except ValueError:
@@ -1255,6 +1298,8 @@ last_token_usage = {}
 assistant_text_seen = False
 failure_printed = False
 task_complete_without_final_message = False
+successful_empty_final_completion_tool = ""
+task_completed_by_successful_empty_final_tool = False
 
 
 def first_string(*values):
@@ -1356,8 +1401,38 @@ def remember_thread_id(thread_id):
 
 
 def mark_task_complete_without_final_message():
-    global task_complete_without_final_message
+    global task_complete_without_final_message, task_completed_by_successful_empty_final_tool
     task_complete_without_final_message = True
+    task_completed_by_successful_empty_final_tool = bool(
+        successful_empty_final_completion_tool
+    )
+
+
+def record_successful_empty_final_completion_tool(event):
+    global successful_empty_final_completion_tool
+    if not isinstance(event, dict) or str(event.get("type") or "") != "event_msg":
+        return
+    payload = event.get("payload")
+    if not isinstance(payload, dict) or str(payload.get("type") or "") != "mcp_tool_call_end":
+        return
+    invocation = payload.get("invocation")
+    if not isinstance(invocation, dict):
+        return
+    if str(invocation.get("server") or "").strip() != "evander":
+        return
+    tool_name = str(invocation.get("tool") or "").strip()
+    if tool_name not in EMPTY_FINAL_COMPLETION_TOOLS:
+        return
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return
+    successful_result = result.get("Ok")
+    if not isinstance(successful_result, dict) or successful_result.get("isError") is True:
+        return
+    structured_content = successful_result.get("structuredContent")
+    if not isinstance(structured_content, dict) or structured_content.get("success") is not True:
+        return
+    successful_empty_final_completion_tool = tool_name
 
 
 def int_value(value):
@@ -1522,6 +1597,7 @@ def replay_session_jsonl_messages():
                 continue
             if not event_is_from_current_invocation(event):
                 continue
+            record_successful_empty_final_completion_tool(event)
             event_type = str(event.get("type") or "")
             if event_type == "token_count":
                 update_token_usage(event)
@@ -1559,6 +1635,7 @@ for raw_line in sys.stdin:
     if not isinstance(event, dict):
         continue
 
+    record_successful_empty_final_completion_tool(event)
     event_type = str(event.get("type") or "")
     if event_type == "session_meta":
         payload = event.get("payload")
@@ -1606,7 +1683,7 @@ for raw_line in sys.stdin:
 
 if not assistant_text_seen:
     replay_session_jsonl_messages()
-if not assistant_text_seen:
+if not assistant_text_seen and not task_completed_by_successful_empty_final_tool:
     if task_complete_without_final_message:
         print_failure(no_final_message_diagnostic())
     elif not failure_printed:
@@ -1781,19 +1858,49 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
                 'export PLAYWRIGHT_BROWSERS_PATH="/opt/evander/ms-playwright"',
                 'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
                 'export PLAYWRIGHT_MCP_SANDBOX="0"',
-                'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
-                '  if _evander_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_evander_playwright_chromium" ]; then',
-                '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_evander_playwright_chromium"',
-                "  fi",
-                "  unset _evander_playwright_chromium",
+                'export EVANDER_PLAYWRIGHT_LAUNCH_HELPER="$HOME/.evander/playwright-launch.mjs"',
+                "if ! command -v node >/dev/null 2>&1; then",
+                '  echo "Evander Playwright preflight failed: the seeded Node runtime is unavailable; reprovision the container worker toolchain." >&2',
+                "  return 1 2>/dev/null || exit 1",
                 "fi",
-                'if [ -n "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ]; then',
-                '  export CHROME_BIN="${CHROME_BIN:-$PLAYWRIGHT_MCP_EXECUTABLE_PATH}"',
-                '  export CHROMIUM_BIN="${CHROMIUM_BIN:-$PLAYWRIGHT_MCP_EXECUTABLE_PATH}"',
+                'if ! _evander_playwright_chromium="$(node -e \'const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); process.stdout.write(chromium.executablePath());\' 2>/dev/null)" || [ -z "$_evander_playwright_chromium" ]; then',
+                '  echo "Evander Playwright preflight failed: the seeded Playwright package could not resolve Chromium; reprovision the package and browser cache together." >&2',
+                "  return 1 2>/dev/null || exit 1",
                 "fi",
+                'if [ ! -x "$_evander_playwright_chromium" ]; then',
+                '  echo "Evander Playwright preflight failed: the seeded package expects $_evander_playwright_chromium, but that executable is absent. Reprovision the package and browser cache from the same Playwright installation; downloads are disabled." >&2',
+                "  return 1 2>/dev/null || exit 1",
+                "fi",
+                'export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_evander_playwright_chromium"',
+                "unset _evander_playwright_chromium",
+                'export CHROME_BIN="$PLAYWRIGHT_MCP_EXECUTABLE_PATH"',
+                'export CHROMIUM_BIN="$PLAYWRIGHT_MCP_EXECUTABLE_PATH"',
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _playwright_launch_helper_content() -> str:
+    return """export function seededChromiumLaunchOptions(options = {}) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("Playwright launch options must be an object.");
+  }
+  const executablePath = process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH;
+  if (!executablePath) {
+    throw new Error(
+      "PLAYWRIGHT_MCP_EXECUTABLE_PATH is unavailable. Reprovision this session with playwright=true.",
+    );
+  }
+  return { ...options, executablePath };
+}
+
+export function launchSeededChromium(chromium, options = {}) {
+  if (!chromium || typeof chromium.launch !== "function") {
+    throw new TypeError("Pass the chromium export from the repository's Playwright package.");
+  }
+  return chromium.launch(seededChromiumLaunchOptions(options));
+}
+"""
 
 
 def _codex_config_content(

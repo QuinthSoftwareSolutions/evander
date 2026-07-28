@@ -8,7 +8,6 @@ from ...models import (
     AgentStatus,
     PersistentAgent,
     TeamState,
-    agent_project_ids,
 )
 
 from .common import _ensure_utc
@@ -221,99 +220,34 @@ def _build_context_handoff_summary(
     *,
     agent: PersistentAgent,
     now: datetime,
-    reason: Literal["idle", "manual"],
+    reason: Literal["idle", "manual", "every_wake"],
     request_note: str | None,
 ) -> str:
-    display = agent.display_name or agent.id
-    assigned_project_ids = agent_project_ids(state, agent.id)
-    project_label = ", ".join(assigned_project_ids) or "none"
-    superior_label = agent.reports_to_agent_id or "none"
-    subordinate_label = ", ".join(agent.subordinate_agent_ids) or "none"
-    role = state.roles.get(agent.role_id)
-    role_label = role.name if role is not None else agent.role_id
     lines = [
-        f"Context rotation handoff for {display} ({agent.id}).",
-        f"Generated at {now.isoformat()} for {reason} context clearing.",
-        (
-            f"Role: {role_label} ({agent.role_id}); team: {agent.team_id}; project: {project_label}; "
-            f"session: {agent.session_id}; reports_to: {superior_label}; "
-            f"subordinates: {subordinate_label}."
-        ),
+        f"Context continuity checkpoint at {now.isoformat()} ({reason}).",
     ]
     if request_note:
-        lines.append(f"Operator note: {request_note}.")
-
-    active_tasks = _active_tasks_for_agent(state, agent.id)
-    if active_tasks:
-        lines.append("Active tasks:")
-        for task in active_tasks[:8]:
-            lines.append(f"- {task.id}: {task.state.value}, priority {task.priority}, {task.title}")
-    else:
-        lines.append("Active tasks: none.")
-
-    pending_inbox = _pending_inbox_for_agent(state, agent.id)
-    if pending_inbox:
-        lines.append("Pending inbox:")
-        for item in pending_inbox[:8]:
-            task_suffix = f", task {item.task_id}" if item.task_id else ""
-            sender_suffix = f", from {item.sender_agent_id}" if item.sender_agent_id else ""
-            lines.append(f"- {item.id}: {item.item_type.value}{task_suffix}{sender_suffix}")
-    else:
-        lines.append("Pending inbox: none.")
-
-    pending_reviews = _pending_reviews_for_agent(state, agent.id)
-    if pending_reviews:
-        lines.append("Pending reviews:")
-        for review in pending_reviews[:8]:
-            lines.append(
-                f"- {review.id}: {review.state.value}, deliverable {review.deliverable_id}"
-            )
-    else:
-        lines.append("Pending reviews: none.")
+        lines.append(f"Operator note: {_handoff_text(request_note, 1200)}")
 
     pending_ephemeral = _pending_ephemeral_acceptances_for_agent(state, agent.id)
     if pending_ephemeral:
-        lines.append("Pending ephemeral acceptances:")
-        for assignment in pending_ephemeral[:8]:
+        lines.append("Continuity not represented by ordinary dispatch records:")
+        for assignment in pending_ephemeral[:12]:
             lines.append(
-                f"- {assignment.id}: task {assignment.task_id}, session {assignment.session_id}"
+                f"- pending ephemeral acceptance {assignment.id}: "
+                f"task {assignment.task_id}, session {assignment.session_id}"
             )
-    else:
-        lines.append("Pending ephemeral acceptances: none.")
-
-    recent_deliverables = sorted(
-        [
-            deliverable
-            for deliverable in state.deliverables.values()
-            if deliverable.producer_agent_id == agent.id
-        ],
-        key=lambda item: (item.created_at, item.id),
-        reverse=True,
-    )
-    if recent_deliverables:
-        lines.append("Recent deliverables:")
-        for deliverable in recent_deliverables[:5]:
-            lines.append(
-                f"- {deliverable.id}: {deliverable.state.value}, task {deliverable.task_id}, "
-                f"{deliverable.summary}"
-            )
-    else:
-        lines.append("Recent deliverables: none.")
-
-    recent_actions = sorted(
-        [record for record in state.action_records.values() if record.agent_id == agent.id],
-        key=lambda item: (item.created_at, item.id),
-        reverse=True,
-    )
-    if recent_actions:
-        lines.append("Recent action records:")
-        for record in recent_actions[:5]:
-            status = "success" if record.success else f"failed: {record.error or 'unknown'}"
-            lines.append(f"- {record.id}: {status}, dispatch {record.dispatch_id}")
-    else:
-        lines.append("Recent action records: none.")
+        if len(pending_ephemeral) > 12:
+            lines.append(f"- {len(pending_ephemeral) - 12} more; use Team read tools.")
 
     return "\n".join(lines)
+
+
+def _handoff_text(value: str, limit: int) -> str:
+    compact = " ".join(str(value).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 1)].rstrip() + "…"
 
 
 __all__ = [

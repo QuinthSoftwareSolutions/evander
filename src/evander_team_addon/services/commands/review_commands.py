@@ -42,6 +42,10 @@ from ..domain.manager_fallback import _manager_fallback_review_decision_guard_er
 from ..domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
 )
+from ..domain.git_work_contexts import (
+    GitCandidateCommitResolver,
+    GitWorkContextValidationError,
+)
 from ..domain.project_status import _recalculate_project_status
 from ..domain.review import (
     _apply_review_decision,
@@ -63,8 +67,12 @@ class TeamReviewCommandService(TeamCommandExecutor):
         repository,
         *,
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+        git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
     ) -> None:
-        super().__init__(repository)
+        super().__init__(
+            repository,
+            git_candidate_commit_resolver=git_candidate_commit_resolver,
+        )
         self._human_review_eligibility_resolver = (
             human_review_eligibility_resolver
         )
@@ -478,7 +486,17 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     reason=normalized_payload["reason"],
                     reviewer_agent_id=normalized_payload["reviewer_agent_id"],
                     result=intent_result,
+                    candidate_commit_resolver=self.git_candidate_commit_resolver,
                 )
+            except GitWorkContextValidationError as exc:
+                raise TeamCommandValidationError(
+                    code=exc.code,
+                    message=exc.message,
+                    correction_context={
+                        "review_request_id": normalized_payload["review_request_id"],
+                        **exc.correction_context,
+                    },
+                ) from None
             except ValueError as exc:
                 raise TeamCommandValidationError(
                     code="review_retry_invalid",
@@ -496,10 +514,11 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 now=utc_now(),
             )
             created_inbox_ids = list(intent_result["created_inbox_item_ids"])
+            events = list(intent_result.get("events") or [])
             return TeamCommandApplyResult(
                 response_payload={
                     "intent_recorded": True,
-                    "async_effect_pending": bool(created_inbox_ids),
+                    "async_effect_pending": bool(created_inbox_ids or events),
                     "review_request_id": retry.id,
                     "retried_review_request_id": normalized_payload[
                         "review_request_id"
@@ -509,6 +528,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "deliverable": deliverable.model_dump(mode="json"),
                     "task": task_payload_with_assessment(command_state, task),
                     "created_inbox_item_ids": created_inbox_ids,
+                    "events": events,
                     "resolved_blocker_ids": list(
                         intent_result.get("resolved_blocker_ids") or []
                     ),

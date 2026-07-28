@@ -1949,6 +1949,46 @@ def git_repos_refresh(
     _echo_managed_git_json(result)
 
 
+@git_repos_app.command(
+    "set-host-identity",
+    short_help="Set the author and committer identity for host-created commits.",
+)
+def git_repos_set_host_identity(
+    managed_repo_id: str,
+    directory_path: Annotated[
+        str,
+        typer.Option(
+            "--directory-path",
+            help="Directory scope from which the managed repository is visible.",
+        ),
+    ],
+    name: Annotated[
+        str,
+        typer.Option(
+            "--name",
+            help="Git author and committer name for host-created commits.",
+        ),
+    ],
+    email: Annotated[
+        str,
+        typer.Option(
+            "--email",
+            help="Git author and committer email for host-created commits.",
+        ),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(
+        managed_git.set_host_commit_identity,
+        managed_repo_id,
+        directory_path=directory_path,
+        name=name,
+        email=email,
+    )
+    _echo_managed_git_json(result)
+
+
 @git_repos_app.command("delete", short_help="Delete an unused managed repository.")
 def git_repos_delete(
     managed_repo_id: str,

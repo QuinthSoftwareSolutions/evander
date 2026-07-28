@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -698,18 +698,7 @@ def blockers_due_for_agent(
 ) -> list[TeamBlocker]:
     effective_now = _ensure_utc(now or utc_now())
     rows: list[TeamBlocker] = []
-    for blocker in state.blockers.values():
-        if blocker.state != TeamBlockerState.OPEN:
-            continue
-        assigned = (
-            blocker.route == TeamBlockerRoute.DELEGATED
-            and blocker.delegate_agent_id == agent_id
-        ) or (
-            blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
-            and blocker.owner_agent_id == agent_id
-        )
-        if not assigned:
-            continue
+    for blocker in blockers_assigned_to_agent(state, agent_id=agent_id):
         has_pending_inbox = any(
             item.recipient_agent_id == agent_id
             and item.state == TeamInboxItemState.PENDING
@@ -722,15 +711,73 @@ def blockers_due_for_agent(
     return sorted(rows, key=lambda item: (item.created_at, item.id))
 
 
+def blockers_assigned_to_agent(
+    state: TeamState,
+    *,
+    agent_id: str,
+) -> list[TeamBlocker]:
+    """Return the exact open blockers currently routed to one agent.
+
+    This is deliberately independent of follow-up scheduling. A dispatch may
+    expose an assigned blocker in runtime attention before its next follow-up
+    is due, and its immutable authorization scope must still cover that exact
+    blocker without admitting team-manager or foreign-owner access.
+    """
+
+    rows = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and (
+            (
+                blocker.route == TeamBlockerRoute.DELEGATED
+                and blocker.delegate_agent_id == agent_id
+            )
+            or (
+                blocker.route
+                in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                and blocker.owner_agent_id == agent_id
+            )
+        )
+    ]
+    return sorted(rows, key=lambda item: (item.created_at, item.id))
+
+
 def assign_blockers_to_dispatch(
     state: TeamState,
     *,
     agent_id: str,
     dispatch_id: str,
+    blocker_ids: Iterable[str] | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     effective_now = _ensure_utc(now or utc_now())
-    blockers = blockers_due_for_agent(state, agent_id=agent_id, now=effective_now)
+    if blocker_ids is None:
+        blockers = blockers_due_for_agent(state, agent_id=agent_id, now=effective_now)
+    else:
+        blockers = []
+        for blocker_id in sorted(set(blocker_ids)):
+            blocker = state.blockers.get(blocker_id)
+            assigned = blocker is not None and (
+                (
+                    blocker.route == TeamBlockerRoute.DELEGATED
+                    and blocker.delegate_agent_id == agent_id
+                )
+                or (
+                    blocker.route
+                    in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                    and blocker.owner_agent_id == agent_id
+                )
+            )
+            if (
+                blocker is None
+                or blocker.state != TeamBlockerState.OPEN
+                or not assigned
+            ):
+                raise ValueError(
+                    f"blocker {blocker_id} is not open and assigned to agent {agent_id}"
+                )
+            blockers.append(blocker)
     for blocker in blockers:
         blocker.active_dispatch_id = dispatch_id
         blocker.updated_at = effective_now
@@ -1742,6 +1789,7 @@ __all__ = [
     "assign_blockers_to_dispatch",
     "blocker_resolution_line_agent_ids",
     "blocker_events_for_dispatch",
+    "blockers_assigned_to_agent",
     "blockers_due_for_agent",
     "complete_blocker_dispatches",
     "create_blocker_inbox",

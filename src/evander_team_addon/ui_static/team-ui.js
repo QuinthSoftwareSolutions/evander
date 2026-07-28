@@ -518,6 +518,9 @@ const fieldTooltips = {
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
+  "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
+  "create-task-form:require_git_provenance": "Require the integration deliverable to carry server-verified Git branch and commit provenance.",
+  "create-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
   "update-task-form:state": "New task state. Leave blank to keep the current state.",
@@ -527,6 +530,9 @@ const fieldTooltips = {
   "update-task-form:description": "New description. Leave blank to keep the current description.",
   "update-task-form:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "update-task-form:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
+  "update-task-form:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
+  "update-task-form:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "update-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "create-review-profile-form:team_id": "Team that owns this review profile.",
   "create-review-profile-form:project_id": "Optional project scope. Blank makes the profile team-wide.",
@@ -608,6 +614,9 @@ const fieldTooltips = {
   "edit:task:description": "Update the instructions for the owning agent.",
   "edit:task:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
+  "edit:task:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
+  "edit:task:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "edit:task:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
   "edit:review-profile:project_id": "Optional project scope. Clear it to make the profile team-wide.",
   "edit:review-profile:name": "Rename the review profile without changing its immutable ID.",
   "edit:review-profile:description": "Optional summary of when this profile should be used.",
@@ -2097,6 +2106,7 @@ function bindRecordEditing() {
       void requestAgentStandDown(
         standDownButton,
         standDownButton.dataset.standDownAgentId,
+        standDownButton.dataset.standDownScope,
       );
       return;
     }
@@ -10175,7 +10185,10 @@ function renderAgentStandDownControls(agentId, record) {
   const standDowns = effectiveStandDowns(record);
   const active = Boolean(record?.standDownActive || record?.stand_down_active) || standDowns.length > 0;
   if (!active) {
-    return `<button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}">Stand down</button>`;
+    return `
+      <button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}" data-stand-down-scope="agent">Stand down</button>
+      <button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}" data-stand-down-scope="subtree">Stand down subtree</button>
+    `;
   }
   const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
   const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
@@ -10219,10 +10232,12 @@ function agentStandDownSummary(record) {
   const standDowns = effectiveStandDowns(record);
   const primary = standDowns[standDowns.length - 1] || {};
   const source = text(primary.source) || "stand-down";
+  const scope = text(primary.scope) || "subtree";
   const root = text(primary.root_agent_id || primary.agent_id);
   const reason = text(primary.reason);
   const inherited = Boolean(primary.inherited) && root ? ` inherited from ${root}` : "";
-  return `${humanizeToken(source)} stand-down${inherited}${reason ? `: ${reason}` : ""}`;
+  const direct = scope === "agent" ? " (agent only)" : "";
+  return `${humanizeToken(source)} stand-down${direct}${inherited}${reason ? `: ${reason}` : ""}`;
 }
 
 function runtimeSummary(agentId) {
@@ -12891,6 +12906,9 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
+    ["Integration boundary", task.integration_boundary ? "Yes" : ""],
+    ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
+    ["Required contribution task IDs", (task.deliverable_contract?.required_contribution_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Blocking task IDs", (task.blocked_by_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Blocker IDs", [...new Set(blockerIds)].join(", ")],
     ["Worktree context IDs", worktreeContextIds.join(", ")],
@@ -13815,6 +13833,9 @@ function renderPlanningTaskTechnicalDetails(task) {
       ["Parent task ID", task.parent_task_id],
       ["Originating task ID", task.originating_task_id],
       ["Dependency task IDs", task.dependency_task_ids || []],
+      ["Integration boundary", task.integration_boundary ? "Yes" : null],
+      ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : null],
+      ["Required contribution task IDs", task.deliverable_contract?.required_contribution_task_ids || []],
       ["Child task IDs", task.child_task_ids || assessment.direct_child_ids || []],
       ["Unresolved task IDs", assessment.unresolved_descendant_ids || []],
       ["Deliverable IDs", task.deliverable_ids || []],
@@ -18255,6 +18276,20 @@ async function submitTaskUpdate(form) {
   if (description) payload.description = description;
   payload.parent_task_id = parentTaskId || null;
   payload.dependency_task_ids = splitList(data.dependency_task_ids);
+  const integrationBoundary = Boolean(
+    form.elements.integration_boundary?.checked,
+  );
+  payload.integration_boundary = integrationBoundary;
+  payload.deliverable_contract = integrationBoundary
+    ? {
+        require_git_provenance: Boolean(
+          form.elements.require_git_provenance?.checked,
+        ),
+        required_contribution_task_ids: splitList(
+          data.required_contribution_task_ids,
+        ),
+      }
+    : null;
   await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
     resetOnSuccess: false,
   });
@@ -19484,13 +19519,26 @@ function agentVoiceTranscriptExcerpt(call, { limit = 12 } = {}) {
     .join("\n");
 }
 
-async function requestAgentStandDown(button, agentId) {
+async function requestAgentStandDown(button, agentId, requestedScope) {
   if (!guardTeamMutation("stand down agents")) {
     return;
   }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     setStatus("No agent selected.", "error");
+    return;
+  }
+  const scope = text(requestedScope).toLowerCase();
+  if (!["agent", "subtree"].includes(scope)) {
+    setStatus("Stand-down scope must be agent or subtree.", "error");
+    return;
+  }
+  if (
+    scope === "subtree"
+    && !window.confirm(
+      `Stand down ${normalizedAgentId} and every subordinate in that agent's subtree?`,
+    )
+  ) {
     return;
   }
   const reason = text(window.prompt(`Reason to stand down ${normalizedAgentId}`));
@@ -19500,7 +19548,7 @@ async function requestAgentStandDown(button, agentId) {
   }
   const drafts = captureFormDrafts();
   button.disabled = true;
-  setStatus("Standing down agent subtree.", "loading");
+  setStatus(scope === "agent" ? "Standing down agent." : "Standing down agent subtree.", "loading");
   try {
     const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`;
     const response = await teamFetch(
@@ -19514,6 +19562,7 @@ async function requestAgentStandDown(button, agentId) {
         },
         body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason,
+          scope,
         })),
       },
     );
@@ -19966,6 +20015,20 @@ function payloadForForm(form, data = formData(form)) {
       payload.parent_task_id = parentTaskId;
     }
     payload.dependency_task_ids = splitList(data.dependency_task_ids);
+    const integrationBoundary = Boolean(
+      form.elements.integration_boundary?.checked,
+    );
+    if (integrationBoundary) {
+      payload.integration_boundary = true;
+      payload.deliverable_contract = {
+        require_git_provenance: Boolean(
+          form.elements.require_git_provenance?.checked,
+        ),
+        required_contribution_task_ids: splitList(
+          data.required_contribution_task_ids,
+        ),
+      };
+    }
     return payload;
   }
   if (formId === "create-review-profile-form") {
@@ -20774,6 +20837,9 @@ function renderEditFields(type, record) {
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
       ${selectField("Parent task", "parent_task_id", "tasks", record.parent_task_id || "", { placeholder: "No parent" })}
       ${textareaField("Dependency tasks", "dependency_task_ids", (record.dependency_task_ids || []).join("\n"), { rows: 2 })}
+      ${checkboxField("Integration boundary", "integration_boundary", Boolean(record.integration_boundary))}
+      ${checkboxField("Require Git provenance", "require_git_provenance", Boolean(record.deliverable_contract?.require_git_provenance))}
+      ${textareaField("Required contribution task IDs", "required_contribution_task_ids", (record.deliverable_contract?.required_contribution_task_ids || []).join("\n"), { rows: 2 })}
     `;
   }
   if (type === "review-profile") {
@@ -20953,7 +21019,20 @@ function editPayloadForForm(type, form) {
     };
   }
   if (type === "task") {
-    return {
+    const integrationBoundary = Boolean(
+      form.elements.integration_boundary?.checked,
+    );
+    const deliverableContract = integrationBoundary
+      ? {
+          require_git_provenance: Boolean(
+            form.elements.require_git_provenance?.checked,
+          ),
+          required_contribution_task_ids: splitList(
+            data.required_contribution_task_ids,
+          ),
+        }
+      : null;
+    const payload = {
       state: text(data.state),
       case_id: text(data.case_id) || null,
       priority: numberOrZero(data.priority),
@@ -20962,6 +21041,17 @@ function editPayloadForForm(type, form) {
       parent_task_id: text(data.parent_task_id) || null,
       dependency_task_ids: splitList(data.dependency_task_ids),
     };
+    const currentTask = state.tasks?.[text(form.dataset.editId)];
+    const currentContract = currentTask?.deliverable_contract || null;
+    if (
+      !currentTask
+      || Boolean(currentTask.integration_boundary) !== integrationBoundary
+      || JSON.stringify(currentContract) !== JSON.stringify(deliverableContract)
+    ) {
+      payload.integration_boundary = integrationBoundary;
+      payload.deliverable_contract = deliverableContract;
+    }
+    return payload;
   }
   if (type === "review-profile") {
     return {
@@ -21049,6 +21139,33 @@ function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
   }
   if (!keepEditedValues || !form.elements.dependency_task_ids.value) {
     form.elements.dependency_task_ids.value = (task.dependency_task_ids || []).join("\n");
+  }
+  if (
+    form.elements.integration_boundary
+    && (!keepEditedValues || !form.elements.integration_boundary.checked)
+  ) {
+    form.elements.integration_boundary.checked = Boolean(
+      task.integration_boundary,
+    );
+  }
+  if (
+    form.elements.require_git_provenance
+    && (!keepEditedValues || !form.elements.require_git_provenance.checked)
+  ) {
+    form.elements.require_git_provenance.checked = Boolean(
+      task.deliverable_contract?.require_git_provenance,
+    );
+  }
+  if (
+    form.elements.required_contribution_task_ids
+    && (
+      !keepEditedValues
+      || !form.elements.required_contribution_task_ids.value
+    )
+  ) {
+    form.elements.required_contribution_task_ids.value = (
+      task.deliverable_contract?.required_contribution_task_ids || []
+    ).join("\n");
   }
 }
 

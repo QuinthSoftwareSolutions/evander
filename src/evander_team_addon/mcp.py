@@ -102,6 +102,7 @@ TEAM_CREATE_OUTCOME_KIND_TOOL = "team_create_outcome_kind"
 TEAM_UPDATE_OUTCOME_KIND_TOOL = "team_update_outcome_kind"
 TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
+TEAM_REOPEN_TASK_FOR_REWORK_TOOL = "team_reopen_task_for_rework"
 TEAM_CANCEL_TASK_TOOL = "team_cancel_task"
 TEAM_UPDATE_GOAL_TOOL = "team_update_goal"
 TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
@@ -145,6 +146,7 @@ TEAM_GET_RELEASE_PACKAGE_TOOL = "team_get_release_package"
 TEAM_LIST_AGENTS_TOOL = "team_list_agents"
 TEAM_GET_AGENT_TOOL = "team_get_agent"
 TEAM_GET_MY_IDENTITY_TOOL = "team_get_my_identity"
+TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL = "team_get_current_dispatch_context"
 TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
 TEAM_GET_PROJECT_TOOL = "team_get_project"
 TEAM_LIST_OUTCOME_KINDS_TOOL = "team_list_outcome_kinds"
@@ -176,6 +178,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_OUTCOME_KIND_TOOL,
     TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
@@ -224,6 +227,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_LIST_AGENTS_TOOL,
     TEAM_GET_AGENT_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_OUTCOME_KINDS_TOOL,
@@ -255,6 +259,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_OUTCOME_KIND_TOOL,
     TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
@@ -309,6 +314,7 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_OUTCOME_KIND_TOOL,
     TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
@@ -385,12 +391,16 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     task_update_commands = TeamTaskUpdateCommandService(repo)
     agent_control_commands = TeamAgentControlCommandService(repo)
     governance_commands = TeamGovernanceCommandService(repo)
-    deliverable_submission_commands = TeamDeliverableSubmissionCommandService(repo)
+    deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(context),
+    )
     review_commands = TeamReviewCommandService(
         repo,
         human_review_eligibility_resolver=human_review_eligibility_resolver(
             getattr(context.auth, "user_store", None)
         ),
+        git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(context),
     )
     git_release_commands = TeamGitReleaseCommandService(repo)
     ephemeral_commands = TeamEphemeralCommandService(repo)
@@ -1348,6 +1358,8 @@ def _register_slice6_tools(
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
         outcome_contract: dict[str, Any] | None = None,
+        integration_boundary: bool = False,
+        deliverable_contract: dict[str, Any] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1373,6 +1385,8 @@ def _register_slice6_tools(
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
+                integration_boundary=integration_boundary,
+                deliverable_contract=deliverable_contract,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1385,7 +1399,13 @@ def _register_slice6_tools(
     server.add_tool(
         team_create_task,
         name=TEAM_CREATE_TASK_TOOL,
-        description="Create one Team task after permission and graph validation.",
+        description=(
+            "Create one Team task after permission and graph validation. Set "
+            "integration_boundary=true with deliverable_contract to declare an "
+            "explicit final-integration boundary. The contract may require Git "
+            "provenance and explicitly name direct-child or dependency task "
+            "contributions."
+        ),
     )
 
     def team_create_tasks(
@@ -1541,6 +1561,8 @@ def _register_slice6_tools(
         description: str | None = None,
         owner_agent_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
+        integration_boundary: bool | None = None,
+        deliverable_contract: dict[str, Any] | None = None,
         completion: dict[str, Any] | None = None,
         request_id: str | None = None,
         handled_inbox_item_ids: list[str] | None = None,
@@ -1560,6 +1582,8 @@ def _register_slice6_tools(
             "description": description,
             "owner_agent_id": owner_agent_id,
             "dependency_task_ids": dependency_task_ids,
+            "integration_boundary": integration_boundary,
+            "deliverable_contract": deliverable_contract,
             "completion": completion,
         }.items():
             if value is not None:
@@ -1581,7 +1605,55 @@ def _register_slice6_tools(
     server.add_tool(
         team_update_task,
         name=TEAM_UPDATE_TASK_TOOL,
-        description="Update a Team task without accepting or rejecting review work.",
+        description=(
+            "Update a Team task without accepting or rejecting review work. "
+            "Before any deliverable submission, an authorized task-graph editor "
+            "can designate it as an integration boundary by supplying "
+            "integration_boundary=true and deliverable_contract."
+        ),
+    )
+
+    def team_reopen_task_for_rework(
+        task_id: str,
+        accepted_deliverable_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
+        )
+        try:
+            _state, result = task_update_commands.reopen_task_for_rework_command(
+                session_id=caller.session_id,
+                task_id=task_id,
+                accepted_deliverable_id=accepted_deliverable_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_reopen_task_for_rework,
+        name=TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
+        description=(
+            "Reopen a finished or accepted task when one of its current accepted "
+            "deliverables later proves invalid. The old acceptance and reviews remain "
+            "immutable; the original owner receives one high-priority rework wake, and "
+            "the task cannot resolve again until a fresh formally reviewed deliverable "
+            "supersedes accepted_deliverable_id. The task owner, its project lead, or "
+            "same-team manager may use this. Requires task_id, "
+            "accepted_deliverable_id, reason, and request_id."
+        ),
     )
 
     def team_cancel_task(
@@ -1756,6 +1828,7 @@ def _register_slice6_tools(
         agent_id: str,
         reason: str,
         request_id: str,
+        scope: Literal["agent", "subtree"] = "subtree",
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1771,6 +1844,7 @@ def _register_slice6_tools(
                 agent_id=agent_id,
                 reason=reason,
                 request_id=request_id,
+                scope=scope,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
@@ -1782,7 +1856,10 @@ def _register_slice6_tools(
     server.add_tool(
         team_stand_down_agent,
         name=TEAM_STAND_DOWN_AGENT_TOOL,
-        description="Stand down a direct subordinate and its subtree.",
+        description=(
+            "Stand down a direct subordinate. scope='subtree' (the default) also "
+            "holds every subordinate; scope='agent' holds only the named agent."
+        ),
     )
 
     def team_revoke_stand_down(
@@ -1889,10 +1966,14 @@ def _register_slice7_tools(
             "verification records status passed, failed, partial, not_run, or "
             "unknown with a summary. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "
-            "context. Call team_publish_review_branch separately only when a "
+            "context. git_refs accepts exactly branch_context_id, agent_branch, "
+            "and commit_sha; use commit_sha, not commit, to pin the submitted "
+            "candidate. Call team_publish_review_branch separately only when a "
             "durable review branch is needed. Set supersedes_deliverable_id when "
             "reworking a rejected or blocked same-task deliverable; its open "
-            "findings carry forward. Requires task_id, summary, and request_id."
+            "findings carry forward. Accepted-deliverable recovery must use "
+            "team_submit_deliverable_for_review instead. Requires task_id, summary, "
+            "and request_id."
         ),
     )
 
@@ -1977,9 +2058,13 @@ def _register_slice7_tools(
             "deliverable, reviews, and request_id. The deliverable may include "
             "verification status and git_refs. Git deliverables must include "
             "deliverable.branch_context_id; git_refs do not publish a review "
-            "branch by themselves and must match that context. A rework may set "
-            "deliverable.supersedes_deliverable_id to a rejected or blocked "
-            "same-task predecessor; its open findings carry forward."
+            "branch by themselves and must match that context. "
+            "deliverable.git_refs accepts exactly branch_context_id, agent_branch, "
+            "and commit_sha; use commit_sha, not commit, to pin the submitted "
+            "candidate. A rework may set "
+            "deliverable.supersedes_deliverable_id to a rejected, blocked, or "
+            "explicitly reopened accepted same-task predecessor; its open findings "
+            "carry forward and fresh review requests are always created."
         ),
     )
 
@@ -2158,7 +2243,9 @@ def _register_slice7_tools(
             "Create a new pending review attempt that supersedes a current blocked "
             "non-release review without rewriting its immutable decision. The producer, "
             "supervisor, project lead, or team manager may retry it and optionally choose "
-            "another eligible reviewer. Requires review_request_id, reason, and request_id."
+            "another eligible reviewer. A Git-backed retry fails closed unless its pinned "
+            "candidate still matches the server-resolved task branch; submit a replacement "
+            "deliverable when it does not. Requires review_request_id, reason, and request_id."
         ),
     )
 
@@ -2493,6 +2580,32 @@ def _team_mcp_deliverable_artifact_publisher(context: AddonContext):
         )
 
     return _publish
+
+
+def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
+    managed_git = getattr(context.service, "managed_git_admin", None)
+
+    def _resolve(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        agent_branch: str,
+    ) -> str | None:
+        nonlocal managed_git
+        if managed_git is None:
+            from evander.admin.composition import build_admin_runtime
+
+            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
+        resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
+        if not callable(resolve_branch_commit):
+            raise RuntimeError("managed Git branch resolution is unavailable")
+        return resolve_branch_commit(
+            managed_repo_id,
+            directory_path=directory_path,
+            branch=agent_branch,
+        )
+
+    return _resolve
 
 
 def _team_mcp_memory_artifact_publisher(context: AddonContext):
@@ -3201,6 +3314,30 @@ def _register_read_tools(
         team_get_my_identity,
         name=TEAM_GET_MY_IDENTITY_TOOL,
         description="Get the calling Team agent's complete identity and role context.",
+    )
+
+    def team_get_current_dispatch_context(
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
+        )
+        dispatch_id = caller.active_dispatch_id or "current"
+        return _team_read_get_result(
+            _read_service(caller).get_current_dispatch_context(),
+            caller=caller,
+            record_name="dispatch",
+            record_id=dispatch_id,
+        )
+
+    server.add_tool(
+        team_get_current_dispatch_context,
+        name=TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
+        description=(
+            "Get the calling agent's active immutable dispatch scope and hydrate "
+            "the scoped task, inbox, blocker, review, project, and Git records."
+        ),
     )
 
     def team_list_projects(

@@ -52,7 +52,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 23
+    assert TEAM_AGENT_GUIDANCE_VERSION == 26
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content

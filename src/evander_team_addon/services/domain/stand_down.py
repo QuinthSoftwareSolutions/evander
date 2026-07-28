@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import uuid4
 from ...models import (
     AgentStandDown,
@@ -12,6 +12,7 @@ from ...models import (
 
 from .agent_access import _is_direct_subordinate
 from .common import (
+    _optional_text,
     _require_present,
     _required_text,
     utc_now,
@@ -36,7 +37,11 @@ def _active_stand_downs_for_agent(
         [
             stand_down
             for stand_down in state.stand_downs.values()
-            if stand_down.active and stand_down.agent_id in root_set
+            if (
+                stand_down.active
+                and stand_down.agent_id in root_set
+                and (stand_down.scope == "subtree" or stand_down.agent_id == agent_id)
+            )
         ],
         key=lambda item: (item.set_at, item.id),
     )
@@ -68,6 +73,24 @@ def _agent_subtree_ids(state: TeamState, agent_id: str) -> list[str]:
     return ordered
 
 
+def _normalize_stand_down_scope(value: object) -> Literal["agent", "subtree"]:
+    normalized = _optional_text(value) or "subtree"
+    if normalized not in {"agent", "subtree"}:
+        raise ValueError("scope must be one of: agent, subtree")
+    return cast(Literal["agent", "subtree"], normalized)
+
+
+def _stand_down_affected_agent_ids(
+    state: TeamState,
+    *,
+    agent_id: str,
+    scope: Literal["agent", "subtree"],
+) -> list[str]:
+    if scope == "agent":
+        return [agent_id] if agent_id in state.agents else []
+    return _agent_subtree_ids(state, agent_id)
+
+
 def _apply_superior_stand_down(
     state: TeamState,
     *,
@@ -76,6 +99,7 @@ def _apply_superior_stand_down(
 ) -> str:
     target_id = _required_text(request.get("agent_id"), "agent_id")
     reason = _required_text(request.get("reason"), "reason")
+    scope = _normalize_stand_down_scope(request.get("scope"))
     target = _require_present(state.agents, target_id, "agent")
     if target.team_id != actor.team_id:
         raise ValueError(f"agent {target.id} is not in team {actor.team_id}")
@@ -87,13 +111,18 @@ def _apply_superior_stand_down(
     stand_down = AgentStandDown(
         id=f"stand-down-{uuid4().hex}",
         agent_id=target.id,
+        scope=scope,
         reason=reason,
         source=AgentStandDownSource.SUPERIOR,
         set_by=actor.id,
         set_at=now,
     )
     state.stand_downs[stand_down.id] = stand_down
-    for affected_id in _agent_subtree_ids(state, target.id):
+    for affected_id in _stand_down_affected_agent_ids(
+        state,
+        agent_id=target.id,
+        scope=scope,
+    ):
         runtime = state.agent_runtimes.get(affected_id)
         if runtime is None:
             continue
@@ -116,6 +145,7 @@ def _apply_superior_stand_down_revocation(
         raise ValueError(f"agent {actor.id} can only revoke stand-downs for a direct subordinate")
     now = utc_now()
     revoked_ids: list[str] = []
+    affected_ids: set[str] = set()
     for stand_down in state.stand_downs.values():
         if (
             stand_down.agent_id == target.id
@@ -123,12 +153,19 @@ def _apply_superior_stand_down_revocation(
             and stand_down.set_by == actor.id
             and stand_down.active
         ):
+            affected_ids.update(
+                _stand_down_affected_agent_ids(
+                    state,
+                    agent_id=target.id,
+                    scope=stand_down.scope,
+                )
+            )
             stand_down.cleared_by = actor.id
             stand_down.cleared_at = now
             revoked_ids.append(stand_down.id)
     if not revoked_ids:
         raise ValueError(f"agent {target.id} has no active superior stand-down by {actor.id}")
-    for affected_id in _agent_subtree_ids(state, target.id):
+    for affected_id in sorted(affected_ids):
         if _active_stand_downs_for_agent(state, affected_id):
             continue
         _mark_agent_work_due(state, agent_id=affected_id, now=now)
@@ -139,6 +176,8 @@ __all__ = [
     "_active_stand_downs_for_agent",
     "_stand_down_error_detail",
     "_agent_subtree_ids",
+    "_normalize_stand_down_scope",
+    "_stand_down_affected_agent_ids",
     "_apply_superior_stand_down",
     "_apply_superior_stand_down_revocation",
 ]

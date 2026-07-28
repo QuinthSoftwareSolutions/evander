@@ -52,6 +52,20 @@ evander-cli git-repos show mr_0123456789abcdef0123 --directory-path root/acme/te
 evander-cli git-repos refresh mr_0123456789abcdef0123
 ```
 
+Set the author and committer identity for host-created consolidation commits on one managed
+repository without changing directory defaults or other repositories:
+
+```bash
+evander-cli git-repos set-host-identity mr_0123456789abcdef0123 \
+  --directory-path root/acme \
+  --name "Release Automation" \
+  --email "release-automation@example.com"
+```
+
+The operation acquires the repository's exclusive operation lock, updates only that registry
+record, and affects subsequent host-created commits. It does not rewrite existing commits or
+change agent checkout identities.
+
 The explicit refresh command is an operator diagnostic and recovery surface. Normal managed Git
 reads do not require it: restricted SSH keys provisioned by Evander require the host-owned
 `evander-managed-git-refresh.service` to refresh the exact authorized repository before
@@ -66,6 +80,7 @@ The equivalent privileged Admin API is:
 - `POST /api/admin/git-repositories`
 - `GET /api/admin/git-repositories/{managed_repo_id}`
 - `POST /api/admin/git-repositories/{managed_repo_id}/refresh`
+- `PUT /api/admin/git-repositories/{managed_repo_id}/host-commit-identity`
 - `DELETE /api/admin/git-repositories/{managed_repo_id}`
 - `POST /api/admin/git-repositories/maintenance`
 - `POST /api/admin/git-repositories/migrate`
@@ -76,7 +91,8 @@ The equivalent privileged Admin API is:
 
 Mutations require directory-scoped `admin.owner` permission and unlocked privileged operations.
 Registration JSON contains `directory_path`, `repo_source`, optional `default_branch`, and optional
-`refresh`. Maintenance accepts optional `managed_repo_id`. Migration accepts
+`refresh`. Host-identity JSON contains required `name` and `email`. Maintenance accepts optional
+`managed_repo_id`. Migration accepts
 `{"stage":"dry-run"}`, `{"stage":"apply"}`, or
 `{"stage":"finalize","migration_id":"<id>"}`; stages cannot be combined.
 

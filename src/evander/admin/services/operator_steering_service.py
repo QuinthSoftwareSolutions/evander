@@ -53,6 +53,7 @@ class OperatorSteeringAdminService:
             container_prompt_command,
             container_worker_guest_gateway_url,
             container_worker_image_for_session,
+            container_worker_resource_limits_for_session,
             default_agent_model_for_provider,
             gateway_url_with_session_context,
             safe_effect_execution_id,
@@ -198,6 +199,7 @@ class OperatorSteeringAdminService:
             prompt=replacement_prompt,
             model=resolved_model,
             resume_thread_id=resume_thread_id,
+            session=session,
             agent_provider=agent_harness,
             mcp_gateway_url=mcp_gateway_url,
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
@@ -221,6 +223,7 @@ class OperatorSteeringAdminService:
                         session_id=session_id,
                         directory_path=directory_path,
                         image=container_worker_image_for_session(session, effective_config),
+                        resource_limits=container_worker_resource_limits_for_session(session),
                         command=command,
                         codex_turn=codex_turn,
                         metadata={

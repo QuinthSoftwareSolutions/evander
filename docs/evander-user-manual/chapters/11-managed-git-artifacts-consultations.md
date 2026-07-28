@@ -250,6 +250,19 @@ evander-cli git-repos list --directory-path root/northstar-platform/mission-cont
 evander-cli git-repos show <managed-repo-id> --directory-path root/northstar-platform/mission-control
 ```
 
+Set the identity for subsequent host-created consolidation commits on only that managed
+repository:
+
+```bash
+evander-cli git-repos set-host-identity <managed-repo-id> \
+  --directory-path root/northstar-platform/mission-control \
+  --name "Release Automation" \
+  --email "release-automation@example.com"
+```
+
+This repository-locked operation does not change directory defaults, other managed repositories,
+agent checkout identities, or existing commits.
+
 Normal agent reads refresh automatically. The restricted SSH wrapper validates the exact
 repository, then asks `evander-managed-git-refresh.service` to fetch upstream before serving clone,
 fetch, pull, `ls-remote`, or archive data. If the broker or upstream is unavailable, the read fails

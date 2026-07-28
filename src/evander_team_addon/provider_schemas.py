@@ -139,6 +139,8 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     state: ConfigValue | None = None
     parent_task_id: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
+    integration_boundary: ConfigValue | None = None
+    deliverable_contract: ConfigValue | None = None
     created_by: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
@@ -473,6 +475,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "git_work_contexts": {"type": "array"},
         "review_artifact_imports": {"type": "array"},
         "review_artifact_import_errors": {"type": "array"},
+        "preparation_blocker_ids": {"type": "array"},
         "transient_conflicts": {"type": "array"},
         "retry_event_ids": {"type": "array"},
         "retry_scheduled_count": {"type": "integer"},

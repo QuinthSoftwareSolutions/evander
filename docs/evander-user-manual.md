@@ -3208,6 +3208,19 @@ evander-cli git-repos list --directory-path root/northstar-platform/mission-cont
 evander-cli git-repos show <managed-repo-id> --directory-path root/northstar-platform/mission-control
 ```
 
+Set the identity for subsequent host-created consolidation commits on only that managed
+repository:
+
+```bash
+evander-cli git-repos set-host-identity <managed-repo-id> \
+  --directory-path root/northstar-platform/mission-control \
+  --name "Release Automation" \
+  --email "release-automation@example.com"
+```
+
+This repository-locked operation does not change directory defaults, other managed repositories,
+agent checkout identities, or existing commits.
+
 Normal agent reads refresh automatically. The restricted SSH wrapper validates the exact
 repository, then asks `evander-managed-git-refresh.service` to fetch upstream before serving clone,
 fetch, pull, `ls-remote`, or archive data. If the broker or upstream is unavailable, the read fails
@@ -7971,6 +7984,7 @@ Run `evander-cli --help` and a subcommand's `--help` for the precise option set 
 | Run the trigger loop interactively | `evander-cli trigger-orchestrator` |
 | Register or refresh a managed repository | `evander-cli git-repos register ...` |
 | Inspect managed repositories | `evander-cli git-repos list ...` |
+| Set one managed repository's host commit identity | `evander-cli git-repos set-host-identity ...` |
 | Create an issue VM | `evander-cli create-issue-vm <issue-id> ...` |
 | Clone by managed identity | `evander-cli clone-repo-into-vm <vm-name> --managed-repo-id <id>` |
 | Smoke-test a container worker | `evander-cli execution smoke-container-worker --json` |

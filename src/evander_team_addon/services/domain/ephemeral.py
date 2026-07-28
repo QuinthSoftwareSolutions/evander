@@ -8,6 +8,7 @@ from ...models import (
     AgentInboxItem,
     AgentTask,
     Deliverable,
+    DeliverableGitRefs,
     EphemeralAssignment,
     EphemeralAssignmentState,
     PersistentAgent,
@@ -32,7 +33,11 @@ from .common import (
     _string_list,
     utc_now,
 )
-from .task_assessment import task_payload_with_assessment
+from .task_assessment import (
+    require_deliverable_submission,
+    require_task_deliverable_contract_provenance,
+    task_payload_with_assessment,
+)
 
 
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
@@ -186,6 +191,20 @@ def _apply_ephemeral_acceptance(
         deliverable_id_value = deliverable_id or f"deliverable-{uuid4().hex}"
         _require_absent(state.deliverables, deliverable_id_value, "deliverable")
         task = _require_present(state.tasks, assignment.task_id, "task")
+        if task.integration_boundary:
+            require_deliverable_submission(
+                state,
+                task_id=task.id,
+                source_deliverable_ids=[],
+            )
+            require_task_deliverable_contract_provenance(
+                state,
+                task_id=task.id,
+                git_refs=DeliverableGitRefs(),
+                producer_agent_id=assignment.parent_agent_id,
+                deliverable_id=deliverable_id_value,
+                require_submitted_context=False,
+            )
         deliverable = Deliverable(
             id=deliverable_id_value,
             task_id=assignment.task_id,

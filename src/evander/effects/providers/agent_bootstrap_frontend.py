@@ -10,6 +10,7 @@ from .agent_session import (
     as_string_list,
     container_backend,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     effective_config_for_session,
     frontend_bootstrap_command,
     map_install_roots_to_container_repo,
@@ -85,6 +86,7 @@ class AgentBootstrapFrontendEffectProvider(EffectProviderBase):
                     session_id=session_id,
                     directory_path=session.directory_path if session is not None else "root",
                     image=container_worker_image_for_session(session, config),
+                    resource_limits=container_worker_resource_limits_for_session(session),
                     command=command,
                     metadata={
                         "effect_type": "effect:agent:bootstrap-frontend",
