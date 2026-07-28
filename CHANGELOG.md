@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-28 - Team Stand-down Completion and State Upgrades
+
+- Allowed a support-task dispatch leased before a stand-down to record its
+  exact scoped `finished` transition while continuing to reject task edits,
+  new work, and dispatches created after the hold.
+- Upgraded persisted Team state metadata to the current state schema during
+  SQLite initialization and legacy JSON import instead of retaining an older
+  advertised schema version after the new fields are available.
+
 ## 2026-07-28 - Hierarchy-aware Team Review Wakes
 
 - Required assigned deliverable reviewers to fetch and read the complete task

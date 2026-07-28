@@ -67,6 +67,7 @@ from evander_team_addon.models import (
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamRecordState,
+    SCHEMA_VERSION,
     TeamState,
     TaskCompletionKind,
     TeamTaskKind,
@@ -555,6 +556,34 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     assert state.teams == {}
     assert (tmp_path / "addons" / "team-addon" / "state.db").is_file()
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
+
+
+def test_repository_upgrades_persisted_state_schema_metadata(
+    tmp_path: Path,
+) -> None:
+    _seed_hierarchy(tmp_path)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = '2'
+            WHERE key = 'state_schema_version'
+            """
+        )
+
+    upgraded = TeamStateRepository(tmp_path).read()
+
+    assert upgraded.schema_version == SCHEMA_VERSION
+    with sqlite3.connect(db_path) as connection:
+        persisted_version = connection.execute(
+            """
+            SELECT value
+            FROM team_state_metadata
+            WHERE key = 'state_schema_version'
+            """
+        ).fetchone()[0]
+    assert persisted_version == str(SCHEMA_VERSION)
 
 
 def test_repository_mcp_storage_tables_preserve_state_projection(
@@ -7181,8 +7210,10 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
     legacy_path.parent.mkdir(parents=True)
     state = _seed_hierarchy(tmp_path / "seed").read()
+    legacy_payload = state.model_dump(mode="json")
+    legacy_payload["schema_version"] = 2
     legacy_path.write_text(
-        json.dumps(state.model_dump(mode="json"), indent=2, sort_keys=True),
+        json.dumps(legacy_payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
@@ -7190,6 +7221,7 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
 
     imported = repo.read()
     assert imported.revision == state.revision
+    assert imported.schema_version == SCHEMA_VERSION
     assert imported.teams.keys() == state.teams.keys()
     assert imported.projects.keys() == state.projects.keys()
     assert legacy_path.is_file()
@@ -7197,6 +7229,7 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
         metadata = dict(connection.execute("SELECT key, value FROM team_state_metadata").fetchall())
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
+    assert metadata["state_schema_version"] == str(SCHEMA_VERSION)
 
 
 def test_repository_imports_legacy_json_outcome_records_before_validation(
@@ -9117,6 +9150,61 @@ def test_preexisting_review_dispatch_can_record_terminal_decision_during_stand_d
     assert (active_stand_down.agent_id != "worker") is inherited
 
 
+@pytest.mark.parametrize(
+    ("stand_down_agent_id", "inherited"),
+    [
+        ("worker", False),
+        ("manager", True),
+    ],
+)
+def test_preexisting_support_task_dispatch_can_finish_during_stand_down(
+    tmp_path: Path,
+    stand_down_agent_id: str,
+    inherited: bool,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
+    dispatch_id = "dispatch-support-task-before-hold"
+    _lease_agent_dispatch(
+        repo,
+        agent_id="worker",
+        dispatch_id=dispatch_id,
+    )
+    _team_runtime_service(repo).stand_down_agent(
+        agent_id=stand_down_agent_id,
+        reason="Pause new work but let the active support task finish.",
+        set_by="operator:test",
+    )
+
+    def _order_hold_after_dispatch(state):
+        dispatch = state.dispatches[dispatch_id]
+        assert dispatch.leased_at is not None
+        stand_down = next(
+            item
+            for item in state.stand_downs.values()
+            if item.agent_id == stand_down_agent_id and item.active
+        )
+        stand_down.set_at = dispatch.leased_at + timedelta(seconds=1)
+        return state
+
+    repo.update(_order_hold_after_dispatch)
+
+    state, finished = _command_service(repo).update_task_command(
+        session_id="session-worker",
+        task_id="worker-task",
+        state="finished",
+        request_id=f"finish-support-task-during-hold-{stand_down_agent_id}",
+    )
+
+    assert finished["success"] is True
+    assert state.tasks["worker-task"].state == TeamTaskState.FINISHED
+    active_stand_down = next(
+        item for item in state.stand_downs.values() if item.active
+    )
+    assert active_stand_down.agent_id == stand_down_agent_id
+    assert (active_stand_down.agent_id != "worker") is inherited
+
+
 def test_preexisting_dispatch_stand_down_authority_cannot_start_or_widen_work(
     tmp_path: Path,
 ) -> None:
@@ -9145,6 +9233,11 @@ def test_preexisting_dispatch_stand_down_authority_cannot_start_or_widen_work(
         repo,
         agent_id="worker",
         dispatch_id=dispatch_id,
+    )
+    _seed_task(
+        repo,
+        task_id="outside-dispatch-task",
+        owner_agent_id="worker",
     )
     _seed_task(repo, task_id="outside-review-task")
     _seed_deliverable(
@@ -9194,6 +9287,28 @@ def test_preexisting_dispatch_stand_down_authority_cannot_start_or_widen_work(
     assert started["success"] is False
     assert started["errors"][0]["code"] == "agent_stood_down"
     assert state.tasks["worker-task"].state == TeamTaskState.PENDING
+
+    state, outside_finish = _command_service(repo).update_task_command(
+        session_id="session-worker",
+        task_id="outside-dispatch-task",
+        state="finished",
+        request_id="finish-outside-dispatch-task-during-hold",
+    )
+    assert outside_finish["success"] is False
+    assert outside_finish["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.tasks["outside-dispatch-task"].state == TeamTaskState.PENDING
+
+    state, widened_finish = _command_service(repo).update_task_command(
+        session_id="session-worker",
+        task_id="worker-task",
+        state="finished",
+        title="Retitled during the hold",
+        request_id="finish-and-retitle-task-during-hold",
+    )
+    assert widened_finish["success"] is False
+    assert widened_finish["errors"][0]["code"] == "agent_stood_down"
+    assert state.tasks["worker-task"].state == TeamTaskState.PENDING
+    assert state.tasks["worker-task"].title == "Task worker-task"
 
     state, unrelated = _command_service(repo).decide_review_command(
         session_id="session-worker",

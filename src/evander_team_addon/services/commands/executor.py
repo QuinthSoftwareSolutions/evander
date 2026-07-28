@@ -38,6 +38,7 @@ from ...models import (
     TeamInboxItemState,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
     _unique_text_list,
 )
 from ..domain.common import (
@@ -175,6 +176,7 @@ class TeamCommandExecutor:
                 self._validate_stand_down_dispatch_completion_authority(
                     state,
                     resolved=resolved,
+                    normalized_payload=normalized_payload,
                 )
                 if reject_stale_high_priority_inbox:
                     self._validate_dispatch_freshness(
@@ -427,6 +429,7 @@ class TeamCommandExecutor:
         state: TeamState,
         *,
         resolved: _ResolvedTeamCommandContext,
+        normalized_payload: Mapping[str, Any],
     ) -> None:
         if resolved.agent is None:
             return
@@ -446,9 +449,15 @@ class TeamCommandExecutor:
                 for stand_down in active_stand_downs
             )
         )
+        task_updates = normalized_payload.get("updates")
+        scoped_support_task_finish = (
+            resolved.context.tool_name == "team_update_task"
+            and isinstance(task_updates, Mapping)
+            and dict(task_updates) == {"state": TeamTaskState.FINISHED.value}
+        )
         completion_tool_allowed = (
-            resolved.context.tool_name
-            in _STAND_DOWN_DISPATCH_COMPLETION_TOOLS
+            resolved.context.tool_name in _STAND_DOWN_DISPATCH_COMPLETION_TOOLS
+            or scoped_support_task_finish
         )
         if dispatch_predates_stand_downs and completion_tool_allowed:
             return

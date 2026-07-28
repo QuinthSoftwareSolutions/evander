@@ -820,6 +820,18 @@ class TeamStateSqliteStore:
                 previous_schema_version = (
                     int(schema_version_row["value"]) if schema_version_row is not None else 0
                 )
+                state_schema_version_row = connection.execute(
+                    """
+                    SELECT value
+                    FROM team_state_metadata
+                    WHERE key = 'state_schema_version'
+                    """
+                ).fetchone()
+                previous_state_schema_version = (
+                    int(state_schema_version_row["value"])
+                    if state_schema_version_row is not None
+                    else 0
+                )
                 _ensure_column(
                     connection,
                     table_name="team_governance_group_goals",
@@ -1259,6 +1271,15 @@ class TeamStateSqliteStore:
                     """,
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
+                if previous_state_schema_version < SCHEMA_VERSION:
+                    connection.execute(
+                        """
+                        INSERT INTO team_state_metadata(key, value)
+                        VALUES ('state_schema_version', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        """,
+                        (str(SCHEMA_VERSION),),
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1408,6 +1429,10 @@ class TeamStateSqliteStore:
 
     def _write_state(self, connection: sqlite3.Connection, state: TeamState) -> None:
         payload = state.model_dump(mode="json")
+        payload["schema_version"] = max(
+            int(payload.get("schema_version", SCHEMA_VERSION)),
+            SCHEMA_VERSION,
+        )
         self._clear_state_tables(connection)
         self._write_teams(connection, payload["teams"])
         self._write_governance_groups(connection, payload["governance_groups"])
