@@ -873,6 +873,10 @@ class AgentRuntime(TeamModel):
     context_rotation_reason: Literal["idle", "manual", "every_wake"] | None = None
     context_rotation_request_note: str | None = None
     last_handoff_summary: str | None = None
+    context_handoff_preparation_pending: bool = False
+    context_handoff_preparation_status: Literal["pending", "recorded", "failed", "timed_out"] | None = None
+    last_agent_handoff_summary: str | None = None
+    last_agent_handoff_at: datetime | None = None
     last_context_rotated_at: datetime | None = None
     last_thread_id: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
@@ -888,6 +892,7 @@ class AgentRuntime(TeamModel):
         "context_rotation_requested_by",
         "context_rotation_request_note",
         "last_handoff_summary",
+        "last_agent_handoff_summary",
         "last_thread_id",
         mode="before",
     )
@@ -6615,6 +6620,18 @@ def _runtime_agent_payload(
             runtime.context_rotation_requested_at if runtime is not None else None
         ),
         "last_handoff_summary": (runtime.last_handoff_summary if runtime is not None else None),
+        "context_handoff_preparation_pending": (
+            runtime.context_handoff_preparation_pending if runtime is not None else False
+        ),
+        "context_handoff_preparation_status": (
+            runtime.context_handoff_preparation_status if runtime is not None else None
+        ),
+        "last_agent_handoff_summary": (
+            runtime.last_agent_handoff_summary if runtime is not None else None
+        ),
+        "last_agent_handoff_at": _json_datetime(
+            runtime.last_agent_handoff_at if runtime is not None else None
+        ),
         "last_context_rotated_at": _json_datetime(
             runtime.last_context_rotated_at if runtime is not None else None
         ),

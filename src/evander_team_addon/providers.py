@@ -112,6 +112,7 @@ from .mcp import (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
     TEAM_RECORD_NOTE_TOOL,
+    TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
     TEAM_REJECT_EPHEMERAL_RESULT_TOOL,
@@ -2255,10 +2256,15 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         agent_ids=_prompt_session_health_agent_ids(state, agent),
                     ),
                 }
+                context_handoff_preparation = lease.get("reason") == "context_handoff"
                 tool_grant_result = _set_session_team_mcp_tools(
                     context,
                     session_id=agent["session_id"],
-                    tool_names=_ordinary_team_tools_for_agent(agent),
+                    tool_names=(
+                        [TEAM_RECORD_CONTEXT_HANDOFF_TOOL]
+                        if context_handoff_preparation
+                        else _ordinary_team_tools_for_agent(agent)
+                    ),
                     dispatch_id=lease["dispatch_id"],
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
@@ -2318,7 +2324,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
                     agent_id=agent["id"],
                     dispatch_id=lease["dispatch_id"],
-                    lease_seconds=agent_lease_seconds,
+                    lease_seconds=(
+                        120
+                        if context_handoff_preparation
+                        else agent_lease_seconds
+                    ),
                 )
                 lease = {
                     **lease,
@@ -2372,6 +2382,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     runtime_payload.get("context_rotation_pending")
                 )
                 effective_resume_mode = (
+                    resume_mode
+                    if context_handoff_preparation
+                    else
                     "new_context"
                     if wake_uses_fresh_context(
                         lease,
@@ -2432,7 +2445,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     dispatch_payload["review_artifact_import_errors"] = lease[
                         "review_artifact_import_errors"
                     ]
-                if context_rotation_pending:
+                if context_rotation_pending and not context_handoff_preparation:
                     thread_id = _optional_text(result_payload.get("thread_id"))
                     state = TeamRuntimeService(repo).record_context_rotation_dispatch_started(
                         agent_id=agent["id"],
@@ -2444,6 +2457,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         "reason": runtime_payload.get("context_rotation_reason")
                         if isinstance(runtime_payload, Mapping)
                         else None,
+                    }
+                elif context_handoff_preparation:
+                    dispatch_payload["context_handoff_preparation"] = {
+                        "status": "started",
+                        "timeout_seconds": 120,
                     }
                 dispatches.append(dispatch_payload)
                 _mirror_session_metadata(
@@ -6211,6 +6229,15 @@ def _build_prompt(
     effective_resume_mode: str | None = None,
 ) -> str:
     agent = lease["agent"]
+    if lease.get("reason") == "context_handoff":
+        return (
+            "Record a concise advisory handoff before your Team context is reset.\n\n"
+            f"Use {TEAM_RECORD_CONTEXT_HANDOFF_TOOL} exactly once with a summary of at most "
+            "1,200 characters. Include only salient local context that durable Team state "
+            "does not already represent: key decision, current intent, next useful action, "
+            "or risk. Do not perform ordinary Team work, create records, or send messages. "
+            "The reset will proceed even if no handoff is recorded."
+        )
     fresh_context = (
         True
         if effective_resume_mode is None
@@ -6229,6 +6256,17 @@ def _build_prompt(
     )
     handoff_section = (
         f"Prior handoff summary from Team state:\n{handoff_summary}\n\n" if handoff_summary else ""
+    )
+    agent_handoff_summary = (
+        _optional_text(runtime.get("last_agent_handoff_summary"))
+        if fresh_context and isinstance(runtime, Mapping)
+        else None
+    )
+    agent_handoff_section = (
+        "Agent-authored self-handoff (advisory; durable Team state is authoritative):\n"
+        f"{agent_handoff_summary}\n\n"
+        if agent_handoff_summary
+        else ""
     )
     rotation_section = (
         "Context rotation for this wake:\n"
@@ -6330,6 +6368,7 @@ def _build_prompt(
         f"{_project_repos_prompt_guidance(project_repos)}"
         f"{rotation_section}"
         f"{handoff_section}"
+        f"{agent_handoff_section}"
         f"{review_artifact_section}"
         f"{git_release_sequence_section}"
         f"{manager_fallback_section}"
@@ -8593,6 +8632,12 @@ def _record_wake_failure(
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
     dispatch_id = _required_text(lease.get("dispatch_id"), "dispatch_id")
     current_dispatch = repo.read().dispatches.get(dispatch_id)
+    if current_dispatch is not None and current_dispatch.cause_kind == "context_handoff":
+        return TeamRuntimeService(repo).fail_agent_dispatch(
+            agent_id=agent_id,
+            dispatch_id=dispatch_id,
+            error=error,
+        )
     if current_dispatch is not None and current_dispatch.status.value == "preparing":
         return TeamRuntimeService(repo).fail_agent_dispatch(
             agent_id=agent_id,

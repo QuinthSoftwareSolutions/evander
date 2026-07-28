@@ -137,6 +137,12 @@ def _mark_context_rotation_pending(
     runtime.context_rotation_requested_at = requested_at
     runtime.context_rotation_request_note = request_note
     runtime.next_wake_at = requested_at
+    runtime.context_handoff_preparation_pending = reason in {"idle", "manual"}
+    runtime.context_handoff_preparation_status = (
+        "pending" if runtime.context_handoff_preparation_pending else None
+    )
+    runtime.last_agent_handoff_summary = None
+    runtime.last_agent_handoff_at = None
     runtime.last_handoff_summary = _build_context_handoff_summary(
         state,
         agent=agent,
@@ -213,6 +219,10 @@ def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
     runtime.context_rotation_request_note = None
     runtime.next_wake_at = None
     runtime.last_handoff_summary = None
+    runtime.context_handoff_preparation_pending = False
+    runtime.context_handoff_preparation_status = None
+    runtime.last_agent_handoff_summary = None
+    runtime.last_agent_handoff_at = None
 
 
 def _build_context_handoff_summary(

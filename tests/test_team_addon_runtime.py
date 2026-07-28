@@ -5320,22 +5320,34 @@ def test_wake_due_agents_provider_rotates_context_when_pending(
     result = provider.execute()
 
     assert result["success"] is True
-    assert resumer.calls[0]["resume_mode"] == "new_context"
-    prompt = str(resumer.calls[0]["prompt"])
+    assert resumer.calls[0]["resume_mode"] == "same_context"
+    assert "team_record_context_handoff" in str(resumer.calls[0]["prompt"])
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_handoff_preparation_pending is True
+    _team_runtime_service(repo).record_agent_context_handoff(
+        agent_id="backend",
+        dispatch_id=runtime.active_dispatch_id or "",
+        summary="Continue the controlled rotation with the observed local decision.",
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[1]["resume_mode"] == "new_context"
+    prompt = str(resumer.calls[1]["prompt"])
     assert "Prior handoff summary from Team state" in prompt
     assert "controlled rotation" in prompt
+    assert "Agent-authored self-handoff" in prompt
     assert result["dispatches"][0]["context_rotation"] == {
         "rotated": True,
         "reason": "manual",
     }
     runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
     assert runtime.context_rotation_pending is False
+    assert runtime.context_handoff_preparation_status == "recorded"
     assert runtime.last_context_rotated_at is not None
     assert runtime.last_thread_id == "thread-rotated"
-    assert (
-        session_store.sessions["session-backend"].metadata["team_addon"]["context_rotation_pending"]
-        is False
-    )
     assert session_store.sessions["session-backend"].metadata["team_addon"][
         "last_context_rotated_at"
     ]
@@ -5379,11 +5391,56 @@ def test_wake_due_agents_provider_rotates_every_wake_policy(
     runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
     assert runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
     assert runtime.context_rotation_pending is False
+    assert runtime.context_handoff_preparation_pending is False
+    assert runtime.last_agent_handoff_summary is None
     assert runtime.last_thread_id == "thread-every-wake"
     assert (
         session_store.sessions["session-backend"].metadata["team_addon"]["context_clearing_policy"]
         == "every_wake"
     )
+
+
+def test_idle_context_rotation_uses_bounded_handoff_preparation(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.IDLE,
+        set_context_clearing_policy=True,
+    )
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.FINISHED)
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime.now(UTC),
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "context_handoff"
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_reason == "idle"
+    assert runtime.context_handoff_preparation_pending is True
+
+
+def test_context_handoff_rejects_oversize_summary_without_releasing_rotation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_runtime_service(repo).request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+    )
+    _state, leases = _team_runtime_service(repo).lease_due_agents()
+
+    with pytest.raises(ValueError, match="at most 1200"):
+        _team_runtime_service(repo).record_agent_context_handoff(
+            agent_id="backend",
+            dispatch_id=str(leases[0]["dispatch_id"]),
+            summary="x" * 1201,
+        )
+
+    runtime = repo.read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_handoff_preparation_pending is True
+    assert runtime.last_agent_handoff_summary is None
 
 
 def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
@@ -5415,9 +5472,19 @@ def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
     result = provider.execute()
 
     assert result["success"] is True
-    assert resumer.calls[0]["resume_mode"] == "new_context"
-    assert "Context continuity checkpoint" in str(resumer.calls[0]["prompt"])
-    assert "Active tasks:" not in str(resumer.calls[0]["prompt"])
+    assert resumer.calls[0]["resume_mode"] == "same_context"
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    _team_runtime_service(repo).record_agent_context_handoff(
+        agent_id="backend",
+        dispatch_id=runtime.active_dispatch_id or "",
+        summary="No remaining active work; preserve the local conclusion.",
+    )
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[1]["resume_mode"] == "new_context"
+    assert "Context continuity checkpoint" in str(resumer.calls[1]["prompt"])
+    assert "Active tasks:" not in str(resumer.calls[1]["prompt"])
     runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
     assert runtime.context_rotation_pending is False
     assert runtime.last_thread_id == "thread-idle"
@@ -5594,9 +5661,10 @@ def test_wake_due_agents_provider_keeps_rotation_pending_when_resume_fails(
     result = provider.execute()
 
     assert result["success"] is False
-    assert resumer.calls[0]["resume_mode"] == "new_context"
+    assert resumer.calls[0]["resume_mode"] == "same_context"
     runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
     assert runtime.context_rotation_pending is True
+    assert runtime.context_handoff_preparation_status == "failed"
     assert runtime.last_context_rotated_at is None
 
 

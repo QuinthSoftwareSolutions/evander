@@ -44,6 +44,7 @@ from .chat_attachments import (
 )
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.read_service import TeamReadService
+from .services.runtime_service import TeamRuntimeService
 from .services.commands import (
     TeamAgentControlCommandService,
     TeamAgentMessageCommandService,
@@ -75,6 +76,7 @@ from .services.human_review_assignment_service import (
 logger = logging.getLogger(__name__)
 
 TEAM_RECORD_NOTE_TOOL = "team_record_note"
+TEAM_RECORD_CONTEXT_HANDOFF_TOOL = "team_record_context_handoff"
 TEAM_RECORD_MEMORY_TOOL = "team_record_memory"
 TEAM_ARCHIVE_MEMORY_TOOL = "team_archive_memory"
 TEAM_MARK_INBOX_HANDLED_TOOL = "team_mark_inbox_handled"
@@ -290,6 +292,7 @@ IMPLEMENTED_CHAT_TEAM_MCP_TOOL_NAMES = (
 IMPLEMENTED_EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 
 MCP_TOOL_NAMES = (
+    TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
     TEAM_ARCHIVE_MEMORY_TOOL,
@@ -343,6 +346,10 @@ MCP_TOOL_NAMES = (
     *READ_TEAM_MCP_TOOL_NAMES,
 )
 _MCP_TOOL_CATALOG_DESCRIPTIONS = {
+    TEAM_RECORD_CONTEXT_HANDOFF_TOOL: (
+        "Record one concise advisory handoff for the caller's pending context reset. "
+        "Available only during the dedicated context-handoff dispatch."
+    ),
     TEAM_DECIDE_DELIVERABLE_TOOL: (
         "Accept or reject a direct deliverable handoff as its recorded superior; "
         "formal review decisions remain separate."
@@ -407,6 +414,33 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     resolver = TeamMcpContextResolver(repo=repo, context=context)
     attachment_storage = TeamChatAttachmentStorage(context.runtime_dir)
     attachment_policy_service = TeamChatAttachmentPolicyService(repo)
+
+    @server.tool()
+    def team_record_context_handoff(
+        summary: str,
+        request_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        del request_id  # The rotation is single-use and dispatch-bound.
+        caller = resolver.require_context_handoff_context(
+            session_id=session_id,
+            tool_name=TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
+        )
+        try:
+            state = TeamRuntimeService(repo).record_agent_context_handoff(
+                agent_id=caller.agent_id or "",
+                dispatch_id=caller.active_dispatch_id or "",
+                summary=summary,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return team_mcp_success(
+            revision=state.revision,
+            progress_made=False,
+            agent_id=caller.agent_id,
+            context_rotation_pending=True,
+            handoff_recorded=True,
+        )
 
     @server.tool()
     def team_create_operator_directive(

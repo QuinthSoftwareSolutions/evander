@@ -169,6 +169,13 @@ Each persistent agent has one of three policies:
 
 “Truly idle” means no active lease, active tasks, pending wakeable work, reviews, or ephemeral acceptance needing that agent. The system first creates a handoff summary so a new conversation does not discard durable orientation.
 
+Manual and idle rotations also make one bounded 120-second attempt to resume
+the prior context and record a single advisory self-handoff. The summary is
+limited to 1,200 characters, is clearly separate from durable Team state, and
+cannot delay the fresh-context reset if it is missing, rejected, or times out.
+The <code>every_wake</code> policy deliberately skips this agent-authored step
+and keeps only its deterministic checkpoint.
+
 A pending rotation is cleared only after the new dispatch starts successfully. If session startup fails, it remains pending. Manual rotation can queue a change even when the automatic policy is <code>off</code>.
 
 For Northstar, Imani might use <code>idle</code>: the telemetry implementation stays in one context while active, then rotates after all substantive work is handed off. Rowan might use <code>every_wake</code> for strongly isolated review passes. That does not make Rowan poll constantly; Rowan still needs a review or other wake reason.

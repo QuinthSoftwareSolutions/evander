@@ -5792,6 +5792,16 @@ def _build_agent_voice_projection(
             ),
             "context_rotation_pending": getattr(runtime, "context_rotation_pending", False),
             "last_handoff_summary": getattr(runtime, "last_handoff_summary", None),
+            "context_handoff_preparation_pending": getattr(
+                runtime, "context_handoff_preparation_pending", False
+            ),
+            "context_handoff_preparation_status": getattr(
+                runtime, "context_handoff_preparation_status", None
+            ),
+            "last_agent_handoff_summary": getattr(runtime, "last_agent_handoff_summary", None),
+            "last_agent_handoff_at": _datetime_text(
+                getattr(runtime, "last_agent_handoff_at", None)
+            ),
             "last_thread_id": getattr(runtime, "last_thread_id", None),
         },
         "open_tasks": [

@@ -308,6 +308,53 @@ class TeamRuntimeService:
 
         return self._repository.update(_mutate)
 
+    def record_agent_context_handoff(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        summary: str,
+    ) -> TeamState:
+        """Persist one advisory handoff and release the fresh-context rotation."""
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_summary = " ".join(_required_text(summary, "summary").split())
+        if len(normalized_summary) > 1200:
+            raise ValueError("summary must be at most 1200 characters")
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = _require_present(state.agent_runtimes, normalized_agent_id, "agent runtime")
+            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError("context handoff dispatch belongs to another agent")
+            if dispatch.cause_kind != "context_handoff":
+                raise ValueError("agent context handoff requires a context_handoff dispatch")
+            if dispatch.status != TeamDispatchStatus.LEASED:
+                raise ValueError("agent context handoff dispatch is not active")
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError("context handoff dispatch no longer owns the runtime lease")
+            if not runtime.context_handoff_preparation_pending:
+                raise ValueError("agent context handoff is no longer pending")
+            now = utc_now()
+            runtime.last_agent_handoff_summary = normalized_summary
+            runtime.last_agent_handoff_at = now
+            runtime.context_handoff_preparation_pending = False
+            runtime.context_handoff_preparation_status = "recorded"
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.wake_reason = None
+            runtime.next_wake_at = now
+            runtime.updated_at = now
+            _mark_dispatch_terminal(
+                state,
+                dispatch_id=dispatch.id,
+                status=TeamDispatchStatus.COMPLETED,
+                completed_at=now,
+            )
+            return state
+
+        return self._repository.update(_mutate)
+
     def lease_due_agents(
         self,
         *,
@@ -423,6 +470,10 @@ class TeamRuntimeService:
                         runtime.active_dispatch_id = None
                         runtime.wake_leased_until = None
                         runtime.wake_reason = None
+                        if durable_dispatch is not None and durable_dispatch.cause_kind == "context_handoff":
+                            runtime.context_handoff_preparation_pending = False
+                            runtime.context_handoff_preparation_status = "timed_out"
+                            runtime.next_wake_at = effective_now
                         runtime.updated_at = effective_now
                 if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
                     continue
@@ -645,9 +696,15 @@ class TeamRuntimeService:
                 ):
                     continue
 
+                context_handoff_preparation = (
+                    runtime.context_rotation_pending
+                    and runtime.context_handoff_preparation_pending
+                )
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
                 reason = (
-                    "blocker"
+                    "context_handoff"
+                    if context_handoff_preparation
+                    else "blocker"
                     if preparation_recovery_dispatch
                     else "inbox"
                     if immediate_inbox
@@ -674,7 +731,10 @@ class TeamRuntimeService:
                     if low_priority_wake_ready and low_priority_inbox
                     else _action_feedback_cause_id(action_feedback)
                 )
-                if preparation_recovery_dispatch:
+                if context_handoff_preparation:
+                    reservation_scope = None
+                    dispatch_scope = None
+                elif preparation_recovery_dispatch:
                     reservation_scope = build_preparation_recovery_dispatch_scope(
                         blockers=due_blockers,
                         inbox_items=pending_inbox,
@@ -712,7 +772,7 @@ class TeamRuntimeService:
                     cause_id=cause_id,
                     status=TeamDispatchStatus.PREPARING,
                     created_at=effective_now,
-                    **dispatch_scope.model_fields(),
+                    **(dispatch_scope.model_fields() if dispatch_scope is not None else {}),
                 )
                 state_model.dispatches[dispatch_id] = durable_dispatch
                 if (
@@ -735,13 +795,14 @@ class TeamRuntimeService:
                 runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
                 runtime.updated_at = effective_now
-                assign_blockers_to_dispatch(
-                    state_model,
-                    agent_id=agent.id,
-                    dispatch_id=dispatch_id,
-                    blocker_ids=reservation_scope.blocker_ids,
-                    now=effective_now,
-                )
+                if reservation_scope is not None:
+                    assign_blockers_to_dispatch(
+                        state_model,
+                        agent_id=agent.id,
+                        dispatch_id=dispatch_id,
+                        blocker_ids=reservation_scope.blocker_ids,
+                        now=effective_now,
+                    )
                 scoped_blockers = [
                     state_model.blockers[blocker_id].model_dump(mode="json")
                     for blocker_id in durable_dispatch.blocker_ids
@@ -1966,6 +2027,10 @@ def _fail_dispatch_preparation_in_state(
         runtime.active_dispatch_id = None
         runtime.wake_leased_until = None
         runtime.wake_reason = None
+        if dispatch.cause_kind == "context_handoff":
+            runtime.context_handoff_preparation_pending = False
+            runtime.context_handoff_preparation_status = "failed"
+            runtime.next_wake_at = completed_at
         runtime.updated_at = completed_at
     _mark_dispatch_terminal(
         state,

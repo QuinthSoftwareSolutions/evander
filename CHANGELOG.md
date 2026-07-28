@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-28 - Bounded Agent Context Self-handoffs
+
+- Added a 120-second, best-effort same-context handoff preparation for manual
+  and idle Team context rotations. Agents can record one server-capped advisory
+  summary before the fresh context starts; failure or timeout never blocks the
+  reset. Every-wake agents retain only the existing deterministic checkpoint.
+
 ## 2026-07-28 - Team Stand-down Completion and State Upgrades
 
 - Allowed a support-task dispatch leased before a stand-down to record its

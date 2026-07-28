@@ -904,6 +904,30 @@ class TeamStateSqliteStore:
                     column_name="context_clearing_policy",
                     definition="TEXT NOT NULL DEFAULT 'off'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_handoff_preparation_pending",
+                    definition="INTEGER NOT NULL DEFAULT 0",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_handoff_preparation_status",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="last_agent_handoff_summary",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="last_agent_handoff_at",
+                    definition="TEXT",
+                )
                 connection.execute(
                     """
                     UPDATE team_agent_runtimes
@@ -2051,6 +2075,10 @@ class TeamStateSqliteStore:
                 "context_rotation_reason": row["context_rotation_reason"],
                 "context_rotation_request_note": row["context_rotation_request_note"],
                 "last_handoff_summary": row["last_handoff_summary"],
+                "context_handoff_preparation_pending": _bool(row["context_handoff_preparation_pending"]),
+                "context_handoff_preparation_status": row["context_handoff_preparation_status"],
+                "last_agent_handoff_summary": row["last_agent_handoff_summary"],
+                "last_agent_handoff_at": row["last_agent_handoff_at"],
                 "last_context_rotated_at": row["last_context_rotated_at"],
                 "last_thread_id": row["last_thread_id"],
                 "updated_at": row["updated_at"],
@@ -2070,9 +2098,11 @@ class TeamStateSqliteStore:
                     auto_context_clearing_enabled, context_rotation_pending,
                     context_rotation_requested_by, context_rotation_requested_at,
                     context_rotation_reason, context_rotation_request_note,
-                    last_handoff_summary, last_context_rotated_at, last_thread_id, updated_at
+                    last_handoff_summary, context_handoff_preparation_pending,
+                    context_handoff_preparation_status, last_agent_handoff_summary,
+                    last_agent_handoff_at, last_context_rotated_at, last_thread_id, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2094,6 +2124,10 @@ class TeamStateSqliteStore:
                     runtime.get("context_rotation_reason"),
                     runtime.get("context_rotation_request_note"),
                     runtime.get("last_handoff_summary"),
+                    _int_bool(runtime.get("context_handoff_preparation_pending")),
+                    runtime.get("context_handoff_preparation_status"),
+                    runtime.get("last_agent_handoff_summary"),
+                    runtime.get("last_agent_handoff_at"),
                     runtime.get("last_context_rotated_at"),
                     runtime.get("last_thread_id"),
                     runtime["updated_at"],
@@ -5686,6 +5720,10 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     context_rotation_reason TEXT,
     context_rotation_request_note TEXT,
     last_handoff_summary TEXT,
+    context_handoff_preparation_pending INTEGER NOT NULL DEFAULT 0,
+    context_handoff_preparation_status TEXT,
+    last_agent_handoff_summary TEXT,
+    last_agent_handoff_at TEXT,
     last_context_rotated_at TEXT,
     last_thread_id TEXT,
     updated_at TEXT NOT NULL

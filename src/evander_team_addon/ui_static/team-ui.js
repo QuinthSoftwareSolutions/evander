@@ -6775,6 +6775,8 @@ function renderRuntimeAgentRow(agent) {
   const wakeLease = runtimeText(agent.wake_leased_until);
   const dispatchId = runtimeText(agent.active_dispatch_id);
   const contextPending = Boolean(agent.context_rotation_pending);
+  const handoffPreparing = Boolean(agent.context_handoff_preparation_pending);
+  const handoffPreparationStatus = runtimeText(agent.context_handoff_preparation_status);
   const contextPolicy = contextClearingPolicyValue(agent);
   const lastRotated = runtimeText(agent.last_context_rotated_at);
   const handoffSummary = text(agent.last_handoff_summary);
@@ -6792,7 +6794,7 @@ function renderRuntimeAgentRow(agent) {
       <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}</div>
       ${
         handoffSummary
           ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
