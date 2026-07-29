@@ -219,14 +219,15 @@ let activeTeamView = initialHumanReviewDeepLink.enabled
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
-const openPlanningDisclosures = new Set();
+// Native disclosure state belongs to the DOM, so keep its intentional state
+// separately whenever a view renderer replaces that DOM.
+const openTeamDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
 let projectCreateFormOpen = false;
 let projectReviewProfileCreateProjectId = null;
 const projectRecordSectionPages = {};
 const projectRecordShowRejected = new Set();
-const openProjectRecordSections = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -653,7 +654,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
-  bindPlanningDisclosures();
+  bindTeamDisclosures();
   bindProjectFocus();
   bindTaskBoardSelectors();
   bindCaseFilters();
@@ -799,6 +800,8 @@ const mailController = createTeamMailController({
   humanizeToken,
   taskStateLabel,
   inboxItemLabels,
+  disclosureAttributes: teamDisclosureAttributes,
+  captureDisclosures: rememberOpenTeamDisclosures,
 });
 
 const activityController = createTeamActivityController({
@@ -986,6 +989,7 @@ function targetIsActive(target) {
 }
 
 function renderIntoActiveTargets(selector, html) {
+  rememberOpenTeamDisclosures();
   const targets = Array.from(document.querySelectorAll(selector));
   targets.forEach((target) => {
     if (targetIsActive(target)) {
@@ -3048,6 +3052,11 @@ function bindDeliveryFilters() {
       return;
     }
     selectedDeliveryProjectId = text(projectSelect.value);
+    if (selectedDeliveryProjectId) {
+      openTeamDisclosures.add(
+        teamDisclosureKey("delivery", "project", selectedDeliveryProjectId),
+      );
+    }
     renderReviewDeliveryWorkspace();
   });
   document.addEventListener("click", (event) => {
@@ -3141,38 +3150,25 @@ function bindPlanningFilters() {
   updatePlanningFilterControls();
 }
 
-function bindPlanningDisclosures() {
+function bindTeamDisclosures() {
   document.addEventListener("toggle", (event) => {
     const disclosure = event.target;
-    if (!disclosure?.matches?.("details[data-planning-disclosure-key]")) {
+    if (!disclosure?.matches?.("details[data-team-disclosure-key]")) {
       return;
     }
-    const key = text(disclosure.dataset.planningDisclosureKey);
+    const key = text(disclosure.dataset.teamDisclosureKey);
     if (!key) {
       return;
     }
     if (disclosure.open) {
-      openPlanningDisclosures.add(key);
+      openTeamDisclosures.add(key);
     } else {
-      openPlanningDisclosures.delete(key);
+      openTeamDisclosures.delete(key);
     }
   }, true);
 }
 
 function bindProjectFocus() {
-  document.addEventListener("toggle", (event) => {
-    const section = event.target;
-    if (!section?.matches?.("[data-project-record-section]")) {
-      return;
-    }
-    const key = projectRecordSectionKey(section.dataset.projectId, section.dataset.projectSection);
-    if (section.open) {
-      openProjectRecordSections.add(key);
-    } else {
-      openProjectRecordSections.delete(key);
-    }
-  }, true);
-
   document.addEventListener("click", (event) => {
     const createToggle = event.target?.closest?.("[data-project-create-toggle]");
     if (createToggle) {
@@ -3250,7 +3246,7 @@ function bindProjectFocus() {
         projectRecordShowRejected.add(key);
       }
       projectRecordSectionPages[key] = 1;
-      openProjectRecordSections.add(key);
+      openTeamDisclosures.add(key);
       renderProjectFocus();
       return;
     }
@@ -3263,7 +3259,7 @@ function bindProjectFocus() {
         pageButton.dataset.projectSection,
       );
       projectRecordSectionPages[key] = Math.max(1, Math.floor(Number(pageButton.dataset.projectSectionPage) || 1));
-      openProjectRecordSections.add(key);
+      openTeamDisclosures.add(key);
       renderProjectFocus();
     }
   });
@@ -4641,6 +4637,7 @@ function renderShell() {
 }
 
 function render() {
+  rememberOpenTeamDisclosures();
   renderShell();
   renderActiveView(activeTeamView);
 }
@@ -5087,6 +5084,7 @@ function renderWorkspaceDashboard() {
 function renderWorkspaceTarget(panel, selector, html) {
   const target = panel.querySelector(selector);
   if (target) {
+    rememberOpenTeamDisclosures();
     target.innerHTML = html;
   }
 }
@@ -5770,7 +5768,9 @@ function renderGovernanceGroup(group) {
       ${renderTechnicalDetails([
         ["Governance group ID", group.id],
         ["Manager agent ID", group.manager_agent_id],
-      ])}
+      ], {
+        disclosureKey: teamDisclosureKey("governance-group", group.id, "technical"),
+      })}
     </li>
   `;
 }
@@ -6741,7 +6741,10 @@ function renderRuntimeAttentionTechnicalDetails(row) {
     ["Source branch", row.source_branch],
     ["Target branch", row.target_branch],
     ["Commit", row.commit_sha || row.candidate_commit_sha],
-  ], { summary: "Identifiers, branches, and hashes" });
+  ], {
+    summary: "Identifiers, branches, and hashes",
+    disclosureKey: teamDisclosureKey("runtime-attention", row.id, "technical"),
+  });
 }
 
 function renderRuntimeAttentionActions(row) {
@@ -6834,7 +6837,7 @@ function renderCompactRuntimeAttentionRow(row) {
   const where = runtimeAttentionWhere(row);
   return `
     <li class="record-item runtime-item runtime-item-compact runtime-attention-card runtime-attention-kind-${escapeAttr(category.id)} runtime-severity-${escapeAttr(row.severity || "info")}" data-attention-id="${escapeAttr(row.id)}">
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("operations", "attention", row.id, "detail"))}>
         <summary class="runtime-summary compact-record-summary">
           <span class="runtime-attention-summary-icon" aria-hidden="true">${escapeHtml(category.icon)}</span>
           <span class="compact-record-main runtime-attention-summary-main">
@@ -6902,7 +6905,7 @@ function renderRuntimeAgentRow(agent) {
       <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}</div>
       ${
         handoffSummary
-          ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
+          ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey(activeTeamView, "runtime-agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
           : ""
       }
       <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
@@ -6934,7 +6937,7 @@ function renderCompactRuntimeAgentRow(agent) {
   ].filter(Boolean);
   return `
     <li class="record-item runtime-item runtime-item-compact runtime-agent-item">
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("operations", "agent", agent.id, "detail"))}>
         <summary class="runtime-summary compact-record-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(agent.id)}</strong>
@@ -6955,7 +6958,7 @@ function renderCompactRuntimeAgentRow(agent) {
           <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
           ${
             handoffSummary
-              ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
+              ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey("operations", "agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
               : ""
           }
           <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
@@ -8129,7 +8132,7 @@ function renderTeamInlineProjectForm(teamId) {
         )}</select></label>
         <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
       </div>
-      <details class="team-inline-create-advanced">
+      <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "git"))}>
         <summary>Git config</summary>
         <div class="team-inline-create-fields">
           <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
@@ -8140,7 +8143,7 @@ function renderTeamInlineProjectForm(teamId) {
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
       </details>
-      <details class="team-inline-create-advanced">
+      <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "release-gates"))}>
         <summary>Release gates</summary>
         <label>Automated and agent-review policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
         ${renderHumanReviewPolicyEditor()}
@@ -11037,7 +11040,7 @@ function inboxPriorityLabel(item) {
 }
 
 function renderProjects() {
-  rememberOpenPlanningDisclosures();
+  rememberOpenTeamDisclosures();
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter(isVisibleProject);
   if (!allProjects.length) {
@@ -11137,6 +11140,7 @@ function renderProjects() {
 }
 
 function renderProjectFocus() {
+  rememberOpenTeamDisclosures();
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
   }
@@ -11349,7 +11353,7 @@ function renderProjectOutcomeKinds(definitions) {
     <ul class="review-list compact-record-list">
       ${definitions.map((definition) => `
         <li class="record-item compact-record-card">
-          <details>
+          <details ${teamDisclosureAttributes(teamDisclosureKey("projects", "outcome-kind", definition.id, "detail"))}>
             <summary class="compact-record-summary">
               <span class="compact-record-main">
                 <strong>${escapeHtml(definition.name)}</strong>
@@ -11442,7 +11446,7 @@ function renderProjectRecordSection(project, section, title, records, renderPage
       data-project-record-section
       data-project-id="${escapeAttr(project.id)}"
       data-project-section="${escapeAttr(section)}"
-      ${openProjectRecordSections.has(key) ? "open" : ""}
+      ${teamDisclosureAttributes(key)}
     >
       <summary class="project-record-section-summary">
         <span class="compact-record-main">
@@ -11511,7 +11515,7 @@ function renderProjectRecordPager(projectId, section, page, totalPages, totalRec
 }
 
 function projectRecordSectionKey(projectId, section) {
-  return `${text(projectId)}:${text(section)}`;
+  return teamDisclosureKey("projects", "record-section", projectId, section);
 }
 
 function isRejectedProjectRecord(record) {
@@ -11984,7 +11988,7 @@ function renderProjectReviewProfiles(projectProfiles, teamProfiles) {
     : `<p class="empty-state">No project-specific review profiles.</p>`;
   const teamList = teamProfiles.length
     ? `
-      <details class="team-wide-review-profiles">
+      <details class="team-wide-review-profiles" ${teamDisclosureAttributes(teamDisclosureKey("projects", "team-review-profiles", project.id))}>
         <summary>Team-wide profiles available to this project</summary>
         <ul class="review-list compact-record-list">${teamProfiles.map(renderCompactReviewProfile).join("")}</ul>
       </details>
@@ -12925,7 +12929,7 @@ function renderTaskBoardCard(task, focus) {
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
       <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
-      ${renderTaskBoardUnresolvedDescendants(unresolvedIds)}
+      ${renderTaskBoardUnresolvedDescendants(task.id, unresolvedIds)}
       ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
       ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
       ${renderTaskBoardBlockerLine(task)}
@@ -12956,7 +12960,7 @@ function taskBoardTaskReferenceLabel(taskId) {
   return text(linkedTask?.title) || "Unavailable task";
 }
 
-function renderTaskBoardUnresolvedDescendants(unresolvedIds) {
+function renderTaskBoardUnresolvedDescendants(taskId, unresolvedIds) {
   const ids = [...new Set((unresolvedIds || []).map(text).filter(Boolean))];
   if (!ids.length) {
     return "";
@@ -12980,7 +12984,7 @@ function renderTaskBoardUnresolvedDescendants(unresolvedIds) {
         <strong>${descendants.length} unresolved descendant${descendants.length === 1 ? "" : "s"}</strong>
         <span>${escapeHtml(previewLabels.join(", "))}</span>
       </div>
-      <details class="task-board-descendant-details">
+      <details class="task-board-descendant-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "task", taskId, "descendants"))}>
         <summary>View all ${descendants.length} descendant${descendants.length === 1 ? "" : "s"}</summary>
         <ul class="task-board-descendant-list">
           ${descendants.map((descendant) => `
@@ -13022,7 +13026,7 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Unresolved descendant IDs", (unresolvedIds || []).map(text).filter(Boolean).join(", ")],
   ].filter(([, value]) => value);
   return `
-    <details class="technical-details task-board-technical-details">
+    <details class="technical-details task-board-technical-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "task", task.id, "technical"))}>
       <summary>Technical details</summary>
       <dl class="technical-details-list">
         ${rows.map(([label, value]) => `
@@ -13324,27 +13328,38 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
   `;
 }
 
-function planningDisclosureKey(kind, recordId) {
-  return `${text(kind)}:${text(recordId)}`;
+function teamDisclosureKey(...parts) {
+  return parts.map(text).filter(Boolean).join(":");
 }
 
-function planningDisclosureAttributes(kind, recordId) {
-  const key = planningDisclosureKey(kind, recordId);
-  return `data-planning-disclosure-key="${escapeAttr(key)}"${openPlanningDisclosures.has(key) ? " open" : ""}`;
+function teamDisclosureAttributes(key) {
+  const normalizedKey = text(key);
+  if (!normalizedKey) {
+    return "";
+  }
+  return `data-team-disclosure-key="${escapeAttr(normalizedKey)}"${openTeamDisclosures.has(normalizedKey) ? " open" : ""}`;
 }
 
-function rememberOpenPlanningDisclosures() {
-  document.querySelectorAll("details[data-planning-disclosure-key]").forEach((disclosure) => {
-    const key = text(disclosure.dataset.planningDisclosureKey);
+function rememberOpenTeamDisclosures(root = document) {
+  root.querySelectorAll?.("details[data-team-disclosure-key]").forEach((disclosure) => {
+    const key = text(disclosure.dataset.teamDisclosureKey);
     if (!key) {
       return;
     }
     if (disclosure.open) {
-      openPlanningDisclosures.add(key);
+      openTeamDisclosures.add(key);
     } else {
-      openPlanningDisclosures.delete(key);
+      openTeamDisclosures.delete(key);
     }
   });
+}
+
+function planningDisclosureKey(kind, recordId) {
+  return teamDisclosureKey("planning", kind, recordId);
+}
+
+function planningDisclosureAttributes(kind, recordId) {
+  return teamDisclosureAttributes(planningDisclosureKey(kind, recordId));
 }
 
 function renderProjectGit(git) {
@@ -13380,7 +13395,7 @@ function renderGoals(goals, { compact = false } = {}) {
           .map((goal) => {
             return `
               <li class="record-item compact-record-card">
-                <details>
+                <details ${teamDisclosureAttributes(teamDisclosureKey("goal", goal.id, "detail"))}>
                   <summary class="compact-record-summary">
                     <span class="compact-record-main">
                       <strong>${escapeHtml(goal.description)}</strong>
@@ -13504,7 +13519,7 @@ function renderTaskHierarchyRow(
   if (compact) {
     return `
       <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}">
-        <details>
+        <details ${teamDisclosureAttributes(teamDisclosureKey("task", task.id, "detail"))}>
           <summary class="compact-record-summary">
             <span class="compact-record-main">
               <strong>${escapeHtml(task.title)}</strong>
@@ -14374,7 +14389,7 @@ function renderTechnicalDetails(entries, { summary = "Technical details", disclo
     return "";
   }
   return `
-    <details class="technical-details"${disclosureKey ? ` data-planning-disclosure-key="${escapeAttr(disclosureKey)}"${openPlanningDisclosures.has(disclosureKey) ? " open" : ""}` : ""}>
+    <details class="technical-details" ${teamDisclosureAttributes(disclosureKey)}>
       <summary>${escapeHtml(summary)}</summary>
       <dl class="technical-details-list">${rows.join("")}</dl>
     </details>
@@ -14461,7 +14476,9 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
-  ]);
+  ], {
+    disclosureKey: teamDisclosureKey("deliverable", deliverable.id, "technical"),
+  });
 }
 
 function renderDeliverableCard(deliverable, { compact = false } = {}) {
@@ -14472,7 +14489,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
   const reviewIds = deliverable.review_request_ids || [];
   return `
     <li class="record-item compact-record-card deliverable-card${compact ? " deliverable-card-compact" : ""}" data-deliverable-id="${escapeAttr(deliverable.id)}">
-      <details class="deliverable-card-details">
+      <details class="deliverable-card-details" ${teamDisclosureAttributes(teamDisclosureKey("deliverable", deliverable.id, "detail"))}>
         <summary class="compact-record-summary deliverable-card-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(subject)}</strong>
@@ -14567,7 +14584,9 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
                 ["Deliverable ID", review.deliverable_id],
                 ["Release ID", review.release_package_id],
                 ["Reviewed commit", review.reviewed_commit_sha],
-              ])}
+              ], {
+                disclosureKey: teamDisclosureKey("review-request", review.id, "technical"),
+              })}
             </li>
           `;
         })
@@ -14780,7 +14799,7 @@ function renderCompactReviewProfile(profile) {
           ${editButton("review-profile", profile.id)}
         </div>
       </div>
-      <details class="review-profile-card-details">
+      <details class="review-profile-card-details" ${teamDisclosureAttributes(teamDisclosureKey("review-profile", profile.id, "detail"))}>
         <summary class="review-profile-detail-toggle">View profile</summary>
         <div class="review-profile-card-body">
           <div class="review-profile-section-grid">
@@ -14895,7 +14914,7 @@ function renderProfileCriteria(criteria) {
 function renderReviewProfileTechnicalDetails(profile, scope, outcomeKinds) {
   const criteria = profile.criteria || [];
   return `
-    <details class="technical-details review-profile-technical-details">
+    <details class="technical-details review-profile-technical-details" ${teamDisclosureAttributes(teamDisclosureKey("review-profile", profile.id, "technical"))}>
       <summary>Technical details</summary>
       <dl class="technical-details-list">
         <div>
@@ -15582,7 +15601,10 @@ function renderReleaseNotes(release) {
   return `<div class="release-notes">${escapeHtml(summary)}</div>`;
 }
 
-function renderReleaseTechnicalDetails(release) {
+function renderReleaseTechnicalDetails(
+  release,
+  { disclosureKey = teamDisclosureKey("release", release.id, "technical") } = {},
+) {
   const manifest = release.manifest || {};
   return renderTechnicalDetails([
     ["Release ID", release.id],
@@ -15601,7 +15623,7 @@ function renderReleaseTechnicalDetails(release) {
     ["Review IDs", release.review_request_ids || []],
     ["Verification run IDs", release.verification_run_ids || []],
     ["Promotion IDs", release.git_promotion_record_ids || []],
-  ]);
+  ], { disclosureKey });
 }
 
 function renderReleaseCardBody(release) {
@@ -15625,8 +15647,10 @@ function renderReleaseCardBody(release) {
       ${renderPostReleaseReportControl(release)}
       ${renderReleaseDetailControl(release)}
       ${renderCachedReleaseDetail(release.id)}
-      ${renderReleasePolicyDetails(release) ? `<details class="technical-details release-policy-details"><summary>Policy and gate details</summary><div class="release-policy-body">${renderReleasePolicyDetails(release)}</div></details>` : ""}
-      ${renderReleaseTechnicalDetails(release)}
+      ${renderReleasePolicyDetails(release) ? `<details class="technical-details release-policy-details" ${teamDisclosureAttributes(teamDisclosureKey("release-card", release.id, "policy"))}><summary>Policy and gate details</summary><div class="release-policy-body">${renderReleasePolicyDetails(release)}</div></details>` : ""}
+      ${renderReleaseTechnicalDetails(release, {
+        disclosureKey: teamDisclosureKey("release-card", release.id, "technical"),
+      })}
     </div>
   `;
 }
@@ -15640,7 +15664,7 @@ function renderReleaseCard(release, { compact = false } = {}) {
   ].filter(Boolean);
   return `
     <li class="record-item compact-record-card release-card${compact ? " release-card-compact" : ""}" data-release-id="${escapeAttr(release.id)}">
-      <details${expandedReleaseDetailIds.has(text(release.id)) || postReleaseReportResults.has(text(release.id)) ? " open" : ""}>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("release-card", release.id, "detail"))}>
         <summary class="compact-record-summary release-card-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(releaseDisplayLabel(release))}</strong>
@@ -15756,7 +15780,7 @@ function renderPostReleaseReportControl(release) {
   return `
     <div class="post-release-report-control">
       ${resultMarkup}
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("release-card", release.id, "post-release-report"))}>
         <summary>Report regression or adjustment</summary>
         <form
           class="post-release-report-form"
@@ -15829,10 +15853,12 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
+    openTeamDisclosures.delete(teamDisclosureKey("release-card", releaseId, "detail"));
     renderReleaseDetailSurfaces();
     return;
   }
   expandedReleaseDetailIds.add(releaseId);
+  openTeamDisclosures.add(teamDisclosureKey("release-card", releaseId, "detail"));
   renderReleaseDetailSurfaces();
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
@@ -15919,6 +15945,7 @@ async function openHumanReviewDeepLink(requestId) {
     return false;
   }
   expandedReleaseDetailIds.add(releaseId);
+  openTeamDisclosures.add(teamDisclosureKey("release-card", releaseId, "detail"));
   renderReleases();
   await loadReleaseDetail(releaseId);
   focusHumanReviewRequestElement(focusedHumanReviewRequestId);
@@ -15965,10 +15992,10 @@ function renderReleaseDetail(release) {
       </div>
       ${renderReleaseCandidateCheckout(release)}
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
-      ${renderReleaseContributionGraph(contributionGraph)}
-      ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [])}
-      ${renderReleaseAgentReviews(releaseReviews)}
-      ${renderReleaseHumanRequests(humanRequests, manifest)}
+      ${renderReleaseContributionGraph(contributionGraph, release.id)}
+      ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [], release.id)}
+      ${renderReleaseAgentReviews(releaseReviews, release.id)}
+      ${renderReleaseHumanRequests(humanRequests, manifest, release.id)}
       ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
     </section>
   `;
@@ -16010,7 +16037,9 @@ function renderReleaseDeliverableEvidence(rows, release) {
       ? `<div class="release-detail-section"><h4>Included work evidence</h4><ul class="delivery-detail-list">${deliverableIds.map((id) => {
           const deliverable = state.deliverables[id] || {};
           const task = deliverableTask(deliverable);
-          return `<li><strong>${escapeHtml(task?.title || deliverableDisplaySubject(deliverable))}</strong>${deliverable.summary ? `<div>${escapeHtml(readablePreview(deliverable.summary, 320))}</div>` : ""}${renderTechnicalDetails([["Deliverable ID", id], ["Task ID", deliverable.task_id]])}</li>`;
+          return `<li><strong>${escapeHtml(task?.title || deliverableDisplaySubject(deliverable))}</strong>${deliverable.summary ? `<div>${escapeHtml(readablePreview(deliverable.summary, 320))}</div>` : ""}${renderTechnicalDetails([["Deliverable ID", id], ["Task ID", deliverable.task_id]], {
+            disclosureKey: teamDisclosureKey("release-detail", release.id, "deliverable", id, "technical"),
+          })}</li>`;
         }).join("")}</ul></div>`
       : "";
   }
@@ -16033,7 +16062,9 @@ function renderReleaseDeliverableEvidence(rows, release) {
               ["Feature branch", row.feature_branch],
               ["Feature commit", row.feature_commit_sha],
               ["Review IDs", reviews.map((review) => review.review_request_id)],
-            ])}
+            ], {
+              disclosureKey: teamDisclosureKey("release-detail", release.id, "deliverable", row.deliverable_id, "technical"),
+            })}
           </li>`;
         }).join("")}
       </ul>
@@ -16041,7 +16072,7 @@ function renderReleaseDeliverableEvidence(rows, release) {
   `;
 }
 
-function renderReleaseContributionGraph(graph) {
+function renderReleaseContributionGraph(graph, releaseId) {
   const rows = Object.entries(graph || {});
   if (!rows.length) {
     return "";
@@ -16056,7 +16087,9 @@ function renderReleaseContributionGraph(graph) {
           return `<li>
             <strong>${escapeHtml(deliverable ? deliverableDisplaySubject(deliverable) : "Included work")}</strong>
             <div class="meta-line">${sources.length ? `Built from ${escapeHtml(sources.map(deliverableDisplaySubject).join(", "))}` : "Direct contribution"}</div>
-            ${renderTechnicalDetails([["Deliverable ID", deliverableId], ["Source deliverable IDs", sourceIds || []]])}
+            ${renderTechnicalDetails([["Deliverable ID", deliverableId], ["Source deliverable IDs", sourceIds || []]], {
+              disclosureKey: teamDisclosureKey("release-detail", releaseId, "contribution", deliverableId, "technical"),
+            })}
           </li>`;
         }).join("")}
       </ul>
@@ -16064,7 +16097,7 @@ function renderReleaseContributionGraph(graph) {
   `;
 }
 
-function renderReleaseVerificationRuns(runs, commands) {
+function renderReleaseVerificationRuns(runs, commands, releaseId) {
   if (!runs.length && !commands.length) {
     return "";
   }
@@ -16077,7 +16110,9 @@ function renderReleaseVerificationRuns(runs, commands) {
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
               ${(run.command_results || []).length ? `<ul class="inline-list">${run.command_results.map((result) => `<li>${escapeHtml(result.name)}: ${escapeHtml(result.state)}${result.log_excerpt ? ` - ${escapeHtml(result.log_excerpt)}` : ""}</li>`).join("")}</ul>` : ""}
-              ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]])}
+              ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
+                disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
+              })}
             </li>`).join("")}</ul>`
           : `<div class="meta-line">Configured commands: ${escapeHtml(commands.map((command) => command.name).join(", "))}</div>`
       }
@@ -16085,7 +16120,7 @@ function renderReleaseVerificationRuns(runs, commands) {
   `;
 }
 
-function renderReleaseAgentReviews(reviews) {
+function renderReleaseAgentReviews(reviews, releaseId) {
   if (!reviews.length) {
     return "";
   }
@@ -16100,7 +16135,9 @@ function renderReleaseAgentReviews(reviews) {
           ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
           ${renderReleaseReviewCriteria(review)}
           ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
-          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]])}
+          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
+            disclosureKey: teamDisclosureKey("release-detail", releaseId, "agent-review", review.id, "technical"),
+          })}
         </li>`;
         }).join("")}
       </ul>
@@ -16137,7 +16174,7 @@ function renderReleaseReviewCriteria(review) {
   return `<ul class="inline-list">${rows.map((row) => `<li>${escapeHtml(row.label)}: ${escapeHtml(row.state)}${row.finding ? ` - ${escapeHtml(row.finding)}` : ""}</li>`).join("")}</ul>`;
 }
 
-function renderReleaseHumanRequests(requests, manifest) {
+function renderReleaseHumanRequests(requests, manifest, releaseId) {
   const carriedFindings = manifest.carried_human_findings || [];
   if (!requests.length) {
     return manifest.human_review_requirement
@@ -16149,13 +16186,13 @@ function renderReleaseHumanRequests(requests, manifest) {
       <h4>Human request and decision history</h4>
       ${carriedFindings.length ? `<div class="release-carried-findings"><strong>Carried findings requiring explicit confirmation:</strong> ${escapeHtml(carriedFindings.map((finding) => finding.finding_id || finding.id).join(", "))}</div>` : ""}
       <div class="human-review-request-list">
-        ${requests.map((request) => renderHumanReviewRequest(request, carriedFindings)).join("")}
+        ${requests.map((request) => renderHumanReviewRequest(request, carriedFindings, releaseId)).join("")}
       </div>
     </div>
   `;
 }
 
-function renderHumanReviewRequest(request, carriedFindings) {
+function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
   const assignment = request.current_assignment || {};
   const target = request.test_target || null;
   const checklist = request.requirement_snapshot?.checklist || [];
@@ -16182,7 +16219,9 @@ function renderHumanReviewRequest(request, carriedFindings) {
         ["Release ID", request.release_package_id],
         ["Candidate commit", request.candidate_commit_sha],
         ["Candidate tree", request.candidate_tree_hash],
-      ])}
+      ], {
+        disclosureKey: teamDisclosureKey("human-review", releaseId || request.release_package_id, request.id, "technical"),
+      })}
     </article>
   `;
 }
@@ -16254,7 +16293,7 @@ function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
       }
       <label>Decision summary<textarea name="summary" rows="3" placeholder="What was tested and why this decision is appropriate"></textarea></label>
       <label>Evidence references<textarea name="evidence_refs" rows="2" placeholder="artifact-space:..., one per line"></textarea></label>
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("human-review", request.id, "changes-requested"))}>
         <summary>Changes requested fields</summary>
         <label>Actionable findings<textarea name="findings" rows="4" placeholder="One actionable finding per line"></textarea></label>
         <label>Target deliverable IDs<textarea name="target_deliverable_ids" rows="2" placeholder="One per line"></textarea></label>
@@ -16369,6 +16408,7 @@ async function submitPostReleaseReport(form, submitter) {
       case: payload.case || null,
       triageTaskId: text(payload.result?.triage_task_id),
     });
+    openTeamDisclosures.add(teamDisclosureKey("release-card", releaseId, "detail"));
     releaseDetailCache.delete(releaseId);
     await loadView("delivery", { force: true, preserveForms: false });
     if (expandedReleaseDetailIds.has(releaseId)) {
@@ -17342,7 +17382,7 @@ function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
   }
   const expanded = Boolean(project && selectedDeliveryProjectId === text(project.id));
   return `
-    <details class="delivery-project"${expanded ? " open" : ""}>
+    <details class="delivery-project" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "project", project?.id || projectGroup.project_id || "unknown"))}>
       <summary class="delivery-project-title">
         <span class="delivery-project-heading-main">
           <span class="section-label">Project</span>
@@ -17426,7 +17466,7 @@ function renderCompactDeliveryRow(row) {
   const reviewText = `${reviewIds.length} review${reviewIds.length === 1 ? "" : "s"}`;
   const releaseText = `${row.releasePackages.length} release${row.releasePackages.length === 1 ? "" : "s"}`;
   return `
-    <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
+    <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "deliverable", deliverable.id, "detail"))}>
       <summary class="delivery-row-summary">
         <span class="delivery-summary-main">
           <strong>${escapeHtml(deliverableDisplaySubject(deliverable))}</strong>
@@ -17717,7 +17757,7 @@ function renderDeliveryPipelineGateEvidence(release) {
     return `<p class="meta-line">No individual gate attempts have been recorded yet.</p>`;
   }
   return `
-    <details class="delivery-pipeline-evidence">
+    <details class="delivery-pipeline-evidence" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "release", release.id, "gate-evidence"))}>
       <summary>Gate attempts and decisions</summary>
       <ul class="delivery-detail-list">
         ${verificationRuns.map((run) => `
@@ -17762,11 +17802,13 @@ function renderReleaseSummary(releasePackages) {
                 </div>
                 <div class="meta-line">${escapeHtml(releaseProjectLabel(release))}${release.published_at ? ` · ${renderRecordDate(release.published_at, "published")}` : ""}</div>
                 ${renderReleaseProgress(release)}
-                <details class="release-related-details">
+                <details class="release-related-details" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "related-release", release.id, "detail"))}>
                   <summary>Release notes, included work, and technical details</summary>
                   ${renderReleaseNotes(release)}
                   ${renderReleaseIncludedWork(release)}
-                  ${renderReleaseTechnicalDetails(release)}
+                  ${renderReleaseTechnicalDetails(release, {
+                    disclosureKey: teamDisclosureKey("delivery", "related-release", release.id, "technical"),
+                  })}
                 </details>
                 ${renderRecordBlockers("release_package", release.id)}
               </li>
@@ -17863,7 +17905,7 @@ function renderCompactTimelineEntry(entry) {
   const headline = timelineEntryHeadline(entry);
   return `
     <li class="timeline-entry timeline-entry-compact">
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("timeline", entry.id, "detail"))}>
         <summary class="timeline-entry-summary">
           <span class="timeline-summary-main">
             <span class="timeline-timestamp">${escapeHtml(timestamp)}</span>
@@ -18198,7 +18240,9 @@ function renderTimelineTechnicalDetails(entry) {
       return [`${label} ID`, entry[key]];
     }
     return [key, label];
-  }));
+  }), {
+    disclosureKey: teamDisclosureKey("timeline", entry.id, "technical"),
+  });
 }
 
 function renderTimelineEntryDetails(entry) {
@@ -21159,7 +21203,9 @@ function renderEditFields(type, record) {
       ${renderTechnicalDetails([
         ["Governance group ID", record.id],
         ["Manager agent ID", record.manager_agent_id],
-      ])}
+      ], {
+        disclosureKey: teamDisclosureKey("edit", "governance-group", record.id, "technical"),
+      })}
     `;
   }
   if (type === "project") {

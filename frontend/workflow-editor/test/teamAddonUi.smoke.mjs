@@ -127,6 +127,21 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /ensureStateStream/);
   assert.match(script, /\/state\/stream/);
   assert.match(script, /applyStateSnapshot/);
+  assert.match(script, /openTeamDisclosures/);
+  assert.match(script, /rememberOpenTeamDisclosures/);
+  assert.match(mailScript, /captureDisclosures\?\.\(\)/);
+  assert.match(mailScript, /mail-reader-envelope" \$\{disclosureAttributes/);
+  const dynamicDisclosureTags = [...script.matchAll(/<details\b[^>]*>/g)].map(
+    ([tag]) => tag,
+  );
+  assert.ok(dynamicDisclosureTags.length > 0, "expected dynamic disclosure markup");
+  for (const tag of dynamicDisclosureTags) {
+    assert.match(
+      tag,
+      /(teamDisclosureAttributes|planningDisclosureAttributes)/,
+      `dynamic disclosure is not tracked: ${tag}`,
+    );
+  }
   assert.match(script, /teamViewCacheGeneration \+= 1/);
   assert.match(script, /loadedTeamViews\.clear\(\)/);
   assert.match(script, /loadView\(activeTeamView, \{ force: true, preserveForms: true \}\)/);
@@ -11535,7 +11550,7 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     decision_at: "2026-07-26T14:00:00Z",
   };
 
-  const { port, costResponses } = await createTeamAddonServer(t, {
+  const { port, costResponses, emitStateSnapshot, state } = await createTeamAddonServer(t, {
     costsBeforeResponse: costsGate,
     initialState,
   });
@@ -11726,6 +11741,33 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
       state: "visible",
     });
   }
+
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected an active state stream",
+  );
+  await waitForRevision(page, state.revision);
+  assert.notEqual(
+    await alphaProjectCard.locator(":scope > details").getAttribute("open"),
+    null,
+    "the planning project should remain expanded after a state-stream refresh",
+  );
+  assert.notEqual(
+    await rootTask.locator(":scope > .planning-task-details").getAttribute("open"),
+    null,
+    "the planning task should remain expanded after a state-stream refresh",
+  );
+  assert.notEqual(
+    await briefDetails.getAttribute("open"),
+    null,
+    "the full task brief should remain expanded after a state-stream refresh",
+  );
+  assert.notEqual(
+    await technicalIdentifiers.getAttribute("open"),
+    null,
+    "the task technical details should remain expanded after a state-stream refresh",
+  );
 
   await page.locator("#planning-status-cancelled").check();
   const refreshedAlphaProjectCard = page.locator(
