@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-29 - Persistent Team UI Disclosures
+
+- Preserved every dynamic Team Add-on disclosure across state-stream, cost, and
+  view re-renders, including operations, planning, projects, task board,
+  release and human-review details, delivery pipeline, timeline, and mail.
+  Operator-opened panels now retain their own stable record key instead of
+  inheriting the browser's replaced DOM state.
+
 ## 2026-07-29 - Team Lifecycle Review Repairs
 
 - Continued manual and idle context rotation in a fresh context when a bounded
