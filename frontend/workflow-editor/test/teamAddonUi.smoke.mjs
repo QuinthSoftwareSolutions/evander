@@ -4537,6 +4537,44 @@ test("team add-on review profiles and task descendants prioritize display names"
     state: "visible",
   });
 
+  const projectsProfileDisclosure = profileCard.locator(
+    ":scope > details.review-profile-card-details",
+  );
+  const projectsProfileKey = await projectsProfileDisclosure.getAttribute(
+    "data-team-disclosure-key",
+  );
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const deliveryProfileCard = page.locator(
+    "#team-delivery-page .review-profile-card",
+    { hasText: "Bookkeeping preparation review" },
+  );
+  await deliveryProfileCard.waitFor({ state: "visible" });
+  const deliveryProfileDisclosure = deliveryProfileCard.locator(
+    ":scope > details.review-profile-card-details",
+  );
+  assert.notEqual(
+    await deliveryProfileDisclosure.getAttribute("data-team-disclosure-key"),
+    projectsProfileKey,
+    "shared review-profile renderers should use view-scoped disclosure keys",
+  );
+  assert.equal(
+    await deliveryProfileDisclosure.getAttribute("open"),
+    null,
+    "opening a Projects review profile should not open its Delivery copy",
+  );
+  await openProjects(page);
+  const restoredProjectsProfile = page.locator(
+    "#team-projects-page .review-profile-card",
+    { hasText: "Bookkeeping preparation review" },
+  );
+  assert.notEqual(
+    await restoredProjectsProfile
+      .locator(":scope > details.review-profile-card-details")
+      .getAttribute("open"),
+    null,
+    "the Projects review profile should retain its own open state",
+  );
+
   await page.getByRole("tab", { name: "Task board" }).click();
   await page.locator("#task-board-team-select").selectOption("team");
   await page.locator("#task-board-project-select").selectOption("project");
@@ -11359,6 +11397,12 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.projects["alpha-project"].goals = [
+    { id: "shared-goal", description: "Coordinate alpha launch", state: "active" },
+  ];
+  initialState.projects["beta-project"].goals = [
+    { id: "shared-goal", description: "Coordinate beta launch", state: "active" },
+  ];
 
   initialState.tasks["task-starship-root"] = {
     id: "task-starship-root",
@@ -11563,6 +11607,19 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     { hasText: "Alpha Project" },
   );
   await alphaProjectCard.locator(":scope > details > summary").click();
+  const alphaGoalDisclosure = alphaProjectCard
+    .locator(".goal-list .compact-record-card", { hasText: "Coordinate alpha launch" })
+    .locator(":scope > details");
+  await alphaGoalDisclosure.locator(":scope > summary").click();
+  const betaGoalDisclosure = page
+    .locator("#team-planning-page .planning-project-card", { hasText: "Beta Project" })
+    .locator(".goal-list .compact-record-card", { hasText: "Coordinate beta launch" })
+    .locator(":scope > details");
+  assert.notEqual(
+    await alphaGoalDisclosure.getAttribute("data-team-disclosure-key"),
+    await betaGoalDisclosure.getAttribute("data-team-disclosure-key"),
+    "project-local goal IDs should be scoped by their owning project",
+  );
 
   const rootTask = page.locator(
     '#team-planning-page [data-planning-task-id="task-starship-root"]',
@@ -11696,6 +11753,16 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     await briefDetails.getAttribute("open"),
     null,
     "the full task brief should remain expanded after a background render",
+  );
+  assert.notEqual(
+    await alphaGoalDisclosure.getAttribute("open"),
+    null,
+    "the opened alpha goal should remain expanded after a background render",
+  );
+  assert.equal(
+    await betaGoalDisclosure.getAttribute("open"),
+    null,
+    "the closed beta goal with the same local ID should remain closed",
   );
   await briefDetails.locator(".planning-task-brief-content").waitFor({ state: "visible" });
 

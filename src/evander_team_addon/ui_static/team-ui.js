@@ -220,7 +220,8 @@ let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 // Native disclosure state belongs to the DOM, so keep its intentional state
-// separately whenever a view renderer replaces that DOM.
+// separately whenever a view renderer replaces that DOM. Rendered keys include
+// their Team view so shared renderers cannot couple hidden view copies.
 const openTeamDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
@@ -3054,7 +3055,9 @@ function bindDeliveryFilters() {
     selectedDeliveryProjectId = text(projectSelect.value);
     if (selectedDeliveryProjectId) {
       openTeamDisclosures.add(
-        teamDisclosureKey("delivery", "project", selectedDeliveryProjectId),
+        teamDisclosureStateKey(
+          teamDisclosureKey("delivery", "project", selectedDeliveryProjectId),
+        ),
       );
     }
     renderReviewDeliveryWorkspace();
@@ -3246,7 +3249,7 @@ function bindProjectFocus() {
         projectRecordShowRejected.add(key);
       }
       projectRecordSectionPages[key] = 1;
-      openTeamDisclosures.add(key);
+      openTeamDisclosures.add(teamDisclosureStateKey(key));
       renderProjectFocus();
       return;
     }
@@ -3259,7 +3262,7 @@ function bindProjectFocus() {
         pageButton.dataset.projectSection,
       );
       projectRecordSectionPages[key] = Math.max(1, Math.floor(Number(pageButton.dataset.projectSectionPage) || 1));
-      openTeamDisclosures.add(key);
+      openTeamDisclosures.add(teamDisclosureStateKey(key));
       renderProjectFocus();
     }
   });
@@ -8719,7 +8722,7 @@ function renderTeamProjectDetail(project) {
       ${renderProjectReleasePolicy(project.release_policy)}
       <section class="agent-detail-section">
         <h3>Goals</h3>
-        ${renderGoals(project.goals || [], { compact: true })}
+        ${renderGoals(project.id, project.goals || [], { compact: true })}
       </section>
       <section class="agent-detail-section">
         <h3>Tasks</h3>
@@ -11123,7 +11126,7 @@ function renderProjects() {
           <div class="project-columns">
             <div>
               <p class="subheading">Goals</p>
-              ${renderGoals(project.goals || [])}
+              ${renderGoals(project.id, project.goals || [])}
               <p class="subheading">Deliverables</p>
               ${renderDeliverables(projectDeliverables)}
             </div>
@@ -11266,7 +11269,7 @@ function renderProjectFocusDetail(project) {
     <div class="projects-detail-grid">
       <section>
         <h3>Goals</h3>
-        ${renderGoals(project.goals || [], { compact: true })}
+        ${renderGoals(project.id, project.goals || [], { compact: true })}
       </section>
       <section>
         <h3>Project roles</h3>
@@ -13313,7 +13316,7 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
           <div class="project-columns planning-project-columns">
             <div>
               <p class="subheading">Goals</p>
-              ${renderGoals(goals, { compact: true })}
+              ${renderGoals(project.id, goals, { compact: true })}
               <p class="subheading">Deliverables</p>
               ${renderDeliverables(projectDeliverables, { compact: true })}
             </div>
@@ -13332,8 +13335,16 @@ function teamDisclosureKey(...parts) {
   return parts.map(text).filter(Boolean).join(":");
 }
 
-function teamDisclosureAttributes(key) {
+function teamDisclosureStateKey(key, view = activeTeamView) {
   const normalizedKey = text(key);
+  if (!normalizedKey) {
+    return "";
+  }
+  return teamDisclosureKey(normalizedTeamView(view), normalizedKey);
+}
+
+function teamDisclosureAttributes(key) {
+  const normalizedKey = teamDisclosureStateKey(key);
   if (!normalizedKey) {
     return "";
   }
@@ -13384,7 +13395,7 @@ function renderProjectReleasePolicy(policy) {
   return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")} - ${escapeHtml(humanLabel)}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
 }
 
-function renderGoals(goals, { compact = false } = {}) {
+function renderGoals(projectId, goals, { compact = false } = {}) {
   if (!goals.length) {
     return `<p class="empty-state">No goals.</p>`;
   }
@@ -13395,7 +13406,7 @@ function renderGoals(goals, { compact = false } = {}) {
           .map((goal) => {
             return `
               <li class="record-item compact-record-card">
-                <details ${teamDisclosureAttributes(teamDisclosureKey("goal", goal.id, "detail"))}>
+                <details ${teamDisclosureAttributes(teamDisclosureKey("goal", projectId, goal.id, "detail"))}>
                   <summary class="compact-record-summary">
                     <span class="compact-record-main">
                       <strong>${escapeHtml(goal.description)}</strong>
@@ -15853,12 +15864,16 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
-    openTeamDisclosures.delete(teamDisclosureKey("release-card", releaseId, "detail"));
+    openTeamDisclosures.delete(
+      teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+    );
     renderReleaseDetailSurfaces();
     return;
   }
   expandedReleaseDetailIds.add(releaseId);
-  openTeamDisclosures.add(teamDisclosureKey("release-card", releaseId, "detail"));
+  openTeamDisclosures.add(
+    teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+  );
   renderReleaseDetailSurfaces();
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
@@ -15945,7 +15960,9 @@ async function openHumanReviewDeepLink(requestId) {
     return false;
   }
   expandedReleaseDetailIds.add(releaseId);
-  openTeamDisclosures.add(teamDisclosureKey("release-card", releaseId, "detail"));
+  openTeamDisclosures.add(
+    teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+  );
   renderReleases();
   await loadReleaseDetail(releaseId);
   focusHumanReviewRequestElement(focusedHumanReviewRequestId);
@@ -16408,7 +16425,9 @@ async function submitPostReleaseReport(form, submitter) {
       case: payload.case || null,
       triageTaskId: text(payload.result?.triage_task_id),
     });
-    openTeamDisclosures.add(teamDisclosureKey("release-card", releaseId, "detail"));
+    openTeamDisclosures.add(
+      teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+    );
     releaseDetailCache.delete(releaseId);
     await loadView("delivery", { force: true, preserveForms: false });
     if (expandedReleaseDetailIds.has(releaseId)) {

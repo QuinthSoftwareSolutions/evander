@@ -7,6 +7,9 @@
   release and human-review details, delivery pipeline, timeline, and mail.
   Operator-opened panels now retain their own stable record key instead of
   inheriting the browser's replaced DOM state.
+- Scoped shared-renderer disclosure keys by Team view and project-owned goal
+  keys by project, preventing hidden copies and repeated local goal IDs from
+  overwriting one another during background renders.
 
 ## 2026-07-29 - Team Lifecycle Review Repairs
 
