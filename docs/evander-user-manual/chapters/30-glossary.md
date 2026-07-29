@@ -21,6 +21,12 @@ For a broad explanation, use the Subject Index to find the relevant chapter. The
 
 ## A
 
+**Accepted-deliverable rework**<br>
+An authorized recovery that reopens a finished or accepted task without
+rewriting its accepted deliverable or reviews. The original owner must submit a
+fresh, formally reviewed deliverable that explicitly supersedes the accepted
+one.
+
 **Active lease**<br>
 A Team record giving an agent responsibility for a dispatch for a bounded period/lifecycle. A task can exist without an active lease; inspect the lease when determining whether work is actually assigned or running.
 
@@ -102,6 +108,12 @@ A directory-scoped, host-owned description of a communication endpoint and its s
 **Consultation**<br>
 A bounded request to another agent/session for analysis or advice, persisted independently from the caller so lifecycle and cleanup can be tracked.
 
+**Context handoff**<br>
+The bounded, best-effort advisory-summary dispatch attempted before a manual or
+idle Team context rotation. It has 120 seconds and only the handoff-recording
+tool; the fresh-context reset continues if it fails, times out, or records
+nothing.
+
 **Contribution graph**<br>
 The recursively derived lineage from an aggregate deliverable to its exact
 accepted direct-child `source_deliverable_ids`. It proves composition without
@@ -127,6 +139,11 @@ The use of several independent controls so that bypassing or misconfiguring one 
 **Deliverable**<br>
 A Team submission representing completed work, usually tied to a task and containing a Git candidate or published artifact references plus a summary.
 
+**Deliverable contract**<br>
+The explicit completion requirements on an integration-boundary task, including
+whether Git provenance is mandatory and which direct child/dependency tasks
+must contribute their current accepted deliverables.
+
 **Directory**<br>
 Evander's hierarchical ownership and configuration scope. `root` is the immutable top-level directory and default baseline.
 
@@ -135,6 +152,11 @@ A domain-specific JSON configuration at `runtime/directory-config/root/...` that
 
 **Dispatch**<br>
 A Team execution assignment derived from work such as a task or review request. The dispatch describes work to run; a lease records who currently owns it.
+
+**Dispatch hydration**<br>
+Reading the exact immutable scope of the current Team dispatch on demand. It
+complements compact wake prompts and cannot be used to broaden the assigned
+tasks, reviews, blockers, repositories, or command authority.
 
 **Disposable execution**<br>
 A VM or container intended to be created for bounded work and removed afterward. Durable state and secrets remain on the host or pass through explicit artifacts/Git surfaces.
@@ -163,6 +185,12 @@ The rule that Git publication must use the precise commit that passed review and
 
 **Execution backend**<br>
 The abstraction that creates, resumes, inspects, and terminates isolated execution. Current choices are `libvirt_vm` and the additive `container_worker_vm`.
+
+**External Team Chat bridge**<br>
+An operator-configured workflow path that persists an authenticated external
+human message in an ordinary Team Chat conversation and durably requests
+delivery of the Team reply back to the source. It does not turn arbitrary
+external identities into Team operators.
 
 ## F
 
@@ -217,6 +245,12 @@ The authenticated subject attached to a request: operator, agent, session, direc
 
 **Inbox item**<br>
 A durable Team communication/work signal with priority, recipient, handling state, and optional response intent. Current wake logic makes pending non-low inbox work eligible without requiring `response_requested`.
+
+**Integration boundary**<br>
+An explicit task flag stating that the task owns a reviewed final-acceptance
+boundary. Its contract may require Git provenance, named task contributions, or
+both. It is independent of the task's title or position in the hierarchy and
+prevents direct-finish or artifact-only escape from the declared contract.
 
 **Internal event**<br>
 A host-local typed event used to connect commands, schedules, Team transitions, and workflows without pretending it came from an external provider.
@@ -314,6 +348,12 @@ A Team UI/API concurrency token tied to a mutable resource. It complements numer
 
 **Review cascade**<br>
 The linked Team lifecycle from deliverable submission through review requests/dispatches, decisions, requested changes, follow-up work, and final acceptance.
+
+**Review cohort**<br>
+A sealed, atomically created set of review requests for one deliverable. Team
+waits for every active member to decide before consolidating requested changes,
+and any replacement must recreate the complete reviewer/profile multiplicity
+as a fresh cohort.
 
 **Review request**<br>
 A request for a reviewer to evaluate a deliverable or PR. Core's PR review-request inbox and Team review requests are distinct domain records even when a workflow connects them.

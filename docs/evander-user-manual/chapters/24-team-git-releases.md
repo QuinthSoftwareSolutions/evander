@@ -160,6 +160,8 @@ The project policy says how the fixed candidate will be checked and who must rev
 >
 > - <code>container_worker_vm</code> verification backend;
 > - optional container image;
+> - optional <code>resource_limits</code> with a Docker memory string,
+>   positive CPU count, and positive integer <code>pids_limit</code>;
 > - ordered commands, each with name, working directory, argv, and timeout;
 > - required reviewer/profile pairs;
 > - optional human-review requirement with Admin reviewer groups, checklist,
@@ -176,6 +178,18 @@ The project policy says how the fixed candidate will be checked and who must rev
 > human review is configured, its group resolution and instructions are
 > snapshotted into the candidate manifest rather than reread as mutable policy
 > during the decision.
+
+If <code>resource_limits</code> is omitted, a Team release verifier defaults to
+8 CPUs and 2,048 processes/threads; memory uses the worker/host default. A
+configured field overrides its corresponding default. These limits are read
+from the live project policy for each disposable verifier session, including a
+retry; unlike candidate commands and review requirements, they are not frozen
+candidate evidence.
+
+Worker inspection reports <code>pids_limit_exhausted</code> from cgroup
+<code>pids.events</code> and <code>memory_limit_exhausted</code> from Docker's
+OOM-killed state. Those structured causes are infrastructure failures, not
+strings inferred from test output, and enter the evidence-gated retry path.
 
 ## Scope validation
 
@@ -200,6 +214,14 @@ The system refuses a cosmetic new release of the same failed deliverables and tr
 ### Retryable process failures
 
 Verification timeout or infrastructure failure can be retryable. A release review recorded <code>blocked</code> with a concrete process/evidence blocker can also be retried. <code>team_retry_release_gate</code> creates a linked immutable successor attempt against the same candidate SHA with reason and requester identity. It never edits the old run or review.
+
+Retry is not polling. An agent should request it only after citing concrete
+evidence that the infrastructure recovered and what changed. If an
+agent-requested verification retry fails against the unchanged candidate, no
+agent may schedule another verification retry in that chain; escalate the
+current run and recovery requirement to an operator. An authorized operator
+may decide whether another typed recovery is justified. This agent bound does
+not change the separate blocked release-review retry rules.
 
 Use <code>blocked</code> only when the review process cannot complete. Use <code>rejected</code> for an actual candidate defect.
 
@@ -231,7 +253,7 @@ is preparing, pending, blocked, or changes-requested.
 | Gate result | What happens to the pinned release attempt |
 |---|---|
 | Verification candidate failure | Terminal rejection; changed, reviewed content is required. |
-| Verification infrastructure failure or timeout | Same attempt is blocked and may retry the unchanged candidate. |
+| Verification infrastructure failure or timeout | Same attempt is blocked and may retry the unchanged candidate only after concrete recovery evidence; a failed agent-requested retry requires operator escalation. |
 | Agent review rejection | Terminal candidate failure under existing immutable-review rules. |
 | Agent review blocked | Same candidate stays blocked until the typed review recovery runs. |
 | Preview preparation failure or expiry | Same human request and candidate are blocked; preparation can rerun. |
@@ -389,7 +411,11 @@ from resolved tasks in that case may extend the predecessor candidate.
 8. Canonical push publishes it to the configured <code>releases/mission-control/...</code> branch under a destination lease.
 9. The accepted release package records the canonical branch and published SHA.
 
-If integration verification times out, Riley may request an audited retry against the same SHA. If it exits nonzero, Imani must change and re-review the content; Riley cannot retry it into approval.
+If integration verification times out, Riley may request one evidence-backed
+audited retry against the same SHA after the worker recovers. If that
+agent-requested attempt also fails for infrastructure reasons, Riley must
+escalate it rather than retry again. If a command exits nonzero, Imani must
+change and re-review the content; no one can retry it into approval.
 
 ## Complete APP walkthrough: guarded line-speed control
 
@@ -469,7 +495,7 @@ to the supported records described in Chapters 18–24.
 | Missing release policy | Git publication is blocked unless explicitly ungated. Configure policy; do not bypass the gate. |
 | Unreviewed changed path | Hard scope failure, never waiver-eligible. Rebuild from reviewed content. |
 | Verification command nonzero | Terminal candidate defect. New content and release required. |
-| Verification infrastructure error | Potentially retryable immutable successor run. |
+| Verification infrastructure error, including structured PID or memory exhaustion | Potentially retryable immutable successor run only after concrete recovery evidence. After an agent-requested retry fails, further agent retry is blocked and operator recovery is required. |
 | Release review rejected | Terminal candidate defect. |
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Human assignment unavailable | Same request and candidate stay blocked. Repair group membership or use audited reassignment; do not skip the gate. |
@@ -510,7 +536,9 @@ During release:
    verification run, agent reviews, human request/preparation/decision, and
    scope validation.
 2. Treat outbox acceptance and effect completion as separate facts.
-3. Retry only typed retryable failures through <code>team_retry_release_gate</code>.
+3. Retry only typed retryable failures through
+   <code>team_retry_release_gate</code>, cite concrete infrastructure recovery,
+   and stop agent retries after an agent-requested attempt fails.
 4. Use <code>team_recover_release</code> only for eligible Git promotion failure.
 5. For a blocked human request, recover or reassign the same request; for
    changes requested, follow the generated case and request a changed successor.
@@ -531,6 +559,7 @@ After release:
 - <code>src/evander_team_addon/git_naming.py</code> — deterministic internal and canonical branch names and validation.
 - <code>src/evander_team_addon/services/commands/git_release.py</code> and <code>services/git_release_service.py</code> — promotion/release authority, intent, recovery, and state transitions.
 - <code>src/evander_team_addon/services/domain/git_promotion.py</code>, <code>release_packages.py</code>, and <code>release_gates.py</code> — pinned sources, manifests, scope, verification, reviews, and retries.
+- <code>src/evander_team_addon/services/release_verification_runner.py</code>, <code>src/evander/effects/providers/agent_session.py</code>, and <code>src/evander/worker/docker_runtime.py</code> — live verifier limits, disposable sessions, and structured resource-exhaustion evidence.
 - <code>src/evander_team_addon/services/domain/human_reviews.py</code> and <code>human_review_projection.py</code> — candidate-pinned human requests, identity-safe decisions, preview preparation, findings, successors, feedback intake, and bounded read views.
 - <code>src/evander_team_addon/providers.py</code> — publish, consolidate, verify, record, and mark-published effects.
 - <code>src/evander_team_addon/workflow_packs.py</code> — review, feature, release, verification, and canonical-push routes.

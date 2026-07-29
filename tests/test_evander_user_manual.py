@@ -149,6 +149,10 @@ def test_screenshots_are_sanitized_dark_mode_publication_assets() -> None:
 
     assert "session-telemetry-implementation" in fixture
     assert "Create implementation session" in fixture
+    assert 'const MANAGED_REPO_ID = "mr_0123456789abcdefabcd"' in fixture
+    assert "estimated_cost: 18.42" in fixture
+    assert "estimated_cost_usd" not in fixture
+    assert 'projectSelect.selectOption("mission-control")' in fixture
     for named_core_fixture in (
         "session-imani-telemetry",
         "vm-imani-telemetry",
@@ -213,9 +217,75 @@ def test_current_contract_repairs_are_reflected_in_manual_and_authoritative_docs
     assert "src/evander/triggers/models.py" not in configuration
     assert "no separate top-level `Roles` view" in addons
     assert "chat-class tool `team_reply_to_chat`" in addons
-    assert "High or normal<br/>pending inbox?" in wake_tree
+    assert "non-low inbox" in wake_tree
+    assert "context_handoff dispatch" in wake_tree
+    assert "context_mode: retained_delta" in wake_tree
     assert "team_import_artifact" in delivery_chapter
     assert "/artifacts/team-artifact-imports/..." in delivery_chapter
+
+
+def test_feature_branch_team_contracts_are_documented() -> None:
+    addons = (ROOT / "docs/addons.md").read_text(encoding="utf-8")
+    configuration = (ROOT / "docs/configuration-reference.md").read_text(encoding="utf-8")
+    git_remotes = (ROOT / "docs/git-remotes.md").read_text(encoding="utf-8")
+    managed_git = (CHAPTERS / "11-managed-git-artifacts-consultations.md").read_text(
+        encoding="utf-8"
+    )
+    organization = (CHAPTERS / "18-team-organization-work.md").read_text(encoding="utf-8")
+    wakes = (CHAPTERS / "20-team-wakes-context.md").read_text(encoding="utf-8")
+    communication = (CHAPTERS / "21-team-communication.md").read_text(encoding="utf-8")
+    delivery = (CHAPTERS / "22-team-delivery-review.md").read_text(encoding="utf-8")
+    releases = (CHAPTERS / "24-team-git-releases.md").read_text(encoding="utf-8")
+
+    for term in (
+        "effect:team:create-review-cohort",
+        "integration_boundary",
+        "team_reopen_task_for_rework",
+        "team_get_current_dispatch_context",
+        "team.chat.external_reply_requested",
+        "worktree_cleanup_dry_run",
+    ):
+        assert term in addons
+
+    for term in (
+        "integration_boundary",
+        "deliverable_contract",
+        "require_git_provenance",
+        "required_contribution_task_ids",
+    ):
+        assert term in organization
+
+    for term in (
+        "fresh_full",
+        "retained_delta",
+        "team_record_context_handoff",
+        "team_get_current_dispatch_context",
+        "worktree_cleanup_dry_run",
+    ):
+        assert term in wakes
+
+    for term in (
+        "team.chat.external_reply_requested",
+        "attachment_ids",
+        "team_chat_body",
+        "provider-native file upload",
+    ):
+        assert term in communication
+        assert term in configuration
+
+    for term in (
+        "effect:team:create-review-cohort",
+        "git_refs.commit_sha",
+        "team_retry_review",
+        "team_reopen_task_for_rework",
+    ):
+        assert term in delivery
+
+    assert "resource_limits" in releases
+    assert "agent-requested" in releases
+    assert "AZURE_DEVOPS_PR_PAT" in managed_git
+    assert "AZURE_DEVOPS_PAT" in managed_git
+    assert "worktree_cleanup_dry_run" in git_remotes
 
 
 def test_generated_publication_formats_are_nontrivial_and_current() -> None:

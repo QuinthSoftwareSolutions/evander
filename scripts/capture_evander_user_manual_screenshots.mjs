@@ -22,6 +22,7 @@ const MANUAL_SCREENSHOT_DIR = path.join(ROOT, "docs", "assets", "evander-user-ma
 const ADMIN_SCREENSHOT_DIR = path.join(ROOT, "docs", "assets", "admin-ui");
 const FIXED_NOW = "2026-07-13T12:00:00.000Z";
 const DIRECTORY = "root/northstar-platform/mission-control";
+const MANAGED_REPO_ID = "mr_0123456789abcdefabcd";
 const VIEWPORT = { width: 1600, height: 1000 };
 
 const frontendRequire = createRequire(path.join(ROOT, "frontend", "workflow-editor", "package.json"));
@@ -276,7 +277,7 @@ const ISSUE = {
   rejection_reason: null,
   yaml_path: "runtime/issues/mission-control/MC-248.yaml",
   directory_path: DIRECTORY,
-  managed_repo_id: "mr_northstar_mission_control",
+  managed_repo_id: MANAGED_REPO_ID,
   source_type: "local",
   state: "in_progress",
   url: null,
@@ -851,7 +852,7 @@ const TEAM_STATE = {
       goals: [
         { id: "telemetry-resilience", description: "Make telemetry delivery bounded, observable, and safe to retry.", state: "in_progress" },
       ],
-      git: { managed_repo_id: "mr_northstar_mission_control", base_branch: "main", provider: "github" },
+      git: { managed_repo_id: MANAGED_REPO_ID, base_branch: "main", provider: "github" },
       status: "active",
       created_at: TIMESTAMPS.created,
       updated_at: TIMESTAMPS.updated,
@@ -1666,6 +1667,7 @@ function handleApi(req, res, url, unknownRequests, openStreams) {
   if (pathname === "/api/admin/sessions/catalog") return json(res, { tool_options: [{ value: "get_issue", label: "Get issue" }, { value: "stage_artifact", label: "Stage artifact" }, { value: "publish_artifact", label: "Publish artifact" }, { value: "prompt_agent", label: "Prompt agent" }], model_options: [{ value: "gpt-5.4", label: "GPT-5.4" }], resume_mode_options: [{ value: "same_context", label: "Same context" }, { value: "fresh_context", label: "Fresh context" }], renew_extension_presets: ["1h", "1d", "7d"] }), true;
   if (pathname === "/api/admin/sessions") return json(res, sessionList()), true;
   if (pathname === `/api/admin/sessions/${SESSION.session_id}`) return json(res, { session: SESSION, wake_schedules: [{ request_id: "wake-implementation-status", session_id: SESSION.session_id, prompt: "Check Mission Control telemetry retry status.", cron: "*/30 * * * *", resume_at: null, resume_mode: "same_context", status: "scheduled", enabled: true, updated_at: TIMESTAMPS.updated, schedule_kind: "cron" }], summary_json: { work_item: "MC-248", workflow_run_id: "run-telemetry-retry", owner: "Implementation agent" } }), true;
+  if (pathname === "/api/admin/git-repositories") return json(res, { repositories: [{ managed_repo_id: MANAGED_REPO_ID, display_name: "Mission Control", directory_path: DIRECTORY }] }), true;
   if (pathname === "/api/admin/scheduled-wakes") return json(res, { items: [{ request_id: "wake-implementation-status", session_id: SESSION.session_id, source: "team-addon", next_run_at: "2026-07-13T12:15:00Z", schedule_cron: "*/30 * * * *", status: "pending", prompt_summary: "Check Mission Control telemetry retry status.", latest_dispatch: null, retry_available: false, enabled: true }] }), true;
 
   if (pathname === "/api/admin/tool-calls") return json(res, TOOL_CALLS), true;
@@ -1692,7 +1694,64 @@ function handleApi(req, res, url, unknownRequests, openStreams) {
   if (pathname === "/api/addons/team-addon/bootstrap") return json(res, bootstrapTeamPayload()), true;
   const teamView = pathname.match(/^\/api\/addons\/team-addon\/views\/([^/]+)$/);
   if (teamView) return json(res, viewPayload(decodeURIComponent(teamView[1]), url)), true;
-  if (pathname === "/api/addons/team-addon/costs") return json(res, { generated_at: FIXED_NOW, coverage_status: "complete", coverage_reasons: [], team_costs: { "northstar-platform": { team_id: "northstar-platform", estimated_cost_usd: 18.42, max_cost_usd: 250, coverage_status: "complete" } }, governance_group_costs: {}, project_costs: { "mission-control": { project_id: "mission-control", estimated_cost_usd: 12.76, coverage_status: "complete" } }, unattributed_costs: null, source_counts: { model_usage: 14 }, events_count: 14, priced_events_count: 14, unpriced_events_count: 0, backfill: null }), true;
+  if (pathname === "/api/addons/team-addon/costs") return json(res, {
+    generated_at: FIXED_NOW,
+    coverage_status: "complete",
+    coverage_reasons: [],
+    team_costs: {
+      "northstar-platform": {
+        team_id: "northstar-platform",
+        currency: "usd",
+        estimated_cost: 18.42,
+        max_cost_usd: 250,
+        remaining_cost_usd: 231.58,
+        cost_limit_reached: false,
+        cost_limit_basis: "lifetime",
+        coverage_status: "complete",
+        coverage_reasons: [],
+        events_count: 14,
+        priced_events_count: 14,
+        unpriced_events_count: 0,
+        source_counts: { relay: 14 },
+      },
+    },
+    governance_group_costs: {},
+    project_costs: {
+      "mission-control": {
+        project_id: "mission-control",
+        currency: "usd",
+        estimated_cost: 12.76,
+        coverage_status: "complete",
+        coverage_reasons: [],
+        events_count: 10,
+        priced_events_count: 10,
+        unpriced_events_count: 0,
+        source_counts: { relay: 10 },
+      },
+    },
+    unattributed_costs: {
+      currency: "usd",
+      estimated_cost: 0,
+      events_count: 0,
+      priced_events_count: 0,
+      unpriced_events_count: 0,
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      source_counts: {},
+      provider_breakdown: {},
+      model_breakdown: {},
+      cost_status_counts: {},
+      coverage_status: "complete",
+      coverage_reasons: [],
+    },
+    source_counts: { relay: 14 },
+    events_count: 14,
+    priced_events_count: 14,
+    unpriced_events_count: 0,
+  }), true;
   if (pathname === "/api/addons/team-addon/templates") return json(res, { templates: [TEAM_TEMPLATE] }), true;
   if (pathname === "/api/addons/team-addon/conversations") return json(res, chatCollection(url.searchParams.get("selected_conversation_id"), url.searchParams.get("include_selected_messages") === "1")), true;
   const conversationDetail = pathname.match(/^\/api\/addons\/team-addon\/conversations\/([^/]+)$/);
@@ -1786,7 +1845,9 @@ async function prepareTaskBoard(page) {
 }
 
 async function prepareDelivery(page) {
-  await page.locator(".delivery-row").first().waitFor({ state: "visible" });
+  const projectSelect = page.locator("[data-delivery-project-filter]");
+  await projectSelect.selectOption("mission-control");
+  await page.locator(".delivery-project[open] .delivery-row").first().waitFor({ state: "visible" });
 }
 
 const FREEZE_AND_THEME_SCRIPT = ({ fixedNow, teamView, directory }) => {

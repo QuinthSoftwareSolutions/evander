@@ -500,6 +500,19 @@ repository paths or overwrites an existing target. The generated command
 includes the absolute runtime root, so it remains valid from another checkout,
 and loads only the narrow managed-Git service rather than unrelated providers.
 
+The Planning view presents projects and structured task briefs as nested native
+disclosures, including lifecycle, blockers, hierarchy, contribution coverage,
+review status, and technical fields. Their open/collapsed state is remembered
+when a live refresh or mutation rerenders the view, so an operator does not lose
+the task they were inspecting. Remembered disclosure keys are scoped to the
+owning Team view, and project-local goal keys are also scoped by project, so
+hidden copies and repeated local IDs cannot change another panel's state.
+Eligible task rows use a dedicated **Cancel task** dialog rather than a generic
+state edit. It requires a reason category and explanation and may link an
+optional successor selected only from the same project; the dialog calls out
+that cancellation is a terminal audited disposition that resolves active
+blockers and finalizes the task Git context.
+
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
 malformed hierarchy references without changing persisted state. Agent nodes
@@ -539,6 +552,41 @@ inspection; the UI labels that mode separately from "My chats" and blocks
 sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
+
+Chat refreshes and live snapshots preserve reader position when the operator is
+scrolled up, while a reader already near the bottom remains pinned to new
+messages. Loading older history preserves the visible anchor as messages are
+prepended, and thread rerenders preserve the current composer text, focus, and
+selection.
+
+External communication can enter the same durable Chat lifecycle through
+`effect:team:enqueue-operator-chat-message`, normally after
+`trigger:communication:new-message`. Configure exactly one fixed
+`conversation_id` or `agent_id`, a fixed `operator_user_id`, and a read-capable
+source `communication_target_id`; do not derive those identities from message
+text. The provider, target, and source-message ID form the durable ingress
+idempotency key, so replay returns the original Team message and
+`team-chat:<message-id>` dispatch. `allow_team_mutations` defaults to `false`;
+enabling it also requires a fixed `authorized_author_ids` allowlist containing
+the authenticated source author. The target must additionally allow `reply` for
+a preserved provider thread or `write` for a top-level response.
+
+An agent reply to an externally originated message is committed to Team state
+before delivery is attempted. `team_reply_to_chat` creates a pending external
+delivery and emits `team.chat.external_reply_requested`; the packaged runtime
+pack sends it through `effect:communication:send-message` and records success or
+failure with `effect:team:record-external-chat-delivery`. The persisted Team
+reply remains visible when the external send fails, and the Chat UI exposes its
+delivery state.
+
+The external-reply event carries `attachment_ids` and sanitized attachment
+metadata (`id`, filename, MIME type, byte count, and SHA-256). Its delivery
+`body` is a rendered textual reference that lists each attachment's filename,
+MIME type, and byte count, so an attachment-only Team reply is still non-empty
+and deliverable. This contract does not upload files through the communication
+provider. The unrendered source Team reply body remains separately available as
+`team_chat_body`. Discord replies are top-level channel messages rather than
+thread replies.
 
 Built-in Team Chat supports file and image attachments in both directions. An
 operator can attach up to the effective per-message limit when sending a Chat
@@ -684,18 +732,54 @@ first enabled. `effect:team:create-review-request` creates a review request for
 an existing deliverable, requires an `actor_agent_id` with normal Team review
 request authority, validates the optional review profile, creates the reviewer
 inbox item, and publishes the reviewer wake event. Use one effect node per
-required reviewer or review profile; the existing review cascade keeps the
-deliverable pending until all attached review requests are accepted.
+reviewer only when the requests are intentionally independent: those requests
+may be added separately, and each terminal decision can cascade immediately.
+
+Use `effect:team:create-review-cohort` when all required reviewers must assess
+one immutable candidate as a sealed set. Its `reviews` array atomically creates
+one slot per distinct reviewer and seals the deliverable only after every slot
+is valid; no individual review may already exist, and no late member may join.
+Retrying the effect with the same reviewer/profile membership is idempotent.
+The effect contract requires `actor_agent_id`, `deliverable_id`, and a complete
+`reviews` array whose entries require `reviewer_agent_id` and may set
+`review_profile_id`, `review_request_id`, or `instructions`;
+`publish_wake_events` and `expected_revision` are optional. Success returns
+`review_cohort_id`, `review_cohort_sealed_at`,
+`created_review_request_ids`, `existing_review_request_ids`,
+`created_inbox_item_ids`, `events`, and `published_event_ids`.
+Exact-membership replay returns the existing IDs; changed membership or any
+pre-existing independent request fails closed.
+`team_submit_deliverable_for_review` applies the same sealed-cohort contract at
+submission time. A rejection in one cohort slot does not send partial rework
+while another slot remains pending: Team waits for the complete cohort result,
+then sends one consolidated rework item containing all open cohort findings.
+A replacement must name the rejected deliverable in
+`supersedes_deliverable_id` and create a complete fresh cohort. It must preserve
+every current profiled slot by profile count and every unprofiled slot by
+reviewer identity; a smaller cohort or a plain unreviewed replacement fails
+before artifact publication.
 
 The Team Add-on also registers its stable internal event names in the workflow
 editor catalog, so `trigger:event.event_type` suggests the event names without
-requiring code inspection. Current Team events are
-`team.chat.message_queued`, `team.agent.wake_requested`,
-`team.ephemeral.requested`, `team.ephemeral.completed`,
-`team.operator.escalation_requested`, `team.git.promotion_requested`, and
-`team.git.release_recovery_requested`. Use these for generic Team event
-workflows; use `trigger:team:deliverable-created` for deliverable-created
-workflows because it owns the deliverable cursor and startup baseline behavior.
+requiring code inspection. Current catalog entries are:
+
+- `team.chat.message_queued`
+- `team.chat.external_reply_requested`
+- `team.agent.wake_requested`
+- `team.ephemeral.requested`
+- `team.ephemeral.completed`
+- `team.operator.escalation_requested`
+- `team.git.promotion_requested`
+- `team.git.release_recovery_requested`
+- `team.release.verification_requested`
+- `team.release.human_review_requested`
+- `team.release.human_review_preparation_requested`
+
+The packaged runtime pack also consumes `team.governance.wake_requested`, which
+blocker routing emits for an immediate governance-manager wake. Use generic
+`trigger:event` workflows for these durable events; use
+`trigger:team:deliverable-created` for deliverable-created workflows because it
+owns the deliverable cursor and startup baseline behavior.
 
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
@@ -876,11 +960,35 @@ set:
   `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
   dynamic dispatch context. Team state changes are made through Team-owned MCP
   tools exposed only to the appropriate wake/session class.
+  A first successful ordinary-context wake, an explicit `new_context` resume,
+  or a lifecycle rotation receives a compact complete context labeled
+  `context_mode: fresh_full`. A retained same-context wake is labeled
+  `context_mode: retained_delta`: it carries the current immutable dispatch
+  delta but intentionally omits stable identity, role, subordinate, project,
+  outcome-catalog, and session details already present in the conversation.
+  `team_get_current_dispatch_context` hydrates the active dispatch's frozen
+  scope on demand, returning the scoped tasks, inbox items, blockers, reviews,
+  projects, and Git contexts without widening its membership.
+  Chat is deliberately asymmetric: only a successfully resumed,
+  mutation-enabled Chat dispatch receives and marks an ordinary Team context,
+  can establish the prior-wake baseline, and can consume a pending ordinary
+  rotation. A reply-only Chat dispatch remains exact to its claimed message,
+  even if the session transport resumes with `new_context`; it neither receives
+  nor seeds ordinary Team context and leaves any pending ordinary reset
+  pending. An unsuccessful mutation-enabled resume likewise seeds nothing.
   Each persistent agent can set `context_clearing_policy` to `off`, `idle`, or
   `every_wake`. `idle` preserves the original automatic behavior by rotating
-  after real work has completed and the agent becomes idle. `every_wake` starts
-  each otherwise-eligible Team wake with a fresh context without bypassing
-  low-priority batching or waking idle agents by itself.
+  after real work has completed and the agent becomes idle. Manual and idle
+  rotations first lease a 120-second `context_handoff` preparation dispatch in
+  the retained conversation. Its sole Team tool is
+  `team_record_context_handoff`, which accepts one advisory summary of at most
+  1,200 characters; ordinary Team work and messages are unavailable. Recording
+  the handoff completes that preparation lease and makes the fresh rotation due
+  immediately. Completion without a summary, timeout, or resume failure also
+  allows the fresh reset to proceed, with the failure state retained for
+  observability. `every_wake` skips advisory preparation and starts each
+  otherwise-eligible Team wake directly with a fresh context; it does not
+  bypass low-priority batching or wake an idle agent by itself.
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.
@@ -1012,6 +1120,9 @@ Ordinary persistent Team wakes may receive these tools:
 Tool visibility is scoped by wake class:
 
 - Normal persistent wakes get ordinary Team action tools.
+- `context_handoff` preparation wakes get only
+  `team_record_context_handoff`; even ordinary Team read/action tools are
+  withheld for that bounded advisory turn.
 - Team Chat wakes get the chat-class tool `team_reply_to_chat` and the attachment-staging tool
   `team_stage_chat_attachment`, plus ordinary tools only when that chat dispatch may mutate Team
   state.
@@ -1106,13 +1217,24 @@ Persistent agents may include `git_refs` on deliverables when the project has
 Git configured and the runtime has created a Git work context for that task
 worktree. Persistent sessions receive one deterministic branch and physical Git
 worktree per task under `/home/agent/worktrees/<repo>/...`; later wakes reuse the
-same task branch without sharing a mutable checkout with another task. Git
-deliverables must include the context's `branch_context_id`; the
-server derives the accepted `git_refs.agent_branch` from that context and
-rejects mismatched agent-supplied branches. These refs are not published
-automatically; a supervising agent, project lead, or manager requests
-publication with `team_publish_review_branch`, `team_update_feature_branch`, or
-`team_request_release`.
+same task branch without sharing a mutable checkout with another task.
+
+When a submission explicitly carries any Git metadata, it must include the
+context's `branch_context_id` and `git_refs.commit_sha`. The server resolves the
+server-owned branch tip, rejects a supplied commit or branch that does not match
+that context, derives `git_refs.agent_branch`, and records the verified tip as
+both `commit_sha` and `submitted_commit_sha`. Omitting Git metadata does not
+provide a provenance bypass: when exactly one active context matches the
+agent/task/dispatch, Team resolves its branch tip. An unchanged tip equal to the
+pinned `base_commit` leaves a legitimate artifact-only deliverable Git-free; an
+advanced tip is automatically bound to the deliverable with the full verified
+Git refs. Multiple matching contexts require an explicit
+`branch_context_id`, and inability to resolve the live tip fails the submission
+instead of guessing that it is artifact-only.
+
+These refs are not published automatically; a supervising agent, project lead,
+or manager requests publication with `team_publish_review_branch`,
+`team_update_feature_branch`, or `team_request_release`.
 Deliverables may also include `verification` with `status` set to `passed`,
 `failed`, `partial`, `not_run`, or `unknown`, plus an optional summary and
 evidence refs. Use `not_run` when test tooling, services, or credentials were
@@ -1162,9 +1284,12 @@ Team communication is directional and enforced by the repository, not by prose:
   for groups they manage. Operators can still use the Admin API or UI handle
   action.
 - **Team Chat to a human** — use `team_reply_to_chat` only to answer a specific
-  human operator message from the built-in Chat tab. If that operator message
-  explicitly asks for a Team state change, use the relevant ordinary Team tools
-  in the same dispatch when mutation is allowed. Use
+  human operator message, whether it entered from the built-in Chat tab or an
+  authorized external communication bridge. If that operator message explicitly
+  asks for a Team state change, use the relevant ordinary Team tools in the same
+  dispatch only when its dispatch allows mutation. An externally originated
+  reply is persisted first and delivered asynchronously through
+  `team.chat.external_reply_requested`; delivery failure does not erase it. Use
   `team_send_operator_chat_message` only for human operators listed in the
   current dispatch context. Do not use question, status-report, or operator-chat
   tools for normal agent-to-agent coordination.
@@ -1174,12 +1299,23 @@ Team communication is directional and enforced by the repository, not by prose:
   Discord, create the manager agent/session with a read-capable Discord
   communication target in its session allowlist and grant `discord_get_commands`.
 - **Operator stand-down** — use `POST /agents/{agent_id}/stand-down` with a
-  required `reason` to disable that agent and its subordinate subtree. Held
-  agents are skipped by future Team wake leasing, and any already-running
-  dispatch that later attempts Team mutations is rejected instead of being
-  applied. Operator holds are durable state and can only be cleared through
-  `POST /agents/{agent_id}/stand-down/revoke`; ordinary Team MCP tools cannot
-  revoke or override them.
+  required `reason` and `scope`. `scope: agent` holds only that agent;
+  `scope: subtree` also holds every reporting-line descendant. The UI's
+  **Stand down** action explicitly sends direct-agent scope, while **Stand down
+  subtree** sends subtree scope; the Admin API and
+  `team_stand_down_agent` retain `subtree` as the omitted/default value for
+  compatibility. Future leasing skips an agent under either its own active hold
+  or an inherited subtree hold.
+
+  A hold does not discard exact terminal work already leased before every
+  effective hold was set. Such a pre-hold dispatch may complete only records in
+  its frozen scope through the narrow deliverable/review/ephemeral/chat
+  completion allowlist, or finish a scoped support task with an update whose
+  entire mutation is exactly `{"state": "finished"}`. It cannot start work,
+  widen the task update, or touch a record outside that dispatch. A dispatch
+  leased after the hold has no exception. Operator holds are durable and can
+  only be cleared through `POST /agents/{agent_id}/stand-down/revoke`; ordinary
+  Team MCP tools cannot revoke or override them.
 
 Inbox priority controls wake timing, not visibility or permission. `high` and
 `normal` pending inbox items request a debounced recipient wake outside the
@@ -1202,10 +1338,19 @@ and the same cascade backs both the `team_decide_review` MCP tool and the
   finding remains open. The task becomes accepted only when every current
   deliverable on that task is accepted (multi-review and multi-deliverable tasks
   are held back until the last one lands).
-- **rejected** — the review and deliverable are rejected, findings are preserved,
-  the task returns to `in_progress`, and the owner receives an actionable rework
-  notice.
+- **rejected** — for independent reviews, the review and deliverable are
+  rejected, findings are preserved, the task returns to `in_progress`, and the
+  owner receives an actionable rework notice. A sealed cohort instead keeps the
+  candidate pending while another cohort slot remains pending, then emits one
+  consolidated rework notice after the whole cohort has resolved.
 - **blocked** — the review, deliverable, and task are all set to `blocked`.
+
+Independent review requests can be added one at a time. A sealed cohort fixes
+its complete membership atomically and rejects late additions; blocked slots
+must be retried or validly retired within their original cohort slot rather than
+collapsed onto another member. Any replacement for a cohort-rejected candidate
+must supersede that candidate and carry a complete fresh replacement cohort as
+described above.
 
 Every decision stamps `decision_at` and triggers
 `_recalculate_project_status`, which also runs after goal updates, task state
@@ -1239,6 +1384,27 @@ command paths. It contains:
 - integration readiness and direct-child contribution coverage; and
 - invalid legacy reason codes.
 
+`integration_boundary: true` designates the explicit task that integrates and
+accepts a final deliverable. It is valid only with `deliverable_contract`, and a
+contract is invalid on a non-boundary task. The contract has two independent
+controls:
+
+- `require_git_provenance` requires the final deliverable to carry a submitted,
+  authoritative Git context with matching
+  `branch_context_id`, `agent_branch`, `commit_sha`, and
+  `submitted_commit_sha`.
+- `required_contribution_task_ids` names the exact same-project contributions
+  that the final deliverable must cover. Each named task must be either a direct
+  child or a declared dependency of the integration task; incidental children,
+  descendants, and lineage-only `originating_task_id` links do not count.
+
+An integration boundary cannot resolve through
+`team_update_task state=finished`. It resolves only when a current deliverable
+whose `source_deliverable_ids` provide complete contract coverage is accepted,
+and Git provenance is verified when required. Agents can set these fields with
+`team_create_task` or, before any deliverable submission, an authorized
+`team_update_task`; the create/update/edit UI surfaces the same controls.
+
 Every task read also includes a non-persisted `inherited_blockers` projection
 for blockers reached through unresolved descendants or unsatisfied
 dependencies. Each row identifies the upstream task and canonical blocker,
@@ -1265,14 +1431,19 @@ provenance never supplies that permission. The authenticated human
 changes-requested transition has one narrow system-authorized exception to
 create same-project correction or triage roots atomically.
 
-An aggregate parent deliverable names the exact accepted current direct-child
-outputs in `source_deliverable_ids`. It omits children resolved by accepted
-evidenced no-op or authorized cancellation and does not invent a deliverable for
-finished support work. A nested child's accepted aggregate deliverable carries
-the next layer; recursive lineage is derived. The runtime does not periodically
-wake a parent merely because children remain open. It notifies the parent owner
-on blockers, handoffs, rejection, child resolution, and the transition to
-integration-ready.
+An ordinary aggregate parent deliverable names the exact accepted current
+direct-child outputs in `source_deliverable_ids`; an explicit integration
+boundary instead uses the exact contribution tasks named by its contract,
+including declared dependencies where configured. It omits contributions
+resolved by accepted evidenced no-op or authorized cancellation and does not
+invent a deliverable for finished support work. A nested child's accepted
+aggregate deliverable carries the next layer, and recursive lineage is derived.
+The runtime does not periodically wake a parent merely because children remain
+open. It notifies the owner on blockers, handoffs, rejection, child resolution,
+and the transition to integration-ready. Child-resolution history remains
+durable when the parent owner's own active dispatch caused or observed that
+transition, but that notice is recorded as handled and does not schedule a
+redundant wake.
 
 Review profiles are reusable, team-owned review rubrics. A profile may be scoped
 to one project, constrained to specific reviewer roles with `applicable_role_ids`,
@@ -1280,6 +1451,17 @@ and populated with criteria rows. Review requests can attach a profile and
 instructions; review decisions can then record per-criterion outcomes. Archived
 profiles remain visible for history but cannot be assigned to new review
 requests through either Team MCP tools or the Admin API.
+
+An assigned-review wake does not treat the review's flat task row as the whole
+specification. It directs the reviewer to fetch the complete deliverable and
+task, including descriptions, outcome and deliverable contracts, assessment,
+profile, artifacts, candidate, and verification evidence. For an integration
+boundary it follows `required_contribution_task_ids` and the assessment's
+required accepted source deliverables; for a legacy aggregate parent it follows
+direct children. Composite contributions are traversed recursively to their
+leaf specifications and evidence. Complete ID coverage alone is not proof of
+correct integration, and missing required context is a `blocked` review with
+the missing record IDs rather than permission to guess.
 
 #### Outcome Kinds, Outcome Tasks, And Deliverables
 
@@ -1362,7 +1544,26 @@ decision and never resolves or waives open findings.
 A blocked or rejected deliverable can be replaced by a normal same-task rework
 submission, which carries its open findings, or a project lead/manager can link
 an accepted cross-task replacement with `team_link_deliverable_replacement`.
-Migrations never infer these relationships.
+That general rule does not bypass an unresolved sealed cohort: a candidate with
+an active pending or blocked cohort slot cannot be replaced until the cohort
+settles or its blocked slot is recovered. Migrations never infer these
+relationships.
+
+If a current accepted deliverable later proves invalid, the task owner, project
+lead, or same-team manager uses `team_reopen_task_for_rework` with the resolved
+task, exact `accepted_deliverable_id`, reason, and idempotent request ID. The
+command fails with `task_rework_owner_unavailable` unless that task's original
+owner is still active and belongs to the project Team. The accepted deliverable
+and historical review decisions remain immutable; Team
+marks the rework request on that deliverable, clears the task completion, moves
+the task to `in_progress`, makes terminal ancestors unresolved through their
+assessment, and sends the original active owner one high-priority rework item.
+The task cannot finish or resolve again until
+`team_submit_deliverable_for_review` creates a fresh formally reviewed same-task
+deliverable whose `supersedes_deliverable_id` is that exact accepted
+predecessor. The replacement must repeat every current required review profile;
+if the predecessor used a sealed cohort, it must preserve the complete cohort
+slot coverage described above.
 
 Terminal commands reject a stale dispatch snapshot when a newer high-priority
 inbox item arrived after the agent woke. The item is intentionally outside the
@@ -1392,6 +1593,27 @@ project, managed repository, worktree, branch, and context, and label the base
 checkout as a control checkout. If any preparation fails, the complete dispatch
 fails, created contexts are finalized, and the runtime reservation is released;
 Team never silently drops one scoped task.
+
+Preparation failures are durable and target-specific so the cron loop does not
+repeat the same failing setup before inference:
+
+- Task, repository, and dependency-Git failures open or reuse a routed blocker
+  keyed by task, semantic preparation generation, and a stable cause
+  fingerprint. That current generation is suppressed from ordinary task
+  dispatch until the blocker is resolved or meaningful task/project/dependency
+  candidate state changes. A generation change automatically resolves the stale
+  incident and permits one fresh preparation attempt; priority, timestamps, and
+  other scheduling bookkeeping do not count as recovery.
+- Inbox preparation failures suppress that exact inbox item under its
+  item-and-cause blocker. Review artifact/repository preparation failures mark
+  the exact immutable review attempt `blocked` with `block_kind: system`; use a
+  valid review retry successor after recovery rather than repeatedly waking the
+  failed attempt.
+- A wake whose purpose is preparation recovery freezes only the preparation
+  blockers and their referencing inbox items. It carries no task, review,
+  project, managed-repository, or worktree preparation scope, so the accountable
+  owner can inspect, resolve, delegate, or escalate the incident without
+  retriggering the unavailable setup first.
 
 For a Git-backed task, direct dependency edges also define code inheritance.
 Before exposing the successor worktree, Team resolves every accepted, current
@@ -1449,18 +1671,26 @@ Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
 deliverable do not need Git contexts. Once a deliverable includes Git metadata,
 `team_submit_deliverable` and `team_submit_deliverable_for_review` require a
-matching `branch_context_id` and reject missing, wrong-task, wrong-agent,
-wrong-dispatch, inactive, or mismatched branch contexts.
+matching `branch_context_id` plus `git_refs.commit_sha`, verify the exact
+server-owned branch tip, and reject missing, wrong-task, wrong-agent,
+wrong-dispatch, inactive, or mismatched contexts and commits. When Git metadata
+is omitted, the submission rules above still inspect a unique active context
+and automatically bind an advanced task branch.
 
 Resolved tasks and task reassignment create durable, checkout-specific
 `WorktreeCleanupCandidate` records. The periodic Team wake reconciler starts in
-dry-run mode by default and exposes configurable cleanup limit, grace, retry,
-and interrupted-processing recovery intervals. Before invoking either the
-libvirt or container-worker backend it rereads Team state twice and refuses or
-defers cleanup while the task is still actionable for the checkout owner, a
-preparing/leased dispatch references the task, an active Git context references
-the path, the project repository changed, or the expected retained commit is
-not durably evidenced.
+staged mode when `worktree_cleanup_dry_run` is omitted: the first eligible safe
+pass is an audited dry run, leaves the candidate pending with
+`last_safety_check: dry_run_safe`, and schedules it after the retry interval;
+the next eligible pass revalidates everything before attempting removal.
+Explicit `true` remains audit-only on every pass, while explicit `false` permits
+removal on the first eligible pass. The reconciler also exposes configurable
+cleanup limit, grace, retry, and interrupted-processing recovery intervals.
+Before invoking either the libvirt or container-worker backend it rereads Team
+state twice and refuses or defers cleanup while the task is still actionable
+for the checkout owner, a preparing/leased dispatch references the task, an
+active Git context references the path, the project repository changed, or the
+expected retained commit is not durably evidenced.
 
 Both execution backends serialize task-worktree preparation and cleanup for the
 session repository. A host coordinator lock is shared by Team preparation and
@@ -1561,10 +1791,16 @@ Only timeouts and infrastructure failures leave verification retryable, and only
 a review recorded as process-blocked may be replaced. Release-review decisions
 are immutable: use `rejected` for a candidate defect and reserve `blocked` for a
 non-candidate process or evidence-access blocker with a concrete finding.
-`team_retry_release_gate`
-and the Admin API/UI create a linked immutable successor attempt against the same
-pinned SHA and persist the audited reason and requesting agent/operator identity;
-they never rewrite the failed attempt.
+`team_retry_release_gate` and the Admin API/UI create a linked immutable
+successor attempt against the same pinned SHA and persist the audited reason and
+requesting agent/operator identity; they never rewrite the failed attempt. An
+agent should retry verification only after concrete evidence that the
+infrastructure or timeout cause recovered, with a reason stating what changed;
+without that evidence it must escalate the blocker. The agent-side retry budget
+for an unchanged candidate is one: if an agent-requested replacement
+verification attempt also fails, no agent may schedule another retry. The
+current run and concrete recovery requirement must be escalated to an operator,
+who may authorize a later attempt after an independently verified intervention.
 `team_recover_release` remains limited to failed Git feature/release promotions
 and is not a release-gate retry mechanism.
 

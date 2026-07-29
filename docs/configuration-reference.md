@@ -29,6 +29,22 @@ use a 120-second request timeout and fail rather than serving cached refs when r
 complete. Simultaneous reads for one managed repository share a single upstream refresh. Socket
 clients are authorized from their host peer UID against every effective directory-scoped
 `issue_setup.git_user`; upstream Git credentials remain in the broker's host service environment.
+For Azure DevOps, the directory-scoped `azure_devops_pr_pat_env` defaults to
+`AZURE_DEVOPS_PR_PAT` and `azure_devops_pat_env` defaults to `AZURE_DEVOPS_PAT`.
+Managed Git tries the first populated PR PAT variable and then the populated
+general PAT variable. When a PAT is selected for an Azure DevOps SSH refresh
+source, only the Git child process receives an in-memory
+`url.<canonical-https-url>.insteadOf=<ssh-source>` override; no registry entry,
+repository identity, or persistent Git configuration is changed.
+
+Broker errors contain a sanitized message, stable `error_code`, and exception
+category. Supported codes are `broker_busy`,
+`upstream_host_key_verification_failed`, `upstream_host_resolution_failed`,
+`upstream_authentication_failed`, `upstream_connection_failed`,
+`upstream_tls_verification_failed`, `local_ref_update_failed`,
+`upstream_ref_policy_rejected`, and the fallback
+`upstream_refresh_failed`. Raw Git output is not returned to the restricted SSH
+client.
 
 ## `config/gateway.env.example`
 
@@ -194,6 +210,21 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
+The `effect:team:wake-due-agents` node also reconciles durable task-worktree
+cleanup candidates. Its cleanup fields are:
+
+| Field | Default | Meaning |
+|---|---:|---|
+| `worktree_cleanup_limit` | `10` | Maximum candidates reconciled in one wake cycle. |
+| `worktree_cleanup_grace_seconds` | `300` | Delay after a checkout becomes cleanup-eligible before its first safety pass. |
+| `worktree_cleanup_retry_seconds` | `300` | Delay before a dry-run-safe, deferred, or recovery-required candidate becomes eligible again. |
+| `worktree_cleanup_recovery_seconds` | `900` | Age after which an interrupted processing claim can be recovered. |
+| `worktree_cleanup_dry_run` | omitted | `true` is audit-only; `false` permits an immediate physical attempt on the first eligible pass; omitted stages a dry run and attempts removal on a later eligible pass after the retry interval. |
+
+Omission is intentionally different from explicitly setting `true`. All three
+modes retain the same state, reference, repository, branch, commit, and
+dirty-file safety checks.
+
 ### Communication-to-Team Chat bridge
 
 Use `effect:team:enqueue-operator-chat-message` after a
@@ -214,6 +245,12 @@ The bundled Team runtime pack consumes
 `team.chat.external_reply_requested` after `team_reply_to_chat`, sends the
 persisted reply through `effect:communication:send-message`, and records the
 delivery result. The Team reply remains visible even if external send fails.
+The event keeps the original Team text in `team_chat_body`, carries
+`attachment_ids` plus sanitized attachment metadata, and renders filename,
+MIME type, and byte-count references into the external `body`. That textual
+reference keeps attachment-only replies deliverable; it is not a
+provider-native file upload, and the generic communication effect does not
+upload Team attachment bytes.
 Discord sends are top-level channel posts; do not configure a thread ID for a
 Discord target.
 
@@ -1328,7 +1365,8 @@ Configuration stores environment-variable names, never secret values:
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `github_token_env` | directory provider config | Managed Git refresh/publication; defaults to `GITHUB_TOKEN`, with `GH_TOKEN` accepted by the host integration. |
-| `azure_devops_pr_pat_env` / `azure_devops_pat_env` | directory provider config | Managed Git Azure DevOps refresh/publication; defaults to `AZURE_DEVOPS_PR_PAT`. |
+| `azure_devops_pr_pat_env` | directory provider config | Preferred Azure DevOps PAT environment-variable name for PR operations and Managed Git refresh/publication; defaults to `AZURE_DEVOPS_PR_PAT`. Managed Git uses it only when the named variable is populated. |
+| `azure_devops_pat_env` | directory provider config | General Azure DevOps PAT environment-variable name; defaults to `AZURE_DEVOPS_PAT`. Managed Git uses it as the fallback when the preferred PR PAT variable is unpopulated. |
 | `managed_git_commit_name` | directory provider config | Host-authored merge/consolidation commits; falls back to the configured Git committer identity and then the control-plane default. |
 | `managed_git_commit_email` | directory provider config | Host-authored merge/consolidation commits; follows the same fallback order. |
 | `managed_git_operation_timeout_seconds` | effective host/directory config | Per-process timeout for managed Git fetch, push, worktree, checkout, and merge commands; defaults to five minutes. |

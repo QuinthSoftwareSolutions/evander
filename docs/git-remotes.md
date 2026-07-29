@@ -99,7 +99,13 @@ reads do not require it: restricted SSH keys provisioned by Evander require the 
 `git-upload-pack` or `git-upload-archive` serves refs. This covers clone, fetch, pull,
 `ls-remote`, and archive reads. If the broker or upstream is unavailable, the Git read fails with
 a stale-ref refusal instead of succeeding from an old mirror. The SSH wrapper never receives
-provider credentials and cannot request a different repository.
+provider credentials and cannot request a different repository. Broker failures expose a
+sanitized message, stable `error_code`, and exception category without returning raw Git output.
+The codes are `broker_busy`, `upstream_host_key_verification_failed`,
+`upstream_host_resolution_failed`, `upstream_authentication_failed`,
+`upstream_connection_failed`, `upstream_tls_verification_failed`,
+`local_ref_update_failed`, `upstream_ref_policy_rejected`, and the fallback
+`upstream_refresh_failed`.
 
 The equivalent privileged Admin API is:
 
@@ -273,12 +279,20 @@ payloads map task, project, managed repository, worktree, branch, and context;
 the base repository checkout is control-only.
 
 When a task resolves or is reassigned away from the checkout owner, Team creates
-a durable `WorktreeCleanupCandidate`. The reconciler starts in dry-run mode by
-default and refuses removal while a preparing/leased dispatch or active Git
+a durable `WorktreeCleanupCandidate`. The workflow field
+`worktree_cleanup_dry_run` deliberately has three modes:
+
+- `true` performs safety audits only and never attempts physical removal;
+- `false` permits an eligible candidate's first reconciliation pass to attempt
+  physical removal immediately; and
+- omitted performs a dry run first, records `dry_run_safe`, and schedules the
+  physical attempt for a later pass after `worktree_cleanup_retry_seconds`.
+
+Every mode refuses removal while a preparing/leased dispatch or active Git
 context references the checkout, while retained commit evidence is incomplete,
 or when repository/path/branch/`HEAD`/dirty-file checks disagree. Preparation
-and cleanup share a session/repository coordinator lock; the execution backend
-then repeats physical Git inspection under its repository lock immediately
+and cleanup share a session/repository coordinator lock; a physical attempt
+repeats Git inspection under the execution backend's repository lock immediately
 before `git worktree remove` and pruning.
 
 Ignored caches may be reclaimed only after tracked and non-ignored untracked
@@ -291,8 +305,17 @@ delete as a substitute for this task-checkout recovery path.
 ## Credentials
 
 Upstream authentication uses Evander's fixed host-owned askpass path and credential environment.
-Tokens must not appear in repository URLs, Git config, command arguments, manifests, registry
-records, logs, or workflow outputs. Interactive credential prompts are disabled.
+For Azure DevOps, `azure_devops_pr_pat_env` defaults to `AZURE_DEVOPS_PR_PAT` and
+`azure_devops_pat_env` defaults to `AZURE_DEVOPS_PAT`. Managed Git tries the first
+populated PR PAT variable, then the populated general PAT variable. If it selects
+a PAT for a registered Azure DevOps SSH refresh source, the Git child process
+receives an in-memory `url.<canonical-https-url>.insteadOf=<ssh-source>` override.
+The stored refresh source, canonical repository identity, registry, and operator
+checkout are not rewritten.
+
+Tokens must not appear in repository URLs, persistent Git config, command
+arguments, manifests, registry records, logs, or workflow outputs. Interactive
+credential prompts are disabled.
 
 Configure provider token environment names through directory provider configuration and expose the
 actual secret only to the control-plane/effect-worker process. GitHub publication may use the host

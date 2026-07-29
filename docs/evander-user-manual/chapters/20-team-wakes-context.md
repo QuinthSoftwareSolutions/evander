@@ -51,6 +51,12 @@ review work wakes the assigned reviewer. Child blockers and handoffs notify the
 accountable parent owner without turning the waiting aggregate into a periodic
 polling task.
 
+Child-resolution transitions always retain durable parent-owner history. When
+the parent owner's own active dispatch caused or observed that resolution,
+Team records the notice as already handled and does not mark the owner due or
+emit a redundant wake request. A resolution learned from another agent still
+uses the ordinary pending-notice and wake path.
+
 The runtime then applies safety guards:
 
 - agent and Team remain active;
@@ -126,6 +132,25 @@ If any repository or task-worktree preparation fails, Team marks the dispatch
 runtime reservation, and reports the exact error. It does not resume with one
 scoped task omitted or choose a repository from incidental list order.
 
+The same task/repository/dependency preparation cause in the same semantic
+generation creates or reuses one durable high-priority preparation blocker.
+While that blocker remains current, ordinary inference and another attempt at
+the identical failed setup are suppressed. A fresh generation requires either
+explicit source-aware blocker recovery or a meaningful change to task
+instructions, ownership/state, integration contract, dependencies, project Git
+configuration, or current deliverable candidates. Priority, timestamps,
+creator/case bookkeeping, dispatch churn, and denormalized ID lists do not
+pretend the cause changed.
+
+Review repository or artifact preparation failure is also terminal for that
+immutable attempt before inference: Team blocks the exact review and records
+the missing evidence rather than waking a reviewer without it. Recover with
+the supported review retry, cohort-slot replacement, or deliverable
+replacement after the underlying access or repository issue is fixed. Blocker
+recovery, delegated blocker work, future tasks, and unrelated dispatch scopes
+exclude the failed setup, so investigating the incident does not accidentally
+run it again.
+
 Every prepared coding task is shown with this mapping:
 
 | Task | Project | Repository | Worktree | Branch | Context |
@@ -169,6 +194,20 @@ Each persistent agent has one of three policies:
 
 “Truly idle” means no active lease, active tasks, pending wakeable work, reviews, or ephemeral acceptance needing that agent. The system first creates a handoff summary so a new conversation does not discard durable orientation.
 
+The prompt labels the context lifecycle explicitly:
+
+| Context mode | When it is used | What it carries |
+|---|---|---|
+| <code>fresh_full</code> | First successful wake, manual or idle rotation, <code>every_wake</code>, or an explicit <code>new_context</code> resume. | A compact complete working set for the immutable dispatch. |
+| <code>retained_delta</code> | Successful retained same-session wake. | The current immutable dispatch delta; stable identity and organization detail already in the conversation are omitted. |
+| <code>context_handoff</code> | The bounded preparation dispatch before manual or idle reset. | One advisory continuity summary only; this is a dispatch cause, not an ordinary work context mode. |
+
+Lifecycle state and resume behavior choose the mode. Agent display names,
+model names, and provider names do not. During a retained delta,
+<code>team_get_current_dispatch_context</code> hydrates the active immutable
+scope and its task, inbox, blocker, review, project, and Git records without
+widening membership.
+
 Manual and idle rotations also make one bounded 120-second attempt to resume
 the prior context and record a single advisory self-handoff. The summary is
 limited to 1,200 characters, is clearly separate from durable Team state, and
@@ -176,7 +215,18 @@ cannot delay the fresh-context reset if it is missing, rejected, or times out.
 The <code>every_wake</code> policy deliberately skips this agent-authored step
 and keeps only its deterministic checkpoint.
 
+A <code>context_handoff</code> dispatch grants only
+<code>team_record_context_handoff</code>, exactly once; ordinary Team reads,
+mutations, and messages are unavailable. The fresh reset proceeds after
+success, completion without a summary, failure, or timeout, while the outcome
+remains observable.
+
 A pending rotation is cleared only after the new dispatch starts successfully. If session startup fails, it remains pending. Manual rotation can queue a change even when the automatic policy is <code>off</code>.
+
+Chat follows the same reset and <code>every_wake</code> semantics. Its current
+operator message is exact and singular, while historical transcript bodies are
+bounded. Only a successful mutation-enabled Chat dispatch seeds ordinary Team
+context; a reply-only Chat dispatch leaves a pending ordinary reset intact.
 
 For Northstar, Imani might use <code>idle</code>: the telemetry implementation stays in one context while active, then rotates after all substantive work is handed off. Rowan might use <code>every_wake</code> for strongly isolated review passes. That does not make Rowan poll constantly; Rowan still needs a review or other wake reason.
 
@@ -189,7 +239,29 @@ There are two sources:
 - **operator** — set through the Admin surface and revocable only through the operator path;
 - **superior** — set by an authorized direct superior and revocable by the agent that set that superior hold.
 
-A stand-down applies to the target's reporting subtree. The runtime skips every affected agent. The command executor also checks effective stand-downs, so a dispatch that was already running cannot continue mutating Team state after the hold becomes active.
+A stand-down has explicit scope. <code>agent</code> pauses only the target;
+<code>subtree</code> pauses the target and reporting descendants. The UI exposes
+separate **Stand down** and **Stand down subtree** actions so an ordinary
+single-agent pause does not silently stop a larger organization, and its
+ordinary action defaults to direct-agent scope. For compatibility, omitting
+<code>scope</code> from the API or MCP command retains the legacy
+<code>subtree</code> default; callers should always send the intended scope
+explicitly. The runtime skips every affected agent and refuses dispatches
+leased after any effective hold.
+
+A dispatch leased before every effective hold has one narrow terminal
+exception. It may use only <code>team_submit_deliverable</code>,
+<code>team_submit_deliverable_for_review</code>,
+<code>team_decide_deliverable</code>, <code>team_decide_review</code>,
+<code>team_accept_ephemeral_result</code>,
+<code>team_reject_ephemeral_result</code>,
+<code>team_link_deliverable_replacement</code>, or
+<code>team_reply_to_chat</code>; support work may additionally call
+<code>team_update_task</code> with exactly
+<code>{"state":"finished"}</code>. No title change, combined update, new work,
+scope widening, or other mutation is admitted. This lets an already-running
+turn record its exact terminal evidence without treating the hold as authority
+to continue work.
 
 Revocation clears only the holds the caller is authorized to clear. If another inherited hold remains, the agent stays down. When the last effective hold clears, ready work can be made due for fresh evaluation.
 
@@ -203,10 +275,16 @@ reassigned away from the checkout owner, Team creates a durable,
 checkout-specific <code>WorktreeCleanupCandidate</code>. Cleanup is separate
 from task resolution: refusal never reopens accepted work or discards evidence.
 
-The periodic reconciler runs in dry-run mode by default and recovers
-interrupted or retryable candidates after configurable grace intervals. Before
-physical removal it acquires the same session/repository coordinator lock used
-by preparation, rereads Team state twice, and proves:
+When <code>worktree_cleanup_dry_run</code> is omitted, cleanup is staged: the
+first eligible pass records an audited dry run, leaves the candidate pending
+with <code>last_safety_check=dry_run_safe</code>, and schedules it after the
+retry interval; a later eligible pass repeats all checks and may physically
+remove the worktree. Explicit <code>true</code> remains audit-only. Explicit
+<code>false</code> permits an immediate physical attempt on the first eligible
+pass. The reconciler also recovers interrupted or retryable candidates after
+configurable grace intervals. Before physical removal it acquires the same
+session/repository coordinator lock used by preparation, rereads Team state
+twice, and proves:
 
 - the task remains resolved or permanently reassigned;
 - no <code>preparing</code> or <code>leased</code> dispatch references it;
@@ -263,11 +341,14 @@ Begin in **Operations** with the agent's wake reason, runtime attention, active 
 | Low-priority report does not wake | Confirm whether it requests a response, the batch cycle count, and whether another wake delivered it. |
 | Task owner never wakes | Check dependency status, active deliverable review, interval, no-progress count, Team cap, stand-down, busy session, and active lease. |
 | Dispatch remains <code>preparing</code> | Inspect every scoped repository/worktree and the recorded preparation error; Team will not lease a partial scope. |
+| The same preparation error does not run again | Inspect the current cause-specific preparation blocker and its semantic generation. Recover it only after fixing the cause, or make a meaningful task/dependency/project-Git/candidate change. |
+| Retained wake omits stable detail | This is expected for <code>retained_delta</code>; call <code>team_get_current_dispatch_context</code> to hydrate the frozen active scope. |
 | Task appears in context but no worktree mapping does | Confirm the task actually needs the project's managed repository and that the complete dispatch preparation succeeded. |
 | Two prompts seem concurrent | Compare core session activity and Team <code>active_dispatch_id</code>; one may be a non-Team wake or an expired/stale completion. |
 | Lease remains after the model stopped | Session completion may not have routed or matched the active dispatch. Inspect session routing and finalizer workflow run. |
 | Tasks stop dispatching after repeated empty wakes | Inspect the canonical <code>agent_execution_stall</code> blocker, its affected tasks, route, and events. Resolve it through the blocker recovery path after addressing the cause. |
 | Cleanup reports <code>recovery_required</code> | A state, path, branch, commit, or dirty-file safety check failed. Preserve the worktree, inspect the named check, and retry the candidate only after the mismatch is understood. |
+| Cleanup reports <code>dry_run_safe</code> but reclaims no bytes | If cleanup mode was omitted, wait for the later eligible physical pass; explicit <code>true</code> is intentionally audit-only. |
 | Context rotates repeatedly | Verify policy, pending flag, session startup result, and whether successful start clears it. |
 | Revocation appears ineffective | Another operator or inherited superior hold may remain active. Inspect the effective stand-down list. |
 | Manager wakes without owned tasks | Manager fallback found open Team work with no member lease; inspect the supplied routing summary. |
@@ -305,10 +386,11 @@ Do not clear leases, no-progress counters, or stand-down rows directly in SQLite
 
 - <code>src/evander_team_addon/services/runtime_service.py</code> — leasing, low-priority cycles, busy-session guard, manager fallback, finalization, and attention payloads.
 - <code>src/evander_team_addon/services/domain/dispatch_scope.py</code> and <code>task_assessment.py</code> — immutable source-specific dispatch construction and recursive readiness.
+- <code>src/evander_team_addon/services/domain/preparation_failures.py</code> — cause and semantic-generation fingerprints, durable blockers, and retry suppression.
 - <code>src/evander_team_addon/services/worktree_cleanup_service.py</code> and <code>src/evander/execution/task_worktree_cleanup.py</code> — durable cleanup candidates, double-checked state and Git safety, backend removal, audit, and recovery.
-- <code>src/evander_team_addon/services/domain/wake.py</code> — exact inbox wake predicate, ready-work rules, debounce, and follow-up wake decisions.
-- <code>src/evander_team_addon/services/domain/context_rotation.py</code> and <code>stand_down.py</code> — context policies, durable handoff, subtree holds, and revocation.
-- <code>src/evander_team_addon/providers.py</code> and <code>workflow_packs.py</code> — wake effect, session routing, prompt construction, and event paths.
+- <code>src/evander_team_addon/services/domain/wake.py</code> and <code>task_supervision.py</code> — exact inbox wake predicate, ready-work rules, debounce, parent-transition history, and redundant self-wake suppression.
+- <code>src/evander_team_addon/services/domain/context_rotation.py</code> and <code>stand_down.py</code> — context policies, durable handoff, agent/subtree holds, and revocation.
+- <code>src/evander_team_addon/providers.py</code>, <code>services/wake_prompt_context.py</code>, and <code>workflow_packs.py</code> — wake effect, lifecycle-aware context construction, session routing, and event paths.
 - <code>src/evander_team_addon/models.py</code> — runtime lease, context, inbox priority, and stand-down records.
 - <code>docs/team-addon-wake-decision-tree.md</code> and <code>docs/addons.md</code> — operator-oriented decision tree and integration overview.
 - <code>tests/test_team_addon_runtime.py</code> and <code>tests/test_team_addon_outbox_runtime.py</code> — eligibility, batching, no-progress, Chat/busy guards, rotation, and event publication.

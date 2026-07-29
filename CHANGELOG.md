@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-29 - Feature-branch Documentation Alignment
+
+- Updated the Team Add-on, managed-Git, configuration, operations, and canonical
+  manual sources to match the branch's current delivery, review, context,
+  stand-down, cleanup, chat, and release-recovery contracts.
+- Refreshed the Team Delivery manual screenshot for the attention-first,
+  project-focused workspace and brought its deterministic browser fixture up to
+  date with the current Admin Sessions API.
+
 ## 2026-07-29 - Persistent Team UI Disclosures
 
 - Preserved every dynamic Team Add-on disclosure across state-stream, cost, and

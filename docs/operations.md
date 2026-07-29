@@ -301,6 +301,14 @@ delivery state before retrying the communication workflow. Do not send a
 generic `effect:agent:enqueue-prompt` for bridge traffic: it bypasses the Team
 dispatch lease and cannot safely call `team_reply_to_chat` or Team mutations.
 
+For attachment coverage, stage one allowed Team Chat attachment and send an
+external reply with an empty text body. Confirm the external-reply event
+contains its attachment ID and sanitized metadata, preserves an empty
+`team_chat_body`, and supplies a non-empty provider body listing the filename,
+MIME type, and byte count. The generic bridge sends that textual reference; a
+provider-native file upload requires a separately supported communication
+capability.
+
 Troubleshooting:
 
 - **Active lease mismatch** — if a completed session's dispatch does not match
@@ -1292,7 +1300,7 @@ Example directory-scoped `providers.json` overlay:
 
 ### Team Add-on browser direct agent calls
 
-The Team Add-on People tab can start a browser WebRTC call to the selected persistent agent. This
+The Team Add-on **Teams** view can start a browser WebRTC call to the selected persistent agent. This
 path reuses projected voice-session state, origin-agent query delegation, and reconciliation wakes,
 but it does not use DIDWW, Asterisk, SIP, or the host media bridge. The Admin API validates the
 selected agent and origin session, writes a `browser_agent_call` record to
@@ -3022,6 +3030,27 @@ Refresh stages canonical branches and tags under an operation namespace and comm
 changes in one transaction. It rejects upstream `agents/**`, `review/**`, and `team/**`
 branches and never prunes agent, review, Team, notes, or operation refs.
 
+For Azure DevOps, effective directory configuration names two credential
+variables. `azure_devops_pr_pat_env` defaults to `AZURE_DEVOPS_PR_PAT`;
+`azure_devops_pat_env` defaults to `AZURE_DEVOPS_PAT`. Managed Git uses the first
+populated PR PAT and falls back to the populated general PAT. When the
+registered refresh source is Azure DevOps SSH but a PAT is selected, the Git
+process receives an in-memory rewrite to the canonical HTTPS URL. The stored
+source, registry, and operator checkout are unchanged.
+
+A restricted SSH clone, fetch, pull, `ls-remote`, or archive read that fails
+through the refresh broker reports a sanitized message plus a stable code and
+category. Use the code to triage without copying raw Git output: `broker_busy`,
+`upstream_host_key_verification_failed`, `upstream_host_resolution_failed`,
+`upstream_authentication_failed`, `upstream_connection_failed`,
+`upstream_tls_verification_failed`, `local_ref_update_failed`,
+`upstream_ref_policy_rejected`, or the fallback
+`upstream_refresh_failed`. Check
+`journalctl -u evander-managed-git-refresh.service` with the managed repository
+ID; do not add tokens to the URL or enable interactive credential prompts.
+An explicit `evander-cli git-repos refresh` calls the managed-Git service
+directly and therefore does not use the broker's stable error-code envelope.
+
 ### Agent push and queue processing
 
 Each writable guest key is restricted to one managed repository, one
@@ -3084,6 +3113,16 @@ evander-cli git-repos maintenance --managed-repo-id mr_0123456789abcdef0123
 Startup reconciliation and maintenance remove only lock-free managed worktrees older than the
 configured stale threshold (one hour by default). Routine reconciliation is rate-limited to at
 most once every five minutes.
+
+Persistent Team task worktrees use a separate durable cleanup candidate and are
+reconciled by `effect:team:wake-due-agents`. Set
+`worktree_cleanup_dry_run: true` for safety audits only. Set it to `false` to
+allow an eligible candidate's first pass to attempt physical removal. Leave it
+omitted for the staged default: the first pass records a safe dry run, and a
+later pass attempts physical removal only after
+`worktree_cleanup_retry_seconds`. Omitted therefore does not mean `true`.
+Regardless of mode, never bypass a deferred or `recovery_required` candidate
+with `git-repos maintenance` or a recursive delete.
 
 Issue, session, and Team deletion removes bindings and SSH authorization, not the shared
 repository. Unpublished refs and repositories are retained until an operator explicitly deletes

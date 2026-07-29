@@ -249,8 +249,8 @@ def test_formal_review_handoff_does_not_wake_its_own_parent_owner() -> None:
     assert "parent-owner" not in state.agent_runtimes
 
 
-def test_redundant_parent_transitions_do_not_notify_the_effective_sender() -> None:
-    for transition in ("handoff", "rejection", "resolution"):
+def test_redundant_parent_handoff_and_rejection_do_not_notify_sender() -> None:
+    for transition in ("handoff", "rejection"):
         state = _state_with_hierarchy()
         state.tasks["child-1"].owner_agent_id = "parent-owner"
 
@@ -266,6 +266,32 @@ def test_redundant_parent_transitions_do_not_notify_the_effective_sender() -> No
         assert notice is None
         assert _pending_for(state, "parent-owner") == []
         assert "parent-owner" not in state.agent_runtimes
+
+
+def test_self_observed_parent_resolution_is_retained_as_handled_history() -> None:
+    state = _state_with_hierarchy()
+    state.tasks["child-1"].owner_agent_id = "parent-owner"
+    result = {"events": [], "created_inbox_item_ids": []}
+
+    notice = queue_parent_task_transition(
+        state,
+        child_task_id="child-1",
+        transition="resolution",
+        sender_agent_id="parent-owner",
+        result=result,
+        now=utc_now(),
+    )
+
+    assert notice is not None
+    assert notice.recipient_agent_id == "parent-owner"
+    assert notice.sender_agent_id == "parent-owner"
+    assert notice.state == TeamInboxItemState.HANDLED
+    assert notice.response_requested is False
+    assert notice.payload["transition"] == "resolution"
+    assert result["created_inbox_item_ids"] == [notice.id]
+    assert result["events"] == []
+    assert _pending_for(state, "parent-owner") == []
+    assert "parent-owner" not in state.agent_runtimes
 
 
 def test_actionable_self_parent_transitions_still_notify_owner() -> None:

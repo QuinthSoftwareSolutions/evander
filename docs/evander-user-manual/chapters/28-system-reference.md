@@ -194,14 +194,14 @@ The Team Add-on contributes one navigation area with fifteen current views. Ther
 | View | What it projects |
 |---|---|
 | Workspace | Cross-cutting attention, delivery, team, and work-status summary |
-| Operations | Active leases, dispatches, sessions, and operational exceptions |
-| Delivery | Deliverables and review progress |
+| Operations | Active leases, dispatches, sessions, direct-agent/subtree stand-down controls, and operational exceptions |
+| Delivery | Attention-first, project-focused deliverables with review, release, verification, and publication evidence |
 | Memory | Durable Team memory records and artifact references |
 | Projects | Project definitions, memberships, leads, and goals |
 | Task board | Project tasks arranged by workflow lane |
 | Cases | Structured operational cases and their lifecycle |
 | Teams | Teams, agents, memberships, responsibilities, roles, and models |
-| Chat | Team chat channels and messages |
+| Chat | Built-in and workflow-bridged external Team Chat conversations, messages, and external delivery state |
 | Mail | Sent/received projections over the durable Team inbox |
 | Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |

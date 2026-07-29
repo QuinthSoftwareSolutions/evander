@@ -131,6 +131,39 @@ Guest clones include three helpers:
 
 The bare repository's post-receive hook only enqueues a structured trigger event. It never receives an upstream token and never publishes to the canonical remote.
 
+### Refresh credentials and broker failures
+
+Normal guest clone, fetch, pull, <code>ls-remote</code>, and archive reads ask
+the host-owned refresh broker to update the exact managed repository before
+serving refs. Azure DevOps credential names resolve from the repository's
+effective directory configuration:
+
+- <code>azure_devops_pr_pat_env</code> defaults to
+  <code>AZURE_DEVOPS_PR_PAT</code>;
+- <code>azure_devops_pat_env</code> defaults to
+  <code>AZURE_DEVOPS_PAT</code>; and
+- Managed Git uses the first populated PR PAT variable, then the populated
+  general PAT variable.
+
+If a PAT is selected while the registered Azure DevOps refresh source uses SSH,
+Evander gives only that Git child process an in-memory
+<code>url.&lt;canonical-https-url&gt;.insteadOf=&lt;ssh-source&gt;</code>
+override. It does not change the registry, canonical repository identity,
+stored refresh source, persistent Git configuration, or operator checkout.
+
+A failed broker request never returns raw Git output. It returns a sanitized
+message, exception category, and one stable code:
+<code>broker_busy</code>,
+<code>upstream_host_key_verification_failed</code>,
+<code>upstream_host_resolution_failed</code>,
+<code>upstream_authentication_failed</code>,
+<code>upstream_connection_failed</code>,
+<code>upstream_tls_verification_failed</code>,
+<code>local_ref_update_failed</code>,
+<code>upstream_ref_policy_rejected</code>, or the fallback
+<code>upstream_refresh_failed</code>. The restricted read fails rather than
+serving stale refs.
+
 ## Administrator reference: pinned promotion and publication
 
 A `trigger:git:push` event names the managed repository, changed ref, old and new SHA, session, notes ref, default branch, and derived review branch. Downstream logic must carry the event's exact new SHA.
@@ -157,6 +190,28 @@ runtime/git-worktrees/<managed_repo_id>/<operation-id>/checkout
 It starts from a pinned host-only ref. Hooks, LFS smudge, submodule initialization, inherited commit signing, credential prompts, and interactive prompts are disabled. A secret-free manifest and operation lock sit beside the checkout.
 
 The worktree is scratch space, not an agent sandbox. Never execute agent-authored builds or tests there. Success, failure, cancellation, and normal termination remove the worktree, prune its registration, and compare-and-swap delete its operation ref. Startup and periodic maintenance reconcile abandoned worktrees only when their lock is free and they are older than the configured stale threshold, one hour by default.
+
+### Persistent Team task-worktree cleanup
+
+Persistent Team coding tasks use a different lifecycle from ephemeral host
+operation worktrees. Resolution or reassignment creates a durable
+<code>WorktreeCleanupCandidate</code>, and
+<code>effect:team:wake-due-agents</code> reconciles it under the same
+session/repository coordination used by preparation.
+
+The node's <code>worktree_cleanup_dry_run</code> setting is tri-state:
+
+| Value | Behavior |
+|---|---|
+| <code>true</code> | Run safety audits only; never attempt physical removal. |
+| <code>false</code> | Permit the first eligible reconciliation pass to attempt physical removal immediately. |
+| omitted | Run a dry safety pass first, mark the candidate <code>dry_run_safe</code>, then attempt physical removal on a later eligible pass after <code>worktree_cleanup_retry_seconds</code>. |
+
+Every physical attempt revalidates Team references, retained commit evidence,
+repository, path, branch, <code>HEAD</code>, and dirty-file state before and
+under the execution backend's repository lock. A refusal remains visible as a
+deferred or <code>recovery_required</code> candidate; managed-repository
+maintenance and recursive deletion are not substitutes for this lifecycle.
 
 ## Administrator reference: artifact lifecycle
 
