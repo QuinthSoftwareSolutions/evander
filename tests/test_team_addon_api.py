@@ -1247,6 +1247,87 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     assert "derived from the authenticated session" in spoofed.json()["error"]
 
 
+def test_human_review_changes_requested_publishes_correction_wake_before_cron(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _attach_pending_human_review(repo)
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(
+                        login="Reviewer@Example.com",
+                        group_assignments=[
+                            SimpleNamespace(
+                                login="reviewer@example.com",
+                                group_id="human-reviewers",
+                                directory_path="root/team",
+                            )
+                        ],
+                    ),
+                )
+            )
+        )
+    )
+    payload = {
+        "decision": "changes_requested",
+        "summary": "The release needs a correction.",
+        "findings": [
+            {
+                "text": "Correct the release-wide workflow failure.",
+                "evidence_refs": ["artifact-space:reports/release-failure.txt"],
+            }
+        ],
+        "expected_revision": 0,
+        "request_id": "changes-requested-1",
+    }
+
+    decided = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+
+    assert decided.status_code == 200, decided.text
+    decided_payload = decided.json()
+    assert decided_payload["result"]["idempotent_replay"] is False
+    assert len(decided_payload["result"]["outbox_record_ids"]) == 1
+    assert len(decided_payload["published_event_ids"]) == 1
+    wake_events = [
+        event
+        for event in InternalEventBus(
+            internal_event_store_path(runtime_dir)
+        ).list_events()
+        if event.event_type == "team.agent.wake_requested"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0].event_id == decided_payload["published_event_ids"][0]
+    assert wake_events[0].payload["agent_id"] == "lead"
+    assert wake_events[0].payload["reason"] == "inbox"
+
+    replay = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+
+    assert replay.status_code == 200, replay.text
+    replay_payload = replay.json()
+    assert replay_payload["result"]["idempotent_replay"] is True
+    assert replay_payload["published_event_ids"] == decided_payload["published_event_ids"]
+    replay_wake_events = [
+        event
+        for event in InternalEventBus(
+            internal_event_store_path(runtime_dir)
+        ).list_events()
+        if event.event_type == "team.agent.wake_requested"
+    ]
+    assert len(replay_wake_events) == 1
+
+
 def test_human_review_owner_reassign_resume_and_preparation_result_api(
     tmp_path: Path,
 ) -> None:
@@ -1558,12 +1639,14 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
         json=payload,
     )
     assert reported.status_code == 200, reported.text
-    assert reported.json()["case"]["source"] == "post_release_feedback"
-    assert reported.json()["case"]["metadata"]["reporter_user_id"] == (
+    reported_payload = reported.json()
+    assert reported_payload["case"]["source"] == "post_release_feedback"
+    assert reported_payload["case"]["metadata"]["reporter_user_id"] == (
         "reporter@example.com"
     )
-    first_revision = reported.json()["revision"]
-    first_result = reported.json()["result"]
+    assert len(reported_payload["published_event_ids"]) == 1
+    first_revision = reported_payload["revision"]
+    first_result = reported_payload["result"]
     reported_state = repo.read()
     feedback_cases = [
         case
@@ -1592,14 +1675,26 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert report_outbox.intent_type == "team.agent.wake_requested"
     assert report_outbox.payload["payload"]["agent_id"] == "lead"
     assert set(reported_state.release_packages) == release_ids_before
+    wake_events = [
+        event
+        for event in InternalEventBus(
+            internal_event_store_path(runtime_dir)
+        ).list_events()
+        if event.event_type == "team.agent.wake_requested"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0].event_id == reported_payload["published_event_ids"][0]
+    assert wake_events[0].payload["agent_id"] == "lead"
 
     replay = client.post(
         "/release-packages/release-1/report-issue",
         json=payload,
     )
     assert replay.status_code == 200
-    assert replay.json()["result"]["idempotent_replay"] is True
-    assert replay.json()["revision"] == first_revision
+    replay_payload = replay.json()
+    assert replay_payload["result"]["idempotent_replay"] is True
+    assert replay_payload["revision"] == first_revision
+    assert replay_payload["published_event_ids"] == reported_payload["published_event_ids"]
     replay_state = repo.read()
     assert len(
         [
@@ -1627,6 +1722,15 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
         for record in repo.list_outbox_records()
         if record.id in first_result["outbox_record_ids"]
     } == set(first_result["outbox_record_ids"])
+    assert len(
+        [
+            event
+            for event in InternalEventBus(
+                internal_event_store_path(runtime_dir)
+            ).list_events()
+            if event.event_type == "team.agent.wake_requested"
+        ]
+    ) == 1
 
     conflict = client.post(
         "/release-packages/release-1/report-issue",

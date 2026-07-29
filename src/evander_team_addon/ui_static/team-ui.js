@@ -1790,6 +1790,38 @@ function bindForms() {
       return;
     }
 
+    const humanReviewApprove = event.target?.closest?.(
+      '[data-human-review-decision="approved"]',
+    );
+    if (humanReviewApprove) {
+      humanReviewApprove
+        .closest("[data-human-review-decision-form]")
+        ?.querySelectorAll?.('[name="human_finding_text"]')
+        .forEach((field) => field.setCustomValidity(""));
+    }
+
+    const findingAdd = event.target?.closest?.("[data-human-review-finding-add]");
+    if (findingAdd) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review findings")) {
+        return;
+      }
+      addHumanReviewFindingRow(
+        findingAdd.closest("[data-human-review-findings-editor]"),
+      );
+      return;
+    }
+
+    const findingRemove = event.target?.closest?.("[data-human-review-finding-remove]");
+    if (findingRemove) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review findings")) {
+        return;
+      }
+      removeHumanReviewFindingRow(findingRemove);
+      return;
+    }
+
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
     if (addButton) {
       event.preventDefault();
@@ -1884,6 +1916,15 @@ function bindForms() {
         )
         .forEach((field) => field.setCustomValidity(""));
       syncHumanReviewChecklistEditor(editor);
+    }
+    const humanReviewFindingField = event.target?.closest?.(
+      '[name="human_finding_text"], [name="human_finding_target_deliverable_ids"], [name="human_finding_evidence_refs"]',
+    );
+    if (humanReviewFindingField instanceof HTMLTextAreaElement) {
+      humanReviewFindingField
+        .closest("[data-human-review-finding-row]")
+        ?.querySelector?.('[name="human_finding_text"]')
+        ?.setCustomValidity("");
     }
     const governanceTeamSearch = event.target?.closest?.("[data-governance-team-search]");
     if (!(governanceTeamSearch instanceof HTMLInputElement)) {
@@ -2652,6 +2693,8 @@ const lockedMutationControlSelectors = [
   ["[data-human-review-checklist-add]", "edit human review checklist"],
   ["[data-human-review-checklist-remove]", "edit human review checklist"],
   ["[data-human-review-checklist-move]", "reorder human review checklist"],
+  ["[data-human-review-finding-add]", "edit human review findings"],
+  ["[data-human-review-finding-remove]", "edit human review findings"],
   ["[data-context-rotation-agent-id]", "clear agent context"],
   ["[data-stand-down-agent-id]", "stand down agents"],
   ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
@@ -16372,6 +16415,202 @@ function renderHumanFindingHistory(findings, correctionTasks) {
   `;
 }
 
+function humanReviewFindingListFieldValue(value) {
+  if (Array.isArray(value)) {
+    return value.join("\n");
+  }
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function renderHumanReviewFindingRow(finding = {}) {
+  return `
+    <div class="human-review-finding-row" data-human-review-finding-row>
+      <div class="human-review-finding-row-heading">
+        <strong data-human-review-finding-number>Finding</strong>
+        <button
+          class="record-action human-review-finding-remove"
+          type="button"
+          data-human-review-finding-remove
+        >Remove</button>
+      </div>
+      <label class="human-review-finding-description">
+        <span>Description</span>
+        <textarea
+          name="human_finding_text"
+          rows="3"
+          placeholder="Describe one concrete, actionable problem"
+        >${escapeHtml(finding.text || "")}</textarea>
+      </label>
+      <div class="human-review-finding-metadata">
+        <label>
+          <span>Target deliverable IDs <small>(optional)</small></span>
+          <textarea
+            name="human_finding_target_deliverable_ids"
+            rows="2"
+            placeholder="One ID per line"
+          >${escapeHtml(humanReviewFindingListFieldValue(finding.target_deliverable_ids))}</textarea>
+        </label>
+        <label>
+          <span>Evidence references <small>(optional)</small></span>
+          <textarea
+            name="human_finding_evidence_refs"
+            rows="2"
+            placeholder="artifact-space:..., one per line"
+          >${escapeHtml(humanReviewFindingListFieldValue(finding.evidence_refs))}</textarea>
+        </label>
+      </div>
+    </div>
+  `;
+}
+
+function renderHumanReviewFindingsEditor() {
+  return `
+    <div class="human-review-findings-editor" data-human-review-findings-editor>
+      <div class="human-review-findings-heading">
+        <strong>Findings</strong>
+        <span>Required only when requesting changes.</span>
+      </div>
+      <div class="human-review-finding-rows" data-human-review-finding-rows></div>
+      <p class="human-review-findings-empty" data-human-review-findings-empty>No findings added.</p>
+      <button
+        class="record-action human-review-finding-add"
+        type="button"
+        data-human-review-finding-add
+      >Add finding</button>
+    </div>
+  `;
+}
+
+function syncHumanReviewFindingEditor(editor) {
+  if (!editor) {
+    return;
+  }
+  const rows = Array.from(editor.querySelectorAll("[data-human-review-finding-row]"));
+  rows.forEach((row, index) => {
+    const number = row.querySelector("[data-human-review-finding-number]");
+    if (number) {
+      number.textContent = `Finding ${index + 1}`;
+    }
+    const remove = row.querySelector("[data-human-review-finding-remove]");
+    if (remove) {
+      remove.setAttribute("aria-label", `Remove finding ${index + 1}`);
+    }
+  });
+  const empty = editor.querySelector("[data-human-review-findings-empty]");
+  if (empty) {
+    empty.hidden = rows.length > 0;
+  }
+}
+
+function addHumanReviewFindingRow(editor, finding = {}) {
+  const rows = editor?.querySelector?.("[data-human-review-finding-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderHumanReviewFindingRow(finding);
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  syncHumanReviewFindingEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  row.querySelector('[name="human_finding_text"]')?.focus();
+}
+
+function removeHumanReviewFindingRow(button) {
+  const editor = button.closest("[data-human-review-findings-editor]");
+  button.closest("[data-human-review-finding-row]")?.remove();
+  syncHumanReviewFindingEditor(editor);
+  rememberFormDraft(editor?.closest("form"));
+}
+
+function humanReviewFindingFromRow(row) {
+  return {
+    text: text(row.querySelector('[name="human_finding_text"]')?.value),
+    target_deliverable_ids: splitList(
+      row.querySelector('[name="human_finding_target_deliverable_ids"]')?.value,
+    ),
+    evidence_refs: splitList(
+      row.querySelector('[name="human_finding_evidence_refs"]')?.value,
+    ),
+  };
+}
+
+function humanReviewFindingsFromForm(form, { validate = false } = {}) {
+  const rows = Array.from(form.querySelectorAll("[data-human-review-finding-row]"));
+  const findings = [];
+  let valid = true;
+  rows.forEach((row) => {
+    const description = row.querySelector('[name="human_finding_text"]');
+    description?.setCustomValidity("");
+    const finding = humanReviewFindingFromRow(row);
+    const hasMetadata =
+      finding.target_deliverable_ids.length > 0 || finding.evidence_refs.length > 0;
+    if (!finding.text) {
+      if (validate) {
+        description?.setCustomValidity(
+          hasMetadata
+            ? "Describe the finding before attaching targets or evidence."
+            : "Describe this finding or remove the empty row.",
+        );
+        valid = false;
+      }
+      return;
+    }
+    findings.push(finding);
+  });
+  if (validate && !rows.length) {
+    setStatus("Request changes requires at least one actionable finding.", "error");
+    form.querySelector("[data-human-review-finding-add]")?.focus();
+    return null;
+  }
+  if (validate && !valid) {
+    form.reportValidity();
+    setStatus(
+      "Describe or remove every added finding before requesting changes.",
+      "error",
+    );
+    return null;
+  }
+  return findings;
+}
+
+function humanReviewFindingDraftFromRow(row) {
+  return {
+    text: row.querySelector('[name="human_finding_text"]')?.value || "",
+    target_deliverable_ids:
+      row.querySelector('[name="human_finding_target_deliverable_ids"]')?.value || "",
+    evidence_refs:
+      row.querySelector('[name="human_finding_evidence_refs"]')?.value || "",
+  };
+}
+
+function humanReviewFindingsDraftFromForm(form) {
+  const editor = form.querySelector("[data-human-review-findings-editor]");
+  if (!editor) {
+    return null;
+  }
+  return Array.from(editor.querySelectorAll("[data-human-review-finding-row]")).map(
+    humanReviewFindingDraftFromRow,
+  );
+}
+
+function restoreHumanReviewFindingsDraft(form, findings) {
+  const editor = form.querySelector("[data-human-review-findings-editor]");
+  const rows = editor?.querySelector?.("[data-human-review-finding-rows]");
+  if (!rows || !Array.isArray(findings)) {
+    return;
+  }
+  rows.innerHTML = findings
+    .map((finding) => renderHumanReviewFindingRow(finding))
+    .join("");
+  decorateFieldTooltips(rows);
+  syncHumanReviewFindingEditor(editor);
+}
+
 function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
   return `
     <form class="human-review-decision-form" data-human-review-decision-form data-form-id="human-review-decision-form" data-form-draft-scope="${escapeAttr(request.id)}" data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
@@ -16386,11 +16625,7 @@ function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
       }
       <label>Decision summary<textarea name="summary" rows="3" placeholder="What was tested and why this decision is appropriate"></textarea></label>
       <label>Evidence references<textarea name="evidence_refs" rows="2" placeholder="artifact-space:..., one per line"></textarea></label>
-      <details ${teamDisclosureAttributes(teamDisclosureKey("human-review", request.id, "changes-requested"))}>
-        <summary>Changes requested fields</summary>
-        <label>Actionable findings<textarea name="findings" rows="4" placeholder="One actionable finding per line"></textarea></label>
-        <label>Target deliverable IDs<textarea name="target_deliverable_ids" rows="2" placeholder="One per line"></textarea></label>
-      </details>
+      ${renderHumanReviewFindingsEditor()}
       <div class="record-actions">
         <button type="submit" class="record-action human-review-approve" data-human-review-decision="approved">Approve</button>
         <button type="submit" class="record-action" data-human-review-decision="changes_requested" formnovalidate>Request changes</button>
@@ -16547,14 +16782,12 @@ async function submitHumanReviewDecision(form, submitter) {
     .map((input) => text(input.dataset.confirmFindingId))
     .filter(Boolean);
   const data = formData(form);
-  const findings = splitList(data.findings).map((findingText) => ({
-    text: findingText,
-    target_deliverable_ids: splitList(data.target_deliverable_ids),
-    evidence_refs: splitList(data.evidence_refs),
-  }));
-  if (decision === "changes_requested" && !findings.length) {
-    setStatus("Request changes requires at least one actionable finding.", "error");
-    return;
+  let findings = [];
+  if (decision === "changes_requested") {
+    findings = humanReviewFindingsFromForm(form, { validate: true });
+    if (!findings) {
+      return;
+    }
   }
   const payload = {
     decision,
@@ -16564,8 +16797,10 @@ async function submitHumanReviewDecision(form, submitter) {
     confirmed_finding_ids: confirmedFindingIds,
     summary: text(data.summary),
     evidence_refs: splitList(data.evidence_refs),
-    findings,
   };
+  if (decision === "changes_requested") {
+    payload.findings = findings;
+  }
   await mutateHumanReview(
     submitter,
     `/human-review-requests/${encodeURIComponent(requestId)}/decisions`,
@@ -21834,6 +22069,7 @@ function formValuesForDraft(form) {
     values.__human_review_checklist = humanReviewChecklistDraft;
   }
   if (form.matches("[data-human-review-decision-form]")) {
+    values.__human_review_findings = humanReviewFindingsDraftFromForm(form) || [];
     values.__human_review_checklist_results = Object.fromEntries(
       Array.from(form.querySelectorAll("[data-human-checklist-id]")).map((field) => [
         text(field.dataset.humanChecklistId),
@@ -21889,6 +22125,7 @@ function restoreFormDrafts(drafts) {
     restoreGovernanceGoalsDraft(form, values.__governance_goals);
     restoreHumanReviewChecklistDraft(form, values.__human_review_checklist);
     if (form.matches("[data-human-review-decision-form]")) {
+      restoreHumanReviewFindingsDraft(form, values.__human_review_findings);
       const checklistResults = values.__human_review_checklist_results || {};
       form.querySelectorAll("[data-human-checklist-id]").forEach((field) => {
         field.checked = Boolean(checklistResults[text(field.dataset.humanChecklistId)]);
@@ -21912,11 +22149,13 @@ function restoreFormDrafts(drafts) {
         name === "__review_profile_criteria" ||
         name === "__governance_goals" ||
         name === "__human_review_checklist" ||
+        name === "__human_review_findings" ||
         name === "__human_review_checklist_results" ||
         name === "__human_review_confirmed_finding_ids" ||
         name.startsWith("criterion_") ||
         name.startsWith("governance_goal_") ||
-        name.startsWith("human_review_checklist_")
+        name.startsWith("human_review_checklist_") ||
+        name.startsWith("human_finding_")
       ) {
         return;
       }
@@ -21966,6 +22205,9 @@ function restoreFormDrafts(drafts) {
     );
     syncHumanReviewChecklistEditor(
       form.querySelector("[data-human-review-checklist-editor]"),
+    );
+    syncHumanReviewFindingEditor(
+      form.querySelector("[data-human-review-findings-editor]"),
     );
     rememberFormDraft(form);
   });

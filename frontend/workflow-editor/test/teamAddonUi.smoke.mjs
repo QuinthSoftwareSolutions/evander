@@ -10988,6 +10988,114 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   }
 
   const decisionForm = detail.locator("[data-human-review-decision-form]");
+  const findingEditor = decisionForm.locator("[data-human-review-findings-editor]");
+  const findingRows = findingEditor.locator("[data-human-review-finding-row]");
+  assert.equal(
+    await findingRows.count(),
+    0,
+    "the flat findings editor should begin empty until the reviewer explicitly adds one",
+  );
+  const decisionEndpoint =
+    "**/api/addons/team-addon/human-review-requests/human-review-release-human/decisions";
+  let findingsDecisionPayload = null;
+  await page.route(decisionEndpoint, async (route) => {
+    findingsDecisionPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        revision: state.revision,
+        result: {},
+        human_review_request: humanRequest,
+      }),
+    });
+  });
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_target_deliverable_ids"]')
+    .fill("deliverable-accepted");
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  assert.equal(
+    findingsDecisionPayload,
+    null,
+    "a metadata-only finding must not be submitted",
+  );
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_text"]')
+      .evaluate((field) => field.validationMessage),
+    "Describe the finding before attaching targets or evidence.",
+  );
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("[P1] Keep this finding intact, including its explanatory comma.");
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_text"]')
+      .evaluate((field) => field.validationMessage),
+    "",
+    "editing a finding should clear its stale validation error",
+  );
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:finding-one");
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  assert.equal(
+    findingsDecisionPayload,
+    null,
+    "an explicitly added empty finding must not be silently discarded",
+  );
+  assert.equal(
+    await findingRows
+      .nth(1)
+      .locator('textarea[name="human_finding_text"]')
+      .evaluate((field) => field.validationMessage),
+    "Describe this finding or remove the empty row.",
+  );
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("[P2] Keep a second finding intact, too.");
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_target_deliverable_ids"]')
+    .fill("deliverable-pending");
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:finding-two");
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  await waitForCondition(
+    () => findingsDecisionPayload !== null,
+    "expected an intercepted changes-requested decision",
+  );
+  assert.deepEqual(
+    findingsDecisionPayload.findings,
+    [
+      {
+        text: "[P1] Keep this finding intact, including its explanatory comma.",
+        target_deliverable_ids: ["deliverable-accepted"],
+        evidence_refs: ["artifact-space:finding-one"],
+      },
+      {
+        text: "[P2] Keep a second finding intact, too.",
+        target_deliverable_ids: ["deliverable-pending"],
+        evidence_refs: ["artifact-space:finding-two"],
+      },
+    ],
+    "each explicit finding row should retain its own prose, targets, and evidence",
+  );
+  await page.getByText("Human review changes requested recorded.").waitFor({
+    state: "visible",
+  });
+  await page.unroute(decisionEndpoint);
+  await decisionForm.waitFor({ state: "visible" });
   await decisionForm.locator('[data-human-checklist-id="smoke-release"]').check();
   await decisionForm
     .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
@@ -10998,20 +11106,39 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await decisionForm
     .locator('textarea[name="evidence_refs"]')
     .fill("artifact-space:human-smoke-evidence");
-  const changesRequestedDetails = decisionForm.locator("details", {
-    has: page.getByText("Changes requested fields", { exact: true }),
-  });
-  await changesRequestedDetails.locator("summary").click();
-  await decisionForm
-    .locator('textarea[name="findings"]')
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_text"]')
     .fill("Pinned preview footer does not show the release identifier.");
-  await decisionForm
-    .locator('textarea[name="target_deliverable_ids"]')
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_target_deliverable_ids"]')
     .fill("deliverable-accepted");
-  await decisionForm.locator('textarea[name="findings"]').evaluate((field) => {
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:footer-screenshot");
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("Secondary finding survives refresh.");
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_target_deliverable_ids"]')
+    .fill("deliverable-pending");
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:secondary-evidence,\nartifact-space:follow-up");
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_text"]')
+    .evaluate((field) => {
     field.focus();
-    field.setSelectionRange(7, 14);
-  });
+      field.setSelectionRange(10, 17);
+    });
   await waitForCondition(
     () => stateStreamCount() > 0,
     "expected Team state stream to be open before refreshing the human-review draft",
@@ -11032,12 +11159,42 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     "artifact-space:human-smoke-evidence",
   );
   assert.equal(
-    await decisionForm.locator('textarea[name="findings"]').inputValue(),
+    await findingRows.nth(0).locator('textarea[name="human_finding_text"]').inputValue(),
     "Pinned preview footer does not show the release identifier.",
   );
   assert.equal(
-    await decisionForm.locator('textarea[name="target_deliverable_ids"]').inputValue(),
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_target_deliverable_ids"]')
+      .inputValue(),
     "deliverable-accepted",
+  );
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_evidence_refs"]')
+      .inputValue(),
+    "artifact-space:footer-screenshot",
+  );
+  assert.equal(await findingRows.count(), 2);
+  assert.equal(
+    await findingRows.nth(1).locator('textarea[name="human_finding_text"]').inputValue(),
+    "Secondary finding survives refresh.",
+  );
+  assert.equal(
+    await findingRows
+      .nth(1)
+      .locator('textarea[name="human_finding_target_deliverable_ids"]')
+      .inputValue(),
+    "deliverable-pending",
+  );
+  assert.equal(
+    await findingRows
+      .nth(1)
+      .locator('textarea[name="human_finding_evidence_refs"]')
+      .inputValue(),
+    "artifact-space:secondary-evidence,\nartifact-space:follow-up",
+    "draft refresh should not normalize unfinished list punctuation",
   );
   assert.equal(
     await decisionForm.locator('[data-human-checklist-id="smoke-release"]').isChecked(),
@@ -11049,16 +11206,12 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
       .isChecked(),
     true,
   );
-  assert.equal(
-    await changesRequestedDetails.getAttribute("open"),
-    "",
-    "expected the opened changes-requested disclosure to survive refresh",
-  );
   assert.deepEqual(
     await page.evaluate(() => {
       const field = document.activeElement;
       return {
         name: field?.getAttribute?.("name") || "",
+        value: field?.value || "",
         selectionStart:
           field instanceof HTMLTextAreaElement ? field.selectionStart : null,
         selectionEnd:
@@ -11066,14 +11219,16 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
       };
     }),
     {
-      name: "findings",
-      selectionStart: 7,
-      selectionEnd: 14,
+      name: "human_finding_text",
+      value: "Secondary finding survives refresh.",
+      selectionStart: 10,
+      selectionEnd: 17,
     },
   );
 
-  await decisionForm.locator('textarea[name="findings"]').fill("");
-  await decisionForm.locator('textarea[name="target_deliverable_ids"]').fill("");
+  await findingRows.nth(1).getByRole("button", { name: "Remove finding 2" }).click();
+  await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
+  assert.equal(await findingRows.count(), 0);
   await decisionForm.getByRole("button", { name: "Approve" }).click();
   await page.getByText("Human review approved recorded.").waitFor({ state: "visible" });
   assert.equal(
@@ -11104,6 +11259,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   assert.deepEqual(decisionRequest.payload.evidence_refs, [
     "artifact-space:human-smoke-evidence",
   ]);
+  assert.equal(
+    "findings" in decisionRequest.payload,
+    false,
+    "non-changes decisions should not send structured findings",
+  );
   assert.equal("reviewer_user_id" in decisionRequest.payload, false);
   assert.equal("reviewer_display_name" in decisionRequest.payload, false);
   assert.equal(initialState.human_review_requests[humanRequest.id].state, "approved");

@@ -6523,6 +6523,72 @@ label textarea {
   gap: 0.4rem;
 }
 
+.human-review-findings-editor {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.human-review-findings-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  align-items: baseline;
+}
+
+.human-review-findings-heading span,
+.human-review-finding-row small,
+.human-review-findings-empty {
+  color: var(--muted);
+}
+
+.human-review-finding-rows {
+  display: grid;
+}
+
+.human-review-finding-row {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.human-review-finding-row-heading {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.human-review-finding-description,
+.human-review-finding-metadata label {
+  min-width: 0;
+}
+
+.human-review-finding-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.human-review-finding-add,
+.human-review-finding-remove {
+  width: fit-content;
+}
+
+.human-review-finding-remove {
+  color: var(--danger);
+}
+
+.human-review-findings-empty {
+  margin: 0;
+}
+
+.human-review-findings-empty[hidden] {
+  display: none;
+}
+
 .human-review-checklist-editor {
   display: grid;
   gap: 0.7rem;
@@ -6699,6 +6765,7 @@ label textarea {
   .team-record-grid,
   .team-inline-create-fields,
   .criteria-editor-row,
+  .human-review-finding-metadata,
   .human-review-checklist-editor-row,
   .governance-goal-row,
   .governance-create-form,

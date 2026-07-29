@@ -2719,10 +2719,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             evidence_refs=_optional_string_list(payload, "evidence_refs") or [],
             findings=_optional_mapping_list(payload, "findings"),
         )
+        published_event_ids = _publish_team_events(context, result.get("events"))
         return JSONResponse(
             {
                 "revision": state.revision,
                 "result": result,
+                "published_event_ids": published_event_ids,
                 "human_review_request": human_review_request_detail_payload(
                     state,
                     state.human_review_requests[human_request.id],
@@ -2897,11 +2899,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request_id=_mutation_request_id(request, payload),
             expected_state_revision=_expected_revision(payload),
         )
+        published_event_ids = _publish_team_events(context, result.get("events"))
         case_id = str(result["case_id"])
         return JSONResponse(
             {
                 "revision": state.revision,
                 "result": result,
+                "published_event_ids": published_event_ids,
                 "case": state.cases[case_id].model_dump(mode="json"),
             }
         )

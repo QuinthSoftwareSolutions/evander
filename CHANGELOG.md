@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-29 - Immediate Human-review Correction Wakes
+
+- Published durable correction wake events immediately from human-review
+  changes-requested and post-release issue API responses, while retaining the
+  transactional outbox for recovery. Idempotent request replays reuse the
+  original event identity instead of waiting for the quarter-hour Team cron or
+  creating duplicate wake events.
+
+## 2026-07-29 - Structured Human-review Findings
+
+- Replaced the changes-requested free-text convention with a flat repeatable
+  findings editor. Reviewers now explicitly add or remove findings and enter
+  each description, optional target deliverable IDs, and optional evidence
+  references independently.
+- Preserved every finding row and its unnormalized in-progress field values,
+  focus, and text selection across background refreshes. Submission rejects
+  blank or metadata-only rows, retains commas in finding prose, and includes
+  structured findings only for changes-requested decisions.
+
 ## 2026-07-29 - Team UI Draft-safe Background Refresh
 
 - Preserved unsaved, request-scoped human-review decisions across Team state
