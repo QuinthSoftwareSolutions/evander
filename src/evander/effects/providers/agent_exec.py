@@ -123,6 +123,11 @@ class AgentExecEffectProvider(VmExecEffectProvider):
         exit_code = self._exit_code_from_status(status=status, success=success)
         status_metadata = getattr(status, "metadata", {})
         failure_kind = None
+        failure_cause = None
+        if isinstance(status_metadata, Mapping):
+            failure_cause = normalize_optional_string(
+                status_metadata.get("worker_failure_cause")
+            )
         if not success:
             failure_kind = (
                 "command"
@@ -147,6 +152,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
             "message": message,
             "exit_code": exit_code,
             "failure_kind": failure_kind,
+            "failure_cause": failure_cause,
             "stdout": stdout,
             "stderr": stderr,
             "vm_name": None,

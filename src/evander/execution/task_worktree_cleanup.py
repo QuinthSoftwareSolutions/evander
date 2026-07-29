@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Iterator
 
 
+_IGNORED_PATH_CLEAN_BATCH_COUNT = 1024
+_IGNORED_PATH_CLEAN_BATCH_BYTES = 128 * 1024
+_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS = 60.0
+
+
 @dataclass(frozen=True, slots=True)
 class TaskWorktreeInspection:
     safe_to_remove: bool
@@ -477,29 +482,55 @@ def _git_path_list(args: list[str]) -> list[str]:
 def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | None:
     """Remove only ignored paths observed by the final pre-cleanup inspection."""
 
-    for relative_path in paths:
-        result = _run(
-            [
-                "git",
-                "--literal-pathspecs",
-                "-C",
-                str(target_dir),
-                "clean",
-                "-f",
-                "-d",
-                "-X",
-                "--",
-                relative_path,
-            ],
-            check=False,
-        )
+    for batch in _ignored_path_clean_batches(paths):
+        try:
+            result = _run(
+                [
+                    "git",
+                    "--literal-pathspecs",
+                    "-C",
+                    str(target_dir),
+                    "clean",
+                    "-f",
+                    "-d",
+                    "-X",
+                    "--",
+                    *batch,
+                ],
+                check=False,
+                timeout_seconds=_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                "timed out after "
+                f"{_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS:g} seconds while removing "
+                f"{len(batch)} proven ignored path(s)"
+            )
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
             return (
-                f"failed to remove proven ignored path {relative_path!r}"
+                f"failed to remove {len(batch)} proven ignored path(s)"
                 + (f": {detail}" if detail else "")
             )
     return None
+
+
+def _ignored_path_clean_batches(paths: list[str]) -> Iterator[list[str]]:
+    batch: list[str] = []
+    batch_bytes = 0
+    for relative_path in paths:
+        path_bytes = len(os.fsencode(relative_path)) + 1
+        if batch and (
+            len(batch) >= _IGNORED_PATH_CLEAN_BATCH_COUNT
+            or batch_bytes + path_bytes > _IGNORED_PATH_CLEAN_BATCH_BYTES
+        ):
+            yield batch
+            batch = []
+            batch_bytes = 0
+        batch.append(relative_path)
+        batch_bytes += path_bytes
+    if batch:
+        yield batch
 
 
 def _path_inventory_bytes(root: Path, paths: list[str]) -> int:
@@ -542,12 +573,18 @@ def _git_output(args: list[str], *, check: bool = True) -> str | None:
     return result.stdout.strip()
 
 
-def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: list[str],
+    *,
+    check: bool = True,
+    timeout_seconds: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
         check=check,
         capture_output=True,
         text=True,
+        timeout=timeout_seconds,
     )
 
 

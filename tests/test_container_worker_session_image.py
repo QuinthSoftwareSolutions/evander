@@ -12,6 +12,9 @@ from evander.effects.providers.agent_bootstrap_frontend import (
 )
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.agent_session import (
+    container_worker_resource_limits_for_session,
+)
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.provider_models import (
     AgentBootstrapFrontendEffectDefinition,
@@ -115,6 +118,69 @@ def _session(
     return session
 
 
+def test_release_verification_session_gets_expanded_process_budget() -> None:
+    session = SimpleNamespace(metadata={"team_release_verification": True})
+
+    assert container_worker_resource_limits_for_session(session) == {
+        "cpus": 8.0,
+        "pids_limit": 2048,
+    }
+
+
+def test_release_verification_session_resource_limits_override_fallbacks() -> None:
+    session = SimpleNamespace(
+        metadata={
+            "team_release_verification": True,
+            "container_worker_resource_limits": {
+                "memory": "6g",
+                "cpus": 4,
+                "pids_limit": 1536,
+            },
+        }
+    )
+
+    assert container_worker_resource_limits_for_session(session) == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
+
+
+def test_release_verification_session_partial_limits_keep_fallbacks() -> None:
+    session = SimpleNamespace(
+        metadata={
+            "team_release_verification": True,
+            "container_worker_resource_limits": {"memory": "6g"},
+        }
+    )
+
+    assert container_worker_resource_limits_for_session(session) == {
+        "memory": "6g",
+        "cpus": 8.0,
+        "pids_limit": 2048,
+    }
+
+
+@pytest.mark.parametrize(
+    "resource_limits",
+    [
+        "not-an-object",
+        {"cpus": 0},
+        {"pids_limit": -1},
+        {"unexpected": 1},
+    ],
+)
+def test_session_rejects_invalid_container_worker_resource_limits(
+    resource_limits: object,
+) -> None:
+    session = SimpleNamespace(
+        metadata={"container_worker_resource_limits": resource_limits}
+    )
+
+    with pytest.raises(ValueError):
+        container_worker_resource_limits_for_session(session)
+
+
 def test_agent_exec_uses_session_container_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -122,7 +188,15 @@ def test_agent_exec_uses_session_container_image(
     _session(
         session_repository,
         session_id="session-1",
-        metadata={"container_worker": {"image": "runner:exec-image"}},
+        metadata={
+            "container_worker": {"image": "runner:exec-image"},
+            "team_release_verification": True,
+            "container_worker_resource_limits": {
+                "memory": "6g",
+                "cpus": 4,
+                "pids_limit": 1536,
+            },
+        },
     )
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
@@ -155,6 +229,11 @@ def test_agent_exec_uses_session_container_image(
 
     assert result["success"] is True
     assert backend.started_specs[0].image == "runner:exec-image"
+    assert backend.started_specs[0].resource_limits == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
     assert backend.started_specs[0].metadata == {
         "effect_type": "effect:agent:exec",
         "effect_id": "effect-1",

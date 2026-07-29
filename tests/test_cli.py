@@ -313,6 +313,140 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
 
 
+def test_team_checkout_release_candidate_resolves_pinned_release_and_managed_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate_sha = "a" * 40
+    tree_hash = "b" * 40
+    release = SimpleNamespace(
+        id="release-1",
+        project_id="project-1",
+        release_branch="team/team-1/releases/release-1",
+        candidate_commit_sha=candidate_sha,
+        candidate_tree_hash=tree_hash,
+    )
+    project = SimpleNamespace(
+        git=SimpleNamespace(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team",
+        )
+    )
+    state = SimpleNamespace(
+        release_packages={"release-1": release},
+        projects={"project-1": project},
+    )
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _ManagedGit:
+        def materialize_candidate_checkout(self, *args: object, **kwargs: object):
+            calls.append((args, kwargs))
+            return {
+                "managed_repo_id": args[0],
+                "source_ref": kwargs["source_ref"],
+                "commit_sha": kwargs["commit_sha"],
+                "tree_hash": kwargs["tree_hash"],
+                "target_dir": str(kwargs["target_dir"]),
+                "detached": True,
+            }
+
+    monkeypatch.setattr(
+        "evander_team_addon.repository.TeamStateRepository",
+        lambda _runtime_dir: SimpleNamespace(read=lambda: state),
+    )
+    monkeypatch.setattr(
+        "evander.cli.build_admin_runtime",
+        lambda _config: pytest.fail(
+            "release candidate checkout must not build the full Admin runtime"
+        ),
+    )
+    monkeypatch.setattr(
+        "evander.cli._build_managed_git_admin_for_cli",
+        lambda _config: _ManagedGit(),
+    )
+    target = tmp_path / "candidate"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "team",
+            "checkout-release-candidate",
+            "release-1",
+            "--target",
+            str(target),
+            "--expected-commit-sha",
+            candidate_sha,
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            ("mr_0123456789abcdefabcd", "root/team"),
+            {
+                "source_ref": "refs/heads/team/team-1/releases/release-1",
+                "commit_sha": candidate_sha,
+                "tree_hash": tree_hash,
+                "target_dir": target,
+                "purpose": "operator-release-review:release-1",
+            },
+        )
+    ]
+    payload = json.loads(result.output)
+    assert payload["release_package_id"] == "release-1"
+    assert payload["commit_sha"] == candidate_sha
+
+
+def test_team_checkout_release_candidate_rejects_stale_expected_sha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = SimpleNamespace(
+        release_packages={
+            "release-1": SimpleNamespace(
+                id="release-1",
+                project_id="project-1",
+                release_branch="team/team-1/releases/release-1",
+                candidate_commit_sha="a" * 40,
+                candidate_tree_hash="b" * 40,
+            )
+        },
+        projects={
+            "project-1": SimpleNamespace(
+                git=SimpleNamespace(
+                    managed_repo_id="mr_0123456789abcdefabcd",
+                    directory_path="root/team",
+                )
+            )
+        },
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.repository.TeamStateRepository",
+        lambda _runtime_dir: SimpleNamespace(read=lambda: state),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "team",
+            "checkout-release-candidate",
+            "release-1",
+            "--target",
+            str(tmp_path / "candidate"),
+            "--expected-commit-sha",
+            "c" * 40,
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "does not match the pinned release" in result.output
+    assert "candidate" in result.output
+
+
 def test_teams_auth_help_exposes_subcommands() -> None:
     runner = CliRunner()
 

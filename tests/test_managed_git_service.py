@@ -1499,6 +1499,116 @@ def test_local_registration_never_mutates_checkout(tmp_path: Path) -> None:
     assert "refresh_source" not in record
 
 
+def test_materialize_candidate_checkout_creates_exact_detached_checkout_without_internal_path(
+    tmp_path: Path,
+) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team", str(source))
+    tree_hash = _run("git", "rev-parse", f"{commit_sha}^{{tree}}", cwd=source)
+    target = tmp_path / "candidate-review"
+
+    result = service.materialize_candidate_checkout(
+        record["managed_repo_id"],
+        "root/team/project",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+        target_dir=target,
+    )
+
+    assert result == {
+        "managed_repo_id": record["managed_repo_id"],
+        "directory_path": "root/team/project",
+        "canonical_repository_identity": record["canonical_repository_identity"],
+        "source_ref": "refs/heads/main",
+        "commit_sha": commit_sha,
+        "tree_hash": tree_hash,
+        "target_dir": str(target),
+        "detached": True,
+    }
+    assert _run("git", "rev-parse", "HEAD", cwd=target) == commit_sha
+    assert _run("git", "rev-parse", "HEAD^{tree}", cwd=target) == tree_hash
+    assert subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=target,
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode == 1
+    assert _run("git", "remote", "get-url", "origin", cwd=target) == record[
+        "canonical_repository_url"
+    ]
+    internal_path = str(_bare_path(service, record["managed_repo_id"]))
+    git_metadata = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (target / ".git").rglob("*")
+        if path.is_file()
+    )
+    assert internal_path not in git_metadata
+    assert str(service.runtime_dir / "git-worktrees") not in git_metadata
+
+
+def test_materialize_candidate_checkout_refuses_existing_or_mismatched_targets(
+    tmp_path: Path,
+) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    tree_hash = _run("git", "rev-parse", f"{commit_sha}^{{tree}}", cwd=source)
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ManagedGitConflictError, match="never overwrites"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            target_dir=existing,
+        )
+    assert (existing / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+
+    mismatched = tmp_path / "mismatched"
+    with pytest.raises(ManagedGitConflictError, match="pinned tree"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash="f" * 40,
+            target_dir=mismatched,
+        )
+    assert not mismatched.exists()
+
+    _commit(source, "README.md", "second\n", "move main")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(record["managed_repo_id"])
+    moved_ref_target = tmp_path / "moved-ref"
+    with pytest.raises(ManagedGitConflictError, match="no longer equals"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            target_dir=moved_ref_target,
+        )
+    assert not moved_ref_target.exists()
+
+    with pytest.raises(ValueError, match="outside the Evander runtime"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            target_dir=service.runtime_dir / "review",
+        )
+
+
 def test_default_branch_override_is_stored_in_registry_and_bare_metadata(
     tmp_path: Path,
 ) -> None:

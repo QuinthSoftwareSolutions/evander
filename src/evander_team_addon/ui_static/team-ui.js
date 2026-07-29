@@ -400,7 +400,7 @@ const deliveryStatusOrder = [
   "rejected",
   "blocked",
 ];
-const deliveryFilterOptions = new Set(["all", ...deliveryStatusOrder]);
+const deliveryFilterOptions = new Set(["attention", "all", ...deliveryStatusOrder]);
 const deliveryStatusLabels = {
   pending: "Pending",
   waiting_for_acceptance: "Waiting for acceptance",
@@ -409,9 +409,11 @@ const deliveryStatusLabels = {
   rejected: "Rejected",
   blocked: "Blocked",
   all: "All",
+  attention: "Needs attention",
 };
 
-let selectedDeliveryFilter = "all";
+let selectedDeliveryFilter = "attention";
+let selectedDeliveryProjectId = "";
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
 let humanReviewQueue = {
@@ -1693,8 +1695,8 @@ function bindForms() {
       return;
     }
     const reason = window.prompt(
-      "Why is this unchanged-candidate gate retry safe?",
-      "Transient infrastructure or evidence blocker resolved.",
+      "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
+      "",
     );
     if (!text(reason)) {
       setStatus("A retry reason is required.", "error");
@@ -3040,6 +3042,14 @@ function bindDeliveryFilters() {
     }
     renderReleases();
   });
+  document.addEventListener("change", (event) => {
+    const projectSelect = event.target?.closest?.("[data-delivery-project-filter]");
+    if (!projectSelect) {
+      return;
+    }
+    selectedDeliveryProjectId = text(projectSelect.value);
+    renderReviewDeliveryWorkspace();
+  });
   document.addEventListener("click", (event) => {
     const copyButton = event.target?.closest?.("[data-copy-identifier]");
     if (copyButton) {
@@ -3051,6 +3061,15 @@ function bindDeliveryFilters() {
     if (retryButton) {
       event.preventDefault();
       void loadMyHumanReviews();
+      return;
+    }
+    const pipelineDetailButton = event.target?.closest?.("[data-delivery-pipeline-detail-id]");
+    if (pipelineDetailButton) {
+      event.preventDefault();
+      const releaseId = text(pipelineDetailButton.dataset.deliveryPipelineDetailId);
+      if (releaseId) {
+        void loadReleaseDetail(releaseId);
+      }
       return;
     }
     const detailButton = event.target?.closest?.("[data-release-detail-id]");
@@ -4753,7 +4772,7 @@ function renderFocusedOrgChartIfActive() {
 }
 
 function setDeliveryFilter(filter) {
-  const nextFilter = deliveryFilterOptions.has(filter) ? filter : "all";
+  const nextFilter = deliveryFilterOptions.has(filter) ? filter : "attention";
   if (selectedDeliveryFilter === nextFilter) {
     updateDeliveryFilterButtons();
     return;
@@ -4794,15 +4813,22 @@ function renderReviewDeliveryWorkspace() {
   }
   updateDeliveryFilterButtons();
   const workspaceRows = buildReviewDeliveryRows();
-  const visibleRows =
+  const statusRows =
     selectedDeliveryFilter === "all"
       ? workspaceRows
-      : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
+      : selectedDeliveryFilter === "attention"
+        ? workspaceRows.filter(deliveryRowNeedsAttention)
+        : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
+  const visibleRows = selectedDeliveryProjectId
+    ? statusRows.filter((row) => text(row.project?.id) === selectedDeliveryProjectId)
+    : statusRows;
+  const controls = renderDeliveryWorkspaceControls(workspaceRows, statusRows, visibleRows);
 
   if (!visibleRows.length) {
     renderIntoActiveTargets("[data-review-delivery-view]", `
+      ${controls}
       <p class="empty-state">
-        No deliverables match the ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
+        No deliverables match the selected project and ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
       </p>
     `);
     bindWorkspaceReviewDecisionForms();
@@ -4811,13 +4837,92 @@ function renderReviewDeliveryWorkspace() {
 
   const teamGroups = groupReviewDeliveryRows(visibleRows);
   const bucketStatuses =
-    selectedDeliveryFilter === "all" ? deliveryStatusOrder : [selectedDeliveryFilter];
+    ["all", "attention"].includes(selectedDeliveryFilter)
+      ? deliveryStatusOrder
+      : [selectedDeliveryFilter];
 
   renderIntoActiveTargets(
     "[data-review-delivery-view]",
-    teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join(""),
+    `
+      ${controls}
+      <div class="delivery-focused-results">
+        ${teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join("")}
+      </div>
+    `,
   );
   bindWorkspaceReviewDecisionForms();
+}
+
+function deliveryRowNeedsAttention(row) {
+  if (text(row.deliverable.superseded_by_deliverable_id)) {
+    return false;
+  }
+  if (
+    currentDeliveryReleasePackages(row.releasePackages).some(
+      (release) => !["accepted", "cancelled"].includes(text(release.state)),
+    )
+  ) {
+    return true;
+  }
+  if (
+    ["accepted", "cancelled"].includes(text(row.task?.state)) &&
+    ["rejected", "blocked"].includes(row.effectiveStatus)
+  ) {
+    return false;
+  }
+  return row.effectiveStatus !== "accepted";
+}
+
+function renderDeliveryWorkspaceControls(allRows, statusRows, visibleRows) {
+  const projects = new Map();
+  allRows.forEach((row) => {
+    const projectId = text(row.project?.id);
+    if (!projectId) {
+      return;
+    }
+    let entry = projects.get(projectId);
+    if (!entry) {
+      entry = { project: row.project, rows: [], total: 0, attention: 0 };
+      projects.set(projectId, entry);
+    }
+    entry.rows.push(row);
+    entry.total += 1;
+    if (deliveryRowNeedsAttention(row)) {
+      entry.attention += 1;
+    }
+  });
+  if (selectedDeliveryProjectId && !projects.has(selectedDeliveryProjectId)) {
+    selectedDeliveryProjectId = "";
+  }
+  const projectOptions = [...projects.entries()]
+    .sort((left, right) => projectSortKey(left[1].project).localeCompare(projectSortKey(right[1].project)))
+    .map(([projectId, entry]) => {
+      const count =
+        selectedDeliveryFilter === "attention"
+          ? entry.attention
+          : selectedDeliveryFilter === "all"
+            ? entry.total
+            : entry.rows.filter((row) => row.effectiveStatus === selectedDeliveryFilter).length;
+      const countLabel = `${count} matching`;
+      return `<option value="${escapeAttr(projectId)}"${selectedDeliveryProjectId === projectId ? " selected" : ""}>${escapeHtml(entry.project?.name || projectId)} (${escapeHtml(countLabel)})</option>`;
+    })
+    .join("");
+  const activeCount = visibleRows.filter(deliveryRowNeedsAttention).length;
+  return `
+    <div class="delivery-focus-bar">
+      <label class="delivery-project-filter">
+        <span>Focus project</span>
+        <select data-delivery-project-filter>
+          <option value="">All projects (collapsed)</option>
+          ${projectOptions}
+        </select>
+      </label>
+      <div class="delivery-focus-summary" role="status">
+        <strong>${visibleRows.length} matching deliverable${visibleRows.length === 1 ? "" : "s"}</strong>
+        <span>${activeCount} still need attention. ${selectedDeliveryProjectId ? "The selected project is expanded." : "Open a project to inspect its deliverables."}</span>
+      </div>
+    </div>
+  `;
 }
 
 function renderMemoryView() {
@@ -15391,15 +15496,15 @@ function releaseProgressStages(release) {
   }
 
   if (!modern && !reviews.length) {
-    stages.push({ label: "Agent review", state: "legacy", detail: "Not recorded (legacy release)" });
+    stages.push({ label: "Release agent review", state: "legacy", detail: "Not recorded (legacy release)" });
   } else if (!reviewRequirements.length && !reviews.length) {
-    stages.push({ label: "Agent review", state: "not-applicable", detail: "No agent review required" });
+    stages.push({ label: "Release agent review", state: "not-applicable", detail: "No agent review required" });
   } else {
     const reviewStates = reviews.map((review) => text(review.state));
     const failed = reviewStates.some((stateValue) => ["blocked", "rejected"].includes(stateValue));
     const completed = reviewStates.length && reviewStates.every((stateValue) => stateValue === "accepted");
     stages.push({
-      label: "Agent review",
+      label: "Release agent review",
       state: failed ? "blocked" : completed ? "complete" : "pending",
       detail: failed ? "Review needs attention" : completed ? `${reviews.length} review${reviews.length === 1 ? "" : "s"} accepted` : "Awaiting agent review",
     });
@@ -15738,6 +15843,7 @@ async function toggleReleaseDetail(releaseId) {
 function renderReleaseDetailSurfaces() {
   renderReleases();
   renderProjectFocus();
+  renderReviewDeliveryWorkspace();
 }
 
 async function loadReleaseDetail(releaseId) {
@@ -15857,6 +15963,7 @@ function renderReleaseDetail(release) {
         <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${release.published_at ? renderRecordDate(release.published_at, "Published") : escapeHtml(release.next_action_hint || release.next_action || "Not published")}</div></div>
         <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
       </div>
+      ${renderReleaseCandidateCheckout(release)}
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
       ${renderReleaseContributionGraph(contributionGraph)}
       ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [])}
@@ -15864,6 +15971,35 @@ function renderReleaseDetail(release) {
       ${renderReleaseHumanRequests(humanRequests, manifest)}
       ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
     </section>
+  `;
+}
+
+function renderReleaseCandidateCheckout(release) {
+  const checkout = release.candidate_checkout;
+  if (!checkout?.checkout_command) {
+    return "";
+  }
+  const repositoryLabel =
+    text(checkout.repository_display_name) ||
+    text(checkout.canonical_repository_identity) ||
+    "Managed repository";
+  return `
+    <div class="release-detail-section release-candidate-checkout">
+      <h4>Test this candidate</h4>
+      <p class="release-candidate-checkout-intro">Create a new detached checkout of the exact candidate that passed this release pipeline. The command verifies the immutable release ref, commit, and tree before writing anything.</p>
+      <dl class="release-candidate-checkout-metadata">
+        <div><dt>Repository</dt><dd><strong>${escapeHtml(repositoryLabel)}</strong><code>${escapeHtml(checkout.canonical_repository_identity)}</code></dd></div>
+        <div><dt>Managed repository ID</dt><dd>${renderIdentifierCopy(checkout.managed_repo_id, { label: "Copy ID" })}</dd></div>
+        <div><dt>Immutable release ref</dt><dd>${renderIdentifierCopy(checkout.release_ref, { label: "Copy ref" })}</dd></div>
+        <div><dt>Candidate commit</dt><dd>${renderIdentifierCopy(checkout.candidate_commit_sha, { label: "Copy SHA" })}</dd></div>
+        <div><dt>Candidate tree</dt><dd>${renderIdentifierCopy(checkout.candidate_tree_hash, { label: "Copy tree" })}</dd></div>
+      </dl>
+      <div class="release-candidate-checkout-command">
+        <div class="delivery-detail-label">Supported host command</div>
+        ${renderIdentifierCopy(checkout.checkout_command, { label: "Copy command" })}
+      </div>
+      <p class="meta-line">The target directory must be new. Existing or non-empty paths are never overwritten.</p>
+    </div>
   `;
 }
 
@@ -17204,21 +17340,22 @@ function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
   if (!bucketMarkup) {
     return "";
   }
+  const expanded = Boolean(project && selectedDeliveryProjectId === text(project.id));
   return `
-    <article class="delivery-project">
-      <div class="delivery-project-title">
-        <div>
-          <p class="section-label">Project</p>
-          <h4>${projectLabel}</h4>
-          ${project ? renderProjectCostCounter(project.id) : ""}
-          ${project ? `<div class="meta-line">Team ${escapeHtml(state.teams?.[project.team_id]?.name || "Unknown team")}</div>` : ""}
-        </div>
-        <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"}</span>
-      </div>
-      <div class="delivery-buckets">
+    <details class="delivery-project"${expanded ? " open" : ""}>
+      <summary class="delivery-project-title">
+        <span class="delivery-project-heading-main">
+          <span class="section-label">Project</span>
+          <strong>${projectLabel}</strong>
+          ${project ? `<span class="meta-line">Team ${escapeHtml(state.teams?.[project.team_id]?.name || "Unknown team")}</span>` : ""}
+        </span>
+        <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"} · ${expanded ? "focused" : "open project"}</span>
+      </summary>
+      ${project ? renderProjectCostCounter(project.id) : ""}
+      <div class="delivery-buckets delivery-project-body">
         ${bucketMarkup}
       </div>
-    </article>
+    </details>
   `;
 }
 
@@ -17314,6 +17451,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
   const deliverable = row.deliverable;
   const task = row.task;
   return `
+    ${renderDeliverablePipeline(row)}
     <section class="deliverable-detail-group">
       <h4>Summary / outcome</h4>
       <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
@@ -17353,6 +17491,259 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
   `;
 }
 
+function currentReleaseForDeliveryRow(row) {
+  if (!row.releasePackages.length) {
+    return null;
+  }
+  const currentReleases = currentDeliveryReleasePackages(row.releasePackages);
+  return (currentReleases.length ? currentReleases : row.releasePackages)
+    .slice()
+    .sort((left, right) => {
+      const leftTimestamp = Date.parse(left.updated_at || left.created_at || "") || 0;
+      const rightTimestamp = Date.parse(right.updated_at || right.created_at || "") || 0;
+      return rightTimestamp - leftTimestamp || text(right.id).localeCompare(text(left.id));
+    })[0];
+}
+
+function currentDeliveryReleasePackages(releasePackages) {
+  const supersededReleaseIds = new Set(
+    releasePackages
+      .map((release) => text(release.supersedes_release_package_id))
+      .filter(Boolean),
+  );
+  return releasePackages.filter(
+    (release) => !supersededReleaseIds.has(text(release.id)),
+  );
+}
+
+function deliverableAcceptanceStage(row) {
+  const deliverable = row.deliverable;
+  const activeReviews = row.reviewRequests.filter(
+    (review) => !text(review.superseded_by_review_request_id),
+  );
+  const label = activeReviews.length
+    ? "Deliverable agent review"
+    : "Deliverable acceptance";
+  if (text(deliverable.state) === "accepted") {
+    return {
+      label,
+      state: "complete",
+      detail: activeReviews.length
+        ? `${activeReviews.length} deliverable review${activeReviews.length === 1 ? "" : "s"} accepted`
+        : "Deliverable accepted",
+    };
+  }
+  const blockedReview = activeReviews.find(
+    (review) => ["blocked", "rejected"].includes(text(review.state)),
+  );
+  if (
+    ["blocked", "rejected"].includes(text(deliverable.state)) ||
+    blockedReview
+  ) {
+    return {
+      label,
+      state: "blocked",
+      detail: blockedReview
+        ? `Deliverable review ${humanizeToken(blockedReview.state)}`
+        : `Deliverable ${humanizeToken(deliverable.state)}`,
+    };
+  }
+  if (activeReviews.length) {
+    const decidedCount = activeReviews.filter((review) => text(review.state) === "accepted").length;
+    return {
+      label,
+      state: "pending",
+      detail: `${decidedCount} of ${activeReviews.length} deliverable reviews accepted`,
+    };
+  }
+  return {
+    label,
+    state: "pending",
+    detail:
+      text(row.task?.waiting_reason) === "superior_acceptance"
+        ? "Waiting for direct superior acceptance"
+        : "Submission recorded; no acceptance decision yet",
+  };
+}
+
+function deliverableEvidenceStage(deliverable) {
+  const evidenceCount =
+    (deliverable.artifact_refs || []).length +
+    (deliverable.outcomes || []).flatMap(
+      (outcome) => [...(outcome.reference_ids || []), ...(outcome.evidence_refs || [])],
+    ).length;
+  const hasGitEvidence = Boolean(
+    text(deliverable.git_refs?.branch_context_id) ||
+    text(deliverable.git_refs?.commit_sha) ||
+    text(deliverable.git_refs?.feature_commit_sha),
+  );
+  const evidenceParts = [
+    evidenceCount ? `${evidenceCount} evidence reference${evidenceCount === 1 ? "" : "s"}` : "",
+    hasGitEvidence ? "Git evidence pinned" : "",
+  ].filter(Boolean);
+  return {
+    label: "Implementation evidence",
+    state: "complete",
+    detail: evidenceParts.length ? evidenceParts.join(" · ") : "Deliverable submission recorded",
+  };
+}
+
+function deliverablePipelineStages(row, release) {
+  const stages = [
+    deliverableEvidenceStage(row.deliverable),
+    deliverableAcceptanceStage(row),
+  ];
+  if (!release) {
+    stages.push({
+      label: "Release inclusion",
+      state: "waiting",
+      detail: "No release package includes this deliverable yet",
+    });
+    return stages;
+  }
+  const manifest = release.manifest || {};
+  const candidatePinned = Boolean(
+    text(release.candidate_commit_sha || manifest.candidate_commit_sha),
+  );
+  stages.push({
+    label: "Release inclusion",
+    state: "complete",
+    detail: candidatePinned
+      ? "Included in a release with a pinned candidate"
+      : "Included in a release; candidate preparation is pending",
+  });
+  stages.push(
+    ...releaseProgressStages(release).filter(
+      (stage) => stage.label !== "Candidate prepared",
+    ),
+  );
+  return stages;
+}
+
+function deliveryPipelineCurrentStage(stages) {
+  return (
+    stages.find((stage) => stage.state === "blocked") ||
+    stages.find((stage) => ["pending", "waiting"].includes(stage.state)) ||
+    stages[stages.length - 1]
+  );
+}
+
+function deliveryPipelineBlockers(row, release) {
+  const blockers = [
+    ...activeBlockersForRecord("deliverable", row.deliverable.id, row.task?.id),
+    ...(release ? activeBlockersForRecord("release_package", release.id) : []),
+  ];
+  return [...new Map(blockers.map((blocker) => [blocker.id, blocker])).values()];
+}
+
+function renderDeliverablePipeline(row) {
+  const compactRelease = currentReleaseForDeliveryRow(row);
+  const cached = compactRelease
+    ? releaseDetailCache.get(text(compactRelease.id))
+    : null;
+  const release = cached?.release || compactRelease;
+  const stages = deliverablePipelineStages(row, release);
+  const currentStage = deliveryPipelineCurrentStage(stages);
+  const blockers = deliveryPipelineBlockers(row, release);
+  return `
+    <section class="deliverable-detail-group deliverable-pipeline" aria-label="Deliverable delivery pipeline">
+      <div class="deliverable-pipeline-heading">
+        <div>
+          <p class="section-label">Delivery pipeline</p>
+          <h4>Current: ${escapeHtml(currentStage?.label || "Implementation evidence")}</h4>
+          <p>${escapeHtml(currentStage?.detail || "Deliverable recorded")}</p>
+        </div>
+        <span class="state-pill ${escapeAttr(currentStage?.state || "pending")}">${escapeHtml(humanizeToken(currentStage?.state || "pending"))}</span>
+      </div>
+      ${
+        blockers.length
+          ? `<div class="deliverable-pipeline-blocker"><strong>Active blocker:</strong> ${escapeHtml(blockers.map((blocker) => blocker.summary || blocker.reason_code || blocker.id).join(" · "))}</div>`
+          : release?.error
+            ? `<div class="deliverable-pipeline-blocker"><strong>Release needs attention:</strong> ${escapeHtml(release.error)}</div>`
+            : ""
+      }
+      <ol class="release-progress deliverable-progress" aria-label="Deliverable progress">
+        ${stages.map((stage, index) => `
+          <li class="release-progress-stage release-progress-${escapeAttr(stage.state)}">
+            <span class="release-progress-marker" aria-hidden="true">${stage.state === "complete" ? "✓" : index + 1}</span>
+            <span class="release-progress-copy">
+              <strong>${escapeHtml(stage.label)}</strong>
+              <span>${escapeHtml(stage.detail)}</span>
+            </span>
+          </li>
+        `).join("")}
+      </ol>
+      ${renderDeliveryPipelineEvidenceControl(compactRelease, cached)}
+      ${renderDeliveryPipelineGateEvidence(cached?.release)}
+    </section>
+  `;
+}
+
+function renderDeliveryPipelineEvidenceControl(release, cached) {
+  if (!release) {
+    return "";
+  }
+  if (cached?.loading) {
+    return `<p class="meta-line">Loading exact release gate evidence.</p>`;
+  }
+  if (cached?.error) {
+    return `
+      <div class="task-invalid-warning">
+        ${escapeHtml(cached.error)}
+        <button type="button" class="record-action" data-delivery-pipeline-detail-id="${escapeAttr(release.id)}">Retry</button>
+      </div>
+    `;
+  }
+  if (cached?.release) {
+    return `<p class="meta-line">Showing exact release gate evidence available to this operator.</p>`;
+  }
+  return `
+    <div class="record-actions">
+      <button type="button" class="record-action" data-delivery-pipeline-detail-id="${escapeAttr(release.id)}">
+        Load exact gate evidence
+      </button>
+    </div>
+  `;
+}
+
+function renderDeliveryPipelineGateEvidence(release) {
+  if (!release) {
+    return "";
+  }
+  const verificationRuns = release.verification_runs || [];
+  const releaseReviews = release.release_reviews || [];
+  const humanRequests = release.human_review?.requests || [];
+  if (!verificationRuns.length && !releaseReviews.length && !humanRequests.length) {
+    return `<p class="meta-line">No individual gate attempts have been recorded yet.</p>`;
+  }
+  return `
+    <details class="delivery-pipeline-evidence">
+      <summary>Gate attempts and decisions</summary>
+      <ul class="delivery-detail-list">
+        ${verificationRuns.map((run) => `
+          <li>
+            <strong>Automated verification attempt ${Number(run.attempt_number || 1)}</strong>
+            <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
+            ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
+          </li>
+        `).join("")}
+        ${releaseReviews.map((review) => `
+          <li>
+            <strong>Release review by ${escapeHtml(state.agents?.[review.reviewer_agent_id] ? agentLabel(state.agents[review.reviewer_agent_id]) : "assigned reviewer")}</strong>
+            <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span>
+          </li>
+        `).join("")}
+        ${humanRequests.map((request) => `
+          <li>
+            <strong>Human review request</strong>
+            <span class="state-pill ${escapeAttr(request.state)}">${escapeHtml(humanizeToken(request.state))}</span>
+          </li>
+        `).join("")}
+      </ul>
+    </details>
+  `;
+}
+
 function renderReleaseSummary(releasePackages) {
   if (!releasePackages.length) {
     return "";
@@ -17388,28 +17779,48 @@ function renderReleaseSummary(releasePackages) {
 }
 
 function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPromotions) {
+  const currentReviews = reviews.filter(
+    (review) => !text(review.superseded_by_review_request_id),
+  );
+  const currentReleases = currentDeliveryReleasePackages(releasePackages);
+  const currentPromotionIds = new Set(
+    currentReleases.flatMap((release) => release.git_promotion_record_ids || []),
+  );
+  const relevantGitPromotions = currentPromotionIds.size
+    ? gitPromotions.filter((promotion) => currentPromotionIds.has(text(promotion.id)))
+    : gitPromotions;
   if (deliverable.state === "blocked") {
     return "blocked";
   }
   if (task && (task.state === "blocked" || task.state === "rejected")) {
     return "blocked";
   }
-  if (reviews.some((review) => review.state === "blocked")) {
+  if (currentReviews.some((review) => review.state === "blocked")) {
     return "blocked";
   }
-  if (releasePackages.some((release) => release.state === "blocked" || release.state === "rejected")) {
+  if (currentReleases.some((release) => release.state === "blocked" || release.state === "rejected")) {
     return "blocked";
   }
-  if (gitPromotions.some((promotion) => promotion.state === "failed")) {
+  if (relevantGitPromotions.some((promotion) => promotion.state === "failed")) {
     return "blocked";
   }
-  if (deliverable.state === "rejected" || reviews.some((review) => review.state === "rejected")) {
+  if (deliverable.state === "rejected" || currentReviews.some((review) => review.state === "rejected")) {
     return "rejected";
   }
-  const reviewsPending = reviews.some(
+  if (
+    currentReleases.some((release) =>
+      ["pending", "in_progress"].includes(text(release.state)),
+    )
+  ) {
+    return "pending";
+  }
+  const reviewsPending = currentReviews.some(
     (review) => review.state === "pending" || review.state === "in_progress",
   );
-  if (deliverable.state === "accepted" && reviews.every((review) => review.state === "accepted")) {
+  if (
+    deliverable.state === "accepted" &&
+    currentReviews.every((review) => review.state === "accepted")
+  ) {
     return "accepted";
   }
   if (

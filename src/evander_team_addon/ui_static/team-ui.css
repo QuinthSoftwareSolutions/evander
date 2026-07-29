@@ -3332,6 +3332,43 @@ button.org-focus-team-tab strong {
   margin-top: 0.9rem;
 }
 
+.delivery-focus-bar {
+  display: grid;
+  grid-template-columns: minmax(14rem, 22rem) minmax(0, 1fr);
+  align-items: end;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-alt);
+}
+
+.delivery-project-filter,
+.delivery-focus-summary {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.delivery-project-filter > span,
+.delivery-focus-summary > span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.delivery-project-filter > span {
+  font-weight: 800;
+}
+
+.delivery-project-filter select {
+  width: 100%;
+}
+
+.delivery-focused-results {
+  display: grid;
+  gap: 0.85rem;
+}
+
 .delivery-row,
 .delivery-detail {
   border: 1px solid var(--line);
@@ -3363,7 +3400,6 @@ button.org-focus-team-tab strong {
 .delivery-project {
   display: grid;
   gap: 0.7rem;
-  padding-top: 0.75rem;
   border-top: 1px solid var(--line);
 }
 
@@ -3403,6 +3439,24 @@ button.org-focus-team-tab strong {
   justify-content: space-between;
   gap: 0.55rem;
   flex-wrap: wrap;
+}
+
+.delivery-project-title {
+  padding: 0.75rem 0.1rem 0;
+  cursor: pointer;
+}
+
+.delivery-project-title::marker {
+  color: var(--muted);
+}
+
+.delivery-project-heading-main {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.delivery-project-body {
+  margin-top: 0.7rem;
 }
 
 .delivery-bucket-title {
@@ -3581,6 +3635,59 @@ button.org-focus-team-tab strong {
   border-radius: 6px;
   background: var(--panel);
   overflow-wrap: anywhere;
+}
+
+.deliverable-pipeline {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(23, 111, 122, 0.24);
+  border-radius: 8px;
+  background: var(--panel-alt);
+}
+
+.deliverable-pipeline-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.deliverable-pipeline-heading h4,
+.deliverable-pipeline-heading p {
+  margin: 0;
+}
+
+.deliverable-pipeline-heading p {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.deliverable-pipeline-blocker {
+  border-left: 3px solid var(--red);
+  padding: 0.45rem 0.6rem;
+  background: rgba(178, 67, 67, 0.08);
+  color: var(--red);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.deliverable-progress {
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+}
+
+.deliverable-progress .release-progress-copy {
+  background: var(--panel-alt);
+}
+
+.release-progress-waiting .release-progress-marker {
+  border-style: dashed;
+}
+
+.delivery-pipeline-evidence {
+  border-top: 1px solid var(--line);
+  padding-top: 0.55rem;
 }
 
 .hierarchy-list ul {
@@ -6297,6 +6404,67 @@ label textarea {
   margin-bottom: 0.4rem;
 }
 
+.release-candidate-checkout {
+  padding: 0.75rem;
+  border: 1px solid rgba(23, 111, 122, 0.35);
+  border-radius: 8px;
+  background: rgba(23, 111, 122, 0.07);
+}
+
+.release-candidate-checkout-intro {
+  max-width: 76ch;
+  margin: 0 0 0.65rem;
+}
+
+.release-candidate-checkout-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.5rem 0.8rem;
+  margin: 0;
+}
+
+.release-candidate-checkout-metadata > div {
+  min-width: 0;
+}
+
+.release-candidate-checkout-metadata dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.release-candidate-checkout-metadata dd {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  margin: 0.15rem 0 0;
+}
+
+.release-candidate-checkout-metadata code,
+.release-candidate-checkout-command code {
+  overflow-wrap: anywhere;
+}
+
+.release-candidate-checkout-command {
+  margin-top: 0.7rem;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.release-candidate-checkout-command .technical-identifier {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 0.35rem;
+}
+
+.release-candidate-checkout-command .technical-identifier code {
+  flex: 1 1 auto;
+}
+
 .human-review-request {
   background: var(--panel-alt);
 }
@@ -6536,6 +6704,7 @@ label textarea {
   .governance-create-form,
   .project-columns,
   .delivery-buckets,
+  .delivery-focus-bar,
   .delivery-detail-grid,
   .timeline-domain-grid,
   .timeline-filters {
@@ -6560,6 +6729,7 @@ label textarea {
   .delivery-team-title,
   .delivery-project-title,
   .delivery-bucket-title,
+  .deliverable-pipeline-heading,
   .agent-detail-header,
   .projects-detail-header,
   .projects-detail-section-header,
@@ -6651,6 +6821,7 @@ label textarea {
   .delivery-team-title,
   .delivery-project-title,
   .delivery-bucket-title,
+  .deliverable-pipeline-heading,
   .timeline-header,
   .timeline-entry-top,
   .timeline-entry-summary,

@@ -61,6 +61,7 @@ from evander_team_addon.services.release_verification_effects import (
 )
 from evander_team_addon.services.release_verification_runner import (
     ReleaseVerificationTimeoutError,
+    _bounded_verification_log_excerpt,
 )
 
 
@@ -476,6 +477,11 @@ def _seed_release_verification(repo: TeamStateRepository) -> None:
             command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
         )
         state.projects["project"].release_policy = ProjectReleasePolicy(
+            resource_limits={
+                "memory": "6g",
+                "cpus": 4,
+                "pids_limit": 1536,
+            },
             verification_commands=[
                 ReleaseVerificationCommand(
                     name="live-policy-check",
@@ -509,13 +515,15 @@ def _stub_release_verifier_setup(
     monkeypatch,
     *,
     destroy_result: dict[str, object],
-) -> tuple[list[list[str]], list[str]]:
+) -> tuple[list[list[str]], list[str], list[dict[str, object]]]:
     executed_commands: list[list[str]] = []
     create_directories: list[str] = []
+    create_metadata: list[dict[str, object]] = []
 
     def _create(self, **kwargs):
         del kwargs
         create_directories.append(self.effect_definition.directory_path)
+        create_metadata.append(dict(self.effect_definition.metadata))
         return {"success": True}
 
     monkeypatch.setattr(AgentCreateEffectProvider, "execute", _create)
@@ -542,7 +550,7 @@ def _stub_release_verifier_setup(
         "execute",
         lambda self, **kwargs: destroy_result,
     )
-    return executed_commands, create_directories
+    return executed_commands, create_directories, create_metadata
 
 
 def test_release_verifier_executes_commands_from_frozen_manifest(
@@ -551,7 +559,7 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
 ) -> None:
     repo = _seed_team(tmp_path)
     _seed_release_verification(repo)
-    executed_commands, create_directories = _stub_release_verifier_setup(
+    executed_commands, create_directories, create_metadata = _stub_release_verifier_setup(
         monkeypatch,
         destroy_result={"success": True},
     )
@@ -572,6 +580,18 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
 
     assert result["success"] is True
     assert create_directories == ["root/team-a"]
+    assert create_metadata == [
+        {
+            "team_release_verification": True,
+            "release_package_id": "release-1",
+            "candidate_commit_sha": "candidate-sha",
+            "container_worker_resource_limits": {
+                "memory": "6g",
+                "cpus": 4.0,
+                "pids_limit": 1536,
+            },
+        }
+    ]
     assert executed_commands[:3] == [
         ["git", "checkout", "--detach", "--force", "candidate-sha"],
         ["git", "reset", "--hard", "candidate-sha"],
@@ -591,7 +611,7 @@ def test_release_verifier_classifies_agent_command_timeouts(
 ) -> None:
     repo = _seed_team(tmp_path)
     _seed_release_verification(repo)
-    executed_commands, _create_directories = _stub_release_verifier_setup(
+    executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
         monkeypatch,
         destroy_result={"success": True},
     )
@@ -636,6 +656,144 @@ def test_release_verifier_classifies_agent_command_timeouts(
     assert recorded["verification_state"] == "timed_out"
     assert recorded["failure_kind"] == "timeout"
     assert recorded["command_results"][0]["state"] == "timed_out"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        """
+System.OutOfMemoryException: Exception of type 'System.OutOfMemoryException' was thrown.
+   at System.Threading.Thread.StartCore()
+   at Microsoft.Build.BackEnd.NodeProviderOutOfProcBase.GetNodes(Int32 count)
+"""
+        + ("trailing worker output\n" * 600),
+        """
+Out of memory.
+MSBUILD : error MSB4166: Child node "36" exited prematurely. Shutting down.
+""",
+        "Out of memory.",
+        'MSBUILD : error MSB4166: Child node "36" exited prematurely.',
+        "Expected 4 items, but found 3.",
+    ],
+)
+def test_release_verifier_does_not_infer_resource_exhaustion_from_command_text(
+    tmp_path: Path,
+    monkeypatch,
+    stderr: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            return {
+                "success": False,
+                "status": "stopped",
+                "execution_id": "execution-failed",
+                "failure_kind": "command",
+                "exit_code": 82,
+                "stderr": stderr,
+            }
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "failed"
+    assert recorded["failure_kind"] == "candidate"
+    assert recorded["command_results"][0]["state"] == "failed"
+
+
+def test_release_verifier_excerpt_retains_failure_start_and_final_summary() -> None:
+    diagnostic = "AdminClient TS1117: duplicate property\n"
+    summary = "\nOperatorClient: 40 passing\nShared: 26 passing\n"
+    full_log = diagnostic + ("intermediate output\n" * 600) + summary
+
+    excerpt = _bounded_verification_log_excerpt(full_log)
+
+    assert len(excerpt) == 8000
+    assert excerpt.startswith(diagnostic)
+    assert "... [middle of verifier log omitted] ..." in excerpt
+    assert excerpt.endswith(summary)
+    assert _bounded_verification_log_excerpt("short output") == "short output"
+
+
+def test_release_verifier_uses_structured_worker_resource_exhaustion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            return {
+                "success": False,
+                "status": "failed",
+                "execution_id": "execution-failed",
+                "failure_kind": "infrastructure",
+                "failure_cause": "pids_limit_exhausted",
+                "exit_code": 1,
+                "stderr": "Out of memory.",
+            }
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "failed"
+    assert recorded["failure_kind"] == "infrastructure"
+    assert recorded["command_results"][0]["failure_cause"] == "pids_limit_exhausted"
 
 
 def test_release_verification_effect_adapter_translates_subprocess_timeouts(

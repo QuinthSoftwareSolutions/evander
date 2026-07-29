@@ -168,6 +168,90 @@ def test_successful_verification_only_policy_approves_release() -> None:
     assert canonical_push.sources[0].expected_commit_sha == "candidate-sha"
 
 
+def test_candidate_verification_failure_wakes_project_lead_for_delegated_rework() -> None:
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    release, _promotion = _release_and_promotion(verification_commands=[command])
+    run = ReleaseVerificationRun(
+        id="verification-run",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        session_id="verification-session",
+        command_results=[ReleaseVerificationCommandResult(name=command.name)],
+    )
+    release.verification_run_ids = [run.id]
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(verification_commands=[command])
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.agents["coder"] = PersistentAgent(
+        id="coder",
+        team_id="team",
+        role_id="coder-role",
+        session_id="session-coder",
+        reports_to_agent_id="lead",
+    )
+    state.release_packages[release.id] = release
+    state.release_verification_runs[run.id] = run
+
+    result = _result()
+    record_release_verification_result(
+        state,
+        release_package_id=release.id,
+        verification_run_id=run.id,
+        candidate_commit_sha="candidate-sha",
+        verification_state="failed",
+        failure_kind="candidate",
+        command_results=[
+            ReleaseVerificationCommandResult(
+                name=command.name,
+                state="failed",
+                exit_code=1,
+                log_excerpt="assertion failed",
+            )
+        ],
+        error="release tests failed",
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert len(result["created_inbox_item_ids"]) == 1
+    item = state.inbox[result["created_inbox_item_ids"][0]]
+    assert item.recipient_agent_id == "lead"
+    assert item.priority.value == "high"
+    assert item.payload["kind"] == "release_verification_candidate_failure"
+    assert item.payload["verification_run_id"] == run.id
+    assert item.payload["candidate_commit_sha"] == "candidate-sha"
+    assert item.payload["failed_command_results"] == [
+        {
+            "name": "tests",
+            "state": "failed",
+            "exit_code": 1,
+            "log_excerpt": "assertion failed",
+        }
+    ]
+    assert "delegate" in item.payload["next_action"]
+    assert "Pin the failed candidate_commit_sha" in item.payload["next_action"]
+    assert "dependency_task_ids for every accepted Git-backed predecessor" in (
+        item.payload["next_action"]
+    )
+    assert "originating_task_id alone does not seed" in item.payload["next_action"]
+    assert "base-branch-only implementation" in item.payload["next_action"]
+    assert not any(row.recipient_agent_id == "coder" for row in state.inbox.values())
+    wake = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    )
+    assert wake["payload"]["agent_id"] == "lead"
+    assert wake["payload"]["reason"] == "inbox"
+
+
 def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
     frozen_command = ReleaseVerificationCommand(name="frozen-tests", argv=["pytest", "-q"])
     release, _promotion = _release_and_promotion(verification_commands=[frozen_command])
@@ -199,6 +283,74 @@ def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
 
     replacement = state.release_verification_runs[str(result["replacement_gate_id"])]
     assert [item.name for item in replacement.command_results] == [frozen_command.name]
+    assert release.state == TeamRecordState.PENDING
+
+
+def test_agent_verification_retry_escalates_after_agent_requested_retry_fails() -> None:
+    frozen_command = ReleaseVerificationCommand(name="frozen-tests", argv=["pytest", "-q"])
+    release, _promotion = _release_and_promotion(verification_commands=[frozen_command])
+    release.state = TeamRecordState.BLOCKED
+    first_run = ReleaseVerificationRun(
+        id="verification-run-1",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        session_id="verification-session-1",
+        state="failed",
+        failure_kind="infrastructure",
+        command_results=[ReleaseVerificationCommandResult(name=frozen_command.name)],
+    )
+    release.verification_run_ids = [first_run.id]
+    state = TeamState.empty()
+    state.projects["project"] = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
+    state.release_verification_runs[first_run.id] = first_run
+
+    first_retry: dict[str, object] = {}
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="verification",
+        gate_id=first_run.id,
+        reason="The disconnected verification worker was replaced.",
+        requested_by="agent:lead",
+        result=first_retry,
+    )
+
+    second_run = state.release_verification_runs[str(first_retry["replacement_gate_id"])]
+    second_run.state = "failed"
+    second_run.failure_kind = "infrastructure"
+    release.state = TeamRecordState.BLOCKED
+
+    with pytest.raises(
+        ValueError,
+        match="agent-requested verification retry already failed",
+    ):
+        retry_release_gate(
+            state,
+            release=release,
+            gate_kind="verification",
+            gate_id=second_run.id,
+            reason="Try the unchanged candidate again.",
+            requested_by="agent:lead",
+            result={},
+        )
+
+    assert second_run.superseded_by_verification_run_id is None
+    assert release.state == TeamRecordState.BLOCKED
+
+    operator_retry: dict[str, object] = {}
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="verification",
+        gate_id=second_run.id,
+        reason="The operator applied and verified a new worker resource policy.",
+        requested_by="operator:release-admin",
+        result=operator_retry,
+    )
+
+    third_run = state.release_verification_runs[str(operator_retry["replacement_gate_id"])]
+    assert third_run.attempt_number == 3
+    assert third_run.retry_requested_by == "operator:release-admin"
     assert release.state == TeamRecordState.PENDING
 
 

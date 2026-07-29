@@ -596,6 +596,11 @@ class ContainerWorkerVmExecutionBackend:
         ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]
+        failure_cause = getattr(record, "failure_cause", None)
+        if failure_cause is not None:
+            metadata["worker_failure_cause"] = getattr(
+                failure_cause, "value", str(failure_cause)
+            )
         if getattr(record, "error", None):
             metadata["worker_error"] = str(record.error)
         metadata["worker_status"] = record.status

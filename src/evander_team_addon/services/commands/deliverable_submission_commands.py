@@ -72,6 +72,7 @@ from ..domain.task_supervision import queue_parent_task_transition
 from ..domain.work_due import (
     _mark_agent_work_due,
 )
+from ..domain.wake import _append_agent_wake_requested_event_for_inbox_item
 
 
 def _require_predecessor_review_coverage(
@@ -372,6 +373,17 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 published_records=published_records,
                 suppress_superior_notice=False,
             )
+            submission_events: dict[str, Any] = {"events": []}
+            for inbox_id in created_inbox_ids:
+                inbox_item = state.inbox.get(inbox_id)
+                if inbox_item is None:
+                    continue
+                _append_agent_wake_requested_event_for_inbox_item(
+                    state,
+                    item=inbox_item,
+                    result=submission_events,
+                    now=inbox_item.created_at,
+                )
             published_refs = [
                 _required_text(record.get("artifact_ref"), "artifact_ref")
                 for record in published_records
@@ -381,6 +393,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     "deliverable_id": deliverable_id,
                     "created_deliverable_ids": [deliverable_id],
                     "created_inbox_item_ids": created_inbox_ids,
+                    "events": list(submission_events["events"]),
                     "published_artifact_refs": published_refs,
                     "published_deliverable_artifacts": [
                         dict(record) for record in published_records
@@ -594,6 +607,8 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     deliverable=deliverable,
                     task=task,
                     now=now,
+                    result=side_effects,
+                    accepted_by_agent_id=agent.id,
                 )
             else:
                 deliverable.state = TeamRecordState.REJECTED

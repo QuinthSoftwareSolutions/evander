@@ -4,10 +4,16 @@ from collections.abc import Mapping
 import time
 from typing import Any, Protocol
 
+from evander.worker.models import WorkerResourceLimits
+
 from ..models import ReleaseVerificationCommand
 from ..repository import TeamStateRepository
 from .domain.common import _optional_text
 from .release_gate_service import TeamReleaseGateService
+
+
+_VERIFICATION_LOG_EXCERPT_LIMIT = 8000
+_VERIFICATION_LOG_OMISSION_MARKER = "\n... [middle of verifier log omitted] ...\n"
 
 
 class ReleaseVerificationTimeoutError(RuntimeError):
@@ -26,6 +32,7 @@ class ReleaseVerificationExecutor(Protocol):
         candidate_commit_sha: str,
         directory_path: str,
         container_image: str | None,
+        resource_limits: WorkerResourceLimits | None,
     ) -> None: ...
 
     def clone_candidate(
@@ -124,6 +131,7 @@ class TeamReleaseVerificationRunner:
                 candidate_commit_sha=candidate_commit_sha,
                 directory_path=git.directory_path,
                 container_image=policy.container_image if policy is not None else None,
+                resource_limits=policy.resource_limits if policy is not None else None,
             )
             created = True
             target_dir = self._executor.clone_candidate(
@@ -157,7 +165,7 @@ class TeamReleaseVerificationRunner:
                             "name": command.name,
                             "state": "timed_out",
                             "duration_seconds": duration,
-                            "log_excerpt": error[-8000:],
+                            "log_excerpt": _bounded_verification_log_excerpt(error),
                         }
                     )
                     terminal_state = "timed_out"
@@ -171,14 +179,15 @@ class TeamReleaseVerificationRunner:
                     command_output.get("failure_kind") == "timeout"
                     or command_status in {"unknown", "preparing", "starting", "running"}
                 )
-                excerpt = "\n".join(
+                command_log = "\n".join(
                     part
                     for part in (
                         _optional_text(command_output.get("stdout")),
                         _optional_text(command_output.get("stderr")),
                     )
                     if part
-                )[-8000:]
+                )
+                excerpt = _bounded_verification_log_excerpt(command_log)
                 command_results.append(
                     {
                         "name": command.name,
@@ -187,6 +196,9 @@ class TeamReleaseVerificationRunner:
                         ),
                         "job_id": _optional_text(command_output.get("execution_id")),
                         "exit_code": command_output.get("exit_code"),
+                        "failure_cause": _optional_text(
+                            command_output.get("failure_cause")
+                        ),
                         "duration_seconds": duration,
                         "log_excerpt": excerpt or None,
                     }
@@ -198,12 +210,17 @@ class TeamReleaseVerificationRunner:
                         terminal_error = f"release verification command {command.name!r} timed out"
                     else:
                         terminal_state = "failed"
-                        failure_kind = (
-                            "candidate"
-                            if command_output.get("failure_kind") == "command"
-                            else "infrastructure"
-                        )
-                        terminal_error = f"release verification command {command.name!r} failed"
+                        if command_output.get("failure_kind") == "command":
+                            failure_kind = "candidate"
+                            terminal_error = (
+                                f"release verification command {command.name!r} failed"
+                            )
+                        else:
+                            failure_kind = "infrastructure"
+                            terminal_error = (
+                                f"release verification command {command.name!r} "
+                                "failed in verifier infrastructure"
+                            )
                     break
         except ReleaseVerificationTimeoutError as exc:
             terminal_state = "timed_out"
@@ -236,3 +253,18 @@ class TeamReleaseVerificationRunner:
             error=terminal_error,
         )
         return result
+
+
+def _bounded_verification_log_excerpt(log_text: str) -> str:
+    """Retain both the first diagnostic and final summary of a bounded command log."""
+
+    if len(log_text) <= _VERIFICATION_LOG_EXCERPT_LIMIT:
+        return log_text
+    retained = _VERIFICATION_LOG_EXCERPT_LIMIT - len(_VERIFICATION_LOG_OMISSION_MARKER)
+    head_length = retained // 2
+    tail_length = retained - head_length
+    return (
+        log_text[:head_length]
+        + _VERIFICATION_LOG_OMISSION_MARKER
+        + log_text[-tail_length:]
+    )

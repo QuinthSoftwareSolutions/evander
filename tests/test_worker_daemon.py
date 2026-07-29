@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -25,6 +26,7 @@ from evander.capacity_health import (
 )
 from evander.codex_auth import CodexAuthMode, CodexTurnSpec
 from evander.managed_git_grants import managed_git_ssh_alias
+from evander.worker import api as worker_api
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.service import WorkerDaemon, _git_subprocess_env
 from evander.worker.models import (
@@ -1718,6 +1720,119 @@ def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
 
     assert record.validation_count == 3
     assert record.tracked_paths == ["README.md"]
+
+
+def test_worker_cleanup_endpoint_offloads_blocking_git_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    branch = "agents/session-1/tasks/task-a-1234"
+    expected_sha = "a" * 40
+    expected_record = WorkerTaskWorktreeCleanupRecord(
+        session_id="session-1",
+        repo_name="repo",
+        worktree_name="task-a-1234",
+        target_dir="/home/agent/worktrees/repo/task-a-1234",
+        branch=branch,
+        expected_commit_sha=expected_sha,
+        state="already_absent",
+        safe_to_remove=True,
+        removed=False,
+        pruned=True,
+        dry_run=False,
+        validation_count=2,
+        message="task worktree was already absent; registrations were pruned",
+    )
+    offloaded_calls: list[tuple[object, tuple[object, ...]]] = []
+
+    async def _record_threadpool_call(function, *args):
+        offloaded_calls.append((function, args))
+        return function(*args)
+
+    def _cleanup(
+        session_id: str,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> WorkerTaskWorktreeCleanupRecord:
+        assert session_id == "session-1"
+        assert request.worktree_name == "task-a-1234"
+        return expected_record
+
+    monkeypatch.setattr(worker_api, "run_in_threadpool", _record_threadpool_call)
+    monkeypatch.setattr(daemon, "cleanup_task_worktree", _cleanup)
+
+    with TestClient(daemon.create_app()) as client:
+        response = client.post(
+            "/v1/sessions/session-1/worktrees/cleanup",
+            headers=_auth(),
+            json={
+                "repo_name": "repo",
+                "worktree_name": "task-a-1234",
+                "branch": branch,
+                "expected_commit_sha": expected_sha,
+                "expected_target_dir": expected_record.target_dir,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "already_absent"
+    assert len(offloaded_calls) == 1
+    assert offloaded_calls[0][1][0] == "session-1"
+    assert isinstance(offloaded_calls[0][1][1], WorkerTaskWorktreeCleanupRequest)
+
+
+def test_worker_prepare_session_endpoint_offloads_blocking_lifecycle_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    offloaded_calls: list[tuple[object, tuple[object, ...]]] = []
+
+    async def _record_threadpool_call(function, *args, **kwargs):
+        offloaded_calls.append((function, args))
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(worker_api, "run_in_threadpool", _record_threadpool_call)
+
+    app = daemon.create_app()
+    endpoint = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/sessions"
+    )
+    body = json.dumps({"session_id": "session-1"}).encode()
+
+    async def _receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    response = asyncio.run(
+        endpoint(
+            worker_api.Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/v1/sessions",
+                    "query_string": b"",
+                    "headers": [],
+                },
+                _receive,
+            )
+        )
+    )
+    assert response.status_code == 201
+    assert len(offloaded_calls) == 1
+    assert offloaded_calls[0][0] == daemon.prepare_session
+    assert isinstance(offloaded_calls[0][1][0], WorkerSessionPrepareRequest)
 
 
 @pytest.mark.parametrize(
@@ -3497,6 +3612,43 @@ def test_worker_inspection_classifies_oom_exit_as_infrastructure(tmp_path: Path)
 
     assert inspected.metadata["worker_terminal_kind"] == "infrastructure"
     assert "memory limit" in (inspected.error or "")
+    assert inspected.failure_cause == "memory_limit_exhausted"
+
+
+def test_worker_inspection_classifies_pids_limit_event_as_infrastructure(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeContainerRuntime()
+    runtime.inspect_results["job-1"] = {
+        "status": "failed",
+        "exit_code": 1,
+        "oom_killed": False,
+        "failure_cause": "pids_limit_exhausted",
+    }
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["dotnet", "test"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path="/worker/session-1/agent_home",
+        repo_root_path="/worker/session-1/agent_home/repos",
+        artifacts_path="/worker/session-1/artifacts",
+        logs_path="/worker/session-1/logs",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert inspected.metadata["worker_terminal_kind"] == "infrastructure"
+    assert inspected.failure_cause == "pids_limit_exhausted"
+    assert "process/thread limit" in (inspected.error or "")
 
 
 def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:

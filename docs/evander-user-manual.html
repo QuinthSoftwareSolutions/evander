@@ -11549,6 +11549,13 @@ does not make an idle agent eligible by itself.</td>
 work, reviews, or ephemeral acceptance needing that agent. The system
 first creates a handoff summary so a new conversation does not discard
 durable orientation.</p>
+<p>Manual and idle rotations also make one bounded 120-second attempt to
+resume the prior context and record a single advisory self-handoff. The
+summary is limited to 1,200 characters, is clearly separate from durable
+Team state, and cannot delay the fresh-context reset if it is missing,
+rejected, or times out. The <code>every_wake</code> policy deliberately
+skips this agent-authored step and keeps only its deterministic
+checkpoint.</p>
 <p>A pending rotation is cleared only after the new dispatch starts
 successfully. If session startup fails, it remains pending. Manual
 rotation can queue a change even when the automatic policy is
@@ -13548,6 +13555,21 @@ POST /api/addons/team-addon/human-review-requests/&lt;id&gt;/resume</code></pre>
 compare the candidate, verification, agent decisions, contribution
 graph, test target, checklist, carried findings, and publication state
 before deciding.</p>
+<p>The authorized release detail also includes <strong>Test this
+candidate</strong>. It shows the canonical repository, immutable
+internal release ref, exact candidate commit and tree, and a copyable
+supported command:</p>
+<pre><code>evander-cli team checkout-release-candidate &lt;release-package-id&gt; \
+  --target ./release-candidate-review \
+  --expected-commit-sha &lt;candidate-sha&gt; \
+  --runtime-dir /absolute/path/to/evander/runtime</code></pre>
+
+<p>The command resolves the private managed repository inside Evander,
+verifies the ref, commit, and tree again, and creates a new detached
+checkout at the chosen target. The absolute runtime root keeps the
+copied command independent of the current working directory; it refuses
+existing targets and never exposes the internal bare repository
+path.</p>
 <h3 id="blocked-review-reassignment-and-preview-preparation">Blocked
 review, reassignment, and preview preparation</h3>
 <p>A human <code>blocked</code> decision, assignment loss,

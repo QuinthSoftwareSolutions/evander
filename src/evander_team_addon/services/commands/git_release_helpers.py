@@ -193,10 +193,19 @@ def _git_command_validation_error(
     else:
         messages = [str(errors)] if errors else []
     message = "; ".join(messages) or "Git intent validation failed"
+    correction_context: dict[str, Any] = {"errors": messages}
+    waiver_requirements = result.get("verification_waiver_requirements")
+    if isinstance(waiver_requirements, Sequence) and not isinstance(
+        waiver_requirements,
+        (str, bytes),
+    ):
+        correction_context["verification_waiver_requirements"] = list(
+            waiver_requirements
+        )
     return TeamCommandValidationError(
         code=code,
         message=message,
-        correction_context={"errors": messages},
+        correction_context=correction_context,
     )
 
 

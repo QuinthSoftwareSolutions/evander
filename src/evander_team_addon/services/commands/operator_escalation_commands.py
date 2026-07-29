@@ -40,6 +40,12 @@ from ..domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
 from .executor import TeamCommandExecutor
 
 
+_PENDING_ESCALATION_DELIVERY_MESSAGE = (
+    "Escalation is queued, not delivered. Report it as queued or pending until "
+    "downstream delivery evidence exists; intent_recorded alone is not delivery confirmation."
+)
+
+
 class TeamOperatorEscalationCommandService(TeamCommandExecutor):
     def escalate_operator_command(
         self,
@@ -183,6 +189,8 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
                         "intent_recorded": True,
                         "async_effect_pending": True,
                         "downstream_effect_completed": False,
+                        "delivery_status": "pending",
+                        "delivery_status_message": _PENDING_ESCALATION_DELIVERY_MESSAGE,
                         "progress_made": True,
                     },
                     created_domain_ids=[escalation_id, inbox_id, outbox_id],
@@ -233,6 +241,8 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
                     "intent_recorded": True,
                     "async_effect_pending": True,
                     "downstream_effect_completed": False,
+                    "delivery_status": "pending",
+                    "delivery_status_message": _PENDING_ESCALATION_DELIVERY_MESSAGE,
                     "progress_made": True,
                 },
                 created_domain_ids=[escalation_id, *agenda_ids],

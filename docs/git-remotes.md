@@ -66,6 +66,33 @@ The operation acquires the repository's exclusive operation lock, updates only t
 record, and affects subsequent host-created commits. It does not rewrite existing commits or
 change agent checkout identities.
 
+## Materialize a Team release candidate for human testing
+
+An authorized human reviewer can copy the supported command from
+**Teams → Delivery → release detail → Test this candidate**. Its shape is:
+
+```bash
+evander-cli team checkout-release-candidate <release-package-id> \
+  --target ./release-candidate-review \
+  --expected-commit-sha <candidate-sha> \
+  --runtime-dir /absolute/path/to/evander/runtime
+```
+
+The command reads the durable Team release package, resolves its project and
+managed repository internally, and verifies that the immutable release ref
+still equals the recorded candidate commit and tree. It then creates a new
+detached checkout at `--target`. The target's parent must exist, while the
+target itself must not: existing paths are refused even when empty. Paths
+inside Evander's runtime directory are also refused.
+
+This is the supported operator alternative to discovering
+`runtime/managed-git/*.git` paths. Those private paths are deliberately absent
+from the UI and command. The absolute runtime root is included so the copied
+command remains valid when run from another repository or working directory;
+it is configuration identity, not a private repository path. The resulting checkout has only the sanitized
+canonical repository URL as `origin`; it retains no private managed-repository
+or temporary-worktree path.
+
 The explicit refresh command is an operator diagnostic and recovery surface. Normal managed Git
 reads do not require it: restricted SSH keys provisioned by Evander require the host-owned
 `evander-managed-git-refresh.service` to refresh the exact authorized repository before

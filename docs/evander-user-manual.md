@@ -6711,6 +6711,21 @@ Use **My Human Reviews** and the release detail to compare the candidate,
 verification, agent decisions, contribution graph, test target, checklist,
 carried findings, and publication state before deciding.
 
+The authorized release detail also includes **Test this candidate**. It shows
+the canonical repository, immutable internal release ref, exact candidate
+commit and tree, and a copyable supported command:
+
+<pre><code>evander-cli team checkout-release-candidate &lt;release-package-id&gt; \
+  --target ./release-candidate-review \
+  --expected-commit-sha &lt;candidate-sha&gt; \
+  --runtime-dir /absolute/path/to/evander/runtime</code></pre>
+
+The command resolves the private managed repository inside Evander, verifies
+the ref, commit, and tree again, and creates a new detached checkout at the
+chosen target. The absolute runtime root keeps the copied command independent
+of the current working directory; it refuses existing targets and never
+exposes the internal bare repository path.
+
 ### Blocked review, reassignment, and preview preparation
 
 A human <code>blocked</code> decision, assignment loss, preview-preparation

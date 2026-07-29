@@ -469,6 +469,38 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     assert ("team-cron", "team-publish-outbox-events") in edges
 
 
+def test_checked_in_team_runtime_pack_preserves_git_promotion_evidence() -> None:
+    project_dir = Path(__file__).resolve().parents[1]
+    pack = json.loads(
+        (
+            project_dir
+            / "config"
+            / "workflow-packs"
+            / "team-runtime.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    nodes = {
+        item["node"]["id"]: item["node"]
+        for item in pack["ir"]["nodes"]
+    }
+    required_result_outputs = {
+        "base_commit_sha",
+        "source_manifests",
+        "tree_hash",
+        "unexpected_commit_shas",
+        "unexpected_paths",
+    }
+
+    for node_id in (
+        "team-record-feature-promotion",
+        "team-record-release-promotion",
+        "team-record-release-recovery-promotion",
+    ):
+        assert required_result_outputs.issubset(
+            nodes[node_id]["config"]["result_outputs"]
+        )
+
+
 def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)

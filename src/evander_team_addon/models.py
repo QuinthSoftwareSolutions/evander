@@ -18,6 +18,7 @@ from pydantic import (
 )
 
 from evander.models import DirectoryPath, utc_now
+from evander.worker.models import WorkerFailureCause, WorkerResourceLimits
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
@@ -723,6 +724,7 @@ class HumanReviewRequirement(TeamModel):
 class ProjectReleasePolicy(TeamModel):
     verification_backend: Literal["container_worker_vm"] = "container_worker_vm"
     container_image: str | None = None
+    resource_limits: WorkerResourceLimits | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirement | None = None
@@ -2706,6 +2708,7 @@ class ReleaseVerificationCommandResult(TeamModel):
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
     job_id: str | None = None
     exit_code: int | None = None
+    failure_cause: WorkerFailureCause | None = None
     duration_seconds: float | None = None
     log_excerpt: str | None = None
 
@@ -6221,7 +6224,7 @@ def release_package_payload_with_derived(
         )
     next_action_hint = _release_next_action_hint(state, release)
     if next_action_hint is not None:
-        payload["next_action"] = _release_next_action(release)
+        payload["next_action"] = _release_next_action(state, release)
         payload["next_action_hint"] = next_action_hint
     blocked_reason_code = _release_blocked_reason_code(
         release,
@@ -6242,10 +6245,25 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             and gate_failure.stage == "verification"
             and gate_failure.kind in {"infrastructure", "timeout"}
         ):
+            current_run = _current_release_verification_run(state, release)
+            if current_run is not None and (
+                current_run.retry_requested_by or ""
+            ).startswith("agent:"):
+                return (
+                    f"Do not retry verification gate {current_run.id} as an agent: the "
+                    "agent-requested retry already failed against the unchanged candidate "
+                    f"for release {release.id}. Escalate the run evidence and the concrete "
+                    "infrastructure recovery requirement to an operator. "
+                    f"Current blocker: {gate_failure.message}"
+                )
             return (
-                "Use team_retry_release_gate with gate_kind verification and gate_id "
+                "Inspect the failed run and confirm concrete evidence that its "
+                "infrastructure failure recovered. Only then use team_retry_release_gate "
+                "with gate_kind verification and gate_id "
                 f"{gate_failure.source_id or 'from the current verification gate'} against "
-                f"the unchanged candidate for release {release.id}; supply an audited reason. "
+                f"the unchanged candidate for release {release.id}, citing exactly what "
+                "changed. If no recovery evidence exists, update or escalate the blocker "
+                "instead of retrying. "
                 f"Current blocker: {gate_failure.message}"
             )
         if (
@@ -6320,7 +6338,21 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     return " ".join(parts)
 
 
-def _release_next_action(release: ReleasePackage) -> str:
+def _current_release_verification_run(
+    state: TeamState,
+    release: ReleasePackage,
+) -> ReleaseVerificationRun | None:
+    current = [
+        state.release_verification_runs[run_id]
+        for run_id in release.verification_run_ids
+        if run_id in state.release_verification_runs
+        and state.release_verification_runs[run_id].superseded_by_verification_run_id is None
+    ]
+    current.sort(key=lambda run: (run.attempt_number, run.created_at, run.id), reverse=True)
+    return current[0] if current else None
+
+
+def _release_next_action(state: TeamState, release: ReleasePackage) -> str:
     failure = release.gate_failure
     if failure is not None:
         if (
@@ -6328,6 +6360,11 @@ def _release_next_action(release: ReleasePackage) -> str:
             and failure.stage == "verification"
             and failure.kind in {"infrastructure", "timeout"}
         ):
+            current_run = _current_release_verification_run(state, release)
+            if current_run is not None and (
+                current_run.retry_requested_by or ""
+            ).startswith("agent:"):
+                return "escalate_release_verification_recovery"
             return "retry_release_verification"
         if (
             release.state == TeamRecordState.BLOCKED

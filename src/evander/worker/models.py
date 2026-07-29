@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -70,6 +71,11 @@ def ensure_resolved_path_within(
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+class WorkerFailureCause(str, Enum):
+    PIDS_LIMIT_EXHAUSTED = "pids_limit_exhausted"
+    MEMORY_LIMIT_EXHAUSTED = "memory_limit_exhausted"
 
 
 class WorkerResourceLimits(BaseModel):
@@ -712,6 +718,7 @@ class WorkerJobRecord(BaseModel):
     logs_path: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    failure_cause: WorkerFailureCause | None = None
     cleanup_status: str = "unknown"
     cleanup_attempted_at: datetime | None = None
     cleanup_completed_at: datetime | None = None

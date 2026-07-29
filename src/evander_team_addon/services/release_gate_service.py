@@ -12,6 +12,7 @@ from .domain.human_reviews import (
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
+from .domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 
 
 class TeamReleaseGateService:
@@ -40,6 +41,10 @@ class TeamReleaseGateService:
         normalized_results = [
             ReleaseVerificationCommandResult.model_validate(item) for item in command_results
         ]
+        is_candidate_failure = verification_state == "failed" and failure_kind in {
+            None,
+            "candidate",
+        }
         result: dict[str, Any] = {
             "success": False,
             "release_package_id": release_package_id,
@@ -76,11 +81,17 @@ class TeamReleaseGateService:
                 [
                     event
                     for event in result["events"]
-                    if event.get("event_type")
-                    in {
-                        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
-                        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
-                    }
+                    if (
+                        event.get("event_type")
+                        in {
+                            HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+                            HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                        }
+                        or (
+                            is_candidate_failure
+                            and event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
+                        )
+                    )
                 ]
             ),
         )

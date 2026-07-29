@@ -58,6 +58,7 @@ from .models import (
     DEFAULT_WORKER_ROOT,
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
+    WorkerFailureCause,
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerGitWriteKeyRecord,
@@ -507,8 +508,24 @@ class WorkerDaemon:
         raw_exit_code = info.get("exit_code")
         runtime_error = str(info.get("runtime_error") or "").strip()
         oom_killed = bool(info.get("oom_killed"))
+        raw_failure_cause = info.get("failure_cause")
+        try:
+            failure_cause = (
+                WorkerFailureCause(raw_failure_cause)
+                if raw_failure_cause is not None
+                else None
+            )
+        except ValueError:
+            failure_cause = None
         terminal = status in {"exited", "stopped", "failed", "removed"}
-        if terminal and (oom_killed or runtime_error):
+        if failure_cause is not None:
+            record.failure_cause = failure_cause
+        if terminal and failure_cause is WorkerFailureCause.PIDS_LIMIT_EXHAUSTED:
+            metadata["worker_terminal_kind"] = "infrastructure"
+            record.error = "container reached its configured process/thread limit"
+        elif terminal and (oom_killed or runtime_error):
+            if oom_killed:
+                record.failure_cause = WorkerFailureCause.MEMORY_LIMIT_EXHAUSTED
             metadata["worker_terminal_kind"] = "infrastructure"
             record.error = (
                 runtime_error or "container was terminated after exceeding its memory limit"

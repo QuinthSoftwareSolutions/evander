@@ -1156,6 +1156,8 @@ def _recalculate_sealed_review_cohort(
                     deliverable=deliverable,
                     task=task,
                     now=now,
+                    result=result,
+                    accepted_by_agent_id=sender_agent_id,
                 )
         task.updated_at = now
         return
@@ -1217,6 +1219,8 @@ def _recalculate_deliverable_after_review_closure(
                 deliverable=deliverable,
                 task=task,
                 now=now,
+                result=result,
+                accepted_by_agent_id=sender_agent_id,
             )
     elif current_reviews:
         deliverable.state = TeamRecordState.PENDING
@@ -1248,6 +1252,8 @@ def _recalculate_deliverable_after_review_closure(
                 deliverable=deliverable,
                 task=task,
                 now=now,
+                result=result,
+                accepted_by_agent_id=sender_agent_id,
             )
     elif active_acceptance_blocker_ids:
         deliverable.state = TeamRecordState.PENDING
@@ -1993,6 +1999,8 @@ def _cascade_review_decision(
                     deliverable=deliverable,
                     task=task,
                     now=now,
+                    result=result,
+                    accepted_by_agent_id=review.reviewer_agent_id,
                 )
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED

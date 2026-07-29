@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Literal
 from uuid import uuid4
+
+from evander.events.internal import (
+    InternalEventBus,
+    InternalEventSource,
+    internal_event_store_path,
+)
 
 from .domain import common as _team_common
 from ..repository import (
@@ -118,7 +125,10 @@ from .domain.stand_down import (
     _stand_down_affected_agent_ids,
 )
 from .domain.wake import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _active_tasks_for_agent,
+    _agent_immediate_wake_request,
+    _append_agent_wake_requested_event,
     _append_follow_up_agent_wake_requested_event,
     _case_payloads_for_agent,
     _case_payloads_for_team,
@@ -139,6 +149,7 @@ from .commands.outbox import _team_event_outbox_records
 
 GIT_WORK_CONTEXT_RETENTION_DAYS = 30
 MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS = 900
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
@@ -245,11 +256,12 @@ class TeamRuntimeService:
     ) -> TeamState:
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_revoked_by = _optional_text(revoked_by) or "operator"
+        wake_result: dict[str, Any] = {"events": []}
 
         def _mutate(state: TeamState) -> TeamState:
             _require_present(state.agents, normalized_agent_id, "agent")
             now = utc_now()
-            revoked = False
+            revoked_ids: list[str] = []
             affected_ids: set[str] = set()
             for stand_down in state.stand_downs.values():
                 if (
@@ -266,16 +278,88 @@ class TeamRuntimeService:
                     )
                     stand_down.cleared_by = normalized_revoked_by
                     stand_down.cleared_at = now
-                    revoked = True
-            if not revoked:
+                    revoked_ids.append(stand_down.id)
+            if not revoked_ids:
                 raise ValueError(f"agent {normalized_agent_id} has no active operator stand-down")
+            idempotency_suffix = (
+                "stand-down-revocation:" + ",".join(sorted(revoked_ids))
+            )
             for affected_id in sorted(affected_ids):
                 if _active_stand_downs_for_agent(state, affected_id):
                     continue
                 _mark_agent_work_due(state, agent_id=affected_id, now=now)
+                wake = _agent_immediate_wake_request(
+                    state,
+                    agent_id=affected_id,
+                    now=now,
+                )
+                if wake is None:
+                    continue
+                reason, _delay_seconds = wake
+                _append_agent_wake_requested_event(
+                    state,
+                    agent_id=affected_id,
+                    result=wake_result,
+                    reason=reason,
+                    now=now,
+                    delay_seconds=0,
+                    idempotency_suffix=idempotency_suffix,
+                )
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                wake_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
+        self._publish_stand_down_revocation_wakes(wake_result.get("events"))
+        return state
+
+    def _publish_stand_down_revocation_wakes(self, events: object) -> None:
+        if not isinstance(events, list) or not events:
+            return
+        records_by_idempotency_key = {
+            record.idempotency_key: record
+            for record in self._repository.list_outbox_records(
+                intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+            )
+            if record.idempotency_key is not None
+        }
+        bus = InternalEventBus(internal_event_store_path(self._repository.runtime_dir))
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            payload = event.get("payload")
+            payload_mapping = dict(payload) if isinstance(payload, Mapping) else {}
+            idempotency_key = _optional_text(event.get("idempotency_key"))
+            try:
+                bus.publish(
+                    event_type=_required_text(event.get("event_type"), "event_type"),
+                    payload=payload_mapping,
+                    correlation_key=_optional_text(event.get("correlation_key")),
+                    idempotency_key=idempotency_key,
+                    source=InternalEventSource(
+                        source_type="team-addon",
+                        source_name="team-addon",
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "failed to publish immediate wake after operator stand-down revocation"
+                )
+                continue
+            outbox_record = records_by_idempotency_key.get(idempotency_key)
+            if outbox_record is None or outbox_record.status.value == "completed":
+                continue
+            try:
+                self._repository.complete_outbox_record(record_id=outbox_record.id)
+            except Exception:
+                logger.exception(
+                    "published operator stand-up wake but failed to acknowledge outbox record %s",
+                    outbox_record.id,
+                )
 
     def record_context_rotation_dispatch_started(
         self,

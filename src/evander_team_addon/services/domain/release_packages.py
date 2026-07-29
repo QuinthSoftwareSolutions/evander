@@ -174,14 +174,16 @@ def _apply_git_release_request(
             f"agent {actor.id} is not permitted to request releases on project {project_id}"
         )
         return None
-    if request.get("verification_waivers") and not (
+    waiver_actor_authorized = (
         _is_project_lead_for(state, actor.id, project_id)
         or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
-    ):
+    )
+    if request.get("verification_waivers") and not waiver_actor_authorized:
         result["errors"].append(
             "verification waivers require the project lead or top-level team manager"
         )
         return None
+    request["waiver_actor_authorized"] = waiver_actor_authorized
     request["waiver_actor_kind"] = "agent"
     request["waiver_actor_id"] = actor.id
     return _build_release_package(
@@ -491,6 +493,33 @@ def _build_release_package(
                 result["errors"].append(
                     f"deliverable {deliverable_id} has {verification_status} verification; "
                     "an authorized verification waiver with a reason is required"
+                )
+                result.setdefault("verification_waiver_requirements", []).append(
+                    {
+                        "deliverable_id": deliverable_id,
+                        "verification_status": verification_status,
+                        "caller_authorized": (
+                            request.get("waiver_actor_kind") == "operator"
+                            or bool(request.get("waiver_actor_authorized"))
+                        ),
+                        "authorized_actor_roles": [
+                            "project_lead",
+                            "top_level_team_manager",
+                            "operator",
+                        ],
+                        "required_input": {
+                            "verification_waivers": [
+                                {
+                                    "deliverable_id": deliverable_id,
+                                    "reason": "<concrete evidence-based reason>",
+                                }
+                            ]
+                        },
+                        "effect": (
+                            "Admits incomplete deliverable evidence at package intake; "
+                            "configured release verification and review gates still apply."
+                        ),
+                    }
                 )
                 valid = False
                 continue

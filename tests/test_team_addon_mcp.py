@@ -28,6 +28,7 @@ from evander_team_addon.mcp import (
     TEAM_CREATE_TASK_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -553,6 +554,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
         tools[TEAM_DECIDE_DELIVERABLE_TOOL].description or ""
     )
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
+    escalation_description = tools[TEAM_ESCALATE_OPERATOR_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
     decide_review_description = tools[TEAM_DECIDE_REVIEW_TOOL].description or ""
     retry_review_description = tools[TEAM_RETRY_REVIEW_TOOL].description or ""
@@ -585,8 +587,14 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "not required merely because team_submit_deliverable included git_refs" in (
         publish_description
     )
+    assert "receipt, not delivery confirmation" in escalation_description
+    assert "report the escalation as queued or pending, never delivered" in (
+        escalation_description
+    )
     assert "infrastructure-failed or timed-out verification" in retry_release_description
     assert "process-blocked reviews" in retry_release_description
+    assert "concrete evidence that the failure recovered" in retry_release_description
+    assert "cannot retry a failed agent-requested" in retry_release_description
     assert "all current reviews are accepted" in decide_review_description
     assert "supersedes a current blocked" in retry_review_description
     assert "pending non-release review" in withdraw_review_description

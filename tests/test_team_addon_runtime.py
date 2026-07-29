@@ -63,6 +63,7 @@ from evander_team_addon.models import (
     ProjectGoal,
     ReleaseGateFailure,
     ReleasePackage,
+    ReleaseVerificationRun,
     ReviewRequest,
     Team,
     TeamCase,
@@ -77,6 +78,7 @@ from evander_team_addon.models import (
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
+    TeamOutboxRecord,
     TeamRecordState,
     TeamRole,
     TeamState,
@@ -685,6 +687,194 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="lead-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Integrate backend work",
+        description="Integrate the backend task after it is ready.",
+        created_by_agent_id="manager",
+        expected_revision=repo.read().revision,
+    )
+    runtime = _team_runtime_service(repo)
+    state = runtime.stand_down_agent(
+        agent_id="lead",
+        reason="Pause the project subtree.",
+        set_by="operator:test",
+        scope="subtree",
+        expected_revision=repo.read().revision,
+    )
+    subtree_stand_down_id = next(
+        item.id
+        for item in state.stand_downs.values()
+        if item.agent_id == "lead" and item.active
+    )
+    state = runtime.stand_down_agent(
+        agent_id="backend",
+        reason="Keep the backend agent paused independently.",
+        set_by="operator:test",
+        scope="agent",
+        expected_revision=state.revision,
+    )
+    backend_stand_down_id = next(
+        item.id
+        for item in state.stand_downs.values()
+        if item.agent_id == "backend" and item.active
+    )
+
+    with pytest.raises(TeamStateConflictError):
+        runtime.revoke_operator_stand_downs(
+            agent_id="lead",
+            revoked_by="operator:test",
+            expected_revision=state.revision - 1,
+        )
+    assert all(item.active for item in repo.read().stand_downs.values())
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
+
+    state = runtime.revoke_operator_stand_downs(
+        agent_id="lead",
+        revoked_by="operator:test",
+        expected_revision=state.revision,
+    )
+
+    assert state.stand_downs[subtree_stand_down_id].active is False
+    assert state.stand_downs[backend_stand_down_id].active is True
+    records = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert len(records) == 1
+    [lead_wake] = records
+    assert lead_wake.payload == {
+        "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
+        "correlation_key": f"{AGENT_WAKE_REQUESTED_EVENT_TYPE}:lead",
+        "payload": {
+            "team_id": "team",
+            "agent_id": "lead",
+            "session_id": "session-lead",
+            "reason": "task_ready",
+        },
+        "delay_seconds": 0.0,
+    }
+    assert lead_wake.idempotency_key is not None
+    assert lead_wake.idempotency_key.endswith(
+        f":stand-down-revocation:{subtree_stand_down_id}"
+    )
+    assert lead_wake.status.value == "completed"
+    published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(published) == 1
+    assert published[0].payload["agent_id"] == "lead"
+
+    state = runtime.revoke_operator_stand_downs(
+        agent_id="backend",
+        revoked_by="operator:test",
+        expected_revision=state.revision,
+    )
+
+    assert state.stand_downs[backend_stand_down_id].active is False
+    records = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert len(records) == 2
+    backend_wake = next(
+        record for record in records if record.payload["payload"]["agent_id"] == "backend"
+    )
+    assert backend_wake.payload["delay_seconds"] == 0.0
+    assert backend_wake.payload["payload"]["reason"] == "task_ready"
+    assert backend_wake.idempotency_key is not None
+    assert backend_wake.idempotency_key.endswith(
+        f":stand-down-revocation:{backend_stand_down_id}"
+    )
+    assert backend_wake.status.value == "completed"
+    published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(published) == 2
+    assert {event.payload["agent_id"] for event in published} == {"lead", "backend"}
+
+    with pytest.raises(ValueError, match="has no active operator stand-down"):
+        runtime.revoke_operator_stand_downs(
+            agent_id="backend",
+            revoked_by="operator:test",
+            expected_revision=state.revision,
+        )
+    assert (
+        len(repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE))
+        == 2
+    )
+
+
+def test_operator_stand_down_revocation_rolls_back_when_wake_outbox_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    runtime = _team_runtime_service(repo)
+    stood_down = runtime.stand_down_agent(
+        agent_id="backend",
+        reason="Pause backend work.",
+        set_by="operator:test",
+        scope="agent",
+        expected_revision=repo.read().revision,
+    )
+    stand_down_id = next(item.id for item in stood_down.stand_downs.values() if item.active)
+
+    def _fail_outbox(_events: object) -> list[object]:
+        raise RuntimeError("wake outbox unavailable")
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.runtime_service._team_event_outbox_records",
+        _fail_outbox,
+    )
+
+    with pytest.raises(RuntimeError, match="wake outbox unavailable"):
+        runtime.revoke_operator_stand_downs(
+            agent_id="backend",
+            revoked_by="operator:test",
+            expected_revision=stood_down.revision,
+        )
+
+    state = repo.read()
+    assert state.revision == stood_down.revision
+    assert state.stand_downs[stand_down_id].active is True
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
+    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
+
+
+def test_operator_stand_down_revocation_keeps_outbox_pending_when_fast_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    runtime = _team_runtime_service(repo)
+    stood_down = runtime.stand_down_agent(
+        agent_id="backend",
+        reason="Pause backend work.",
+        set_by="operator:test",
+        scope="agent",
+        expected_revision=repo.read().revision,
+    )
+    stand_down_id = next(item.id for item in stood_down.stand_downs.values() if item.active)
+
+    def _fail_publish(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("internal event bus unavailable")
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.runtime_service.InternalEventBus.publish",
+        _fail_publish,
+    )
+
+    state = runtime.revoke_operator_stand_downs(
+        agent_id="backend",
+        revoked_by="operator:test",
+        expected_revision=stood_down.revision,
+    )
+
+    assert state.stand_downs[stand_down_id].active is False
+    records = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert len(records) == 1
+    assert records[0].status.value == "pending"
 
 
 def _seed_git_work_context(
@@ -3957,7 +4147,56 @@ def test_build_prompt_includes_typed_release_gate_retry_context(tmp_path: Path) 
     assert release["next_action"] == "retry_release_verification"
     assert release["blocked_reason_code"] == "release_verification_infrastructure"
     assert release["gate_failure"]["source_id"] == "verification-attempt-1"
-    assert "audited reason" in release["next_action_hint"]
+    assert "concrete evidence" in release["next_action_hint"]
+    assert "escalate the blocker instead of retrying" in release["next_action_hint"]
+
+
+def test_build_prompt_escalates_after_agent_requested_verification_retry_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _add_exhausted_agent_retry(state: TeamState) -> TeamState:
+        run = ReleaseVerificationRun(
+            id="verification-attempt-2",
+            release_package_id="rel-retry",
+            candidate_commit_sha="candidate-sha",
+            session_id="verification-session-2",
+            state="failed",
+            attempt_number=2,
+            failure_kind="infrastructure",
+            retry_reason="The transient worker was replaced.",
+            retry_requested_by="agent:backend",
+        )
+        state.release_verification_runs[run.id] = run
+        state.release_packages["rel-retry"] = ReleasePackage(
+            id="rel-retry",
+            project_id="project",
+            candidate_commit_sha="candidate-sha",
+            verification_run_ids=[run.id],
+            state=TeamRecordState.BLOCKED,
+            error="replacement verification worker disconnected",
+            gate_failure=ReleaseGateFailure(
+                stage="verification",
+                kind="infrastructure",
+                source_id=run.id,
+                message="replacement verification worker disconnected",
+            ),
+        )
+        return state
+
+    repo.update(_add_exhausted_agent_retry)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+
+    release = _team_context_from_prompt(_build_prompt(lease))["release_packages"][
+        "rel-retry"
+    ]
+    assert release["next_action"] == "escalate_release_verification_recovery"
+    assert "Do not retry" in release["next_action_hint"]
+    assert "concrete infrastructure recovery requirement" in release["next_action_hint"]
 
 
 def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
@@ -6953,6 +7192,20 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
         dispatch_id=queued_dispatch_id,
         reason="agent backend already has an active dispatch",
     )
+    repo.enqueue_outbox_record(
+        TeamOutboxRecord(
+            id="outbox-standalone-promotion",
+            intent_type="team.git.promotion_requested",
+            aggregate_type="git_promotion",
+            aggregate_id="promotion-standalone",
+            idempotency_key="team.git.promotion_requested:promotion-standalone",
+            payload={
+                "event_type": "team.git.promotion_requested",
+                "correlation_key": "promotion-standalone",
+                "payload": {"promotion_id": "promotion-standalone"},
+            },
+        )
+    )
     session_store = FakeSessionStore()
     record = SimpleNamespace(
         execution_id="exec-standalone-team-prompt",
@@ -6986,6 +7239,18 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
     assert len(chat_events) == 1
     assert chat_events[0].payload["dispatch_id"] == queued_dispatch_id
     assert chat_events[0].payload["message_id"] == message.id
+    promotion_events = [
+        event for event in events if event.event_type == "team.git.promotion_requested"
+    ]
+    assert len(promotion_events) == 1
+    assert promotion_events[0].payload["promotion_id"] == "promotion-standalone"
+    [promotion_outbox] = repo.list_outbox_records(
+        intent_type="team.git.promotion_requested",
+        aggregate_type="git_promotion",
+        aggregate_id="promotion-standalone",
+    )
+    assert promotion_outbox.status.value == "completed"
+    assert promotion_outbox.attempt_count == 1
     assert hook.on_post_completion_dispatch(worker=worker) == 0
 
 

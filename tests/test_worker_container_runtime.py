@@ -108,6 +108,57 @@ def test_docker_runtime_exposes_terminal_exit_classification_inputs(
     assert inspected["runtime_error"] is None
 
 
+def test_docker_runtime_reports_causal_pids_limit_exhaustion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    proc_root = tmp_path / "proc"
+    cgroup_root = tmp_path / "cgroup"
+    (proc_root / "123").mkdir(parents=True)
+    (proc_root / "123" / "cgroup").write_text(
+        "0::/system.slice/docker-container-1.scope\n",
+        encoding="utf-8",
+    )
+    events_path = cgroup_root / "system.slice" / "docker-container-1.scope" / "pids.events"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text("max 1\n", encoding="utf-8")
+    runtime = DockerContainerRuntime(proc_root=proc_root, cgroup_root=cgroup_root)
+
+    def _run(args, **kwargs):
+        del kwargs
+        if args[:3] == ["docker", "run", "-d"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="container-1\n")
+        if "--format" in args:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="123\n")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "State": {
+                            "Status": "exited",
+                            "Running": False,
+                            "ExitCode": 1,
+                            "OOMKilled": False,
+                            "Error": "",
+                        }
+                    }
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    record = _record(paths)
+
+    runtime.start_job(_request(), record, paths)
+    inspected = runtime.inspect_job(record)
+
+    assert inspected["failure_cause"] == "pids_limit_exhausted"
+    assert inspected["oom_killed"] is False
+
+
 def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(
     tmp_path: Path,
 ) -> None:

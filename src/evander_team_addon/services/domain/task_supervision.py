@@ -77,6 +77,14 @@ def queue_parent_task_transition(
         if sender_agent_id in state.agents
         else child.owner_agent_id
     )
+    if (
+        recipient_agent_id == effective_sender_id
+        and transition in {"handoff", "rejection", "resolution"}
+    ):
+        # An agent already knows about these child-state transitions caused by
+        # its own command. Keep integration-ready and blocker notices because
+        # they can make distinct parent-level action newly available.
+        return None
     existing = next(
         (
             item
@@ -205,6 +213,75 @@ def queue_parent_resolution_transitions(
     return notices
 
 
+def queue_root_task_resolution(
+    state: TeamState,
+    *,
+    task_id: str,
+    deliverable_id: str,
+    sender_agent_id: str,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> AgentInboxItem | None:
+    """Return an accepted root boundary to its project lead for release work."""
+
+    task = state.tasks.get(task_id)
+    if task is None or task.parent_task_id is not None:
+        return None
+    project = state.projects.get(task.project_id)
+    if project is None or project.lead_agent_id == sender_agent_id:
+        return None
+    existing = next(
+        (
+            item
+            for item in state.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.recipient_agent_id == project.lead_agent_id
+            and item.payload.get("kind") == "root_task_resolution"
+            and item.payload.get("task_id") == task.id
+            and item.payload.get("deliverable_id") == deliverable_id
+        ),
+        None,
+    )
+    if existing is not None:
+        existing.updated_at = now
+        _mark_agent_work_due(state, agent_id=project.lead_agent_id, now=now)
+        if result is not None:
+            _append_wake_event_for_notice(
+                state,
+                item=existing,
+                result=result,
+                now=now,
+            )
+        return existing
+    release_ready = project.release_policy is not None
+    # Local import avoids the wake -> deliverables -> supervision import cycle.
+    from .review_handoff import queue_actionable_inbox_item
+
+    return queue_actionable_inbox_item(
+        state,
+        recipient_agent_id=project.lead_agent_id,
+        sender_agent_id=sender_agent_id,
+        task_id=task.id,
+        priority=TeamInboxPriority.NORMAL,
+        payload={
+            "kind": "root_task_resolution",
+            "project_id": project.id,
+            "task_id": task.id,
+            "deliverable_id": deliverable_id,
+            "summary": "A reviewed root task reached its resolved disposition.",
+            "next_action": (
+                "Request a release package for the accepted root deliverable "
+                "and its source lineage."
+                if release_ready
+                else "Review the root completion and choose the next project action."
+            ),
+            "release_ready": release_ready,
+        },
+        result=result,
+        now=now,
+    )
+
+
 def _parent_transition_next_action(
     transition: str,
     *,
@@ -246,5 +323,6 @@ __all__ = [
     "parent_task_for_child",
     "queue_parent_resolution_transitions",
     "queue_parent_task_transition",
+    "queue_root_task_resolution",
     "task_acceptance_recipient_agent_id",
 ]

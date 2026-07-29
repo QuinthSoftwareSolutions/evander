@@ -1,11 +1,143 @@
 # Changelog
 
+## 2026-07-29 - Supported Human-review Candidate Checkout
+
+- Added an authorization-filtered **Test this candidate** panel to Team release
+  detail with the canonical repository identity, managed repository ID,
+  immutable release ref, exact candidate commit/tree, and a copyable supported
+  host command.
+- Added `evander-cli team checkout-release-candidate`, which resolves private
+  managed-Git paths internally, revalidates the pinned ref, commit, and tree,
+  and creates a fresh detached checkout without retaining an internal path.
+  Existing targets and paths inside the Evander runtime are refused. The
+  generated command carries the absolute runtime root and assembles only the
+  narrow managed-Git service, so it works outside the Evander checkout without
+  loading unrelated provider credentials.
+
+## 2026-07-29 - Immediate Team Outbox Drain After Standalone Dispatch
+
+- Reused the Team outbox publisher after lifecycle-hook finalization of
+  standalone agent prompt dispatches, so Git promotion and other durable intents
+  created during those runs no longer wait up to 15 minutes for the Team cron.
+
+## 2026-07-29 - Deterministic Team Correction Git Sources
+
+- Clarified the Team task-creation and release-failure contracts so correction
+  lineage (`originating_task_id`) is never mistaken for Git inheritance.
+  Project leads must name accepted Git predecessors in `dependency_task_ids`,
+  which makes the runtime verify and compose their exact commits before work
+  starts; failed-candidate notices now require the candidate SHA and prohibit
+  silently delegating correction work from a base-branch-only checkout. The
+  assignee must verify that the prepared worktree has the candidate's exact
+  tree before editing rather than selecting or merging a source ad hoc.
+
+## 2026-07-29 - Accurate Operator Escalation Receipts
+
+- Marked operator and governance escalation receipts explicitly as pending and
+  told Team agents to report them as queued, not delivered, until downstream
+  delivery evidence exists. Tool discovery and runtime descriptions now make
+  the same asynchronous boundary explicit.
+
+## 2026-07-28 - Focused Review and Delivery Pipeline
+
+- Changed Review & Delivery to open on attention-requiring work, added a
+  project focus selector, and collapsed project groups until an operator opens
+  or selects one, while retaining status filters and an explicit all-records
+  view for complete history.
+- Added an evidence-backed deliverable pipeline from submitted implementation
+  evidence through deliverable acceptance, release inclusion, automated
+  verification, release-agent review, human review, and publication. The
+  drill-down names the current stage and active blocker and can load the exact
+  permission-filtered release gate attempts on demand.
+
 ## 2026-07-28 - Bounded Agent Context Self-handoffs
 
 - Added a 120-second, best-effort same-context handoff preparation for manual
   and idle Team context rotations. Agents can record one server-capped advisory
   summary before the fresh context starts; failure or timeout never blocks the
   reset. Every-wake agents retain only the existing deterministic checkpoint.
+
+## 2026-07-28 - Bounded Agent Release-verification Retry
+
+- Preserved one project-lead retry for transient release-verifier failures, but
+  prevented agents from repeatedly retrying an unchanged candidate after an
+  agent-requested verification attempt also fails. Operator recovery remains
+  available, while blocker, prompt, MCP, and UI guidance now requires concrete
+  recovery evidence and directs agents to escalate when none exists.
+
+## 2026-07-28 - Project-lead Wake on Candidate Verification Failure
+
+- Turned a release candidate verification rejection into actionable project-lead
+  inbox work with a transactional wake intent, directing the lead to inspect
+  the frozen evidence and delegate changed reviewed work without waking the
+  original coder directly.
+- Included the failed command result and its bounded log context directly in
+  that project-lead notice, and changed long verifier excerpts from tail-only
+  capture to balanced beginning-and-end capture so an early compiler/test
+  diagnostic is not hidden by later suite output.
+
+## 2026-07-28 - Retryable Release-verifier Resource Exhaustion
+
+- Gave Team release-verification container jobs a bounded 8-CPU quota and a
+  2,048 process/thread budget, preventing large MSBuild solution runs from
+  multiplying nodes across every host CPU while accommodating their observed
+  parallel test-host thread count above the strict worker profile's default
+  512-PID ceiling.
+- Added validated per-project `release_policy.resource_limits` configuration
+  for worker memory, CPUs, and process/thread limits. Explicit values override
+  the bounded verifier defaults and are applied to each new verification
+  session, including infrastructure retries.
+- Added a worker-owned, structured `pids_limit_exhausted` failure cause based
+  on the job cgroup's kernel `pids.events` counter and propagated it through
+  container execution into release-verification evidence. Verification no
+  longer guesses infrastructure failure from ambiguous command OOM text;
+  Docker's causal OOM-kill signal is likewise exposed as
+  `memory_limit_exhausted`.
+
+## 2026-07-28 - Non-blocking Worker Worktree Cleanup
+
+- Moved container-worker task-worktree cleanup off the async request loop, so
+  slow ignored-file deletion cannot starve unrelated session and file
+  preparation requests.
+- Moved the worker's remaining synchronous session, Git, file, Docker, MSSQL,
+  telemetry, authentication, job, log, and artifact operations off the async
+  request loop as well, keeping health and unrelated requests responsive while
+  a slow lifecycle operation completes.
+- Batched the final inspection's proven ignored paths into bounded Git cleanup
+  commands and applied a subprocess timeout, avoiding one full Git scan per
+  ignored file while preserving the no-force, exact-path cleanup contract.
+
+## 2026-07-28 - Immediate Team Wake on Operator Stand-up
+
+- Made operator stand-down revocation atomically enqueue targeted
+  `team.agent.wake_requested` intents for affected agents that become eligible
+  for work, so an explicit stand-up no longer waits for the next 15-minute Team
+  cron tick. Agents still covered by another hold remain suppressed.
+- Suppressed handoff, rejection, and resolution parent-task notices when the
+  command's effective sender is also the parent owner, avoiding inference runs
+  whose only action is to acknowledge a transition the agent just caused.
+  Actionable integration-ready and blocker notices remain wakeable.
+- Made direct deliverable acceptance requests normal-priority actionable work
+  and enqueue the same targeted wake intent used by formal review requests, so
+  an idle superior no longer waits for the periodic Team scheduler.
+- Fixed final deliverable-review acceptance so parent resolution and
+  integration-ready notices retain their wake-request events and wake an idle
+  parent owner without waiting for scheduled polling.
+- Returned accepted root-task boundaries to the project lead with an actionable
+  release-ready notice and wake, so the release package and required human
+  review cannot stall merely because the resolved task has no parent.
+- Added structured verification-waiver correction context to rejected release
+  requests, including whether the current caller is authorized, the exact
+  input shape, and the fact that candidate verification and review gates still
+  apply.
+- Refreshed the Team runtime workflow pack to retain Git promotion manifests,
+  base commits, changed-path validation, and tree evidence through the
+  recorder effects, preventing a successfully reviewed candidate from being
+  blocked later by evidence dropped at the workflow boundary.
+- Fixed feature-promotion result recording to attach that immutable reviewed
+  source manifest when a promotion is already linked directly to its accepted
+  deliverable, preventing valid releases from being blocked as though their
+  reviewed manifest were missing.
 
 ## 2026-07-28 - Team Stand-down Completion and State Upgrades
 

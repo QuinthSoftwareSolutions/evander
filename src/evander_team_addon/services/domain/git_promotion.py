@@ -572,6 +572,18 @@ def _attach_promotion_success(
             if commit_sha is not None:
                 refs.reviewed_commit_sha = refs.reviewed_commit_sha or commit_sha
         elif kind == "feature":
+            raw_manifests = promotion.outputs.get("source_manifests")
+            source_manifests = (
+                raw_manifests if isinstance(raw_manifests, dict) else {}
+            )
+            source_branch = refs.review_branch or refs.agent_branch
+            raw_manifest = (
+                source_manifests.get(source_branch) if source_branch else None
+            )
+            if isinstance(raw_manifest, dict):
+                deliverable.review_manifest = DeliverableReviewManifest.model_validate(
+                    raw_manifest
+                )
             refs.feature_branch = promotion.target_branch
             if commit_sha is not None:
                 refs.feature_commit_sha = commit_sha

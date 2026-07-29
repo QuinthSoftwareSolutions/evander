@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -58,36 +59,42 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             "yes",
             "on",
         }
-        record = daemon.read_telemetry(refresh=refresh)
+        record = await run_in_threadpool(daemon.read_telemetry, refresh=refresh)
         return JSONResponse(record.model_dump(mode="json"))
 
     async def codex_auth_status(_: Request) -> JSONResponse:
-        return JSONResponse(daemon.codex_auth_status())
+        return JSONResponse(await run_in_threadpool(daemon.codex_auth_status))
 
     async def start_codex_device_login(_: Request) -> JSONResponse:
         try:
-            record = daemon.start_codex_device_login()
+            record = await run_in_threadpool(daemon.start_codex_device_login)
         except CodexAuthBrokerError as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(record, status_code=201)
 
     async def codex_device_login_status(request: Request) -> JSONResponse:
         try:
-            record = daemon.codex_device_login_status(request.path_params["login_id"])
+            record = await run_in_threadpool(
+                daemon.codex_device_login_status,
+                request.path_params["login_id"],
+            )
         except CodexAuthBrokerError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
         return JSONResponse(record)
 
     async def cancel_codex_device_login(request: Request) -> JSONResponse:
         try:
-            record = daemon.cancel_codex_device_login(request.path_params["login_id"])
+            record = await run_in_threadpool(
+                daemon.cancel_codex_device_login,
+                request.path_params["login_id"],
+            )
         except CodexAuthBrokerError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
         return JSONResponse(record)
 
     async def logout_codex_auth(_: Request) -> JSONResponse:
         try:
-            record = daemon.logout_codex_auth()
+            record = await run_in_threadpool(daemon.logout_codex_auth)
         except CodexAuthBrokerError as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(record)
@@ -96,7 +103,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             job_request = WorkerJobRequest.model_validate(payload)
-            record = daemon.start_job(job_request)
+            record = await run_in_threadpool(daemon.start_job, job_request)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except CodexAuthBrokerError as exc:
@@ -111,7 +118,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             session_request = WorkerSessionPrepareRequest.model_validate(payload)
-            record = daemon.prepare_session(session_request)
+            record = await run_in_threadpool(daemon.prepare_session, session_request)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(record.model_dump(mode="json"), status_code=201)
@@ -120,7 +127,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             clone_request = WorkerRepoCloneRequest.model_validate(payload)
-            record = daemon.clone_repo(request.path_params["session_id"], clone_request)
+            record = await run_in_threadpool(
+                daemon.clone_repo,
+                request.path_params["session_id"],
+                clone_request,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except subprocess.CalledProcessError as exc:
@@ -131,8 +142,10 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             worktree_request = WorkerTaskWorktreeRequest.model_validate(payload)
-            record = daemon.prepare_task_worktree(
-                request.path_params["session_id"], worktree_request
+            record = await run_in_threadpool(
+                daemon.prepare_task_worktree,
+                request.path_params["session_id"],
+                worktree_request,
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
@@ -144,7 +157,8 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             cleanup_request = WorkerTaskWorktreeCleanupRequest.model_validate(payload)
-            record = daemon.cleanup_task_worktree(
+            record = await run_in_threadpool(
+                daemon.cleanup_task_worktree,
                 request.path_params["session_id"], cleanup_request
             )
         except ValueError as exc:
@@ -157,7 +171,8 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             key_request = WorkerGitWriteKeyRequest.model_validate(payload)
-            record = daemon.provision_git_write_key(
+            record = await run_in_threadpool(
+                daemon.provision_git_write_key,
                 request.path_params["session_id"],
                 key_request,
             )
@@ -169,7 +184,8 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
 
     async def revoke_session_git_key(request: Request) -> JSONResponse:
         try:
-            record = daemon.revoke_git_key(
+            record = await run_in_threadpool(
+                daemon.revoke_git_key,
                 request.path_params["session_id"],
                 request.path_params["key_name"],
             )
@@ -181,14 +197,19 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             write_request = WorkerFileWriteRequest.model_validate(payload)
-            record = daemon.write_files(request.path_params["session_id"], write_request)
+            record = await run_in_threadpool(
+                daemon.write_files,
+                request.path_params["session_id"],
+                write_request,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(record.model_dump(mode="json"))
 
     async def read_session_artifact(request: Request) -> Response:
         try:
-            text = daemon.read_session_artifact_text(
+            text = await run_in_threadpool(
+                daemon.read_session_artifact_text,
                 request.path_params["session_id"],
                 request.path_params["artifact_path"],
             )
@@ -200,7 +221,10 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
 
     async def delete_session(request: Request) -> JSONResponse:
         try:
-            deleted = daemon.delete_session(request.path_params["session_id"])
+            deleted = await run_in_threadpool(
+                daemon.delete_session,
+                request.path_params["session_id"],
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except RuntimeError as exc:
@@ -213,7 +237,8 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         try:
             payload = await request.json()
             database_request = WorkerMssqlDatabaseRequest.model_validate(payload)
-            record = daemon.provision_mssql_database(
+            record = await run_in_threadpool(
+                daemon.provision_mssql_database,
                 request.path_params["session_id"],
                 database_request,
             )
@@ -225,14 +250,18 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
 
     async def list_mssql_databases(request: Request) -> JSONResponse:
         try:
-            record = daemon.list_mssql_databases(request.path_params["session_id"])
+            record = await run_in_threadpool(
+                daemon.list_mssql_databases,
+                request.path_params["session_id"],
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(record.model_dump(mode="json"))
 
     async def drop_mssql_database(request: Request) -> JSONResponse:
         try:
-            record = daemon.drop_mssql_database(
+            record = await run_in_threadpool(
+                daemon.drop_mssql_database,
                 request.path_params["session_id"],
                 request.path_params["logical_name"],
             )
@@ -246,7 +275,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
             return JSONResponse({"error": "job not found"}, status_code=404)
-        record = daemon.inspect_job(record)
+        record = await run_in_threadpool(daemon.inspect_job, record)
         return JSONResponse(record.model_dump(mode="json"))
 
     async def stop_job(request: Request) -> JSONResponse:
@@ -254,7 +283,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         if record is None:
             return JSONResponse({"error": "job not found"}, status_code=404)
         try:
-            record = daemon.stop_job(record)
+            record = await run_in_threadpool(daemon.stop_job, record)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"))
@@ -264,7 +293,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         if record is None:
             return JSONResponse({"error": "job not found"}, status_code=404)
         try:
-            daemon.remove_job(record)
+            await run_in_threadpool(daemon.remove_job, record)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse({"deleted": True, "job_id": record.job_id})
@@ -278,7 +307,8 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             offset_text = request.query_params.get("offset")
             query_text = request.query_params.get("query")
             if limit_text is not None or offset_text is not None or query_text is not None:
-                page = daemon.get_log_page(
+                page = await run_in_threadpool(
+                    daemon.get_log_page,
                     record,
                     mode=str(request.query_params.get("mode") or "augmented"),
                     limit=int(limit_text or "200"),
@@ -301,8 +331,10 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                 if page["end_line"] is not None:
                     headers["x-evander-log-end-line"] = str(page["end_line"])
                 return PlainTextResponse(str(page["text"]), headers=headers)
-            text = daemon.get_logs(
-                record, mode=str(request.query_params.get("mode") or "augmented")
+            text = await run_in_threadpool(
+                daemon.get_logs,
+                record,
+                mode=str(request.query_params.get("mode") or "augmented"),
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
@@ -312,7 +344,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
             return JSONResponse({"error": "job not found"}, status_code=404)
-        return JSONResponse({"artifacts": list_relative_files(Path(record.artifacts_path))})
+        artifacts = await run_in_threadpool(
+            list_relative_files,
+            Path(record.artifacts_path),
+        )
+        return JSONResponse({"artifacts": artifacts})
 
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:

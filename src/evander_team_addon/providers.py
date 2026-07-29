@@ -267,7 +267,7 @@ from .services.worktree_cleanup_service import (
     team_task_worktree_cleanup_lock,
 )
 
-TEAM_AGENT_GUIDANCE_VERSION = 26
+TEAM_AGENT_GUIDANCE_VERSION = 27
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -4066,6 +4066,15 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             _publish_team_events(context, result.get("events"))
             if not active_dispatches:
                 break
+        if finalized_count:
+            _publish_team_outbox_events(
+                context=context,
+                repo=repo,
+                worker_id="team-outbox-after-dispatch",
+                limit=25,
+                claim_ttl_seconds=300,
+                retry_after_seconds=60,
+            )
         return finalized_count
 
 
@@ -4132,67 +4141,87 @@ class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
         worker_id = _optional_text(payload.get("worker_id")) or "team-outbox-publisher"
         intent_types = _string_list(payload.get("intent_types"), "intent_types")
 
-        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        claimed = repo.claim_outbox_records(
+        return _publish_team_outbox_events(
+            context=self.runtime_context,
+            repo=TeamStateRepository(_runtime_dir(self.runtime_context)),
             worker_id=worker_id,
             limit=limit,
             intent_types=intent_types or None,
             claim_ttl_seconds=claim_ttl_seconds,
+            retry_after_seconds=retry_after_seconds,
         )
-        published_event_ids: list[str] = []
-        completed_record_ids: list[str] = []
-        failed_record_ids: list[str] = []
-        errors: list[dict[str, Any]] = []
-        for record in claimed:
-            try:
-                event = dict(record.payload)
-                event.setdefault("idempotency_key", record.idempotency_key)
-                if record.intent_type == "team.release.human_review_requested":
-                    notification_result = _publish_human_review_admin_notification(
-                        runtime_dir=_runtime_dir(self.runtime_context),
-                        event=event,
+
+
+def _publish_team_outbox_events(
+    *,
+    context: Any,
+    repo: TeamStateRepository,
+    worker_id: str,
+    limit: int,
+    claim_ttl_seconds: int,
+    retry_after_seconds: int,
+    intent_types: list[str] | None = None,
+) -> dict[str, Any]:
+    claimed = repo.claim_outbox_records(
+        worker_id=worker_id,
+        limit=limit,
+        intent_types=intent_types,
+        claim_ttl_seconds=claim_ttl_seconds,
+    )
+    published_event_ids: list[str] = []
+    completed_record_ids: list[str] = []
+    failed_record_ids: list[str] = []
+    errors: list[dict[str, Any]] = []
+    for record in claimed:
+        try:
+            event = dict(record.payload)
+            event.setdefault("idempotency_key", record.idempotency_key)
+            if record.intent_type == "team.release.human_review_requested":
+                notification_result = _publish_human_review_admin_notification(
+                    runtime_dir=_runtime_dir(context),
+                    event=event,
+                )
+                if notification_result.get("skipped"):
+                    repo.complete_outbox_record(
+                        record_id=record.id,
+                        claim_token=record.claim_token,
                     )
-                    if notification_result.get("skipped"):
-                        repo.complete_outbox_record(
-                            record_id=record.id,
-                            claim_token=record.claim_token,
-                        )
-                        completed_record_ids.append(record.id)
-                        continue
-                record_event_ids = _publish_team_events(self.runtime_context, [event])
-                if not record_event_ids:
-                    raise RuntimeError("outbox record did not publish an internal event")
-                repo.complete_outbox_record(
-                    record_id=record.id,
-                    claim_token=record.claim_token,
-                )
-                completed_record_ids.append(record.id)
-                published_event_ids.extend(record_event_ids)
-            except Exception as exc:
-                repo.fail_outbox_record(
-                    record_id=record.id,
-                    error_code="publish_failed",
-                    error_message=str(exc),
-                    claim_token=record.claim_token,
-                    retry_after_seconds=retry_after_seconds,
-                )
-                failed_record_ids.append(record.id)
-                errors.append(
-                    {
-                        "record_id": record.id,
-                        "intent_type": record.intent_type,
-                        "error": str(exc),
-                    }
-                )
-        return {
-            "success": not errors,
-            "claimed_count": len(claimed),
-            "published_count": len(completed_record_ids),
-            "published_event_ids": published_event_ids,
-            "completed_outbox_record_ids": completed_record_ids,
-            "failed_outbox_record_ids": failed_record_ids,
-            "errors": errors,
-        }
+                    completed_record_ids.append(record.id)
+                    continue
+            record_event_ids = _publish_team_events(context, [event])
+            if not record_event_ids:
+                raise RuntimeError("outbox record did not publish an internal event")
+            repo.complete_outbox_record(
+                record_id=record.id,
+                claim_token=record.claim_token,
+            )
+            completed_record_ids.append(record.id)
+            published_event_ids.extend(record_event_ids)
+        except Exception as exc:
+            repo.fail_outbox_record(
+                record_id=record.id,
+                error_code="publish_failed",
+                error_message=str(exc),
+                claim_token=record.claim_token,
+                retry_after_seconds=retry_after_seconds,
+            )
+            failed_record_ids.append(record.id)
+            errors.append(
+                {
+                    "record_id": record.id,
+                    "intent_type": record.intent_type,
+                    "error": str(exc),
+                }
+            )
+    return {
+        "success": not errors,
+        "claimed_count": len(claimed),
+        "published_count": len(completed_record_ids),
+        "published_event_ids": published_event_ids,
+        "completed_outbox_record_ids": completed_record_ids,
+        "failed_outbox_record_ids": failed_record_ids,
+        "errors": errors,
+    }
 
 
 def _publish_human_review_admin_notification(
@@ -5994,7 +6023,18 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "dependency_task_ids. parent_task_id means constituent composition; "
         "dependency_task_ids means execution ordering; originating_task_id records "
         "provenance for independent correction or follow-up work and does not make "
-        "that task a child. An explicit integration_boundary is a final acceptance "
+        "that task a child. originating_task_id alone does not seed Git content. "
+        "When correction or follow-up work must edit accepted Git work, also list "
+        "every accepted predecessor whose content is required in dependency_task_ids; "
+        "the runtime will verify and compose those exact accepted commits before the "
+        "assignee starts. If the required source cannot be represented by accepted "
+        "dependencies, keep the exact candidate commit in the task instructions and "
+        "escalate the missing source contract instead of silently starting from the "
+        "project base branch. For a task whose instructions pin a failed candidate, "
+        "verify before editing that the prepared worktree HEAD has the same tree as "
+        "that candidate. If it does not, report the source-provenance blocker; do not "
+        "choose or merge a different source ad hoc. An explicit integration_boundary "
+        "is a final acceptance "
         "boundary, regardless of its title or hierarchy depth. Its "
         "deliverable_contract may require authoritative pinned Git provenance and "
         "names the direct-child or dependency task IDs whose accepted deliverables "
@@ -6712,7 +6752,10 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
             "Use parent_task_id only for constituent work contained by that parent. "
             "Create an independent root for separate work, and set "
             "originating_task_id when that root is correction or follow-up work "
-            "provenanced from an earlier task. You may also create child tasks with "
+            "provenanced from an earlier task. If it must edit that task's accepted "
+            "Git content, also include the earlier task in dependency_task_ids so "
+            "the assignee receives its verified commit instead of a base-branch-only "
+            "worktree. You may also create child tasks with "
             "parent_task_id.\n\n"
         )
     return (

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from .codex_subscription import (
     CODEX_COMPLETION_MARKER_HOST_DIRNAME,
 )
 from .models import (
+    WorkerFailureCause,
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerSessionPaths,
@@ -32,6 +35,9 @@ from .sandbox_profile import (
 
 
 _CODEX_IMAGE_BINARY = "/usr/local/bin/codex"
+_PIDS_EXHAUSTION_MARKER_SUFFIX = ".pids-limit-exhausted"
+_PIDS_EVENT_POLL_SECONDS = 0.05
+_PIDS_MONITOR_TERMINAL_JOIN_SECONDS = 0.25
 
 
 class DockerContainerRuntime:
@@ -43,6 +49,8 @@ class DockerContainerRuntime:
         sandbox_profile: WorkerSandboxProfile | None = None,
         read_only_mounts: Sequence[str | WorkerReadOnlyMount] | None = None,
         codex_egress_proxy_url: str | None = None,
+        proc_root: Path = Path("/proc"),
+        cgroup_root: Path = Path("/sys/fs/cgroup"),
     ) -> None:
         profile = sandbox_profile or default_worker_sandbox_profile()
         if docker_network is not None:
@@ -57,6 +65,10 @@ class DockerContainerRuntime:
             for mount in (read_only_mounts or ())
         )
         self.codex_egress_proxy_url = _normalize_proxy_url(codex_egress_proxy_url)
+        self.proc_root = Path(proc_root)
+        self.cgroup_root = Path(cgroup_root)
+        self._pids_monitors: dict[str, threading.Thread] = {}
+        self._pids_monitors_lock = threading.Lock()
 
     def start_job(
         self,
@@ -64,9 +76,13 @@ class DockerContainerRuntime:
         record: WorkerJobRecord,
         paths: WorkerSessionPaths,
     ) -> str:
+        self._pids_exhaustion_marker(record).unlink(missing_ok=True)
         args = self._build_run_args(request=request, record=record, paths=paths)
         completed = subprocess.run(args, check=True, capture_output=True, text=True)
-        return completed.stdout.strip()
+        container_id = completed.stdout.strip()
+        if self._effective_pids_limit(request) is not None:
+            self._start_pids_event_monitor(record, container_id)
+        return container_id
 
     def inspect_job(self, record: WorkerJobRecord) -> dict[str, Any]:
         target = record.container_id or record.container_name
@@ -83,11 +99,26 @@ class DockerContainerRuntime:
         exit_code = state.get("ExitCode")
         oom_killed = bool(state.get("OOMKilled"))
         runtime_error = str(state.get("Error") or "").strip() or None
+        terminal = not bool(state.get("Running")) and str(
+            state.get("Status") or ""
+        ).casefold() in {"exited", "dead"}
+        if terminal:
+            self._join_pids_event_monitor(record)
+        pids_limit_exhausted = (
+            terminal
+            and exit_code not in (0, None)
+            and self._pids_exhaustion_marker(record).is_file()
+        )
         return {
             "status": docker_state_to_status(state),
             "exit_code": exit_code,
             "oom_killed": oom_killed,
             "runtime_error": runtime_error,
+            "failure_cause": (
+                WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value
+                if pids_limit_exhausted
+                else None
+            ),
             "raw_state": {
                 "status": state.get("Status"),
                 "running": state.get("Running"),
@@ -95,6 +126,164 @@ class DockerContainerRuntime:
                 "oom_killed": oom_killed,
             },
         }
+
+    def _effective_pids_limit(self, request: WorkerJobRequest) -> int | None:
+        return (
+            request.resource_limits.pids_limit
+            if request.resource_limits.pids_limit is not None
+            else self.sandbox_profile.default_pids_limit
+        )
+
+    def _pids_exhaustion_marker(self, record: WorkerJobRecord) -> Path:
+        return Path(record.logs_path) / f"{record.job_id}{_PIDS_EXHAUSTION_MARKER_SUFFIX}"
+
+    def _start_pids_event_monitor(
+        self,
+        record: WorkerJobRecord,
+        container_id: str,
+    ) -> None:
+        events_path = self._container_pids_events_path(container_id)
+        if events_path is None:
+            return
+        maximum_events = self._pids_max_events(events_path)
+        if maximum_events is None:
+            return
+        if maximum_events > 0:
+            self._record_pids_limit_exhaustion(record)
+            return
+        monitor = threading.Thread(
+            target=self._monitor_pids_events,
+            args=(record, events_path),
+            name=f"evander-pids-monitor-{record.job_id}",
+            daemon=True,
+        )
+        with self._pids_monitors_lock:
+            self._pids_monitors[record.job_id] = monitor
+        monitor.start()
+
+    def _monitor_pids_events(
+        self,
+        record: WorkerJobRecord,
+        events_path: Path,
+    ) -> None:
+        try:
+            while True:
+                maximum_events = self._pids_max_events(events_path)
+                if maximum_events is None:
+                    return
+                if maximum_events > 0:
+                    self._record_pids_limit_exhaustion(record)
+                    return
+                if self._cgroup_is_populated(events_path.parent / "cgroup.events") is False:
+                    return
+                time.sleep(_PIDS_EVENT_POLL_SECONDS)
+        finally:
+            with self._pids_monitors_lock:
+                current = self._pids_monitors.get(record.job_id)
+                if current is threading.current_thread():
+                    self._pids_monitors.pop(record.job_id, None)
+
+    def _join_pids_event_monitor(self, record: WorkerJobRecord) -> None:
+        with self._pids_monitors_lock:
+            monitor = self._pids_monitors.get(record.job_id)
+        if monitor is not None:
+            monitor.join(timeout=_PIDS_MONITOR_TERMINAL_JOIN_SECONDS)
+
+    def _container_pids_events_path(self, container_id: str) -> Path | None:
+        if not container_id:
+            return None
+        try:
+            completed = subprocess.run(
+                [
+                    self.docker_binary,
+                    "inspect",
+                    "--format",
+                    "{{.State.Pid}}",
+                    container_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            pid = int(completed.stdout.strip())
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            return None
+        if pid <= 0:
+            return None
+        try:
+            cgroup_lines = (self.proc_root / str(pid) / "cgroup").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            return None
+        for line in cgroup_lines.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) != 3:
+                continue
+            hierarchy, controllers, relative_path = parts
+            controller_set = {item for item in controllers.split(",") if item}
+            if hierarchy == "0" and not controller_set:
+                candidate = self._contained_cgroup_path(relative_path) / "pids.events"
+            elif "pids" in controller_set:
+                candidate = (
+                    self._contained_cgroup_path(f"pids/{relative_path.lstrip('/')}")
+                    / "pids.events"
+                )
+            else:
+                continue
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _contained_cgroup_path(self, relative_path: str) -> Path:
+        relative = Path(str(relative_path or "").lstrip("/"))
+        if ".." in relative.parts:
+            return self.cgroup_root / "__invalid__"
+        return self.cgroup_root / relative
+
+    @staticmethod
+    def _pids_max_events(events_path: Path) -> int | None:
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for line in lines:
+            key, separator, raw_value = line.partition(" ")
+            if key != "max" or not separator:
+                continue
+            try:
+                return int(raw_value.strip())
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _cgroup_is_populated(events_path: Path) -> bool | None:
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for line in lines:
+            key, separator, raw_value = line.partition(" ")
+            if key != "populated" or not separator:
+                continue
+            if raw_value.strip() == "1":
+                return True
+            if raw_value.strip() == "0":
+                return False
+            return None
+        return None
+
+    def _record_pids_limit_exhaustion(self, record: WorkerJobRecord) -> None:
+        marker = self._pids_exhaustion_marker(record)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         subprocess.run(

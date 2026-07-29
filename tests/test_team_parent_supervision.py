@@ -6,6 +6,7 @@ from evander_team_addon.models import (
     Deliverable,
     PersistentAgent,
     Project,
+    ProjectReleasePolicy,
     ReviewRequest,
     Team,
     TeamInboxItemState,
@@ -222,6 +223,70 @@ def test_formal_review_handoff_still_notifies_parent_owner() -> None:
     assert state.agent_runtimes["parent-owner"].next_wake_at is None
 
 
+def test_formal_review_handoff_does_not_wake_its_own_parent_owner() -> None:
+    state = _state_with_hierarchy()
+    child = state.tasks["child-1"]
+    child.owner_agent_id = "parent-owner"
+
+    created_inbox_ids = _apply_command_deliverable_submission(
+        state,
+        agent=state.agents["parent-owner"],
+        task=child,
+        deliverable={
+            "summary": "Parent owner's reviewed contribution",
+            "artifact_refs": ["artifact:child"],
+            "git_refs": {},
+            "outcomes": [],
+            "source_deliverable_ids": [],
+        },
+        deliverable_id="deliverable-self-reviewed-child",
+        published_records=[],
+        suppress_superior_notice=True,
+    )
+
+    assert created_inbox_ids == []
+    assert _pending_for(state, "parent-owner") == []
+    assert "parent-owner" not in state.agent_runtimes
+
+
+def test_redundant_parent_transitions_do_not_notify_the_effective_sender() -> None:
+    for transition in ("handoff", "rejection", "resolution"):
+        state = _state_with_hierarchy()
+        state.tasks["child-1"].owner_agent_id = "parent-owner"
+
+        notice = queue_parent_task_transition(
+            state,
+            child_task_id="child-1",
+            transition=transition,
+            sender_agent_id="parent-owner",
+            result={"events": [], "created_inbox_item_ids": []},
+            now=utc_now(),
+        )
+
+        assert notice is None
+        assert _pending_for(state, "parent-owner") == []
+        assert "parent-owner" not in state.agent_runtimes
+
+
+def test_actionable_self_parent_transitions_still_notify_owner() -> None:
+    for transition in ("blocker", "integration_ready"):
+        state = _state_with_hierarchy()
+        state.tasks["child-1"].owner_agent_id = "parent-owner"
+
+        notice = queue_parent_task_transition(
+            state,
+            child_task_id="child-1",
+            transition=transition,
+            sender_agent_id="parent-owner",
+            result={"events": [], "created_inbox_item_ids": []},
+            now=utc_now(),
+        )
+
+        assert notice is not None
+        assert notice.recipient_agent_id == "parent-owner"
+        assert notice.payload["transition"] == transition
+
+
 def test_formal_review_rejection_notifies_child_for_rework_and_parent_for_supervision() -> None:
     state = _state_with_hierarchy()
     child = state.tasks["child-1"]
@@ -304,6 +369,109 @@ def test_child_resolution_coalesces_and_emits_integration_ready_transition() -> 
     assert integration_ready.payload["parent_task_id"] == "parent"
     assert integration_ready.payload["child_task_ids"] == ["child-2"]
     assert state.agent_runtimes["parent-owner"].next_wake_at is None
+
+
+def test_final_review_acceptance_emits_parent_wake_event() -> None:
+    state = _state_with_hierarchy()
+    child = state.tasks["child-1"]
+    deliverable = Deliverable(
+        id="deliverable-child-reviewed",
+        task_id=child.id,
+        producer_agent_id="child-owner",
+        summary="Reviewed child contribution",
+        state=TeamRecordState.PENDING,
+    )
+    review = ReviewRequest(
+        id="review-child-accepted",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+    )
+    state.deliverables[deliverable.id] = deliverable
+    state.review_requests[review.id] = review
+    child.deliverable_ids = [deliverable.id]
+    deliverable.review_request_ids = [review.id]
+    result: dict[str, object] = {"events": [], "created_inbox_item_ids": []}
+
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=result,
+    )
+
+    assert child.state == TeamTaskState.FINISHED
+    assert {
+        item.payload.get("transition")
+        for item in _pending_for(state, "parent-owner")
+    } == {"resolution", "integration_ready"}
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    ]
+    assert wake_events
+    assert {
+        event["payload"]["agent_id"] for event in wake_events
+    } == {"parent-owner"}
+    assert {
+        event["payload"]["reason"] for event in wake_events
+    } == {"inbox"}
+
+
+def test_final_root_review_acceptance_wakes_project_lead_for_release() -> None:
+    state = _state_with_hierarchy()
+    root = state.tasks["child-1"]
+    root.parent_task_id = None
+    state.projects["project"].release_policy = ProjectReleasePolicy(
+        allow_ungated=True,
+    )
+    deliverable = Deliverable(
+        id="deliverable-root-reviewed",
+        task_id=root.id,
+        producer_agent_id="child-owner",
+        summary="Reviewed root contribution",
+        state=TeamRecordState.PENDING,
+    )
+    review = ReviewRequest(
+        id="review-root-accepted",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+    )
+    state.deliverables[deliverable.id] = deliverable
+    state.review_requests[review.id] = review
+    root.deliverable_ids = [deliverable.id]
+    deliverable.review_request_ids = [review.id]
+    result: dict[str, object] = {"events": [], "created_inbox_item_ids": []}
+
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=result,
+    )
+
+    assert root.state == TeamTaskState.FINISHED
+    notice = next(
+        item
+        for item in _pending_for(state, "lead")
+        if item.payload.get("kind") == "root_task_resolution"
+    )
+    assert notice.payload["task_id"] == root.id
+    assert notice.payload["deliverable_id"] == deliverable.id
+    assert notice.payload["release_ready"] is True
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    ]
+    assert wake_events
+    assert {
+        event["payload"]["agent_id"] for event in wake_events
+    } == {"lead"}
 
 
 def test_execution_stall_notifies_every_distinct_parent_owner_and_coalesces() -> None:

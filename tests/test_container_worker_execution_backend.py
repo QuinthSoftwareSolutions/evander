@@ -14,6 +14,7 @@ from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from evander.worker.models import (
+    WorkerFailureCause,
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
     WorkerJobRecord,
@@ -315,6 +316,27 @@ def test_inspect_maps_worker_status(tmp_path: Path) -> None:
     assert status.metadata["exit_code"] == 2
     assert status.metadata["worker_terminal_kind"] == "command_exit"
     assert client.got == ["exec-1"]
+
+
+def test_worker_failure_cause_is_propagated_to_execution_metadata(tmp_path: Path) -> None:
+    metadata = ContainerWorkerVmExecutionBackend._metadata_from_worker_record(  # noqa: SLF001
+        {},
+        WorkerJobRecord(
+            job_id="job-1",
+            session_id="session-1",
+            image="runner:latest",
+            command=["false"],
+            container_name="agent-worker-job-1",
+            status="failed",
+            agent_home_path="/worker/session-1/agent_home",
+            repo_root_path="/worker/session-1/agent_home/repos",
+            artifacts_path="/worker/session-1/artifacts",
+            logs_path="/worker/session-1/logs",
+            failure_cause=WorkerFailureCause.PIDS_LIMIT_EXHAUSTED,
+        ),
+    )
+
+    assert metadata["worker_failure_cause"] == "pids_limit_exhausted"
 
 
 def test_inspect_prefers_failed_codex_outcome_over_worker_lifecycle_status(

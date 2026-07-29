@@ -1023,7 +1023,33 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _attach_project_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team",
+        )
+        return state
+
+    repo.update(_attach_project_git)
     _attach_pending_human_review(repo)
+    managed_repo_calls: list[tuple[str, str | None]] = []
+
+    class _ManagedGit:
+        @staticmethod
+        def get_repository(
+            managed_repo_id: str,
+            *,
+            directory_path: str | None = None,
+        ) -> dict[str, str]:
+            managed_repo_calls.append((managed_repo_id, directory_path))
+            return {
+                "managed_repo_id": managed_repo_id,
+                "canonical_repository_identity": "azure-devops:org/project/app",
+                "display_name": "ExampleIndustryAPP",
+            }
+
+    addon_service = SimpleNamespace(managed_git_admin=_ManagedGit())
     reviewer_auth = _HumanApiAuthStub(login="reviewer@example.com")
     reviewer_app = Starlette(
         routes=team_addon_api.admin_api_routes(
@@ -1032,6 +1058,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
                 runtime_dir=runtime_dir,
                 addon_runtime_dir=runtime_dir / "addons" / "team-addon",
                 auth=reviewer_auth,
+                service=addon_service,
             )
         )
     )
@@ -1054,6 +1081,23 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     assert release_detail.json()["human_review"]["requests"][0]["id"] == (
         "human-review-1"
     )
+    assert release_detail.json()["candidate_checkout"] == {
+        "canonical_repository_identity": "azure-devops:org/project/app",
+        "repository_display_name": "ExampleIndustryAPP",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
+        "release_ref": "refs/heads/team/team/releases/release-1",
+        "candidate_commit_sha": "candidate-sha",
+        "candidate_tree_hash": "candidate-tree",
+        "checkout_command": (
+            "evander-cli team checkout-release-candidate release-1 "
+            "--target ./release-candidate-release-1 "
+            "--expected-commit-sha candidate-sha "
+            f"--runtime-dir {runtime_dir}"
+        ),
+    }
+    assert managed_repo_calls == [
+        ("mr_0123456789abcdefabcd", "root/team")
+    ]
 
     compact_state = _team_state_payload_for_request(
         reviewer_auth,
@@ -1094,6 +1138,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
                 runtime_dir=runtime_dir,
                 addon_runtime_dir=runtime_dir / "addons" / "team-addon",
                 auth=outsider_auth,
+                service=addon_service,
             )
         )
     )
@@ -1109,6 +1154,10 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         "required": True,
         "preparation_mode": "manual",
     }
+    assert "candidate_checkout" not in outsider_release.json()
+    assert managed_repo_calls == [
+        ("mr_0123456789abcdefabcd", "root/team")
+    ]
 
 
 def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
@@ -6236,6 +6285,14 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
             "git": {"managed_repo_id": "mr_0123456789abcdefabcd"},
+            "release_policy": {
+                "allow_ungated": True,
+                "resource_limits": {
+                    "memory": "6g",
+                    "cpus": 4,
+                    "pids_limit": 1536,
+                },
+            },
             "expected_revision": 3,
         },
     )
@@ -6243,6 +6300,11 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert response.json()["projects"]["project"]["git"]["managed_repo_id"] == (
         "mr_0123456789abcdefabcd"
     )
+    assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
 
     response = client.patch(
         "/api/addons/team-addon/projects/project",
@@ -6258,6 +6320,11 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     git = response.json()["projects"]["project"]["git"]
     assert git["managed_repo_id"] == "mr_0123456789abcdefabcd"
     assert git["base_branch"] == "develop"
+    assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
 
     response = client.post(
         "/api/addons/team-addon/projects",

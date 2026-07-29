@@ -16,6 +16,7 @@ from evander.events.provider_models import (
     AgentDestroyEffectDefinition,
     AgentExecEffectDefinition,
 )
+from evander.worker.models import WorkerResourceLimits
 
 from ..models import ReleaseVerificationCommand
 from .domain.common import _optional_text, _required_text
@@ -41,6 +42,7 @@ class EffectReleaseVerificationExecutor:
         candidate_commit_sha: str,
         directory_path: str,
         container_image: str | None,
+        resource_limits: WorkerResourceLimits | None,
     ) -> None:
         provider = AgentCreateEffectProvider()
         provider.initialize(
@@ -60,6 +62,16 @@ class EffectReleaseVerificationExecutor:
                     "team_release_verification": True,
                     "release_package_id": release_package_id,
                     "candidate_commit_sha": candidate_commit_sha,
+                    **(
+                        {
+                            "container_worker_resource_limits": resource_limits.model_dump(
+                                mode="json",
+                                exclude_none=True,
+                            )
+                        }
+                        if resource_limits is not None
+                        else {}
+                    ),
                 },
             ),
             self._runtime_context,

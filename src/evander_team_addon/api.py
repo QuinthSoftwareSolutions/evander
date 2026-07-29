@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
+import shlex
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -3111,18 +3114,27 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         release = state.release_packages.get(request.path_params["release_package_id"])
         if release is None:
             return JSONResponse({"error": "release package not found"}, status_code=404)
-        return JSONResponse(
-            release_package_api_payload(
+        include_human_details = _can_read_release_human_review(
+            context.auth,
+            request,
+            state,
+            release.id,
+        )
+        payload = release_package_api_payload(
+            state,
+            release,
+            include_human_details=include_human_details,
+        )
+        if include_human_details:
+            candidate_checkout = _release_candidate_checkout_metadata(
+                getattr(context.service, "managed_git_admin", None),
                 state,
                 release,
-                include_human_details=_can_read_release_human_review(
-                    context.auth,
-                    request,
-                    state,
-                    release.id,
-                ),
+                runtime_dir=context.runtime_dir,
             )
-        )
+            if candidate_checkout is not None:
+                payload["candidate_checkout"] = candidate_checkout
+        return JSONResponse(payload)
 
     async def list_git_promotions(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -5226,6 +5238,75 @@ def _release_human_review_directory(
     project = state.projects.get(getattr(release, "project_id", "") or "")
     git = getattr(project, "git", None)
     return str(getattr(git, "directory_path", "") or "root").strip() or "root"
+
+
+def _release_candidate_checkout_metadata(
+    managed_git_admin: Any | None,
+    state: TeamState,
+    release: Any,
+    *,
+    runtime_dir: str | Path,
+) -> dict[str, str] | None:
+    project = state.projects.get(str(getattr(release, "project_id", "") or ""))
+    git = getattr(project, "git", None)
+    candidate_sha = str(getattr(release, "candidate_commit_sha", "") or "").strip().lower()
+    candidate_tree = str(getattr(release, "candidate_tree_hash", "") or "").strip().lower()
+    release_branch = str(getattr(release, "release_branch", "") or "").strip()
+    release_id = str(getattr(release, "id", "") or "").strip()
+    if (
+        git is None
+        or not candidate_sha
+        or not candidate_tree
+        or not release_branch
+        or not release_id
+        or managed_git_admin is None
+    ):
+        return None
+    get_repository = getattr(managed_git_admin, "get_repository", None)
+    if not callable(get_repository):
+        return None
+    try:
+        repository = get_repository(
+            git.managed_repo_id,
+            directory_path=git.directory_path,
+        )
+    except Exception:
+        return None
+    if not isinstance(repository, Mapping):
+        return None
+    canonical_identity = str(
+        repository.get("canonical_repository_identity") or ""
+    ).strip()
+    if not canonical_identity:
+        return None
+    release_ref = (
+        release_branch if release_branch.startswith("refs/") else f"refs/heads/{release_branch}"
+    )
+    safe_release_id = re.sub(r"[^A-Za-z0-9._-]+", "-", release_id).strip(".-")
+    suggested_target = f"./release-candidate-{safe_release_id or 'review'}"
+    checkout_command = shlex.join(
+        [
+            "evander-cli",
+            "team",
+            "checkout-release-candidate",
+            release_id,
+            "--target",
+            suggested_target,
+            "--expected-commit-sha",
+            candidate_sha,
+            "--runtime-dir",
+            str(Path(runtime_dir).expanduser().resolve(strict=False)),
+        ]
+    )
+    return {
+        "canonical_repository_identity": canonical_identity,
+        "repository_display_name": str(repository.get("display_name") or "").strip(),
+        "managed_repo_id": git.managed_repo_id,
+        "release_ref": release_ref,
+        "candidate_commit_sha": candidate_sha,
+        "candidate_tree_hash": candidate_tree,
+        "checkout_command": checkout_command,
+    }
 
 
 def _auth_can(

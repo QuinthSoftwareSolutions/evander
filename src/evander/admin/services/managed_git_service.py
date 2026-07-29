@@ -1023,6 +1023,136 @@ class ManagedGitAdminService:
             "commit_sha": resolved,
         }
 
+    def materialize_candidate_checkout(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str,
+        commit_sha: str,
+        tree_hash: str,
+        target_dir: str | Path,
+        purpose: str = "operator-release-review",
+    ) -> dict[str, Any]:
+        """Create a fresh detached checkout without exposing managed repository paths."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        normalized_ref = _normalize_ref(source_ref, field_name="source_ref")
+        expected_commit = _normalize_object_id(commit_sha, field_name="commit_sha")
+        expected_tree = _normalize_object_id(tree_hash, field_name="tree_hash")
+        target = Path(target_dir).expanduser().resolve(strict=False)
+        if target == Path(target.anchor) or target.is_relative_to(self.runtime_dir):
+            raise ValueError(
+                "target_dir must be a new operator-owned path outside the Evander runtime directory"
+            )
+        if target.exists() or target.is_symlink():
+            raise ManagedGitConflictError(
+                "target_dir already exists; candidate checkout never overwrites an existing path"
+            )
+        parent = target.parent
+        if not parent.exists() or not parent.is_dir():
+            raise ValueError("target_dir parent must already exist and be a directory")
+
+        try:
+            target.mkdir(mode=0o700)
+        except FileExistsError:
+            raise ManagedGitConflictError(
+                "target_dir already exists; candidate checkout never overwrites an existing path"
+            ) from None
+
+        try:
+            with self.temporary_worktree(
+                managed_repo_id,
+                source_ref=normalized_ref,
+                commit_sha=expected_commit,
+                purpose=purpose,
+            ) as source_worktree:
+                safe_env = self._safe_worktree_environment()
+                actual_tree = self._git_output(
+                    [
+                        "git",
+                        "-C",
+                        str(source_worktree),
+                        "rev-parse",
+                        f"{expected_commit}^{{tree}}",
+                    ]
+                ).strip().lower()
+                if actual_tree != expected_tree:
+                    raise ManagedGitConflictError(
+                        f"Candidate tree is {actual_tree}, not the pinned tree {expected_tree}"
+                    )
+                self._run_git(
+                    ["git", "init", "--quiet", str(target)],
+                    env=safe_env,
+                )
+                self._run_git(
+                    [
+                        "git",
+                        "-C",
+                        str(target),
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--no-write-fetch-head",
+                        "--no-recurse-submodules",
+                        str(source_worktree),
+                        "HEAD",
+                    ],
+                    env=safe_env,
+                )
+                self._run_git(
+                    [
+                        "git",
+                        "-C",
+                        str(target),
+                        "checkout",
+                        "--quiet",
+                        "--detach",
+                        expected_commit,
+                        "--",
+                    ],
+                    env=safe_env,
+                )
+                canonical_url = str(record.get("canonical_repository_url") or "").strip()
+                if canonical_url:
+                    self._run_git(
+                        [
+                            "git",
+                            "-C",
+                            str(target),
+                            "remote",
+                            "add",
+                            "origin",
+                            canonical_url,
+                        ],
+                        env=safe_env,
+                    )
+                checked_out_commit = self._git_output(
+                    ["git", "-C", str(target), "rev-parse", "HEAD"]
+                ).strip().lower()
+                checked_out_tree = self._git_output(
+                    ["git", "-C", str(target), "rev-parse", "HEAD^{tree}"]
+                ).strip().lower()
+                if checked_out_commit != expected_commit or checked_out_tree != expected_tree:
+                    raise ManagedGitConflictError(
+                        "Materialized checkout does not match the pinned candidate"
+                    )
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "canonical_repository_identity": record.get("canonical_repository_identity"),
+            "source_ref": normalized_ref,
+            "commit_sha": expected_commit,
+            "tree_hash": expected_tree,
+            "target_dir": str(target),
+            "detached": True,
+        }
+
     def pin_snapshot(
         self,
         managed_repo_id: str,

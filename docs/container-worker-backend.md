@@ -314,6 +314,13 @@ the internally resolved clone source and branch, `resource_limits`, `persistence
 sanitized caller context. Public agent workflows provide `managed_repo_id`; the adapter resolves
 the private clone source before building this lower-level worker request.
 
+When a job has a process/thread limit, the worker watches that job's own Linux cgroup
+`pids.events` counter while the container is alive. A positive kernel `max` event is persisted
+before container cleanup and returned as the structured failure cause
+`pids_limit_exhausted`; Docker's `OOMKilled` state is returned as
+`memory_limit_exhausted`. Unsupported cgroup layouts fail safely by omitting the cause, and
+callers must not infer resource exhaustion from command output text.
+
 ## Security Boundaries
 
 The worker is treated as an untrusted execution surface. The host sends only explicit job fields:

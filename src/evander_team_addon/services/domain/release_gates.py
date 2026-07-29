@@ -360,6 +360,14 @@ def record_release_verification_result(
                 error=message,
                 result=result,
             )
+            _queue_candidate_verification_failure_handoff(
+                state,
+                release=release,
+                run=run,
+                error=message,
+                result=result,
+                now=now,
+            )
         else:
             _block_release_gate(
                 state,
@@ -387,6 +395,58 @@ def record_release_verification_result(
         release=release,
         release_promotion=release_promotion,
         result=result,
+    )
+
+
+def _queue_candidate_verification_failure_handoff(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    run: ReleaseVerificationRun,
+    error: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Return failed candidate evidence to the project lead for delegated rework."""
+
+    project = state.projects.get(release.project_id)
+    if project is None:
+        return
+    failed_command_results = [
+        command_result.model_dump(mode="json", exclude_none=True)
+        for command_result in run.command_results
+        if command_result.state in {"failed", "timed_out"}
+    ]
+    queue_actionable_inbox_item(
+        state,
+        recipient_agent_id=project.lead_agent_id,
+        sender_agent_id=project.lead_agent_id,
+        priority=TeamInboxPriority.HIGH,
+        payload={
+            "kind": "release_verification_candidate_failure",
+            "project_id": project.id,
+            "release_package_id": release.id,
+            "verification_run_id": run.id,
+            "candidate_commit_sha": run.candidate_commit_sha,
+            "summary": "The pinned release candidate failed release verification.",
+            "error": error,
+            "failed_command_results": failed_command_results,
+            "next_action": (
+                "Use failed_command_results in this notice for immediate failure context, "
+                "then inspect the frozen release manifest and complete verification run "
+                "evidence on this release package. Identify the required correction and "
+                "delegate changed reviewed work through the project hierarchy. Pin the "
+                "failed candidate_commit_sha in the correction instructions. Set "
+                "originating_task_id for lineage and dependency_task_ids for every accepted "
+                "Git-backed predecessor whose content the correction must inherit; "
+                "originating_task_id alone does not seed the assignee's worktree. If accepted "
+                "dependencies cannot reproduce the required candidate content, escalate the "
+                "missing source contract instead of allowing base-branch-only implementation. "
+                "Do not retry or resubmit the unchanged candidate."
+            ),
+        },
+        result=result,
+        now=now,
     )
 
 
@@ -631,6 +691,15 @@ def retry_release_gate(
             "timeout",
         }:
             raise ValueError("only infrastructure-failed or timed-out verification may be retried")
+        if normalized_requested_by.startswith("agent:") and (
+            current.retry_requested_by or ""
+        ).startswith("agent:"):
+            raise ValueError(
+                "an agent-requested verification retry already failed against the "
+                "unchanged candidate; do not retry it again as an agent. Escalate the "
+                "current run and its concrete infrastructure recovery requirement to "
+                "an operator"
+            )
         verification_commands = release.manifest.verification_commands
         if not verification_commands:
             raise ValueError("release manifest has no verification commands")
@@ -1097,11 +1166,26 @@ def _block_release_gate(
     release.error = error
     release.updated_at = utc_now()
     result["error"] = error
+    blocker_details = error
+    if stage == "verification" and kind in {"infrastructure", "timeout"}:
+        current = _current_verification_run(state, release)
+        if current is not None and (current.retry_requested_by or "").startswith("agent:"):
+            blocker_details = (
+                f"{error} An agent-requested retry already failed against this unchanged "
+                "candidate. Do not schedule another agent retry; escalate the run evidence "
+                "and concrete infrastructure recovery requirement to an operator."
+            )
+        else:
+            blocker_details = (
+                f"{error} Retry the unchanged candidate only after concrete evidence that "
+                "the infrastructure failure recovered; cite what changed. If no such "
+                "evidence exists, escalate the blocker instead of retrying."
+            )
     open_release_blocker(
         state,
         release_package_id=release.id,
         summary=f"Release {release.id} gate is blocked",
-        details=error,
+        details=blocker_details,
         result=result,
         now=release.updated_at,
     )

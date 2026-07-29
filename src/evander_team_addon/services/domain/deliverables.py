@@ -31,7 +31,10 @@ from .common import (
     _string_list,
 )
 from .git_work_contexts import finalize_active_git_work_contexts_for_task
-from .task_supervision import queue_parent_resolution_transitions
+from .task_supervision import (
+    queue_parent_resolution_transitions,
+    queue_root_task_resolution,
+)
 
 
 _DELIVERABLE_VERIFICATION_STATUSES = frozenset(
@@ -327,6 +330,8 @@ def _accept_deliverable_and_maybe_task(
     deliverable: Deliverable,
     task: AgentTask,
     now: datetime,
+    result: dict[str, Any] | None = None,
+    accepted_by_agent_id: str | None = None,
 ) -> bool:
     """Accept one deliverable and close its task when every active product is accepted."""
 
@@ -373,13 +378,23 @@ def _accept_deliverable_and_maybe_task(
         now=now,
     )
     task.updated_at = now
-    queue_parent_resolution_transitions(
+    parent_notices = queue_parent_resolution_transitions(
         state,
         child_task_id=task.id,
         sender_agent_id=deliverable.producer_agent_id,
+        result=result,
         now=now,
         references={"deliverable_id": deliverable.id},
     )
+    if not parent_notices and task.parent_task_id is None:
+        queue_root_task_resolution(
+            state,
+            task_id=task.id,
+            deliverable_id=deliverable.id,
+            sender_agent_id=accepted_by_agent_id or deliverable.producer_agent_id,
+            result=result,
+            now=now,
+        )
     return True
 
 

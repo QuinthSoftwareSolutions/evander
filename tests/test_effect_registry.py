@@ -7228,6 +7228,67 @@ def test_agent_exec_provider_returns_container_failure_when_check_disabled(
     assert backend.destroyed == [output["execution_id"]]
 
 
+def test_agent_exec_provider_returns_structured_worker_failure_cause(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.FAILED,
+        message="container reached its configured process/thread limit",
+        metadata={
+            "exit_code": 1,
+            "worker_terminal_kind": "infrastructure",
+            "worker_failure_cause": "pids_limit_exhausted",
+        },
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_exec.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentExecEffectDefinition(
+            id="agent-exec",
+            display_name="Exec",
+            type="effect:agent:exec",
+            session_id="session-container",
+            command="dotnet test",
+            check=False,
+        )
+    ).execute()
+
+    assert output["success"] is False
+    assert output["failure_kind"] == "infrastructure"
+    assert output["failure_cause"] == "pids_limit_exhausted"
+
+
 def test_agent_exec_provider_raises_for_checked_container_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

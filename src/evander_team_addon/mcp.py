@@ -354,6 +354,10 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
         "Accept or reject a direct deliverable handoff as its recorded superior; "
         "formal review decisions remain separate."
     ),
+    TEAM_ESCALATE_OPERATOR_TOOL: (
+        "Queue a top-level team-manager escalation to the operator or governance. "
+        "The command result is an asynchronous receipt, not delivery confirmation."
+    ),
     TEAM_REPLY_TO_CHAT_TOOL: (
         "Reply to the specific human operator message that started the current Team Chat "
         "dispatch. Available only while that dispatch is active; use "
@@ -1119,8 +1123,11 @@ def _register_slice5_tools(
         team_escalate_operator,
         name=TEAM_ESCALATE_OPERATOR_TOOL,
         description=(
-            "Escalate a top-level team-manager issue to the operator or governance. "
-            "Requires title, message, and request_id."
+            "Queue a top-level team-manager issue for the operator or governance. "
+            "Requires title, message, and request_id. The result is a receipt, not "
+            "delivery confirmation: while async_effect_pending is true and "
+            "downstream_effect_completed is false, report the escalation as queued "
+            "or pending, never delivered."
         ),
     )
 
@@ -1438,7 +1445,10 @@ def _register_slice6_tools(
             "integration_boundary=true with deliverable_contract to declare an "
             "explicit final-integration boundary. The contract may require Git "
             "provenance and explicitly name direct-child or dependency task "
-            "contributions."
+            "contributions. originating_task_id records lineage only and does not "
+            "seed Git content; when a correction must edit accepted predecessor "
+            "content, also put that predecessor in dependency_task_ids so its exact "
+            "accepted commit is verified and composed before work starts."
         ),
     )
 
@@ -2576,7 +2586,10 @@ def _register_slice8_tools(
         description=(
             "Retry the current gate for a blocked release against its unchanged pinned "
             "candidate. Only infrastructure-failed or timed-out verification and "
-            "process-blocked reviews are eligible. Requires an audited reason."
+            "process-blocked reviews are eligible. A verification retry requires concrete "
+            "evidence that the failure recovered and a reason stating what changed; "
+            "otherwise escalate it. An agent cannot retry a failed agent-requested "
+            "verification run again."
         ),
     )
 

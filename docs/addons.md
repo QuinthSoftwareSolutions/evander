@@ -479,6 +479,27 @@ deliverables, release packages, and Git promotion state are grouped inside
 **Delivery**. Team setup, persistent agents, roles, and stand-down controls are
 grouped inside **Teams** rather than separate People or Roles tabs.
 
+The Delivery view defaults to records that still need attention. Projects stay
+collapsed until selected or opened, and the project selector plus status
+filters can narrow the workspace without discarding access to accepted and
+historical records through **All records**. Opening a deliverable shows an
+evidence-backed pipeline for the stages that can be established from current
+state: implementation evidence, deliverable acceptance or agent review,
+release inclusion, automated verification, release-agent review, human review,
+and publication. It calls out the current stage and active blocker. For a
+release-backed deliverable, **Load exact gate evidence** reads the existing
+permission-filtered release-detail endpoint so individual verifier attempts
+and review decisions are shown only when those details are actually available.
+For an authorized human-review detail, **Test this candidate** also shows the
+canonical repository identity, managed repository ID, immutable internal
+release ref, exact candidate commit/tree, and a copyable supported host
+command. The command resolves the private repository location inside Evander,
+verifies that the ref still names the pinned commit and tree, and creates a new
+detached checkout at the caller-selected target. It never teaches internal bare
+repository paths or overwrites an existing target. The generated command
+includes the absolute runtime root, so it remains valid from another checkout,
+and loads only the narrow managed-Git service rather than unrelated providers.
+
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
 malformed hierarchy references without changing persisted state. Agent nodes
@@ -1502,6 +1523,36 @@ created only after verification, all release reviews, and scope validation pass.
 The candidate also receives a frozen typed manifest containing its deliverable
 verification, waiver audit records, accepted immutable reviews, reviewed change
 manifests, scope result, verification commands, and review requirements.
+
+The optional `release_policy.resource_limits` object configures the disposable
+verification worker with Docker-compatible `memory`, positive `cpus`, and
+positive integer `pids_limit` values. For example:
+
+```json
+{
+  "verification_backend": "container_worker_vm",
+  "resource_limits": {
+    "memory": "6g",
+    "cpus": 4,
+    "pids_limit": 1536
+  },
+  "verification_commands": [
+    {
+      "name": "solution tests",
+      "cwd": "Src",
+      "argv": ["dotnet", "test", "./App.slnx"],
+      "timeout_seconds": 3600
+    }
+  ]
+}
+```
+
+Admin Web's project release-policy JSON editor persists these values with the
+project. Omitted values inherit the verifier defaults: 8 CPUs and 2,048
+processes/threads, while memory remains governed by the worker/host default.
+Resource limits are infrastructure configuration rather than candidate
+evidence, so the live project policy is applied when each disposable verifier
+session is created, including an authorized retry of the same pinned candidate.
 
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.

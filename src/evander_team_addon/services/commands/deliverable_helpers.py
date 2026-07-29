@@ -843,7 +843,7 @@ def _apply_command_deliverable_submission(
             task_id=task.id,
             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
             response_requested=True,
-            priority=TeamInboxPriority.LOW,
+            priority=TeamInboxPriority.NORMAL,
             payload=payload,
             created_at=now,
             updated_at=now,

@@ -1955,6 +1955,11 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
     assert first["intent_recorded"] is True
     assert first["async_effect_pending"] is True
     assert first["downstream_effect_completed"] is False
+    assert first["delivery_status"] == "pending"
+    assert "queued, not delivered" in first["delivery_status_message"]
+    assert "intent_recorded alone is not delivery confirmation" in (
+        first["delivery_status_message"]
+    )
     assert len(first["operator_event_ids"]) == 1
     assert len(first["outbox_record_ids"]) == 1
     outbox_records = repo.list_outbox_records()
@@ -2025,6 +2030,8 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
     )
 
     assert result["success"] is True
+    assert result["delivery_status"] == "pending"
+    assert "queued, not delivered" in result["delivery_status_message"]
     assert len(result["governance_agenda_item_ids"]) == 1
     assert result.get("operator_event_ids", []) == []
     agenda = state.governance_agenda[result["governance_agenda_item_ids"][0]]
@@ -2192,6 +2199,18 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         "summary": "pytest is unavailable in this VM.",
         "evidence_refs": [],
     }
+    assert notices[0].priority == TeamInboxPriority.NORMAL
+    wake_events = [
+        event
+        for event in first["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "lead"
+    outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert [record.id for record in outbox_records] == first["outbox_record_ids"]
 
 
 def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
@@ -12215,6 +12234,7 @@ def test_accepted_review_wakes_owners_of_newly_ready_dependent_tasks(
         event
         for event in decided["events"]
         if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and event["payload"]["reason"] == "task_ready"
     ]
     assert len(wake_events) == 1
     assert wake_events[0]["payload"]["agent_id"] == "backend"
@@ -16903,6 +16923,44 @@ def test_partial_verification_release_requires_audited_lead_waiver(
     assert any("authorized verification waiver" in error for error in missing["errors"])
     assert state.release_packages == {}
 
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-release-missing-waiver",
+    )
+    _state, command_missing = _command_service(repo).request_release_command(
+        session_id="session-lead",
+        id="release-command-missing-waiver",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        request_id="request-release-command-missing-waiver",
+    )
+    waiver_requirement = command_missing["errors"][0]["correction_context"][
+        "verification_waiver_requirements"
+    ][0]
+    assert waiver_requirement == {
+        "deliverable_id": "deliverable",
+        "verification_status": "partial",
+        "caller_authorized": True,
+        "authorized_actor_roles": [
+            "project_lead",
+            "top_level_team_manager",
+            "operator",
+        ],
+        "required_input": {
+            "verification_waivers": [
+                {
+                    "deliverable_id": "deliverable",
+                    "reason": "<concrete evidence-based reason>",
+                }
+            ]
+        },
+        "effect": (
+            "Admits incomplete deliverable evidence at package intake; configured "
+            "release verification and review gates still apply."
+        ),
+    }
+
     state, accepted = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
@@ -17443,7 +17501,7 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
     assert evidence.review_manifest.reviewed_commit_sha == "reviewed-commit"
     assert evidence.accepted_reviews[0].reviewed_commit_sha == "reviewed-commit"
 
-    state, _ = _team_release_gate_service(repo).record_verification_result(
+    state, verification_failure = _team_release_gate_service(repo).record_verification_result(
         release_package_id=release.id,
         verification_run_id=run_id,
         candidate_commit_sha="candidate-broken",
@@ -17463,6 +17521,24 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
     assert failed.state == TeamRecordState.REJECTED
     assert failed.gate_failure is not None
     assert failed.gate_failure.kind == "candidate"
+    assert len(verification_failure["created_inbox_item_ids"]) == 1
+    failure_notice = state.inbox[verification_failure["created_inbox_item_ids"][0]]
+    assert failure_notice.recipient_agent_id == "lead"
+    assert failure_notice.payload["kind"] == "release_verification_candidate_failure"
+    wake_event = next(
+        event
+        for event in verification_failure["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert wake_event["payload"]["agent_id"] == "lead"
+    wake_outbox = next(
+        record
+        for record in repo.list_outbox_records(
+            intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+        )
+        if record.idempotency_key == wake_event["idempotency_key"]
+    )
+    assert wake_outbox.payload["payload"]["agent_id"] == "lead"
 
     state, replacement = _team_agent_action_service(repo).apply_agent_action(
         action={
@@ -17581,14 +17657,55 @@ def test_transient_verification_retry_creates_linked_attempt_for_same_candidate(
     assert persisted_second_run.retry_reason == second_run.retry_reason
     assert persisted_second_run.retry_requested_by == second_run.retry_requested_by
 
-    with pytest.raises(ValueError, match="not blocked"):
-        _team_admin_service(repo).retry_release_gate_with_result(
-            release_package_id="release-transient",
-            gate_kind="verification",
-            gate_id=first_run_id,
-            reason="Try the old attempt again.",
-            operator_actor_id="operator:release-admin",
-        )
+    state, second_failure = _team_release_gate_service(repo).record_verification_result(
+        release_package_id="release-transient",
+        verification_run_id=second_run_id,
+        candidate_commit_sha="candidate-sha",
+        verification_state="failed",
+        failure_kind="infrastructure",
+        command_results=[
+            {
+                "name": "solution-tests",
+                "state": "failed",
+                "log_excerpt": "replacement worker also disconnected",
+            }
+        ],
+        error="replacement verification worker disconnected",
+    )
+    blocker = state.blockers[second_failure["created_blocker_ids"][0]]
+    assert "Do not schedule another agent retry" in blocker.details
+    assert "concrete infrastructure recovery requirement" in blocker.details
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-release-second-retry",
+    )
+    _state, denied_retry = _command_service(repo).retry_release_gate_command(
+        session_id="session-lead",
+        release_package_id="release-transient",
+        gate_kind="verification",
+        gate_id=second_run_id,
+        reason="Retry the unchanged candidate again.",
+        request_id="request-release-second-agent-retry",
+    )
+    assert denied_retry["success"] is False
+    assert denied_retry["errors"][0]["code"] == "release_gate_retry_invalid"
+    assert (
+        "agent-requested verification retry already failed"
+        in denied_retry["errors"][0]["message"]
+    )
+
+    state, operator_retry = _team_admin_service(repo).retry_release_gate_with_result(
+        release_package_id="release-transient",
+        gate_kind="verification",
+        gate_id=second_run_id,
+        reason="Operator applied and verified a new worker resource policy.",
+        operator_actor_id="operator:release-admin",
+    )
+    third_run = state.release_verification_runs[operator_retry["replacement_gate_id"]]
+    assert third_run.attempt_number == 3
+    assert third_run.retry_requested_by == "operator:release-admin"
 
 
 def test_blocked_release_review_retry_creates_linked_review_for_same_candidate(
@@ -18371,6 +18488,9 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     assert deliverable.git_refs.feature_branch == "team/team/features/task-lead"
     assert deliverable.git_refs.commit_sha == "reviewed-commit"
     assert deliverable.git_refs.feature_commit_sha == "feedface"
+    assert deliverable.review_manifest is not None
+    assert deliverable.review_manifest.reviewed_commit_sha == "reviewed-commit"
+    assert deliverable.review_manifest.tree_hash == "reviewed-tree"
     release = state.release_packages["rel-1"]
     assert release.feature_branches == ["team/team/features/task-lead"]
     release_promotions = [

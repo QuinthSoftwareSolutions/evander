@@ -47,6 +47,7 @@ from evander.repositories.session_manifests import (
 )
 from evander.session_expiry import ensure_session_not_expired
 from evander.session_auth import MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
+from evander.worker.models import WorkerResourceLimits
 
 from .base import EffectRuntimeContext
 from .vm_targeting import (
@@ -65,6 +66,8 @@ NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
 DEFAULT_CODEX_AGENT_MODEL = "gpt-5.4"
 DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-6"
 PLAYWRIGHT_CONTAINER_JOB_PIDS_LIMIT = 1024
+TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_CPUS = 8.0
+TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_PIDS_LIMIT = 2048
 PLAYWRIGHT_CONTAINER_PROMPT_MARKER = "[Evander seeded Playwright]"
 PLAYWRIGHT_CONTAINER_PROMPT_GUIDANCE = """[Evander seeded Playwright]
 Browser downloads are disabled. Repository-local Playwright does not automatically use PLAYWRIGHT_MCP_EXECUTABLE_PATH and may request an unseeded browser revision. Keep the repository's own Playwright import, then either pass executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH to chromium.launch(...) or use:
@@ -280,7 +283,29 @@ def container_worker_image_for_session(
 
 def container_worker_resource_limits_for_session(
     session: SessionManifest | Any | None,
-) -> dict[str, int] | None:
+) -> dict[str, str | int | float] | None:
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    explicit_limits: dict[str, str | int | float] = {}
+    if isinstance(metadata, Mapping):
+        raw_limits = metadata.get("container_worker_resource_limits")
+        if raw_limits is not None:
+            if not isinstance(raw_limits, Mapping):
+                raise ValueError("container_worker_resource_limits must be an object")
+            explicit_limits = WorkerResourceLimits.model_validate(
+                dict(raw_limits)
+            ).model_dump(mode="json", exclude_none=True)
+    if (
+        isinstance(metadata, Mapping)
+        and metadata.get("team_release_verification") is True
+    ):
+        limits: dict[str, str | int | float] = {
+            "cpus": TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_CPUS,
+            "pids_limit": TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_PIDS_LIMIT,
+        }
+        limits.update(explicit_limits)
+        return limits
+    if explicit_limits:
+        return explicit_limits
     if not container_worker_playwright_enabled(session):
         return None
     return {"pids_limit": PLAYWRIGHT_CONTAINER_JOB_PIDS_LIMIT}

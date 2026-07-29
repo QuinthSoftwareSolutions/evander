@@ -9000,8 +9000,48 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
 });
 
 test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
+  const initialState = seededGitState();
+  const acceptedRelease = initialState.release_packages["release-accepted"];
+  acceptedRelease.detail = {
+    ...acceptedRelease,
+    policy_version: 2,
+    candidate_commit_sha: "ccc333",
+    manifest: {
+      candidate_commit_sha: "ccc333",
+      deliverables: [{ deliverable_id: "deliverable-accepted" }],
+      verification_commands: [{ name: "targeted-dotnet" }],
+      review_requirements: [{ reviewer_role_id: "alpha-project__project-lead" }],
+      human_review_requirement: { reviewer_group_ids: ["release-approvers"] },
+    },
+    verification_runs: [
+      {
+        id: "verification-accepted-1",
+        state: "failed",
+        attempt_number: 1,
+        failure_kind: "timeout",
+        superseded_by_verification_run_id: "verification-accepted-2",
+      },
+      {
+        id: "verification-accepted-2",
+        state: "passed",
+        attempt_number: 2,
+        supersedes_verification_run_id: "verification-accepted-1",
+      },
+    ],
+    release_reviews: [
+      {
+        id: "release-review-accepted",
+        reviewer_agent_id: "alpha-manager",
+        state: "accepted",
+      },
+    ],
+    human_review: {
+      state: "approved",
+      requests: [{ id: "human-review-accepted", state: "approved" }],
+    },
+  };
   const { port, requests, state, timelineRequests } = await createTeamAddonServer(t, {
-    initialState: seededGitState(),
+    initialState,
   });
   const page = await openBrowserPage(t, port);
 
@@ -9046,13 +9086,48 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await workspace.getByRole("heading", { name: "Beta Team", exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Alpha Project", exact: true }).waitFor({
+  const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
+  const projectFocus = deliveryPage.locator("[data-delivery-project-filter]");
+  assert.equal(await deliveryFilter("attention").getAttribute("aria-pressed"), "true");
+  assert.equal(await deliveryFilter("all").getAttribute("aria-pressed"), "false");
+  assert.equal(await projectFocus.inputValue(), "");
+  assert.equal(
+    await projectFocus.locator('option[value=""]').textContent(),
+    "All projects (collapsed)",
+  );
+  await workspace.getByText("4 matching deliverables", { exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Beta Project", exact: true }).waitFor({
+  const collapsedProjects = workspace.locator("details.delivery-project");
+  assert.equal(await collapsedProjects.count(), 2);
+  assert.deepEqual(
+    await collapsedProjects.evaluateAll((projects) =>
+      projects.map((project) => project.open),
+    ),
+    [false, false],
+  );
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 4);
+  assert.equal(
+    await deliveryPage.locator(
+      '.delivery-row[data-deliverable-id="deliverable-accepted"]',
+    ).count(),
+    0,
+  );
+
+  await projectFocus.selectOption("alpha-project");
+  await workspace.getByText("2 matching deliverables", { exact: true }).waitFor({
     state: "visible",
   });
-  assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
+  assert.equal(await workspace.locator("details.delivery-project").count(), 1);
+  assert.equal(
+    await workspace.locator("details.delivery-project").evaluate((project) => project.open),
+    true,
+  );
+  await workspace.getByText("Alpha Project", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await workspace.getByText("Beta Project", { exact: true }).count(), 0);
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 2);
 
   const pendingRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]');
   await openDeliveryRow(pendingRow);
@@ -9087,6 +9162,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
     state: "visible",
   });
 
+  await deliveryFilter("accepted").click();
   const acceptedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
   await openDeliveryRow(acceptedRow);
   const relatedRelease = acceptedRow.locator('[data-release-id="release-accepted"]');
@@ -9120,11 +9196,56 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
   await acceptedRow.getByText("Findings: Looks good.").waitFor({ state: "visible" });
 
+  const deliveryPipeline = acceptedRow.locator(
+    'section[aria-label="Deliverable delivery pipeline"]',
+  );
+  await deliveryPipeline.getByText("Delivery pipeline", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await deliveryPipeline.getByRole("heading", { name: "Current: Publication" }).waitFor({
+    state: "visible",
+  });
+  await deliveryPipeline
+    .getByRole("button", { name: "Load exact gate evidence" })
+    .click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "GET" &&
+          request.pathname ===
+            "/api/addons/team-addon/release-packages/release-accepted",
+      ),
+    "expected release gate evidence request",
+  );
+  await openDeliveryRow(acceptedRow);
+  await deliveryPipeline
+    .getByText("Showing exact release gate evidence available to this operator.", {
+      exact: true,
+    })
+    .waitFor({ state: "visible" });
+  const gateEvidence = deliveryPipeline.locator(
+    "details.delivery-pipeline-evidence",
+  );
+  await gateEvidence.getByText("Gate attempts and decisions", { exact: true }).click();
+  await gateEvidence
+    .getByText("Automated verification attempt 1", { exact: true })
+    .waitFor({ state: "visible" });
+  await gateEvidence
+    .getByText("Automated verification attempt 2", { exact: true })
+    .waitFor({ state: "visible" });
+  await gateEvidence.getByText("Failure type: Timeout", { exact: true }).waitFor({
+    state: "visible",
+  });
+
+  await projectFocus.selectOption("beta-project");
+  await deliveryFilter("rejected").click();
   const rejectedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]');
   await openDeliveryRow(rejectedRow);
   await rejectedRow.locator(".state-pill.rejected").first().waitFor({ state: "visible" });
   await rejectedRow.getByText("Findings: Needs more work.").waitFor({ state: "visible" });
 
+  await deliveryFilter("blocked").click();
   const blockedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]');
   await openDeliveryRow(blockedRow);
   await blockedRow.locator(".state-pill.blocked").first().waitFor({ state: "visible" });
@@ -9142,9 +9263,9 @@ test("team add-on UI renders git refs and releases and submits a review decision
     0,
   );
 
-  const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
-
   await deliveryFilter("pending").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 0);
+  await projectFocus.selectOption("alpha-project");
   assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
   await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]').waitFor({
     state: "visible",
@@ -9178,6 +9299,8 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
 
   await deliveryFilter("rejected").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 0);
+  await projectFocus.selectOption("beta-project");
   assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
   await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]').waitFor({
     state: "visible",
@@ -9190,7 +9313,8 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
 
   await deliveryFilter("all").click();
-  assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
+  await projectFocus.selectOption("alpha-project");
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 3);
   await openDeliveryRow(waitingRow);
 
   const workspaceDecisionForm = deliveryPage.locator(
@@ -10324,6 +10448,16 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     canonical_branch: "releases/alpha/human",
     published_commit_sha: null,
     published_at: null,
+    candidate_checkout: {
+      canonical_repository_identity: "azure-devops:example/app/ExampleIndustryAPP",
+      repository_display_name: "ExampleIndustryAPP",
+      managed_repo_id: "mr_0123456789abcdef0123",
+      release_ref: "refs/heads/team/alpha/releases/human",
+      candidate_commit_sha: "candidate111",
+      candidate_tree_hash: "tree222",
+      checkout_command:
+        "evander-cli team checkout-release-candidate release-human --target ./release-candidate-release-human --expected-commit-sha candidate111 --runtime-dir /srv/evander/runtime",
+    },
     manifest: {
       candidate_commit_sha: "candidate111",
       candidate_tree_hash: "tree222",
@@ -10482,6 +10616,21 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByText("Pinned candidate prepared", { exact: true }).waitFor({
     state: "visible",
   });
+  const candidateCheckout = detail.locator(".release-candidate-checkout");
+  await candidateCheckout.getByRole("heading", { name: "Test this candidate" }).waitFor({
+    state: "visible",
+  });
+  await candidateCheckout.getByText("ExampleIndustryAPP", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await candidateCheckout
+    .getByText("refs/heads/team/alpha/releases/human", { exact: true })
+    .waitFor({ state: "visible" });
+  await candidateCheckout
+    .getByRole("button", {
+      name: /Copy command: evander-cli team checkout-release-candidate release-human/,
+    })
+    .waitFor({ state: "visible" });
   await detail.getByText("Alpha Project", { exact: true }).waitFor({
     state: "visible",
   });
