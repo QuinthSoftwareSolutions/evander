@@ -68,6 +68,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
         *,
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
+        review_dispatch_steering: Callable[..., Mapping[str, Any]] | None = None,
     ) -> None:
         super().__init__(
             repository,
@@ -76,6 +77,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
         self._human_review_eligibility_resolver = (
             human_review_eligibility_resolver
         )
+        self._review_dispatch_steering = review_dispatch_steering
 
     def request_review_command(
         self,
@@ -706,7 +708,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 progress_classification=f"review_{action}",
             )
 
-        return self._execute_team_command(
+        command_state, response = self._execute_team_command(
             context=context,
             normalized_payload=normalized_payload,
             handled_inbox_item_ids=normalized_handled_ids,
@@ -714,6 +716,29 @@ class TeamReviewCommandService(TeamCommandExecutor):
             require_active_dispatch=True,
             reject_stale_high_priority_inbox=True,
         )
+        steering_callback = getattr(self, "_review_dispatch_steering", None)
+        if response.get("success") and steering_callback is not None:
+            try:
+                steering = dict(
+                    steering_callback(
+                        state=command_state,
+                        review_request_id=normalized_payload["review_request_id"],
+                        action=(
+                            "withdrawn"
+                            if action == "withdraw"
+                            else "retired"
+                        ),
+                        reason=normalized_payload["reason"],
+                        created_by=f"agent-session:{normalized_session_id}",
+                    )
+                )
+            except Exception as exc:  # post-commit steering must not undo closure
+                steering = {
+                    "status": "failed",
+                    "error": str(exc).strip() or type(exc).__name__,
+                }
+            response["review_dispatch_steering"] = steering
+        return command_state, response
 
 
 __all__ = ["TeamReviewCommandService"]

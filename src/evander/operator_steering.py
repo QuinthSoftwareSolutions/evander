@@ -22,6 +22,7 @@ OperatorSteeringNoteStatus = Literal[
     "cancelled",
     "failed",
 ]
+OperatorSteeringRequestClaimStatus = Literal["claimed", "completed", "failed"]
 
 
 def _storage_datetime(value: datetime | None) -> str | None:
@@ -145,6 +146,44 @@ class OperatorSteeringNote(BaseModel):
         return self
 
 
+class OperatorSteeringRequestClaim(BaseModel):
+    request_key: str
+    owner_token: str
+    session_id: str
+    dispatch_id: str
+    status: OperatorSteeringRequestClaimStatus = "claimed"
+    outcome_note_id: str | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "request_key",
+        "owner_token",
+        "session_id",
+        "dispatch_id",
+        "status",
+        mode="before",
+    )
+    @classmethod
+    def normalize_required_strings(cls, value: object, info) -> str:
+        text = _required_text(value, field_name=info.field_name)
+        return text.lower() if info.field_name == "status" else text
+
+    @field_validator("outcome_note_id", "error", mode="before")
+    @classmethod
+    def normalize_optional_strings(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def normalize_required_datetimes(cls, value: object) -> datetime:
+        parsed = _parse_datetime(value)
+        if parsed is None:
+            raise ValueError("datetime is required")
+        return parsed
+
+
 class OperatorSteeringNoteStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -180,8 +219,126 @@ class OperatorSteeringNoteStore:
                     ON operator_steering_notes(status, updated_at, note_id);
                 CREATE INDEX IF NOT EXISTS idx_operator_steering_worker_execution
                     ON operator_steering_notes(worker_execution_id, created_at, note_id);
+
+                CREATE TABLE IF NOT EXISTS operator_steering_request_claims (
+                    request_key TEXT PRIMARY KEY,
+                    owner_token TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    dispatch_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_note_id TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_operator_steering_request_claim_dispatch
+                    ON operator_steering_request_claims(
+                        session_id,
+                        dispatch_id,
+                        created_at,
+                        request_key
+                    );
                 """
             )
+
+    def claim_request_once(
+        self,
+        *,
+        request_key: str,
+        session_id: str,
+        dispatch_id: str,
+        now: datetime | None = None,
+    ) -> tuple[OperatorSteeringRequestClaim, bool]:
+        """Atomically elect one owner for a potentially destructive steering request."""
+
+        timestamp = now or utc_now()
+        claim = OperatorSteeringRequestClaim(
+            request_key=request_key,
+            owner_token=f"steer-request-{uuid4().hex}",
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            inserted = connection.execute(
+                """
+                INSERT OR IGNORE INTO operator_steering_request_claims(
+                    request_key,
+                    owner_token,
+                    session_id,
+                    dispatch_id,
+                    status,
+                    outcome_note_id,
+                    error,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                self._request_claim_row_values(claim),
+            ).rowcount
+            row = connection.execute(
+                """
+                SELECT *
+                FROM operator_steering_request_claims
+                WHERE request_key = ?
+                """,
+                (claim.request_key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("operator steering request claim was not persisted")
+        return self._request_claim_from_row(row), bool(inserted)
+
+    def finish_request_claim(
+        self,
+        *,
+        request_key: str,
+        owner_token: str,
+        succeeded: bool,
+        outcome_note_id: str | None = None,
+        error: str | None = None,
+        now: datetime | None = None,
+    ) -> OperatorSteeringRequestClaim | None:
+        """Record the single owner's outcome without reopening an ambiguous attempt."""
+
+        normalized_request_key = _required_text(request_key, field_name="request_key")
+        normalized_owner_token = _required_text(owner_token, field_name="owner_token")
+        timestamp_text = _storage_datetime(now or utc_now())
+        status: OperatorSteeringRequestClaimStatus = "completed" if succeeded else "failed"
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE operator_steering_request_claims
+                SET status = ?,
+                    outcome_note_id = ?,
+                    error = ?,
+                    updated_at = ?
+                WHERE request_key = ?
+                  AND owner_token = ?
+                  AND status = 'claimed'
+                """,
+                (
+                    status,
+                    _optional_text(outcome_note_id),
+                    None if succeeded else _optional_text(error),
+                    timestamp_text,
+                    normalized_request_key,
+                    normalized_owner_token,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT *
+                FROM operator_steering_request_claims
+                WHERE request_key = ?
+                """,
+                (normalized_request_key,),
+            ).fetchone()
+        return self._request_claim_from_row(row) if row is not None else None
 
     def create_note(
         self,
@@ -517,6 +674,36 @@ class OperatorSteeringNoteStore:
             provider_endpoint=row["provider_endpoint"],
             error=row["error"],
             delivery_attempts=row["delivery_attempts"],
+        )
+
+    @staticmethod
+    def _request_claim_row_values(
+        claim: OperatorSteeringRequestClaim,
+    ) -> tuple[object, ...]:
+        return (
+            claim.request_key,
+            claim.owner_token,
+            claim.session_id,
+            claim.dispatch_id,
+            claim.status,
+            claim.outcome_note_id,
+            claim.error,
+            _storage_datetime(claim.created_at),
+            _storage_datetime(claim.updated_at),
+        )
+
+    @staticmethod
+    def _request_claim_from_row(row: sqlite3.Row) -> OperatorSteeringRequestClaim:
+        return OperatorSteeringRequestClaim(
+            request_key=row["request_key"],
+            owner_token=row["owner_token"],
+            session_id=row["session_id"],
+            dispatch_id=row["dispatch_id"],
+            status=row["status"],
+            outcome_note_id=row["outcome_note_id"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def _connect(self) -> sqlite3.Connection:

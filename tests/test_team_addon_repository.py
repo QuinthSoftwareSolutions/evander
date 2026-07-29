@@ -12615,6 +12615,99 @@ def test_pending_review_withdrawal_preserves_history_and_routes_direct_acceptanc
     assert state.tasks["task"].state == TeamTaskState.FINISHED
 
 
+def test_pending_review_withdrawal_steers_an_already_leased_reviewer_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _seed_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        producer_agent_id="backend",
+    )
+    _lease_review_handoff_dispatch(
+        repo,
+        deliverable_id="deliverable",
+        dispatch_id="dispatch-request-review-for-steering",
+    )
+    _state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Run the expensive browser suite.",
+        request_id="request-review-for-steering",
+    )
+    review_id = requested["review_request_id"]
+    _lease_agent_dispatch(
+        repo,
+        agent_id="worker",
+        dispatch_id="dispatch-active-reviewer",
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-withdraw-active-review",
+    )
+    steering_calls: list[dict[str, object]] = []
+
+    state, withdrawn = TeamReviewCommandService(
+        repo,
+        review_dispatch_steering=lambda **kwargs: (
+            steering_calls.append(dict(kwargs))
+            or {
+                "status": "requested",
+                "dispatch_id": "dispatch-active-reviewer",
+            }
+        ),
+    ).withdraw_review_command(
+        session_id="session-backend",
+        review_request_id=review_id,
+        reason="The review was attached to the wrong candidate.",
+        request_id="request-withdraw-active-review",
+    )
+
+    assert withdrawn["success"] is True
+    assert withdrawn["review_dispatch_steering"] == {
+        "status": "requested",
+        "dispatch_id": "dispatch-active-reviewer",
+    }
+    assert len(steering_calls) == 1
+    assert steering_calls[0]["state"] is state
+    assert steering_calls[0]["review_request_id"] == review_id
+    assert steering_calls[0]["action"] == "withdrawn"
+    assert state.review_requests[review_id].retired_at is not None
+    active_reviewer_dispatch = state.dispatches["dispatch-active-reviewer"]
+    assert active_reviewer_dispatch.status == TeamDispatchStatus.LEASED
+    assert review_id in active_reviewer_dispatch.review_request_ids
+    assert not any(
+        blocker.source_id == review_id
+        and blocker.state == TeamBlockerState.OPEN
+        for blocker in state.blockers.values()
+    )
+
+    def _fail_steering(**_kwargs):
+        raise RuntimeError("worker steering is temporarily unavailable")
+
+    replay_state, replayed = TeamReviewCommandService(
+        repo,
+        review_dispatch_steering=_fail_steering,
+    ).withdraw_review_command(
+        session_id="session-backend",
+        review_request_id=review_id,
+        reason="The review was attached to the wrong candidate.",
+        request_id="request-withdraw-active-review",
+    )
+
+    assert replayed["success"] is True
+    assert replayed["review_dispatch_steering"] == {
+        "status": "failed",
+        "error": "worker steering is temporarily unavailable",
+    }
+    assert replay_state.revision == state.revision
+    assert replay_state.review_requests[review_id].retired_at is not None
+
+
 def test_project_lead_can_retire_blocked_review_without_clearing_findings(
     tmp_path: Path,
 ) -> None:

@@ -45,6 +45,7 @@ from .chat_attachments import (
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.read_service import TeamReadService
 from .services.runtime_service import TeamRuntimeService
+from .services.review_dispatch_steering import steer_closed_review_dispatch
 from .services.commands import (
     TeamAgentControlCommandService,
     TeamAgentMessageCommandService,
@@ -412,6 +413,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             getattr(context.auth, "user_store", None)
         ),
         git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(context),
+        review_dispatch_steering=lambda **kwargs: steer_closed_review_dispatch(
+            runtime_dir=context.runtime_dir,
+            **kwargs,
+        ),
     )
     git_release_commands = TeamGitReleaseCommandService(repo)
     ephemeral_commands = TeamEphemeralCommandService(repo)

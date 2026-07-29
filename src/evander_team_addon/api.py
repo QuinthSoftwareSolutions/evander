@@ -114,6 +114,7 @@ from .services.human_review_assignment_service import (
 )
 from .services.memory_service import list_memory_records, memory_record_payload
 from .services.runtime_service import TeamRuntimeService
+from .services.review_dispatch_steering import steer_closed_review_dispatch
 from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
@@ -2318,40 +2319,66 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def retire_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         review_request_id = request.path_params["review_request_id"]
+        operator_actor_id = _operator_actor_from_request(context.auth, request)
+        reason = _required(payload, "reason")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.retire_review_request(
                 review_request_id=review_request_id,
-                reason=_required(payload, "reason"),
-                operator_actor_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
+                reason=reason,
+                operator_actor_id=operator_actor_id,
                 expected_revision=expected_revision,
             ),
             target_collection="review_requests",
             target_id=review_request_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        steering = await run_in_threadpool(
+            steer_closed_review_dispatch,
+            runtime_dir=context.runtime_dir,
+            state=state,
+            review_request_id=review_request_id,
+            action="retired",
+            reason=reason,
+            created_by=operator_actor_id,
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra={"review_dispatch_steering": steering},
+        )
 
     async def withdraw_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         review_request_id = request.path_params["review_request_id"]
+        operator_actor_id = _operator_actor_from_request(context.auth, request)
+        reason = _required(payload, "reason")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.withdraw_review_request(
                 review_request_id=review_request_id,
-                reason=_required(payload, "reason"),
-                operator_actor_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
+                reason=reason,
+                operator_actor_id=operator_actor_id,
                 expected_revision=expected_revision,
             ),
             target_collection="review_requests",
             target_id=review_request_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        steering = await run_in_threadpool(
+            steer_closed_review_dispatch,
+            runtime_dir=context.runtime_dir,
+            state=state,
+            review_request_id=review_request_id,
+            action="withdrawn",
+            reason=reason,
+            created_by=operator_actor_id,
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra={"review_dispatch_steering": steering},
+        )
 
     async def create_operator_directive(request: Request) -> JSONResponse:
         payload = await _read_payload(request)

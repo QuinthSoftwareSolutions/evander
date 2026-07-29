@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-29 - Explicit Review Closure Steering
+
+- Interrupted and resumed a matching leased container-worker review dispatch
+  when an authorized withdrawal or retirement makes that review obsolete, with
+  a bounded instruction to stop its testing while preserving unrelated
+  dispatch scope.
+- Added atomic single-winner, one-shot steering for container and legacy
+  executions, preventing concurrent closure replays from interrupting the same
+  dispatch twice while keeping durable review closure authoritative when
+  post-commit execution steering is unavailable or fails.
+- Kept human-supplied closure reasons in the audit record instead of forwarding
+  them into the privileged reviewer steering prompt; the prompt now contains
+  only a fixed, bounded closure instruction.
+
 ## 2026-07-29 - Immediate Human-review Correction Wakes
 
 - Published durable correction wake events immediately from human-review
