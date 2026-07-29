@@ -1816,6 +1816,14 @@ class TeamRuntimeService:
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
+            if (
+                durable_dispatch is not None
+                and durable_dispatch.cause_kind == "context_handoff"
+                and runtime.context_handoff_preparation_pending
+            ):
+                runtime.context_handoff_preparation_pending = False
+                runtime.context_handoff_preparation_status = "failed"
+                runtime.next_wake_at = completed_at
             if progress_made:
                 if not _agent_has_open_execution_stall(
                     state,

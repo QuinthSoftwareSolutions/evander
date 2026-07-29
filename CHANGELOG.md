@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-29 - Team Lifecycle Review Repairs
+
+- Continued manual and idle context rotation in a fresh context when a bounded
+  handoff run completes without recording its advisory summary, preventing
+  repeated handoff-preparation dispatches.
+- Preserved self-observed child-resolution transitions as handled parent
+  history without scheduling a redundant wake.
+- Included prepared Team Chat attachment IDs and metadata in external-reply
+  events and rendered explicit attachment references into the outbound body,
+  so attachment-only replies remain deliverable and files are not silently
+  omitted from bridged text.
+
 ## 2026-07-29 - Supported Human-review Candidate Checkout
 
 - Added an authorization-filtered **Test this candidate** panel to Team release

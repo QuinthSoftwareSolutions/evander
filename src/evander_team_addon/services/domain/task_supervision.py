@@ -77,13 +77,18 @@ def queue_parent_task_transition(
         if sender_agent_id in state.agents
         else child.owner_agent_id
     )
+    self_observed_resolution = (
+        recipient_agent_id == effective_sender_id
+        and transition == "resolution"
+    )
     if (
         recipient_agent_id == effective_sender_id
-        and transition in {"handoff", "rejection", "resolution"}
+        and transition in {"handoff", "rejection"}
     ):
         # An agent already knows about these child-state transitions caused by
-        # its own command. Keep integration-ready and blocker notices because
-        # they can make distinct parent-level action newly available.
+        # its own command. Resolution is retained below as handled history;
+        # integration-ready and blocker notices can make distinct parent-level
+        # action newly available.
         return None
     existing = next(
         (
@@ -126,8 +131,12 @@ def queue_parent_task_transition(
                 current_values.add(str(value))
             existing.payload[plural_key] = sorted(current_values)
         existing.updated_at = now
-        _mark_agent_work_due(state, agent_id=recipient_agent_id, now=now)
-        if result is not None:
+        if self_observed_resolution:
+            existing.state = TeamInboxItemState.HANDLED
+            existing.response_requested = False
+        else:
+            _mark_agent_work_due(state, agent_id=recipient_agent_id, now=now)
+        if result is not None and not self_observed_resolution:
             _append_wake_event_for_notice(
                 state,
                 item=existing,
@@ -154,22 +163,29 @@ def queue_parent_task_transition(
         sender_agent_id=effective_sender_id,
         task_id=parent.id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
-        response_requested=True,
+        response_requested=not self_observed_resolution,
         priority=TeamInboxPriority.NORMAL,
         payload=payload,
+        state=(
+            TeamInboxItemState.HANDLED
+            if self_observed_resolution
+            else TeamInboxItemState.PENDING
+        ),
         created_at=now,
         updated_at=now,
     )
     state.inbox[item.id] = item
-    _mark_agent_work_due(state, agent_id=recipient_agent_id, now=now)
+    if not self_observed_resolution:
+        _mark_agent_work_due(state, agent_id=recipient_agent_id, now=now)
     if result is not None:
         result.setdefault("created_inbox_item_ids", []).append(item.id)
-        _append_wake_event_for_notice(
-            state,
-            item=item,
-            result=result,
-            now=now,
-        )
+        if not self_observed_resolution:
+            _append_wake_event_for_notice(
+                state,
+                item=item,
+                result=result,
+                now=now,
+            )
     return item
 
 

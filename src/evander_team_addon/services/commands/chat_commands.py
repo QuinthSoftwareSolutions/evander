@@ -172,6 +172,10 @@ class TeamChatCommandService(TeamCommandExecutor):
                 now=now,
                 preview=_chat_message_preview(body_text, len(prepared_attachments)),
             )
+            external_reply_body = _external_chat_reply_body(
+                body_text,
+                prepared_attachments,
+            )
             events: list[dict[str, Any]] = []
             external_origin = source_message.metadata.get("external_origin")
             if isinstance(external_origin, dict):
@@ -218,7 +222,16 @@ class TeamChatCommandService(TeamCommandExecutor):
                                 "source_thread_id": _optional_text(
                                     external_origin.get("source_thread_id")
                                 ),
-                                "body": body_text,
+                                "body": external_reply_body,
+                                "team_chat_body": body_text,
+                                "attachment_ids": [
+                                    attachment.id
+                                    for attachment in prepared_attachments
+                                ],
+                                "attachments": [
+                                    attachment.payload()
+                                    for attachment in prepared_attachments
+                                ],
                             },
                         }
                     )
@@ -434,6 +447,34 @@ def _chat_message_preview(body: str | None, attachment_count: int) -> str:
     if body:
         return _chat_preview(body)
     return f"Sent {attachment_count} attachment{'s' if attachment_count != 1 else ''}"
+
+
+def _external_chat_reply_body(
+    body: str | None,
+    attachments: Sequence[PreparedChatAttachment],
+) -> str:
+    lines = [body] if body else []
+    if attachments:
+        if lines:
+            lines.append("")
+        heading = (
+            "Team Chat attachment reference:"
+            if len(attachments) == 1
+            else "Team Chat attachment references:"
+        )
+        lines.append(heading)
+        for attachment in attachments:
+            details = [
+                value
+                for value in (
+                    attachment.mime_type,
+                    f"{attachment.byte_count} bytes",
+                )
+                if value
+            ]
+            suffix = f" ({', '.join(details)})" if details else ""
+            lines.append(f"- {attachment.filename}{suffix}")
+    return "\n".join(lines)
 
 
 def _require_unclaimed_chat_attachments(

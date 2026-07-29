@@ -514,6 +514,15 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
         and "child-task" in item.payload.get("child_task_ids", [])
     }
     assert {"resolution", "integration_ready"} <= parent_transitions
+    resolution = next(
+        item
+        for item in state.inbox.values()
+        if item.payload.get("kind") == "parent_task_transition"
+        and item.payload.get("transition") == "resolution"
+        and "child-task" in item.payload.get("child_task_ids", [])
+    )
+    assert resolution.state.value == "handled"
+    assert resolution.response_requested is False
 
 
 def test_project_lead_cancels_task_from_role_bounded_operator_chat(

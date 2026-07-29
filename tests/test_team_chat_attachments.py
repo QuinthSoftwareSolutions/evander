@@ -115,6 +115,67 @@ def test_agent_chat_reply_persists_staged_attachment_with_message(tmp_path) -> N
     assert TeamStateRepository(tmp_path).read().chat_attachments[attachment.id].sha256
 
 
+@pytest.mark.parametrize(
+    ("body", "expected_body"),
+    [
+        ("", "Team Chat attachment reference:"),
+        ("Attached is the report.", "Attached is the report."),
+    ],
+)
+def test_external_chat_reply_represents_attachments_in_delivery_event(
+    tmp_path,
+    body,
+    expected_body,
+) -> None:
+    repo, conversation, source_message = _repo_with_chat(tmp_path)
+
+    def _mark_external(state):
+        state.conversation_messages[source_message.id].metadata["external_origin"] = {
+            "provider": "discord",
+            "communication_target_id": "discord-ops",
+            "source_message_id": "discord-message-1",
+            "source_thread_id": None,
+            "source_author_id": "operator-1",
+        }
+        return state
+
+    repo.update(_mark_external)
+    storage = TeamChatAttachmentStorage(tmp_path)
+    staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/report.txt",
+        content=b"report",
+        filename="report.txt",
+        mime_type="text/plain",
+    )
+    prepared = storage.promote_staged([staged.id], session_id="session-manager")
+
+    state, result = TeamChatCommandService(repo).reply_to_chat_command(
+        session_id="session-manager",
+        conversation_id=conversation.id,
+        message_id=source_message.id,
+        body=body,
+        request_id=f"external-file-reply-{bool(body)}",
+        attachments=prepared,
+        source_attachment_ids=[staged.id],
+    )
+
+    reply = state.conversation_messages[result["chat_message_id"]]
+    assert reply.body == (body or None)
+    assert reply.attachment_ids == [prepared[0].id]
+    records = repo.list_outbox_records(
+        intent_type="team.chat.external_reply_requested",
+    )
+    assert len(records) == 1
+    payload = records[0].payload["payload"]
+    assert payload["body"].strip()
+    assert expected_body in payload["body"]
+    assert "report.txt" in payload["body"]
+    assert payload["team_chat_body"] == (body or None)
+    assert payload["attachment_ids"] == [prepared[0].id]
+    assert payload["attachments"] == [prepared[0].payload()]
+
+
 def test_failed_send_cleanup_preserves_attachment_claimed_by_concurrent_message(tmp_path) -> None:
     repo, conversation, source_message = _repo_with_chat(tmp_path)
     storage = TeamChatAttachmentStorage(tmp_path)

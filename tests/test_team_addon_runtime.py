@@ -5682,6 +5682,70 @@ def test_context_handoff_rejects_oversize_summary_without_releasing_rotation(
     assert runtime.last_agent_handoff_summary is None
 
 
+def test_context_handoff_completion_without_summary_continues_fresh_rotation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_task(
+        task_id="task",
+        state=TeamTaskState.FINISHED,
+    )
+    _team_runtime_service(repo).request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-after-missing-handoff"})
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    first = provider.execute()
+    preparation_dispatch_id = first["dispatches"][0]["dispatch_id"]
+    assert resumer.calls[0]["resume_mode"] == "same_context"
+
+    finalized_state, finalized = _team_runtime_service(
+        repo
+    ).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=preparation_dispatch_id,
+    )
+
+    assert finalized["success"] is True
+    preparation_runtime = finalized_state.agent_runtimes["backend"]
+    assert preparation_runtime.context_rotation_pending is True
+    assert preparation_runtime.context_handoff_preparation_pending is False
+    assert preparation_runtime.context_handoff_preparation_status == "failed"
+    assert preparation_runtime.next_wake_at is not None
+
+    second = provider.execute()
+    fresh_dispatch_id = second["dispatches"][0]["dispatch_id"]
+    assert resumer.calls[1]["resume_mode"] == "new_context"
+    assert second["dispatches"][0]["context_rotation"] == {
+        "rotated": True,
+        "reason": "manual",
+    }
+
+    _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=fresh_dispatch_id,
+    )
+    third = provider.execute()
+
+    assert third["leased_count"] == 0
+    assert len(resumer.calls) == 2
+
+
 def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
     tmp_path: Path,
 ) -> None:
