@@ -4680,6 +4680,98 @@ test("team add-on project controls follow privilege changes and partial rerender
   assert.equal(await projectsPage.getByRole("button", { name: "Add review profile" }).isDisabled(), true);
 });
 
+test("team add-on state refresh preserves scoped no-id form and unsubmitted search drafts", async (t) => {
+  const initialState = seededGitState();
+  initialState.cases ||= {};
+  initialState.cases["case-draft-preservation"] = {
+    id: "case-draft-preservation",
+    team_id: "team-alpha",
+    project_id: "alpha-project",
+    title: "Draft preservation case",
+    description: "Keeps the case search form rendered.",
+    status: "open",
+    priority: "normal",
+    tags: [],
+    task_ids: [],
+    created_at: "2026-06-09T00:00:00Z",
+    updated_at: "2026-06-09T00:00:00Z",
+  };
+  const {
+    port,
+    state,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(
+    t,
+    port,
+    {},
+    "/addons/team-addon/?privileged_unlocked=true",
+  );
+
+  await waitForRevision(page, 4);
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before testing form drafts",
+  );
+  await openProjects(page);
+  const alphaOutcomeForm = page.locator(
+    '#team-projects-page form[data-form-id="create-outcome-kind-form"][data-form-draft-scope="alpha-project"]',
+  );
+  await alphaOutcomeForm.locator('[name="kind"]').fill("release_readiness");
+  await alphaOutcomeForm.locator('[name="name"]').fill("Release readiness");
+  await alphaOutcomeForm
+    .locator('[name="description"]')
+    .fill("Confirm release readiness before handoff.");
+  await alphaOutcomeForm.locator('[name="team_wide"]').check();
+
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the project draft refresh to reach the Team client",
+  );
+  await waitForRevision(page, state.revision);
+  assert.equal(
+    await alphaOutcomeForm.locator('[name="description"]').inputValue(),
+    "Confirm release readiness before handoff.",
+  );
+  assert.equal(await alphaOutcomeForm.locator('[name="team_wide"]').isChecked(), true);
+
+  await page.locator('[data-project-focus-id="beta-project"]').click();
+  const betaOutcomeForm = page.locator(
+    '#team-projects-page form[data-form-id="create-outcome-kind-form"][data-form-draft-scope="beta-project"]',
+  );
+  assert.equal(
+    await betaOutcomeForm.locator('[name="description"]').inputValue(),
+    "",
+    "a project-scoped draft must not leak into a different project",
+  );
+
+  await page.getByRole("tab", { name: "Cases" }).click();
+  const caseQuery = page.locator(
+    '#team-cases-page form[data-form-id="case-history-search-form"] [name="query"]',
+  );
+  await caseQuery.fill("unsent case query");
+  state.revision += 1;
+  emitStateSnapshot({ response_scope: "revision", revision: state.revision });
+  await waitForRevision(page, state.revision);
+  assert.equal(await caseQuery.inputValue(), "unsent case query");
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  const taskQuery = page.locator(
+    '#team-task-board-page form[data-form-id="task-board-search-form"] [name="task_board_query"]',
+  );
+  await taskQuery.fill("unsent task query");
+  state.revision += 1;
+  emitStateSnapshot({ response_scope: "revision", revision: state.revision });
+  await waitForRevision(page, state.revision);
+  assert.equal(await taskQuery.inputValue(), "unsent task query");
+});
+
 test("team add-on admin context overrides the browser color scheme", async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
@@ -7563,6 +7655,84 @@ test("team add-on Chat refresh preserves a conversation selected while the list 
     await page.locator(".chat-thread-title").getByText("Ada").count(),
     0,
     "expected delayed conversation-list response not to restore the stale selection",
+  );
+});
+
+test("team add-on Chat preserves unsent composer drafts per conversation and clears a sent draft", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+  });
+  const page = await openBrowserPage(t, port, {
+    viewport: { width: 1280, height: 720 },
+  });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({
+    state: "visible",
+  });
+  const composer = page.locator('.chat-composer textarea[name="body"]');
+  await composer.fill("Alpha conversation draft");
+  await composer.evaluate((field) => field.setSelectionRange(6, 18));
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+    .click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({
+    state: "visible",
+  });
+  await composer.fill("Beta conversation draft");
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-alpha-lead"]')
+    .click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({
+    state: "visible",
+  });
+  assert.equal(await composer.inputValue(), "Alpha conversation draft");
+  assert.deepEqual(
+    await composer.evaluate((field) => ({
+      selectionStart: field.selectionStart,
+      selectionEnd: field.selectionEnd,
+    })),
+    { selectionStart: 6, selectionEnd: 18 },
+  );
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+    .click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({
+    state: "visible",
+  });
+  assert.equal(await composer.inputValue(), "Beta conversation draft");
+  await page.locator(".chat-composer button[type='submit']").click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST"
+          && request.pathname
+            === "/api/addons/team-addon/conversations/conversation-beta-lead/messages"
+          && request.payload?.body === "Beta conversation draft",
+      ),
+    "expected the beta chat draft to be sent",
+  );
+  await page.waitForFunction(() => {
+    const field = document.querySelector('.chat-composer textarea[name="body"]');
+    return field instanceof HTMLTextAreaElement && field.value === "";
+  });
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-alpha-lead"]')
+    .click();
+  assert.equal(await composer.inputValue(), "Alpha conversation draft");
+  await page
+    .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+    .click();
+  assert.equal(
+    await composer.inputValue(),
+    "",
+    "a successfully sent draft must not return after switching conversations",
   );
 });
 
@@ -10624,7 +10794,13 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     },
   };
 
-  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const {
+    port,
+    requests,
+    state,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(
     t,
     port,
@@ -10816,12 +10992,95 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await decisionForm
     .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
     .check();
-  await decisionForm.locator('textarea[name="summary"]').fill("Smoke test passed against the pinned preview.");
+  await decisionForm
+    .locator('textarea[name="summary"]')
+    .fill("Smoke test passed against the pinned preview.");
   await decisionForm
     .locator('textarea[name="evidence_refs"]')
     .fill("artifact-space:human-smoke-evidence");
+  const changesRequestedDetails = decisionForm.locator("details", {
+    has: page.getByText("Changes requested fields", { exact: true }),
+  });
+  await changesRequestedDetails.locator("summary").click();
+  await decisionForm
+    .locator('textarea[name="findings"]')
+    .fill("Pinned preview footer does not show the release identifier.");
+  await decisionForm
+    .locator('textarea[name="target_deliverable_ids"]')
+    .fill("deliverable-accepted");
+  await decisionForm.locator('textarea[name="findings"]').evaluate((field) => {
+    field.focus();
+    field.setSelectionRange(7, 14);
+  });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before refreshing the human-review draft",
+  );
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the human-review draft refresh to reach the Team client",
+  );
+  await waitForRevision(page, state.revision);
+
+  assert.equal(
+    await decisionForm.locator('textarea[name="summary"]').inputValue(),
+    "Smoke test passed against the pinned preview.",
+  );
+  assert.equal(
+    await decisionForm.locator('textarea[name="evidence_refs"]').inputValue(),
+    "artifact-space:human-smoke-evidence",
+  );
+  assert.equal(
+    await decisionForm.locator('textarea[name="findings"]').inputValue(),
+    "Pinned preview footer does not show the release identifier.",
+  );
+  assert.equal(
+    await decisionForm.locator('textarea[name="target_deliverable_ids"]').inputValue(),
+    "deliverable-accepted",
+  );
+  assert.equal(
+    await decisionForm.locator('[data-human-checklist-id="smoke-release"]').isChecked(),
+    true,
+  );
+  assert.equal(
+    await decisionForm
+      .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
+      .isChecked(),
+    true,
+  );
+  assert.equal(
+    await changesRequestedDetails.getAttribute("open"),
+    "",
+    "expected the opened changes-requested disclosure to survive refresh",
+  );
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const field = document.activeElement;
+      return {
+        name: field?.getAttribute?.("name") || "",
+        selectionStart:
+          field instanceof HTMLTextAreaElement ? field.selectionStart : null,
+        selectionEnd:
+          field instanceof HTMLTextAreaElement ? field.selectionEnd : null,
+      };
+    }),
+    {
+      name: "findings",
+      selectionStart: 7,
+      selectionEnd: 14,
+    },
+  );
+
+  await decisionForm.locator('textarea[name="findings"]').fill("");
+  await decisionForm.locator('textarea[name="target_deliverable_ids"]').fill("");
   await decisionForm.getByRole("button", { name: "Approve" }).click();
   await page.getByText("Human review approved recorded.").waitFor({ state: "visible" });
+  assert.equal(
+    await detail.locator("[data-human-review-decision-form]").count(),
+    0,
+    "successful submission should remove rather than restore the completed decision draft",
+  );
 
   const decisionRequest = requests.find(
     (request) =>
@@ -10853,7 +11112,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     `http://127.0.0.1:${port}/addons/team-addon/?privileged_unlocked=true&view=my-human-reviews&human_review_request_id=missing-review`,
     { waitUntil: "domcontentloaded" },
   );
-  await waitForRevision(page, 5);
+  await waitForRevision(page, state.revision);
   await page
     .getByText(
       "Human review missing-review is not assigned or visible; showing your assigned reviews instead.",

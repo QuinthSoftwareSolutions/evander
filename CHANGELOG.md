@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-29 - Team UI Draft-safe Background Refresh
+
+- Preserved unsaved, request-scoped human-review decisions across Team state
+  stream, cost, release-detail, and partial view renders, including text,
+  checklist and carried-finding confirmations, open fields, focus, and caret.
+- Extended the same dirty-form boundary to scoped project/release forms and
+  unsubmitted case/task searches, protected drafts during in-flight saves, and
+  retained unsent Team Chat text independently per conversation. Successful
+  submissions still clear only the completed draft.
+
 ## 2026-07-29 - Feature-branch Documentation Alignment
 
 - Updated the Team Add-on, managed-Git, configuration, operations, and canonical

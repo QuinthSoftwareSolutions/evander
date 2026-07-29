@@ -190,6 +190,7 @@ let selectedChatConversationId = null;
 let selectedChatOperatorUserId = null;
 let chatSending = false;
 const pendingChatAttachments = new Map();
+const chatComposerDrafts = new Map();
 let chatStream = null;
 let chatStreamConversationId = null;
 let chatStreamErrorRefreshPending = false;
@@ -262,6 +263,8 @@ let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
 let orgContextMenuState = null;
 const formDraftRegistry = new Map();
+const formDraftFocusKey = "__team_form_focus__";
+let pendingFormFocusDraft = null;
 let pendingConflictRetry = null;
 let coreAgentSessions = [];
 let coreAgentSessionsDirectoryPath = "";
@@ -990,6 +993,7 @@ function targetIsActive(target) {
 }
 
 function renderIntoActiveTargets(selector, html) {
+  const drafts = captureFormDrafts();
   rememberOpenTeamDisclosures();
   const targets = Array.from(document.querySelectorAll(selector));
   targets.forEach((target) => {
@@ -999,6 +1003,7 @@ function renderIntoActiveTargets(selector, html) {
       target.innerHTML = "";
     }
   });
+  restoreFormDrafts(drafts);
   return targets.filter(targetIsActive).length;
 }
 
@@ -1835,6 +1840,7 @@ function bindForms() {
     if (!select) {
       return;
     }
+    rememberCurrentChatComposerDraft();
     selectedChatOperatorUserId = text(select.value) || null;
     selectedChatConversationId = null;
     chatNewPickerOpen = false;
@@ -1843,6 +1849,13 @@ function bindForms() {
   });
 
   document.addEventListener("input", (event) => {
+    const chatComposer = event.target?.closest?.(
+      '[data-chat-message-form] textarea[name="body"]',
+    );
+    if (chatComposer instanceof HTMLTextAreaElement) {
+      rememberCurrentChatComposerDraft();
+      return;
+    }
     const governanceGoalField = event.target?.closest?.(
       '[name="governance_goal_name"], [name="governance_goal_description"], [name="governance_goal_state"]',
     );
@@ -1900,6 +1913,15 @@ function bindForms() {
 }
 
 function bindRecordEditing() {
+  document.addEventListener("pointerdown", (event) => {
+    if (
+      event.target?.closest?.(
+        ".chat-conversation-row[data-chat-conversation-id]",
+      )
+    ) {
+      rememberCurrentChatComposerDraft();
+    }
+  });
   document.addEventListener("click", (event) => {
     const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
     if (openCreateTeamButton) {
@@ -2044,6 +2066,7 @@ function bindRecordEditing() {
     const chatConversationButton = event.target.closest(".chat-conversation-row[data-chat-conversation-id]");
     if (chatConversationButton) {
       event.preventDefault();
+      rememberCurrentChatComposerDraft();
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
       markChatConversationRead(selectedChatConversationId, { rerender: false });
       renderChat();
@@ -3896,7 +3919,7 @@ function ensureStateStream() {
       return;
     }
     stateStreamErrorRefreshPending = true;
-    void loadView(activeTeamView, { force: true }).finally(() => {
+    void loadView(activeTeamView, { force: true, preserveForms: true }).finally(() => {
       if (stateStream === stream) {
         stateStreamErrorRefreshPending = false;
       }
@@ -4143,6 +4166,7 @@ function applyChatCollectionPayload(
   const previousConversations = new Map(
     chatState.conversations.map((conversation) => [text(conversation.id), conversation]),
   );
+  rememberCurrentChatComposerDraft();
   chatState = normalizeChat(payload);
   maybePlayChatCollectionNotificationSound(previousConversations, chatState.conversations);
   selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
@@ -4437,6 +4461,7 @@ async function createOrFocusChat(agentId) {
     return;
   }
   setStatus("Opening chat.", "loading");
+  rememberCurrentChatComposerDraft();
   try {
     const response = await teamFetch(`${API_BASE}/conversations`, {
       method: "POST",
@@ -4534,6 +4559,7 @@ async function submitChatMessage(form) {
       }
       pendingChatAttachments.delete(conversationId);
     }
+    chatComposerDrafts.delete(conversationId);
     if (payload.dispatch?.success === false && !payload.dispatch?.queued) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
@@ -4717,6 +4743,7 @@ function renderActiveView(view = activeTeamView) {
 }
 
 function renderActiveViewLoading(view = activeTeamView) {
+  const drafts = captureFormDrafts();
   const panel = document.querySelector(`[data-team-view-panel="${normalizedTeamView(view)}"]`);
   const target =
     panel?.querySelector("[data-chat-thread-view]") ||
@@ -4735,6 +4762,7 @@ function renderActiveViewLoading(view = activeTeamView) {
   if (target) {
     target.innerHTML = `<p class="empty-state">Loading ${escapeHtml(humanizeToken(view))}.</p>`;
   }
+  restoreFormDrafts(drafts);
 }
 
 function activeViewPanel() {
@@ -9169,7 +9197,10 @@ function renderChatThread() {
     `;
     return;
   }
-  const composerState = captureChatComposerState(conversation.id);
+  const composerState =
+    captureChatComposerState(conversation.id)
+    || chatComposerDrafts.get(text(conversation.id))
+    || null;
   const agent = conversation.agent || {};
   const messages = conversationMessages(conversation);
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
@@ -9384,6 +9415,33 @@ function captureChatComposerState(expectedConversationId) {
     selectionStart: typeof textarea.selectionStart === "number" ? textarea.selectionStart : 0,
     selectionEnd: typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : 0,
   };
+}
+
+function rememberCurrentChatComposerDraft() {
+  const conversationId = text(
+    elements.chatThreadView
+      ?.querySelector("[data-chat-scroll-conversation-id]")
+      ?.dataset?.chatScrollConversationId,
+  );
+  if (!conversationId) {
+    return null;
+  }
+  const composerState = captureChatComposerState(conversationId);
+  if (composerState) {
+    const previous = chatComposerDrafts.get(conversationId);
+    chatComposerDrafts.set(
+      conversationId,
+      previous?.hadFocus && !composerState.hadFocus
+        ? {
+            ...composerState,
+            hadFocus: true,
+            selectionStart: previous.selectionStart,
+            selectionEnd: previous.selectionEnd,
+          }
+        : composerState,
+    );
+  }
+  return composerState;
 }
 
 function restoreChatComposerState(expectedConversationId, composerState) {
@@ -11143,6 +11201,7 @@ function renderProjects() {
 }
 
 function renderProjectFocus() {
+  const drafts = captureFormDrafts();
   rememberOpenTeamDisclosures();
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
@@ -11196,6 +11255,7 @@ function renderProjectFocus() {
   });
   syncProjectCreatePanel();
   applyLockedMutationControls();
+  restoreFormDrafts(drafts);
 }
 
 function renderProjectFocusListItem(project) {
@@ -11385,6 +11445,7 @@ function renderProjectOutcomeKindCreateForm(project) {
     <form
       class="project-review-profile-form"
       data-form-id="create-outcome-kind-form"
+      data-form-draft-scope="${escapeAttr(project.id)}"
       data-endpoint="/outcome-kinds"
       data-method="POST"
       data-delegated-create-form
@@ -11707,7 +11768,7 @@ function renderCaseFilters(cases) {
         <span>${resolvedCount} resolved</span>
         <span>${closedCount} closed</span>
       </div>
-      <form class="case-history-search" data-case-search-form>
+      <form class="case-history-search" data-case-search-form data-form-id="case-history-search-form">
         <label>
           <span>Search cases</span>
           <input name="query" type="search" value="${escapeAttr(caseQuery)}" placeholder="Title, description, source, tag, or ID" />
@@ -11959,6 +12020,7 @@ function renderProjectReviewProfileCreateForm(project) {
       id="create-review-profile-for-project-form"
       class="project-review-profile-form"
       data-form-id="create-review-profile-form"
+      data-form-draft-scope="${escapeAttr(project.id)}"
       data-endpoint="/review-profiles"
       data-method="POST"
       data-delegated-create-form
@@ -12144,7 +12206,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
           : `<span class="task-board-history-note">${terminalCount} completed task${terminalCount === 1 ? "" : "s"} included in hierarchy</span>`
       }
     </div>
-    <form class="task-board-filters" data-task-board-search-form role="search">
+    <form class="task-board-filters" data-task-board-search-form data-form-id="task-board-search-form" data-form-draft-scope="${escapeAttr(`${selectedTaskBoardTeamId}:${selectedTaskBoardProjectId}`)}" role="search">
       <label class="task-board-search-filter">
         Search
         <span class="task-board-search-controls">
@@ -15359,6 +15421,7 @@ function addReviewProfileCriterionRow(editor) {
   }
   rows.appendChild(row);
   decorateFieldTooltips(row);
+  rememberFormDraft(editor.closest("form"));
   row.querySelector('input[name="criterion_label"]')?.focus();
 }
 
@@ -15372,7 +15435,9 @@ function removeReviewProfileCriterionRow(button) {
   row.remove();
   if (!rows.querySelector("[data-review-profile-criterion-row]")) {
     addReviewProfileCriterionRow(editor);
+    return;
   }
+  rememberFormDraft(editor.closest("form"));
 }
 
 function reviewProfileCriteriaFromForm(form) {
@@ -15796,6 +15861,8 @@ function renderPostReleaseReportControl(release) {
         <form
           class="post-release-report-form"
           data-post-release-report-form
+          data-form-id="post-release-report-form"
+          data-form-draft-scope="${escapeAttr(release.id)}"
           data-release-id="${escapeAttr(release.id)}"
         >
           <p class="post-release-report-boundary">
@@ -15944,8 +16011,9 @@ async function loadMyHumanReviews() {
 }
 
 async function openHumanReviewDeepLink(requestId) {
+  const normalizedRequestId = text(requestId);
   myHumanReviewsOnly = true;
-  focusedHumanReviewRequestId = text(requestId);
+  focusedHumanReviewRequestId = normalizedRequestId;
   await loadMyHumanReviews();
   if (!focusedHumanReviewRequestId) {
     return true;
@@ -15973,6 +16041,14 @@ function focusHumanReviewRequestElement(requestId) {
   const element = document.getElementById(`human-review-${text(requestId)}`);
   if (!element) {
     return;
+  }
+  const disclosure = element.closest("details[data-team-disclosure-key]");
+  if (disclosure) {
+    disclosure.open = true;
+    const disclosureKey = text(disclosure.dataset.teamDisclosureKey);
+    if (disclosureKey) {
+      openTeamDisclosures.add(disclosureKey);
+    }
   }
   element.focus({ preventScroll: true });
   element.scrollIntoView({ block: "center", behavior: "auto" });
@@ -16298,7 +16374,7 @@ function renderHumanFindingHistory(findings, correctionTasks) {
 
 function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
   return `
-    <form class="human-review-decision-form" data-human-review-decision-form data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
+    <form class="human-review-decision-form" data-human-review-decision-form data-form-id="human-review-decision-form" data-form-draft-scope="${escapeAttr(request.id)}" data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
       <fieldset>
         <legend>Human acceptance checklist</legend>
         ${checklist.map((item) => `<label class="checkbox-label"><input type="checkbox" data-human-checklist-id="${escapeAttr(item.id)}"${item.required === false ? "" : " required"} /> ${escapeHtml(item.label)}${item.required === false ? " (optional)" : ""}</label>`).join("") || `<p class="empty-state">No checklist items.</p>`}
@@ -16420,6 +16496,8 @@ async function submitPostReleaseReport(form, submitter) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    clearFormDraft(form);
+    form.reset();
     state.revision = payload.revision ?? state.revision;
     postReleaseReportResults.set(releaseId, {
       case: payload.case || null,
@@ -16558,6 +16636,11 @@ async function mutateHumanReview(control, endpoint, payload, { requestId, releas
       throw new Error(await responseText(response));
     }
     const result = await response.json();
+    const decisionForm = control?.closest?.("[data-human-review-decision-form]");
+    if (decisionForm) {
+      clearFormDraft(decisionForm);
+      decisionForm.reset();
+    }
     state.revision = result.revision ?? state.revision;
     const updatedRequest = result.human_review_request;
     if (updatedRequest) {
@@ -21675,6 +21758,10 @@ function formDraftKey(form) {
   if (semanticId && semanticId !== formId) {
     parts.push(`semantic:${semanticId}`);
   }
+  const draftScope = text(form.dataset.formDraftScope);
+  if (draftScope) {
+    parts.push(`scope:${draftScope}`);
+  }
   const editType = text(form.dataset.editType);
   const editId = text(form.dataset.editId);
   if (editType || editId) {
@@ -21693,7 +21780,11 @@ function formDraftKey(form) {
 }
 
 function shouldTrackFormDraft(form) {
-  return Boolean(form && formIdentifier(form) && !form.matches("[data-chat-message-form]"));
+  return Boolean(
+    form
+    && (formIdentifier(form) || formSemanticIdentifier(form))
+    && !form.matches("[data-chat-message-form]"),
+  );
 }
 
 function rememberFormDraftFromEvent(event) {
@@ -21717,6 +21808,9 @@ function clearFormDraft(form) {
   const key = formDraftKey(form);
   if (key) {
     formDraftRegistry.delete(key);
+    if (pendingFormFocusDraft?.formKey === key) {
+      pendingFormFocusDraft = null;
+    }
   }
 }
 
@@ -21739,6 +21833,19 @@ function formValuesForDraft(form) {
   if (humanReviewChecklistDraft) {
     values.__human_review_checklist = humanReviewChecklistDraft;
   }
+  if (form.matches("[data-human-review-decision-form]")) {
+    values.__human_review_checklist_results = Object.fromEntries(
+      Array.from(form.querySelectorAll("[data-human-checklist-id]")).map((field) => [
+        text(field.dataset.humanChecklistId),
+        Boolean(field.checked),
+      ]),
+    );
+    values.__human_review_confirmed_finding_ids = Array.from(
+      form.querySelectorAll("[data-confirm-finding-id]:checked"),
+    )
+      .map((field) => text(field.dataset.confirmFindingId))
+      .filter(Boolean);
+  }
   return values;
 }
 
@@ -21749,16 +21856,31 @@ function findFormByDraftKey(key) {
 function captureFormDrafts() {
   const drafts = Object.fromEntries(formDraftRegistry.entries());
   document.querySelectorAll("form").forEach((form) => {
+    if (form.dataset.formBusy === "true") {
+      return;
+    }
+    const key = formDraftKey(form);
+    if (!key || !formDraftRegistry.has(key)) {
+      return;
+    }
     const remembered = rememberFormDraft(form);
     if (remembered) {
       drafts[remembered[0]] = remembered[1];
     }
   });
+  const focusDraft = captureFormFocusDraft() || pendingFormFocusDraft;
+  if (focusDraft) {
+    drafts[formDraftFocusKey] = focusDraft;
+  }
   return drafts;
 }
 
 function restoreFormDrafts(drafts) {
+  const focusDraft = drafts?.[formDraftFocusKey] || null;
   Object.entries(drafts || {}).forEach(([formId, values]) => {
+    if (formId === formDraftFocusKey) {
+      return;
+    }
     const form = findFormByDraftKey(formId) || document.getElementById(formId);
     if (!form) {
       return;
@@ -21766,6 +21888,18 @@ function restoreFormDrafts(drafts) {
     restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
     restoreGovernanceGoalsDraft(form, values.__governance_goals);
     restoreHumanReviewChecklistDraft(form, values.__human_review_checklist);
+    if (form.matches("[data-human-review-decision-form]")) {
+      const checklistResults = values.__human_review_checklist_results || {};
+      form.querySelectorAll("[data-human-checklist-id]").forEach((field) => {
+        field.checked = Boolean(checklistResults[text(field.dataset.humanChecklistId)]);
+      });
+      const confirmedFindingIds = new Set(
+        values.__human_review_confirmed_finding_ids || [],
+      );
+      form.querySelectorAll("[data-confirm-finding-id]").forEach((field) => {
+        field.checked = confirmedFindingIds.has(text(field.dataset.confirmFindingId));
+      });
+    }
     if (formSemanticIdentifier(form) === "setup-template-form") {
       const templateField = form.elements.template_id;
       if (templateField && values.template_id) {
@@ -21778,6 +21912,8 @@ function restoreFormDrafts(drafts) {
         name === "__review_profile_criteria" ||
         name === "__governance_goals" ||
         name === "__human_review_checklist" ||
+        name === "__human_review_checklist_results" ||
+        name === "__human_review_confirmed_finding_ids" ||
         name.startsWith("criterion_") ||
         name.startsWith("governance_goal_") ||
         name.startsWith("human_review_checklist_")
@@ -21838,6 +21974,130 @@ function restoreFormDrafts(drafts) {
     syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
   }
   renderTemplatePreview();
+  restoreFormFocusDraft(focusDraft);
+}
+
+function captureFormFocusDraft() {
+  const field = document.activeElement;
+  if (
+    !(
+      field instanceof HTMLInputElement
+      || field instanceof HTMLTextAreaElement
+      || field instanceof HTMLSelectElement
+    )
+  ) {
+    return null;
+  }
+  const form = field.form;
+  const formKey = formDraftKey(form);
+  if (!formKey) {
+    return null;
+  }
+  const identity = {
+    id: text(field.id),
+    name: text(field.name),
+    nameIndex: -1,
+    humanChecklistId: text(field.dataset.humanChecklistId),
+    confirmFindingId: text(field.dataset.confirmFindingId),
+  };
+  if (identity.name) {
+    identity.nameIndex = Array.from(form.elements)
+      .filter((candidate) => text(candidate.name) === identity.name)
+      .indexOf(field);
+  }
+  if (
+    ![
+      identity.id,
+      identity.name,
+      identity.humanChecklistId,
+      identity.confirmFindingId,
+    ].some(Boolean)
+  ) {
+    return null;
+  }
+  let selectionStart = null;
+  let selectionEnd = null;
+  let selectionDirection = null;
+  if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+    try {
+      selectionStart = field.selectionStart;
+      selectionEnd = field.selectionEnd;
+      selectionDirection = field.selectionDirection;
+    } catch {
+      // Some input types do not expose text selection.
+    }
+  }
+  return {
+    formKey,
+    identity,
+    selectionStart,
+    selectionEnd,
+    selectionDirection,
+  };
+}
+
+function restoreFormFocusDraft(focusDraft) {
+  if (!focusDraft?.formKey || !focusDraft.identity) {
+    return;
+  }
+  pendingFormFocusDraft = focusDraft;
+  const form = findFormByDraftKey(focusDraft.formKey);
+  if (!form) {
+    return;
+  }
+  const identity = focusDraft.identity;
+  const fields = Array.from(form.elements).filter(
+    (candidate) =>
+      candidate instanceof HTMLInputElement
+      || candidate instanceof HTMLTextAreaElement
+      || candidate instanceof HTMLSelectElement,
+  );
+  let field = identity.id
+    ? fields.find((candidate) => text(candidate.id) === identity.id)
+    : null;
+  if (!field && identity.humanChecklistId) {
+    field = fields.find(
+      (candidate) =>
+        text(candidate.dataset.humanChecklistId) === identity.humanChecklistId,
+    );
+  }
+  if (!field && identity.confirmFindingId) {
+    field = fields.find(
+      (candidate) =>
+        text(candidate.dataset.confirmFindingId) === identity.confirmFindingId,
+    );
+  }
+  if (!field && identity.name) {
+    const namedFields = fields.filter(
+      (candidate) => text(candidate.name) === identity.name,
+    );
+    field = namedFields[Math.max(0, Number(identity.nameIndex) || 0)] || null;
+  }
+  if (!field || field.disabled) {
+    return;
+  }
+  pendingFormFocusDraft = null;
+  field.focus({ preventScroll: true });
+  if (
+    (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)
+    && typeof focusDraft.selectionStart === "number"
+    && typeof focusDraft.selectionEnd === "number"
+  ) {
+    const start = Math.min(Math.max(focusDraft.selectionStart, 0), field.value.length);
+    const end = Math.min(
+      Math.max(focusDraft.selectionEnd, start),
+      field.value.length,
+    );
+    try {
+      field.setSelectionRange(
+        start,
+        end,
+        focusDraft.selectionDirection || undefined,
+      );
+    } catch {
+      // Ignore selection restoration for unsupported input types.
+    }
+  }
 }
 
 function markUnavailableDraftSelections(field, missingValues) {
@@ -21852,6 +22112,11 @@ function markUnavailableDraftSelections(field, missingValues) {
 }
 
 function setFormBusy(form, busy) {
+  if (busy) {
+    form.dataset.formBusy = "true";
+  } else {
+    delete form.dataset.formBusy;
+  }
   form.querySelectorAll("button, input, select, textarea").forEach((field) => {
     field.disabled = busy;
   });
