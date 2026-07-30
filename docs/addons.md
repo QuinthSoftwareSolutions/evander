@@ -1429,7 +1429,9 @@ the linked blocker and its event history retain the Admin actor and references.
 Only agents with project-scoped `create_root_task` may create ordinary roots;
 provenance never supplies that permission. The authenticated human
 changes-requested transition has one narrow system-authorized exception to
-create same-project correction or triage roots atomically.
+create a same-project correction graph atomically: one coordination-only
+parent and one finding child per human finding. Post-release feedback still
+creates its separate project-lead triage root.
 
 An ordinary aggregate parent deliverable names the exact accepted current
 direct-child outputs in `source_deliverable_ids`; an explicit integration
@@ -1850,19 +1852,25 @@ candidate match. There is no MCP human-decision tool. Admin routes are:
 
 `blocked` preserves the same request and candidate for source-aware recovery.
 `changes_requested` atomically records the decision and findings, ends the
-immutable attempt without publication, creates or reuses one correction
-`TeamCase`, creates independent correction or project-lead triage roots, links
-findings, and queues deduplicated inbox/wake consequences. Accepted historical
-tasks, deliverables, reviews, and candidates are never reopened.
+immutable attempt without publication, and creates or reuses one correction
+`TeamCase` with a coordination-only parent and one immutable-text child per
+finding. Directly attributable findings route to their current owner; only an
+ambiguous finding waits for project-lead routing. The finding child starts from
+the verified rejected candidate and must produce one accepted, reviewed
+correction deliverable. Accepted historical tasks, deliverables, reviews, and
+candidates are never reopened.
 
-A correction successor names `supersedes_release_package_id`, uses the
-predecessor candidate as baseline, preserves original scope, adds accepted
-correction deliverables, carries recursive contribution lineage plus every open
-finding and proposed resolution, requires a changed tree, and reruns all gates.
-Human approval must explicitly confirm every carried finding before it resolves
-and publication can proceed. Publication additionally requires candidate,
-approved, and published SHA equality plus one linked succeeded canonical-push
-promotion.
+After every finding child has exactly one current accepted, reviewed correction
+deliverable, Team derives each proposed resolution and evidence and
+automatically creates the changed successor release. The coordination parent
+produces no deliverable and finishes when that successor exists. The successor
+names `supersedes_release_package_id`, uses the predecessor candidate as
+baseline, preserves original scope, carries recursive contribution lineage plus
+every open finding and proposed resolution, requires a changed tree, and reruns
+all gates. Human approval must explicitly confirm every carried finding before
+it resolves and publication can proceed. Publication additionally requires
+candidate, approved, and published SHA equality plus one linked succeeded
+canonical-push promotion.
 
 `POST /api/addons/team-addon/release-packages/{id}/report-issue` handles
 post-release regression or adjustment intake. It preserves the published

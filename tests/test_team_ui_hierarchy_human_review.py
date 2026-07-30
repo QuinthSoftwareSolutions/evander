@@ -52,7 +52,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 28
+    assert TEAM_AGENT_GUIDANCE_VERSION == 29
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content
@@ -73,6 +73,15 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "never substitutes for the human decision" in content
     assert "team_close_post_release_case" in content
     assert "does not roll back publication" in content
+    assert "human_review_correction_work" in content
+    assert "must resolve through accepted deliverables" in content
+    assert "submit one assessable correction deliverable" in content
+    assert "Do not finish that child directly" in content
+    assert "Team derives the finding resolution" in content
+    assert "creates the changed successor release automatically" in content
+    assert "Do not submit a coordination-parent deliverable" in content
+    assert "produces no deliverable" in content
+    assert "automatic successor of a generated human-review correction graph" in content
 
 
 def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() -> None:
@@ -95,6 +104,8 @@ def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() 
     assert "originating_task_id when that root is correction or follow-up work" in (root_authorized)
     assert "also include the earlier task in dependency_task_ids" in root_authorized
     assert "instead of a base-branch-only worktree" in root_authorized
+    assert "generated human-review correction findings" in root_authorized
+    assert "instead of creating a replacement root" in root_authorized
 
 
 def test_project_repo_guidance_emits_exact_task_worktree_mapping() -> None:

@@ -206,6 +206,35 @@ def test_team_action_tool_inventories_match_source() -> None:
     assert not missing_chat, f"docs/addons.md missing Team Chat tools: {missing_chat}"
 
 
+def test_human_review_correction_documentation_matches_automatic_graph() -> None:
+    addon_reference = (ROOT / "docs/addons.md").read_text(encoding="utf-8")
+    transaction_chapter = (
+        ROOT / "docs/evander-user-manual/chapters/19-team-command-transactions.md"
+    ).read_text(encoding="utf-8")
+    release_chapter = (
+        ROOT / "docs/evander-user-manual/chapters/24-team-git-releases.md"
+    ).read_text(encoding="utf-8")
+
+    for source in (addon_reference, transaction_chapter, release_chapter):
+        assert "coordination-only parent" in source
+    assert "automatically creates the changed successor release" in addon_reference
+    assert re.search(
+        r"creates one changed successor release\s+automatically", transaction_chapter
+    )
+    assert "automatically creates one successor" in release_chapter
+    assert re.search(
+        r"exactly one current accepted, reviewed\s+correction\s+deliverable",
+        addon_reference,
+    )
+    assert re.search(
+        r"exactly one current accepted\s+correction\s+deliverable", transaction_chapter
+    )
+    assert re.search(
+        r"exactly one current accepted\s+correction\s+deliverable", release_chapter
+    )
+    assert "request a changed successor" not in release_chapter
+
+
 def test_agent_create_codex_auth_mode_is_documented() -> None:
     schema_path = ROOT / "src/evander/effects/providers/schemas.py"
     tree = ast.parse(schema_path.read_text(encoding="utf-8"))

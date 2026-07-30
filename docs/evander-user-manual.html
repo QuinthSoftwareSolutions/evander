@@ -14153,18 +14153,20 @@ successor closure</h3>
 <p><code>changes_requested</code> is one atomic Team transition. It
 records the human decision and actionable findings, ends the immutable
 release attempt, guarantees no canonical publication event exists,
-creates or reuses one correction case, creates independent correction or
-project-lead triage roots, links each finding to its current correction
-task, and creates deduplicated inbox/wake obligations.</p>
+creates or reuses one correction case, creates one coordination-only
+parent and one immutable-text child task per finding, links each finding
+to its child, and creates deduplicated inbox/wake obligations.</p>
 <p>Accepted historical tasks, deliverables, reviews, and candidate
 content are not reopened. A finding that clearly targets one deliverable
 routes to that task&#39;s current owner and records the original task as
-provenance. Ambiguous or release-wide findings share a project-lead
-triage root. The correction case groups the response; use parent/child
-containment only when the correction itself has a genuine combined
-outcome.</p>
-<p>After correction/triage tasks resolve and their current deliverables
-are accepted, request a successor with
+provenance. A finding without a deterministic owner remains with the
+project lead until that lead routes its existing child. The coordination
+parent groups the response but has no combined deliverable of its
+own.</p>
+<p>Each finding child starts from the verified rejected candidate and
+must produce exactly one current accepted correction deliverable with
+required review evidence. Team then derives the finding&#39;s resolution
+summary and evidence and automatically creates one successor with
 <code>supersedes_release_package_id</code>. The successor:</p>
 <ul>
 <li>uses the predecessor candidate as its baseline;</li>
@@ -14176,10 +14178,10 @@ evidence;</li>
 <li>requires a different candidate tree; and</li>
 <li>reruns verification, agent review, and human review.</li>
 </ul>
-<p>The new human approval must explicitly confirm every carried finding
-ID. Only then do those findings become resolved and publication become
-eligible. A changed candidate never reuses the predecessor human
-request.</p>
+<p>The coordination parent finishes when that successor exists. The new
+human approval must explicitly confirm every carried finding ID. Only
+then do those findings become resolved and publication become eligible.
+A changed candidate never reuses the predecessor human request.</p>
 <h3 id="publication-and-post-release-feedback">Publication and
 post-release feedback</h3>
 <p>Final publication requires the candidate, approved, and published SHA
@@ -14366,7 +14368,8 @@ generation after fixing the target.</td>
 <tr class="even">
 <td>Human requested changes</td>
 <td>Predecessor attempt is terminal and cannot publish. Complete the
-generated correction case/tasks and request a changed successor.</td>
+generated correction finding children with accepted, reviewed
+deliverables; Team creates the changed successor automatically.</td>
 </tr>
 <tr class="odd">
 <td>Successor omits or silently closes a human finding</td>
@@ -14430,8 +14433,9 @@ fails.</li>
 <li>Use <code>team_recover_release</code> only for eligible Git
 promotion failure.</li>
 <li>For a blocked human request, recover or reassign the same request;
-for changes requested, follow the generated case and request a changed
-successor.</li>
+for changes requested, follow the generated case and let Team create the
+changed successor after every finding child has accepted, reviewed
+work.</li>
 </ol>
 <p>After release:</p>
 <ol type="1">

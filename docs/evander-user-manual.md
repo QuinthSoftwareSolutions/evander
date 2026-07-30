@@ -7204,19 +7204,21 @@ secret-bearing query or fragment parameters are rejected as credentials too.
 <code>changes_requested</code> is one atomic Team transition. It records the
 human decision and actionable findings, ends the immutable release attempt,
 guarantees no canonical publication event exists, creates or reuses one
-correction case, creates independent correction or project-lead triage roots,
-links each finding to its current correction task, and creates deduplicated
-inbox/wake obligations.
+correction case, creates one coordination-only parent and one immutable-text
+child task per finding, links each finding to its child, and creates
+deduplicated inbox/wake obligations.
 
 Accepted historical tasks, deliverables, reviews, and candidate content are not
 reopened. A finding that clearly targets one deliverable routes to that task's
-current owner and records the original task as provenance. Ambiguous or
-release-wide findings share a project-lead triage root. The correction case
-groups the response; use parent/child containment only when the correction
-itself has a genuine combined outcome.
+current owner and records the original task as provenance. A finding without a
+deterministic owner remains with the project lead until that lead routes its
+existing child. The coordination parent groups the response but has no combined
+deliverable of its own.
 
-After correction/triage tasks resolve and their current deliverables are
-accepted, request a successor with
+Each finding child starts from the verified rejected candidate and must produce
+exactly one current accepted correction deliverable with required review
+evidence. Team then derives the finding's resolution summary and evidence and
+automatically creates one successor with
 <code>supersedes_release_package_id</code>. The successor:
 
 - uses the predecessor candidate as its baseline;
@@ -7226,9 +7228,10 @@ accepted, request a successor with
 - requires a different candidate tree; and
 - reruns verification, agent review, and human review.
 
-The new human approval must explicitly confirm every carried finding ID. Only
-then do those findings become resolved and publication become eligible. A
-changed candidate never reuses the predecessor human request.
+The coordination parent finishes when that successor exists. The new human
+approval must explicitly confirm every carried finding ID. Only then do those
+findings become resolved and publication become eligible. A changed candidate
+never reuses the predecessor human request.
 
 ### Publication and post-release feedback
 
@@ -7351,7 +7354,7 @@ to the supported records described in Chapters 18–24.
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Human assignment unavailable | Same request and candidate stay blocked. Repair group membership or use audited reassignment; do not skip the gate. |
 | Human preview preparation failed or expired | Same request and candidate stay blocked. Resume to prepare a new generation after fixing the target. |
-| Human requested changes | Predecessor attempt is terminal and cannot publish. Complete the generated correction case/tasks and request a changed successor. |
+| Human requested changes | Predecessor attempt is terminal and cannot publish. Complete the generated correction finding children with accepted, reviewed deliverables; Team creates the changed successor automatically. |
 | Successor omits or silently closes a human finding | Candidate is not publishable. Carry every finding and require explicit confirmation in the successor approval. |
 | Post-release issue was reported | This is intake, not rollback or a new release. Follow the case and triage root. |
 | Release package says accepted but upstream seems different | Compare canonical branch/published SHA, promotion record, core push effect, and remote ref. Do not inspect only the internal release branch. |
@@ -7392,7 +7395,8 @@ During release:
    and stop agent retries after an agent-requested attempt fails.
 4. Use <code>team_recover_release</code> only for eligible Git promotion failure.
 5. For a blocked human request, recover or reassign the same request; for
-   changes requested, follow the generated case and request a changed successor.
+   changes requested, follow the generated case and let Team create the changed
+   successor after every finding child has accepted, reviewed work.
 
 After release:
 

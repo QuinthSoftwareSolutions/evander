@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-30 - Team Correction Guidance Alignment
+
+- Updated versioned Team-agent guidance for generated human-review correction
+  graphs: finding children now explicitly require one accepted, reviewed
+  deliverable rather than direct support-task completion, while the
+  coordination parent, derived finding resolution, and changed successor
+  release remain system-managed.
+- Aligned the Team Add-on reference and release manual with that automatic
+  correction flow and added documentation and prompt regression coverage.
+
 ## 2026-07-30 - Session Container Resource-limit Documentation
 
 - Documented how operators configure per-session container CPU, memory, and
