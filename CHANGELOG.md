@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-30 - Team UI Record Ordering
+
+- Sorted Delivery releases and related release/review history newest-first by
+  their available publication, update, or creation timestamps instead of
+  opaque record IDs.
+- Audited Team UI collection ordering and aligned named record lists, member
+  lists, hierarchy roots, and selectors with their displayed labels; inbox
+  items now retain the workspace's priority-first order.
+
 ## 2026-07-30 - Team Correction Guidance Alignment
 
 - Updated versioned Team-agent guidance for generated human-review correction

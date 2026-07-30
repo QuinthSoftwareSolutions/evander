@@ -1547,7 +1547,7 @@ function governanceOversightTeamOptions(group, mode) {
   return values(state.teams)
     .filter(isVisibleTeam)
     .filter((team) => memberTeamIds.has(text(team.id)) === includeMember)
-    .sort(byId)
+    .sort(comparePeopleTeams)
     .map((team) => [team.id, `${team.name || team.id} (${team.id})`]);
 }
 
@@ -5177,7 +5177,7 @@ function buildWorkspaceDashboardModel() {
   const visibleAgents = values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => !agent.team_id || visibleTeamIds.has(text(agent.team_id)))
-    .sort(byId);
+    .sort(comparePeopleAgents);
   const visibleAgentIds = new Set(visibleAgents.map((agent) => text(agent.id)));
   const openTasks = values(state.tasks)
     .filter((task) => !terminalTaskStates.has(task.state))
@@ -5802,7 +5802,9 @@ function renderGovernance() {
   if (!document.querySelector("[data-governance-view]")) {
     return;
   }
-  const groups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(byId);
+  const groups = values(state.governance_groups)
+    .filter(isVisibleGovernanceGroup)
+    .sort(compareGovernanceGroups);
   if (!groups.length) {
     renderIntoActiveTargets("[data-governance-view]", `
       <p class="empty-state">No governance groups registered.</p>
@@ -5819,7 +5821,8 @@ function renderGovernanceGroup(group) {
   const manager = state.agents?.[group.manager_agent_id] || null;
   const memberTeams = (group.member_team_ids || [])
     .map((teamId) => state.teams?.[teamId])
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort(comparePeopleTeams);
   const agenda = governanceAgendaForGroup(group.id);
   const pendingAgenda = agenda.filter((item) => item.state === "pending");
   const visibleAgenda = showHandledGovernanceAgenda
@@ -7351,7 +7354,7 @@ function syncOrgFocusTeamTabs(visibleTeams) {
 
 function buildFocusedOrgChartPayload() {
   const teams = values(state.teams);
-  const visibleTeams = teams.filter(isVisibleTeam).sort(byId);
+  const visibleTeams = teams.filter(isVisibleTeam).sort(comparePeopleTeams);
   if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
     selectedOrgTeamId = "all";
   }
@@ -7404,7 +7407,7 @@ function buildOrgFlowGraph(focusedTeams) {
   const governanceGroups = values(state.governance_groups)
     .filter(isVisibleGovernanceGroup)
     .filter((group) => (group.member_team_ids || []).some((teamId) => focusedTeamIds.has(text(teamId))))
-    .sort(byId);
+    .sort(compareGovernanceGroups);
   const teamLayouts = [];
   let nextX = 0;
   const governanceRows = governanceGroups.length;
@@ -7939,7 +7942,7 @@ function renderHierarchyNode(node, options = {}) {
 
 function renderAgents() {
   try {
-    const allAgents = values(state.agents).sort(byId);
+    const allAgents = values(state.agents).sort(comparePeopleAgents);
     const agents = allAgents.filter(isVisibleAgent);
     if (activeTeamView === "people") {
       renderPeopleAgents(allAgents, agents);
@@ -7996,9 +7999,9 @@ function renderPeopleAgents(allAgents, agents) {
   const visibleTeams = peopleViewTeams();
   const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
   const teamAgents = agents.filter((agent) => isTeamInPeopleScope(agent, visibleTeamIds));
-  const allProjects = values(state.projects).sort(byId);
+  const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter((project) => isVisibleProject(project) && visibleTeamIds.has(text(project.team_id)));
-  const allRoles = values(state.roles).sort(byId);
+  const allRoles = values(state.roles).sort(compareTeamRoles);
   const roles = allRoles.filter((role) => isVisibleRole(role) && visibleTeamIds.has(text(role.team_id)));
 
   if (!visibleTeams.length) {
@@ -8615,6 +8618,13 @@ function comparePeopleTeams(left, right) {
   return teamSortKey(left).localeCompare(teamSortKey(right)) || byId(left, right);
 }
 
+function compareGovernanceGroups(left, right) {
+  return (
+    text(left?.name || left?.id).localeCompare(text(right?.name || right?.id)) ||
+    byId(left, right)
+  );
+}
+
 function comparePeopleAgents(left, right) {
   return (
     teamRecordSortKey(left).localeCompare(teamRecordSortKey(right)) ||
@@ -8641,6 +8651,17 @@ function compareTeamRoles(left, right) {
   return (
     teamRecordSortKey(left).localeCompare(teamRecordSortKey(right)) ||
     roleLabel(left).localeCompare(roleLabel(right)) ||
+    byId(left, right)
+  );
+}
+
+function compareReviewProfiles(left, right) {
+  const leftProject = state.projects?.[text(left?.project_id)] || { id: text(left?.project_id) };
+  const rightProject = state.projects?.[text(right?.project_id)] || { id: text(right?.project_id) };
+  return (
+    teamRecordSortKey(left).localeCompare(teamRecordSortKey(right)) ||
+    projectSortKey(leftProject).localeCompare(projectSortKey(rightProject)) ||
+    text(left?.name || left?.id).localeCompare(text(right?.name || right?.id)) ||
     byId(left, right)
   );
 }
@@ -10143,7 +10164,7 @@ function renderRoles() {
   if (!document.querySelector("[data-roles-view]")) {
     return;
   }
-  const allRoles = values(state.roles).sort(byId);
+  const allRoles = values(state.roles).sort(compareTeamRoles);
   const roles = allRoles.filter(isVisibleRole);
   if (!allRoles.length) {
     renderIntoActiveTargets("[data-roles-view]", `<p class="empty-state">No roles registered.</p>`);
@@ -10186,7 +10207,7 @@ function pendingInboxForAgent(agentId) {
         item.state !== "handled" &&
         pendingInboxItemIsCurrent(item),
     )
-    .sort(byId);
+    .sort(compareWorkspaceInboxItems);
 }
 
 function pendingInboxItemIsCurrent(item) {
@@ -10963,7 +10984,7 @@ function teamHierarchyGraph(team) {
   const managerId = text(team?.manager_agent_id);
   const teamAgents = values(state.agents)
     .filter((agent) => text(agent?.team_id) === teamId)
-    .sort(byId);
+    .sort(comparePeopleAgents);
   const seen = new Set();
 
   function buildNode(agentId, ancestry = {}) {
@@ -11148,7 +11169,7 @@ function inboxPriorityLabel(item) {
 
 function renderProjects() {
   rememberOpenTeamDisclosures();
-  const allProjects = values(state.projects).sort(byId);
+  const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter(isVisibleProject);
   if (!allProjects.length) {
     renderIntoActiveTargets("[data-projects-view]", `<p class="empty-state">No projects registered.</p>`);
@@ -11640,6 +11661,10 @@ function compareProjectReleasesLatest(left, right) {
   return compareProjectRecordsLatest(left, right, ["published_at", "updated_at", "created_at"]);
 }
 
+function compareReviewRequestsLatest(left, right) {
+  return compareProjectRecordsLatest(left, right, ["updated_at", "created_at"]);
+}
+
 function compareProjectRecordsLatest(left, right, fields) {
   const leftTime = projectRecordSortTime(left, fields);
   const rightTime = projectRecordSortTime(right, fields);
@@ -12117,14 +12142,14 @@ function projectSpecificReviewProfiles(project) {
   return values(state.review_profiles)
     .filter(isVisibleReviewProfile)
     .filter((profile) => profile.project_id === project.id)
-    .sort(byId);
+    .sort(compareReviewProfiles);
 }
 
 function teamWideReviewProfilesForProject(project) {
   return values(state.review_profiles)
     .filter(isVisibleReviewProfile)
     .filter((profile) => !profile.project_id && profile.team_id === project.team_id)
-    .sort(byId);
+    .sort(compareReviewProfiles);
 }
 
 function renderTaskBoard() {
@@ -14883,7 +14908,7 @@ function renderReviewProfiles() {
   if (!document.querySelector("[data-review-profiles-view]")) {
     return;
   }
-  const allProfiles = values(state.review_profiles).sort(byId);
+  const allProfiles = values(state.review_profiles).sort(compareReviewProfiles);
   const profiles = allProfiles.filter(isVisibleReviewProfile);
   if (!allProfiles.length) {
     renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No review profiles.</p>`);
@@ -15805,7 +15830,7 @@ function renderReleases() {
     return;
   }
   updateMyHumanReviewsFilterButton();
-  const allReleases = values(state.release_packages).sort(byId);
+  const allReleases = values(state.release_packages).sort(compareProjectReleasesLatest);
   const focusedRequest = focusedHumanReviewRequestId
     ? humanReviewQueue.requests.find(
         (request) => text(request.id) === focusedHumanReviewRequestId,
@@ -17662,8 +17687,12 @@ function buildReviewDeliveryRows() {
       const task = taskByDeliverable.get(deliverable.task_id) || null;
       const project = task ? projectByTask.get(task.id) || null : null;
       const team = project ? teamByProject.get(project.id) || null : null;
-      const reviewRequests = (reviewsByDeliverable.get(deliverable.id) || []).slice().sort(byId);
-      const releasePackages = (releasePackagesByDeliverable.get(deliverable.id) || []).slice().sort(byId);
+      const reviewRequests = (reviewsByDeliverable.get(deliverable.id) || [])
+        .slice()
+        .sort(compareReviewRequestsLatest);
+      const releasePackages = (releasePackagesByDeliverable.get(deliverable.id) || [])
+        .slice()
+        .sort(compareProjectReleasesLatest);
       const gitPromotionIds = [
         ...(deliverable.git_refs?.promotion_record_ids || []),
         ...releasePackages.flatMap((release) => release.git_promotion_record_ids || []),
@@ -18776,11 +18805,11 @@ function refreshSelects({ includeEditForm = false } = {}) {
 }
 
 function buildSelectOptionSets() {
-  const teams = values(state.teams).filter(isVisibleTeam).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
-  const governanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(byId).map((group) => [group.id, `${group.name} (${group.id})`]);
-  const projects = values(state.projects).filter(isVisibleProject).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
-  const roles = values(state.roles).filter(isVisibleRole).sort(byId).map((role) => [role.id, `${role.name} (${role.id})`]);
-  const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
+  const teams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams).map((team) => [team.id, `${team.name} (${team.id})`]);
+  const governanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(compareGovernanceGroups).map((group) => [group.id, `${group.name} (${group.id})`]);
+  const projects = values(state.projects).filter(isVisibleProject).sort(compareTeamProjects).map((project) => [project.id, `${project.name} (${project.id})`]);
+  const roles = values(state.roles).filter(isVisibleRole).sort(compareTeamRoles).map((role) => [role.id, `${role.name} (${role.id})`]);
+  const agents = values(state.agents).filter(isVisibleAgent).sort(comparePeopleAgents).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
   const agentsByDisplayName = values(state.agents)
     .filter(isVisibleAgent)
     .map((agent) => [agent.id, text(agent.display_name) || text(agent.id)])
@@ -18798,13 +18827,15 @@ function buildSelectOptionSets() {
     );
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const cases = values(state.cases).filter(isVisibleCase).sort(compareCases).map((item) => [item.id, caseLabel(item)]);
-  const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
+  const deliverables = values(state.deliverables)
+    .sort((left, right) => text(left.summary || left.id).localeCompare(text(right.summary || right.id)) || byId(left, right))
+    .map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
     .sort(byId)
     .map((review) => [review.id, `${review.id} - ${review.state}`]);
   const reviewProfiles = values(state.review_profiles)
     .filter(isVisibleReviewProfile)
-    .sort(byId)
+    .sort(compareReviewProfiles)
     .map((profile) => [profile.id, `${profile.name} (${profile.id})`]);
   const selectedProject = state.projects[selectedProjectFocusId] || null;
   const projectOutcomeKinds = selectedProject
@@ -18827,7 +18858,7 @@ function buildSelectOptionSets() {
         ])
     : [];
   const releasePackages = values(state.release_packages)
-    .sort(byId)
+    .sort(compareProjectReleasesLatest)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
   const timelineOptions = buildTimelineSelectOptions();
   return {
@@ -18967,7 +18998,7 @@ function projectLeadAgentOptionsForTeam(teamId) {
   return values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => text(agent.team_id) === normalizedTeamId)
-    .sort(byId)
+    .sort(comparePeopleAgents)
     .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
 }
 
@@ -22520,17 +22551,17 @@ function buildTimelineSelectOptions() {
   const filters = readTimelineFilters();
 
   values(state.teams)
-    .sort(byId)
+    .sort(comparePeopleTeams)
     .forEach((team) => {
       teamLabels.set(team.id, team.name || team.id);
     });
   values(state.projects)
-    .sort(byId)
+    .sort(compareTeamProjects)
     .forEach((project) => {
       projectLabels.set(project.id, project.name || project.id);
     });
   values(state.agents)
-    .sort(byId)
+    .sort(comparePeopleAgents)
     .forEach((agent) => {
       agentLabels.set(
         agent.id,

@@ -3252,6 +3252,14 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     .getByRole("button", { name: "Close release detail" })
     .waitFor({ state: "visible" });
   await releaseCard.locator(".release-review-detail").waitFor({ state: "visible" });
+
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const deliveryReleases = page.locator("#team-delivery-page [data-releases-view]");
+  await deliveryReleases.locator(".release-list .record-item").first().waitFor({ state: "visible" });
+  assert.equal(
+    await deliveryReleases.locator(".release-list .record-item").first().getAttribute("data-release-id"),
+    "release-rejected",
+  );
 });
 
 test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
