@@ -2554,6 +2554,34 @@ the container. It does not turn the container network into a general public rout
 
 SQL Server is also intentionally separate. `effect:agent:create` rejects the VM-style `mssql=true` and `mssql_init_root` options for container sessions. Container agents use the worker-host SQL Server through the scoped MCP provisioning operations `mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`.
 
+### Adjusting one session's CPU, memory, or process limit
+
+Admin Web can set per-job limits for one persistent container-worker agent. Unlock privileged
+operations, open **Sessions**, select the session, and add or update
+`container_worker_resource_limits` under **Metadata**. Enter the nested value as a JSON object
+snippet:
+
+```json
+{
+  "cpus": 8,
+  "pids_limit": 8192
+}
+```
+
+The object accepts `memory` as a non-empty Docker-compatible memory string, `cpus` as a positive
+number, and `pids_limit` as a positive integer. Saving it changes newly dispatched jobs; it cannot
+resize a job that is already running.
+
+Without this object, a Playwright-enabled session receives a process/thread limit of `1024`, while
+other sessions inherit the strict worker default of `512`. For an ordinary session, a non-empty
+object is the complete per-job override. Include `pids_limit` when changing CPU or memory for a
+Playwright agent, or the worker's `512` default will apply instead of the Playwright allowance.
+
+Team release-verification jobs use a separate project-wide control:
+`release_policy.resource_limits` in the Team project editor. Their built-in defaults are `8` CPUs
+and `2048` processes/threads, and configured fields override those defaults individually. Changing
+that release policy does not change the ordinary prompt or test jobs of a persistent Team agent.
+
 ### Codex metered API and ChatGPT subscription usage
 
 Container-worker Codex sessions can choose between `metered_api` and `chatgpt_subscription`.

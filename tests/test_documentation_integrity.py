@@ -252,6 +252,26 @@ def test_subscription_contract_is_covered_by_authoritative_docs() -> None:
         )
 
 
+def test_session_container_resource_limits_are_covered_by_authoritative_docs() -> None:
+    for path in (
+        ROOT / "docs/configuration-reference.md",
+        ROOT / "docs/container-worker-backend.md",
+        ROOT / "docs/admin-ui-user-manual.md",
+        ROOT / "docs/evander-user-manual/chapters/09-execution-backends.md",
+    ):
+        text = " ".join(path.read_text(encoding="utf-8").casefold().split())
+        for term in (
+            "container_worker_resource_limits",
+            "pids_limit",
+            "playwright",
+            "newly dispatched",
+            "release_policy.resource_limits",
+        ):
+            assert term in text, (
+                f"{path.relative_to(ROOT)} is missing session resource-limit term {term!r}"
+            )
+
+
 def test_mailbox_grant_contract_is_covered_by_authoritative_docs() -> None:
     for path in (
         ROOT / "docs/configuration-reference.md",

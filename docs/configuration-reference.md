@@ -738,6 +738,39 @@ runtime deep-merges that patch into the created session manifest after built-in
 create metadata such as labels, model, execution backend, and worker URL are
 assembled.
 
+For a `container_worker_vm` session, the optional
+`metadata.container_worker_resource_limits` object controls the Docker limits
+sent with each newly dispatched job for that session. It accepts only
+`memory` (a non-empty Docker-compatible memory string), `cpus` (a positive
+number), and `pids_limit` (a positive integer):
+
+```json
+{
+  "container_worker_resource_limits": {
+    "memory": "8g",
+    "cpus": 8,
+    "pids_limit": 8192
+  }
+}
+```
+
+Operators can edit the same value in Admin Web under **Sessions**: unlock
+privileged operations, select the session, add or update
+`container_worker_resource_limits` in **Metadata**, enter the nested object as
+a JSON snippet, and save. The change affects later jobs; it does not resize a
+container that is already running.
+
+For an ordinary session, a non-empty `container_worker_resource_limits` object
+is the complete per-job override. Include `pids_limit` explicitly when setting
+another field for a Playwright session: without an explicit object, Playwright
+sessions receive `pids_limit: 1024`, while other sessions inherit the strict
+worker default of `512`; an object containing only `cpus` does not retain the
+Playwright-specific `1024` value. Team release-verification sessions are
+different: their `8` CPU and `2048` PID defaults are merged with explicit
+session fields. The Team project's `release_policy.resource_limits` editor is
+the normal project-wide control for those disposable verifiers and is separate
+from an ordinary persistent agent's session metadata.
+
 `effect:agent:create.codex_auth_mode` accepts `metered_api` or
 `chatgpt_subscription` for container-worker sessions. Omitting it on an
 existing-agent upsert preserves the session's stored override; omitting it on a

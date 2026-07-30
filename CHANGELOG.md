@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-30 - Session Container Resource-limit Documentation
+
+- Documented how operators configure per-session container CPU, memory, and
+  process/thread limits through Admin Web session metadata, including accepted
+  fields, new-job timing, Playwright precedence, worker defaults, and the
+  separate Team release-verifier policy.
+
 ## 2026-07-30 - Automatic Human Review Correction Graphs
 
 - Replaced lead-authored correction reconstruction with one deterministic

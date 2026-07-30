@@ -616,6 +616,34 @@ agent hard-code a different cached browser. The session manifest also records th
 capability, and all container jobs for that session receive an explicit `pids_limit` of `1024`.
 Non-Playwright sessions continue to inherit the strict worker default of `512`.
 
+An operator can override the limits for later jobs of one persistent container-worker session
+without changing worker-wide configuration. In Admin Web, unlock privileged operations, open
+**Sessions**, select the session, and add or update the
+`container_worker_resource_limits` key in **Metadata** with this JSON object value:
+
+```json
+{
+  "memory": "8g",
+  "cpus": 8,
+  "pids_limit": 8192
+}
+```
+
+The metadata editor treats the nested value as a JSON object snippet. Supported fields are
+`memory` (a non-empty Docker-compatible memory string), `cpus` (a positive number), and
+`pids_limit` (a positive integer); unknown fields and non-positive numeric values are rejected.
+Saving the session changes newly dispatched jobs only and does not resize a running container.
+The control plane validates this host-owned session setting and sends the result to the worker as
+the first-class `resource_limits` job field; the worker does not interpret arbitrary request
+metadata.
+
+For an ordinary session, a non-empty `container_worker_resource_limits` object is the complete
+per-job override. Therefore a Playwright session whose object contains only `cpus` no longer gets
+the Playwright-specific `1024` value and falls back to the strict worker PID default of `512`;
+include `pids_limit` when changing another limit. Team release-verification sessions instead merge
+their `8` CPU and `2048` PID defaults with any explicit session fields. Their project-wide
+operator control is the separate Team project `release_policy.resource_limits` setting.
+
 Repository-local Playwright packages keep resolving normally; the worker does not replace or
 shadow them. Because Playwright's ordinary `chromium.launch()` does not consume
 `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, Playwright-enabled agent prompts include the offline launch
