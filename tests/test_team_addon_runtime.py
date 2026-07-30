@@ -4274,6 +4274,7 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
     assert "runtime_operations" not in fallback_summary
     assert "action_records" not in fallback_summary
     assert fallback_summary["summary_counts"]["open_task_count"] == 1
+    assert fallback_summary["summary_counts"]["actionable_open_task_count"] == 1
     assert fallback_summary["summary_counts"]["pending_review_request_count"] == 1
     work = {item["id"]: item for item in fallback_summary["open_work"]}
     assert work["task"]["state"] == "waiting_for_review"
@@ -4777,7 +4778,7 @@ def test_manager_fallback_authority_matches_compact_prompt_routing_gaps(
     assert fallback_summary["omitted_counts"]["routing_gaps"] == 1
 
 
-def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(
+def test_manager_fallback_skips_finished_task_deliverable_without_actionable_work(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -4816,33 +4817,13 @@ def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(
         return state
 
     repo.update(_make_task_terminal_without_review)
-    _state, leases = _team_runtime_service(repo).lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC)
     )
-    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
-    lease = leases[0]
-    assert lease["reason"] == "manager_fallback"
-
-    prompt = _build_prompt(lease)
-    context = _team_context_from_prompt(prompt)
-    fallback_summary = context["manager_fallback_summary"]
-    assert fallback_summary["summary_counts"]["open_task_count"] == 1
-    assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
-    work = {item["id"]: item for item in fallback_summary["open_work"]}
-    assert work["task"]["state"] == "finished"
-    deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
-    assert deliverables["deliverable-feature"]["state"] == "pending"
-    assert deliverables["deliverable-feature"]["git_refs"] == {
-        "branch_context_id": "ctx-task",
-        "agent_branch": "agents/session-backend/feature",
-        "feature_branch": "team/team/features/task-backend",
-        "commit_sha": "feedface",
-    }
-    assert not any(
-        "deliverable-feature" in item.get("deliverable_ids", [])
-        for item in fallback_summary["routing_gaps"]
-    )
-    assert "deliverable-feature" in prompt
+    assert leases == []
+    manager_runtime = state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+    assert manager_runtime is None or manager_runtime.wake_reason is None
 
 
 def test_manager_fallback_does_not_route_superior_acceptance_for_review(

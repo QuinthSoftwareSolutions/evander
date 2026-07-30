@@ -240,6 +240,9 @@ def _manager_fallback_summary_payload(
         "summary_counts": {
             "active_agent_count": len(team_agents),
             "open_task_count": len(visible_tasks),
+            "actionable_open_task_count": sum(
+                task.state in _NON_TERMINAL_TASK_STATES for task in visible_tasks
+            ),
             "active_deliverable_count": len(visible_deliverables),
             "review_request_count": len(visible_reviews),
             "pending_review_request_count": len(visible_pending_reviews),
@@ -268,6 +271,26 @@ def _manager_fallback_summary_payload(
         "routing_gaps": limited_routing_gaps,
         "omitted_counts": omitted_counts,
     }
+
+
+def _manager_fallback_summary_has_actionable_work(
+    summary: Mapping[str, Any],
+) -> bool:
+    """Return whether a fallback summary contains work a manager can advance."""
+
+    counts = summary.get("summary_counts")
+    if not isinstance(counts, Mapping):
+        return False
+    return any(
+        int(counts.get(key) or 0) > 0
+        for key in (
+            "actionable_open_task_count",
+            "pending_review_request_count",
+            "pending_inbox_count",
+            "failed_action_count",
+            "routing_gap_count",
+        )
+    )
 
 
 def _manager_fallback_review_routing_authorities(
@@ -977,6 +1000,7 @@ __all__ = [
     "_MANAGER_FALLBACK_PENDING_REVIEW_STATES",
     "_manager_fallback_task_visible_for_work",
     "_manager_fallback_summary_payload",
+    "_manager_fallback_summary_has_actionable_work",
     "_manager_fallback_review_routing_authorities",
     "_manager_fallback_review_routing_authority_error",
     "_manager_fallback_time",

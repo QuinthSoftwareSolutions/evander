@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-30 - Empty Manager Fallback Suppression
+
+- Stopped periodic manager-fallback dispatches when a team appears open only
+  because non-superseded pending deliverables remain attached to terminal
+  tasks, with no nonterminal work, pending review or inbox, failed action, or
+  review-routing gap that the manager can advance.
+- Preserved manager fallback wakes for genuinely actionable team oversight and
+  review-routing work.
+
 ## 2026-07-30 - Workflow Generator Model Compatibility
 
 - Stopped sending the unsupported `temperature` parameter from workflow-generation

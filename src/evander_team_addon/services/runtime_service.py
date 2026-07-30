@@ -112,6 +112,7 @@ from .domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
     _manager_fallback_review_routing_authorities,
     _manager_fallback_summary_payload,
+    _manager_fallback_summary_has_actionable_work,
 )
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
@@ -1029,6 +1030,16 @@ class TeamRuntimeService:
                     manager=manager,
                     now=effective_now,
                 )
+                if not _manager_fallback_summary_has_actionable_work(
+                    manager_fallback_summary
+                ):
+                    continue
+                manager_fallback_routing_authorities = (
+                    _manager_fallback_review_routing_authorities(
+                        state_model,
+                        summary=manager_fallback_summary,
+                    )
+                )
                 manager_reservation_scope = build_agent_dispatch_scope(
                     state_model,
                     agent=manager,
@@ -1058,12 +1069,7 @@ class TeamRuntimeService:
                     session_id=manager.session_id,
                     cause_kind="manager_fallback",
                     status=TeamDispatchStatus.PREPARING,
-                    review_routing_authorities=(
-                        _manager_fallback_review_routing_authorities(
-                            state_model,
-                            summary=manager_fallback_summary,
-                        )
-                    ),
+                    review_routing_authorities=manager_fallback_routing_authorities,
                     created_at=effective_now,
                     **manager_scope.model_fields(),
                 )
