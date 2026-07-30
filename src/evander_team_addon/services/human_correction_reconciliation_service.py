@@ -37,6 +37,12 @@ _MAX_RECONCILIATION_ATTEMPTS = 3
 _HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX = (
     "human-correction-aggregation:"
 )
+_TERMINAL_COORDINATION_PARENT_STATES = {
+    TeamTaskState.FINISHED,
+    TeamTaskState.ACCEPTED,
+    TeamTaskState.REJECTED,
+    TeamTaskState.CANCELLED,
+}
 
 
 def _stable_token(*parts: str, length: int = 24) -> str:
@@ -131,6 +137,15 @@ def _coordination_parent_id(case: TeamCase) -> str | None:
     return text or None
 
 
+def _finish_coordination_parent(parent: Any, *, now: datetime) -> bool:
+    if parent.state in _TERMINAL_COORDINATION_PARENT_STATES:
+        return False
+    parent.state = TeamTaskState.FINISHED
+    parent.updated_at = now
+    parent.state_entered_at = now
+    return True
+
+
 def _legacy_case_can_convert(state: Any, case: TeamCase, findings: list[Any]) -> bool:
     if _coordination_parent_id(case) is not None or not findings:
         return False
@@ -156,7 +171,10 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
     successors = _successors(state, predecessor.id)
     if successors:
         parent = state.tasks.get(_coordination_parent_id(case) or "")
-        return parent is not None and parent.state != TeamTaskState.FINISHED
+        return (
+            parent is not None
+            and parent.state not in _TERMINAL_COORDINATION_PARENT_STATES
+        )
     if any(
         blocker.reason_code == "human_correction_aggregation_failed"
         for blocker in active_blockers_for_source(
@@ -315,12 +333,11 @@ def _reconcile_case(
     successors = _successors(state, predecessor.id)
     if successors:
         parent = state.tasks.get(_coordination_parent_id(case) or "")
-        changed = False
-        if parent is not None and parent.state != TeamTaskState.FINISHED:
-            parent.state = TeamTaskState.FINISHED
-            parent.updated_at = now
-            parent.state_entered_at = now
-            changed = True
+        changed = (
+            _finish_coordination_parent(parent, now=now)
+            if parent is not None
+            else False
+        )
         result.setdefault("existing_successor_release_package_ids", []).extend(
             release.id for release in successors
         )
@@ -502,9 +519,7 @@ def _reconcile_case(
         return True
     for project_id in sorted(projects_to_recalculate):
         _recalculate_project_status(state, project_id)
-    parent.state = TeamTaskState.FINISHED
-    parent.updated_at = now
-    parent.state_entered_at = now
+    _finish_coordination_parent(parent, now=now)
     result.setdefault("created_successor_release_package_ids", []).append(created_id)
     result.setdefault("events", []).extend(package_result.get("events") or [])
     result.setdefault("git_promotion_event_ids", []).extend(

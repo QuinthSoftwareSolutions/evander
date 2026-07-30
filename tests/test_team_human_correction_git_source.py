@@ -312,6 +312,16 @@ def test_libvirt_correction_worktree_fetches_and_checks_pinned_candidate() -> No
     assert f"pinned_base_commit={CANDIDATE_COMMIT}" in command
     assert f"pinned_base_tree={CANDIDATE_TREE}" in command
     assert 'git worktree add -b "$branch" "$target" "$base_commitish"' in command
+    head_capture = 'head_before="$(git -C "$target" rev-parse HEAD)"'
+    pinned_ancestry_check = (
+        'git -C "$target" merge-base --is-ancestor '
+        '"$pinned_base_commit" "$head_before"'
+    )
+    assert pinned_ancestry_check in command
+    assert command.index(head_capture) < command.index(pinned_ancestry_check)
+    assert command.index(pinned_ancestry_check) < command.index(
+        'current_dependency_provenance='
+    )
 
 
 def test_correction_git_context_records_candidate_base_and_manifest_sources(

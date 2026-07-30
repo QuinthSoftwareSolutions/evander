@@ -33,6 +33,7 @@ from evander_team_addon.models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    TaskCancellation,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.domain.blockers import resolve_blocker
@@ -305,6 +306,42 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
             if release.supersedes_release_package_id == "release-rejected"
         ]
     ) == 1
+
+
+def test_reconciliation_preserves_cancelled_coordination_parent(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _cancel_parent(state: TeamState) -> TeamState:
+        parent = state.tasks["human-correction-aggregate"]
+        parent.state = TeamTaskState.CANCELLED
+        parent.cancellation = TaskCancellation(
+            reason_code="operator_cancelled",
+            reason="The coordination task is no longer needed.",
+            actor_kind="operator",
+            actor_id="operator:lead",
+            cancelled_at=NOW,
+        )
+        parent.updated_at = NOW
+        parent.state_entered_at = NOW
+        return state
+
+    repo.update(_cancel_parent)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+    parent = state.tasks["human-correction-aggregate"]
+
+    assert result["created_successor_release_package_ids"]
+    assert parent.state == TeamTaskState.CANCELLED
+    assert parent.cancellation is not None
+    assert parent.cancellation.reason_code == "operator_cancelled"
+    assert parent.cancellation.actor_id == "operator:lead"
+
+    revision = state.revision
+    replay = HumanCorrectionReconciliationService(repo).reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == revision
 
 
 def test_reconciliation_converts_one_active_legacy_case_once(

@@ -7896,6 +7896,12 @@ def _prepare_project_repo_task_worktree(
             'evander.baseCommit || true)"'
         ),
         'head_before="$(git -C "$target" rev-parse HEAD)"',
+        'if [ -n "$pinned_base_commit" ]; then',
+        (
+            '  git -C "$target" merge-base --is-ancestor '
+            '"$pinned_base_commit" "$head_before"'
+        ),
+        "fi",
         'if [ -n "$expected_prior_base" ]; then',
         (
             '  if [ -n "$configured_base" ]; then test "$configured_base" = '

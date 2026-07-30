@@ -18,8 +18,12 @@
   choices instead of opaque deliverable-ID text fields when a choice exists.
 - Pinned correction worktrees to the rejected release commit and tree, with
   authoritative managed-Git verification and idempotent preparation recovery.
+- Rejected retained libvirt correction worktrees whose current head no longer
+  descends from the pinned rejected candidate.
 - Added automatic resolution evidence derivation and changed-successor release
   packaging after all correction children have accepted, reviewed work.
+- Preserved cancelled and other terminal correction coordination parents when
+  reconciliation creates or observes the successor release.
 
 ## 2026-07-30 - Local Container Worker Subscription Login
 
