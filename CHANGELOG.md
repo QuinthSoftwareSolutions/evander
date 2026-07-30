@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-30 - Workflow Generator Model Compatibility
+
+- Stopped sending the unsupported `temperature` parameter from workflow-generation
+  Responses API requests, allowing models that reject sampling controls to generate
+  draft workflows.
+
 ## 2026-07-30 - Team UI Record Ordering
 
 - Sorted Delivery releases and related release/review history newest-first by

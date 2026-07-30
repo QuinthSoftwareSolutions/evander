@@ -10880,6 +10880,7 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert captured_requests
     request_payload = captured_requests[0]["payload"]
     assert request_payload["model"] == "gpt-workflow-test"
+    assert "temperature" not in request_payload
     assert request_payload["text"]["format"]["type"] == "json_schema"
     assert request_payload["text"]["format"]["strict"] is True
     schema = request_payload["text"]["format"]["schema"]
