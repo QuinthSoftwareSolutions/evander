@@ -360,7 +360,7 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     assert report_issue_route.methods == {"POST"}
     for path in (
         "/human-review-findings/{human_review_finding_id}/resolution-proposal",
-        "/human-review-findings/{human_review_finding_id}/correction-root",
+        "/human-review-findings/{human_review_finding_id}/route",
         "/cases/{case_id}/close-post-release",
     ):
         mutation_route = next(route for route in routes if route.path == path)
@@ -1033,6 +1033,29 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
 
     repo.update(_attach_project_git)
     _attach_pending_human_review(repo)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="source-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=4,
+        title="Source contribution",
+        description="Provide the source contribution.",
+        created_by_agent_id="lead",
+    )
+    _team_admin_service(repo).record_deliverable(
+        deliverable_id="source-deliverable",
+        task_id="source-task",
+        producer_agent_id="backend",
+        summary="Source contribution summary.",
+    )
+
+    def _attach_contribution_graph(state):
+        state.release_packages["release-1"].manifest.contribution_graph = {
+            "deliverable": ["source-deliverable"],
+        }
+        return state
+
+    repo.update(_attach_contribution_graph)
     managed_repo_calls: list[tuple[str, str | None]] = []
 
     class _ManagedGit:
@@ -1077,10 +1100,37 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     assert detail.status_code == 200
     assert detail.json()["release"]["candidate_commit_sha"] == "candidate-sha"
     assert detail.json()["project"]["name"] == "Project"
+    assert detail.json()["target_deliverable_options"] == [
+        {
+            "deliverable_id": "deliverable",
+            "task_id": "waiting-task",
+            "task_title": "Waiting task",
+            "producer": {
+                "agent_id": "backend",
+                "display_name": "backend",
+            },
+            "summary": "Waiting task deliverable.",
+            "is_top_level": True,
+        },
+        {
+            "deliverable_id": "source-deliverable",
+            "task_id": "source-task",
+            "task_title": "Source contribution",
+            "producer": {
+                "agent_id": "backend",
+                "display_name": "backend",
+            },
+            "summary": "Source contribution summary.",
+            "is_top_level": False,
+        },
+    ]
     assert release_detail.status_code == 200
     assert release_detail.json()["human_review"]["requests"][0]["id"] == (
         "human-review-1"
     )
+    assert release_detail.json()["human_review"]["requests"][0][
+        "target_deliverable_options"
+    ] == detail.json()["target_deliverable_options"]
     assert release_detail.json()["candidate_checkout"] == {
         "canonical_repository_identity": "azure-devops:org/project/app",
         "repository_display_name": "ExampleIndustryAPP",
@@ -1306,7 +1356,7 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     ]
     assert len(wake_events) == 1
     assert wake_events[0].event_id == decided_payload["published_event_ids"][0]
-    assert wake_events[0].payload["agent_id"] == "lead"
+    assert wake_events[0].payload["agent_id"] == "backend"
     assert wake_events[0].payload["reason"] == "inbox"
 
     replay = client.post(
@@ -1913,19 +1963,23 @@ def test_human_finding_correction_and_post_release_closure_admin_api(
     )
 
     created = client.post(
-        "/human-review-findings/human-finding-api/correction-root",
+        "/human-review-findings/human-finding-api/route",
         json={
             "owner_agent_id": "backend",
-            "title": "Correct release-wide behavior",
-            "description": "Implement and verify the independent correction.",
-            "originating_task_id": "human-correction-triage",
             "expected_revision": repo.read().revision,
-            "request_id": "create-correction-root-api",
+            "request_id": "route-correction-api",
         },
     )
-    assert created.status_code == 201, created.text
+    assert created.status_code == 200, created.text
     correction_task_id = created.json()["correction_task"]["id"]
-    assert created.json()["correction_task"]["parent_task_id"] is None
+    assert correction_task_id == "human-correction-triage"
+    aggregation_task_id = repo.read().cases[
+        "human-correction-case"
+    ].metadata["human_correction_aggregation_task_id"]
+    assert (
+        created.json()["correction_task"]["parent_task_id"]
+        == aggregation_task_id
+    )
     assert created.json()["correction_task"]["assessment"]["task_id"] == (
         correction_task_id
     )

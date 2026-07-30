@@ -2981,7 +2981,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             }
         )
 
-    async def create_human_finding_correction_root(
+    async def route_human_finding_correction(
         request: Request,
     ) -> JSONResponse:
         payload = await _read_payload(request)
@@ -2994,14 +2994,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 status_code=404,
             )
         state, result = (
-            admin_service.create_human_finding_correction_root_with_result(
+            admin_service.route_human_finding_correction_with_result(
                 finding_id=finding_id,
                 owner_agent_id=_required(payload, "owner_agent_id"),
-                title=_required(payload, "title"),
-                description=_required(payload, "description"),
-                task_id=_optional(payload, "task_id"),
-                originating_task_id=_optional(payload, "originating_task_id"),
-                created_by_user_id=_operator_actor_from_request(
+                target_deliverable_ids=_optional_string_list(
+                    payload,
+                    "target_deliverable_ids",
+                ),
+                routed_by_user_id=_operator_actor_from_request(
                     context.auth,
                     request,
                 ),
@@ -3022,7 +3022,6 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     state.tasks[correction_task_id],
                 ),
             },
-            status_code=201,
         )
 
     async def close_post_release_feedback_case(
@@ -3628,8 +3627,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         route(
-            "/human-review-findings/{human_review_finding_id}/correction-root",
-            create_human_finding_correction_root,
+            "/human-review-findings/{human_review_finding_id}/route",
+            route_human_finding_correction,
             methods=["POST"],
         ),
         route(

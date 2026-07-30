@@ -52,7 +52,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 27
+    assert TEAM_AGENT_GUIDANCE_VERSION == 28
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content
@@ -68,7 +68,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "stable reason code and reason" in content
     assert "submits an assessable delivered/evidenced-noop contribution" in content
     assert "team_report_blocker" in content
-    assert "team_create_human_finding_correction_root" in content
+    assert "team_route_human_finding_correction" in content
     assert "team_propose_human_finding_resolution" in content
     assert "never substitutes for the human decision" in content
     assert "team_close_post_release_case" in content

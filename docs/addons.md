@@ -1082,7 +1082,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_create_case`
 - `team_update_case`
 - `team_propose_human_finding_resolution`
-- `team_create_human_finding_correction_root`
+- `team_route_human_finding_correction`
 - `team_close_post_release_case`
 - `team_create_task`
 - `team_create_tasks`

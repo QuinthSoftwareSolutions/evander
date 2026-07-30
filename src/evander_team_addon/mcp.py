@@ -95,8 +95,8 @@ TEAM_UPDATE_CASE_TOOL = "team_update_case"
 TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = (
     "team_propose_human_finding_resolution"
 )
-TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL = (
-    "team_create_human_finding_correction_root"
+TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = (
+    "team_route_human_finding_correction"
 )
 TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
@@ -173,7 +173,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
-    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
@@ -254,7 +254,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
-    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
@@ -310,7 +310,7 @@ MCP_TOOL_NAMES = (
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
-    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_TASKS_TOOL,
@@ -1301,14 +1301,11 @@ def _register_slice6_tools(
         ),
     )
 
-    def team_create_human_finding_correction_root(
+    def team_route_human_finding_correction(
         finding_id: str,
         owner_agent_id: str,
-        title: str,
-        description: str,
         request_id: str,
-        task_id: str | None = None,
-        originating_task_id: str | None = None,
+        target_deliverable_ids: list[str] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1316,19 +1313,16 @@ def _register_slice6_tools(
     ) -> dict[str, Any]:
         caller = resolver.require_persistent_action_context(
             session_id=session_id,
-            tool_name=TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+            tool_name=TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
         )
         try:
             _state, result = (
-                case_commands.create_human_finding_correction_root_command(
+                case_commands.route_human_finding_correction_command(
                     session_id=caller.session_id,
                     finding_id=finding_id,
                     owner_agent_id=owner_agent_id,
-                    title=title,
-                    description=description,
                     request_id=request_id,
-                    task_id=task_id,
-                    originating_task_id=originating_task_id,
+                    target_deliverable_ids=target_deliverable_ids,
                     handled_inbox_item_ids=handled_inbox_item_ids,
                     correlation_id=correlation_id,
                     causation_id=causation_id,
@@ -1339,12 +1333,12 @@ def _register_slice6_tools(
         return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
-        team_create_human_finding_correction_root,
-        name=TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+        team_route_human_finding_correction,
+        name=TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
         description=(
-            "Create and retarget an independent correction root for an ambiguous "
-            "or release-wide human-review finding. Requires root-task authority "
-            "and request_id."
+            "Route the existing correction child for an ambiguous human-review "
+            "finding to a project assignee, optionally recording affected "
+            "deliverables. This does not create or rewrite the task."
         ),
     )
 

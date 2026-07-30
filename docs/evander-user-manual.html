@@ -10592,9 +10592,10 @@ feedback story. A case is not a hidden parent task.</li>
 <p>For example, an investigation child whose result must be integrated
 belongs under the incident outcome. A newly discovered, separately
 releasable improvement is an independent root with optional provenance.
-Human correction tasks are likewise independent roots linked by a
-correction case; they do not rewrite or become children of the accepted
-historical task.</p>
+Human review corrections use one coordination-only parent inside the
+correction case and one child per immutable finding. Those children may
+retain provenance to the historical source task, but they never rewrite
+or become children of that accepted historical task.</p>
 <h3 id="explicit-integration-and-final-acceptance-boundaries">Explicit
 integration and final-acceptance boundaries</h3>
 <p>Do not infer the task that owns final integration from words such as
@@ -11148,9 +11149,13 @@ principle. A <code>changes_requested</code> decision atomically:</p>
 <li>ends the pinned release attempt without queuing canonical
 publication;</li>
 <li>creates or reuses one correction <code>TeamCase</code>;</li>
-<li>creates independent correction or project-lead triage roots;</li>
-<li>links each finding to its current correction task; and</li>
-<li>creates or reuses the Team inbox and work-due consequences.</li>
+<li>creates one coordination-only parent and one exact-text child per
+finding;</li>
+<li>derives the affected candidate work and direct owner when that
+mapping is deterministic;</li>
+<li>links each finding to its child task; and</li>
+<li>creates or reuses the Team inbox, immediate wake, and work-due
+consequences.</li>
 </ol>
 <p>The idempotency key covers the complete cascade. A retry or racing
 identical terminal decision reuses the same decision, case, tasks,
@@ -11158,12 +11163,25 @@ notices, and wake obligations. A failure in any part rolls the
 transition back; Team never leaves a recorded human veto without
 actionable correction work, or correction work without the veto that
 authorized it.</p>
-<p>The system may create those narrowly scoped correction roots because
-the authenticated request and target release already authorize the
+<p>The affected-deliverable list is optional. A sole reviewed candidate
+deliverable is inferred. With several candidate contributions, the human
+can choose named work in the form; an omitted selection routes directly
+only when all applicable work has one active owner. Otherwise the
+distinct finding child stays with the project lead until
+<code>team_route_human_finding_correction</code> assigns its owner.</p>
+<p>The system may create this narrowly scoped graph because the
+authenticated request and target release already authorize the
 same-team, same-project relationship. It does not grant
 <code>create_root_task</code> to the original agent. Accepted tasks,
 deliverables, agent reviews, and the predecessor candidate remain
-immutable.</p>
+immutable. Correction worktree preparation verifies the rejected release
+ref, commit, and tree, then uses that immutable candidate as the base
+regardless of later movement on the main branch.</p>
+<p>After every finding child has exactly one current accepted correction
+deliverable with required review evidence, Team derives the resolution
+summary and evidence from those deliverables and creates one changed
+successor release automatically. The coordination parent produces no
+deliverable and finishes when that successor exists.</p>
 <h2 id="idempotency">Idempotency</h2>
 <p><strong>Idempotency</strong> means that repeating the same request
 has the same business effect as making it once. It matters when the
@@ -14222,12 +14240,14 @@ enforcement, audit messages, and operator recovery, then chooses
 <strong>Request changes</strong> because the HMI warning does not
 identify the commissioned limit.</li>
 <li>The decision atomically ends the attempt without publication,
-records the finding, creates one human-review correction case, creates
-an independent HMI correction root with provenance to the UI task, and
-queues its owner. The accepted original work remains immutable.</li>
-<li>The correction root is decomposed, its new contributions are
-accepted, and the finding receives a proposed resolution plus evidence.
-The lead requests a successor from the predecessor release and candidate
+records the finding, creates one human-review correction case and
+coordination parent, creates one exact-text HMI correction child with
+provenance to the UI task, and queues its derived owner. The accepted
+original work remains immutable.</li>
+<li>The correction child starts from the verified rejected candidate.
+Its reviewed correction deliverable is accepted, Team derives the
+finding&#39;s proposed resolution and evidence, and Team automatically
+creates one successor from the predecessor release and candidate
 baseline. The new tree must differ, while original scope, corrections,
 and the carried finding remain visible.</li>
 <li>The successor reruns automated and agent gates. Its preview cannot
@@ -17753,11 +17773,13 @@ create a new preparation generation</td>
 </tr>
 <tr class="odd">
 <td>Human requested changes but no publication follows</td>
-<td>This is expected: predecessor decision/findings, correction
-case/root tasks, and successor link</td>
+<td>Predecessor decision/findings, correction coordination parent and
+children, preparation blockers, accepted correction deliverables, and
+successor link</td>
 <td>Human correction lifecycle</td>
-<td>Complete and accept correction work, propose finding resolutions,
-and create a changed successor that reruns every gate</td>
+<td>Route only ambiguous children, repair any pinned-candidate
+preparation blocker, and complete reviewed correction work. Team derives
+proposals and creates the changed successor automatically</td>
 </tr>
 <tr class="even">
 <td>Successor is approved but publication is refused</td>
@@ -18098,9 +18120,12 @@ execution environment. It receives session-scoped configuration and
 narrow host URLs, never the host&#39;s general secret set.</p>
 <h2 id="h">H</h2>
 <p><strong>Human review finding</strong><br> An immutable actionable
-issue from a human changes-requested decision, linked to correction or
-triage work. It stays open through successor lineage until a later
-approved human decision explicitly confirms its carried resolution.</p>
+issue from a human changes-requested decision, linked to its own child
+under a coordination-only correction parent. A deterministic
+candidate/owner mapping routes that child directly; an ambiguous mapping
+waits for explicit routing. The finding stays open through successor
+lineage until a later approved human decision explicitly confirms its
+carried resolution.</p>
 <p><strong>Human review request</strong><br> A release-gate record
 pinned to one candidate SHA/tree, reviewer assignment, checklist, and
 manual or prepared test target. Only a real eligible Admin user with

@@ -35,6 +35,7 @@ from .domain.git_promotion import (
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _normalized_release_deliverable_set,
+    allowed_release_parent_task_ids,
 )
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
@@ -445,6 +446,13 @@ def _release_publication_validation_error(
             state,
             project_id=release.project_id,
             deliverable_ids=release.deliverable_ids,
+            allowed_parent_task_ids=allowed_release_parent_task_ids(
+                state,
+                project_id=release.project_id,
+                predecessor_release_package_id=(
+                    release.supersedes_release_package_id
+                ),
+            ),
         )
     except TaskAssessmentBoundaryError as exc:
         return (

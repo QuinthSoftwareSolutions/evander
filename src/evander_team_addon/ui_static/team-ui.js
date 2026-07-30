@@ -1920,7 +1920,10 @@ function bindForms() {
     const humanReviewFindingField = event.target?.closest?.(
       '[name="human_finding_text"], [name="human_finding_target_deliverable_ids"], [name="human_finding_evidence_refs"]',
     );
-    if (humanReviewFindingField instanceof HTMLTextAreaElement) {
+    if (
+      humanReviewFindingField instanceof HTMLTextAreaElement
+      || humanReviewFindingField instanceof HTMLInputElement
+    ) {
       humanReviewFindingField
         .closest("[data-human-review-finding-row]")
         ?.querySelector?.('[name="human_finding_text"]')
@@ -16347,7 +16350,11 @@ function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
       ${renderHumanReviewTarget(target)}
       ${renderHumanChecklistHistory(checklist)}
       ${renderHumanDecisionHistory(decisions)}
-      ${renderHumanFindingHistory(findings, request.correction_tasks || [])}
+      ${renderHumanFindingHistory(
+        findings,
+        request.correction_tasks || [],
+        request.target_deliverable_options || [],
+      )}
       ${request.state === "pending" ? renderHumanReviewDecisionForm(request, checklist, carriedFindings) : ""}
       ${renderHumanReviewOwnerActions(request)}
       ${renderTechnicalDetails([
@@ -16395,7 +16402,36 @@ function renderHumanDecisionHistory(decisions) {
   </li>`).join("")}</ul>`;
 }
 
-function renderHumanFindingHistory(findings, correctionTasks) {
+function humanReviewTargetOptionLabel(option) {
+  const title =
+    text(option?.task_title) ||
+    text(option?.summary) ||
+    text(option?.deliverable_id) ||
+    "Included work";
+  const producer =
+    text(option?.producer?.display_name) ||
+    text(option?.producer?.agent_id);
+  const parts = [
+    title,
+    producer ? `by ${producer}` : "",
+    option?.is_top_level ? "included deliverable" : "contribution",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function humanReviewTargetLabels(targetIds, targetOptions) {
+  const optionsById = new Map(
+    (targetOptions || []).map((option) => [text(option.deliverable_id), option]),
+  );
+  return (targetIds || []).map((deliverableId) => {
+    const option = optionsById.get(text(deliverableId));
+    return option
+      ? humanReviewTargetOptionLabel(option)
+      : text(deliverableId);
+  });
+}
+
+function renderHumanFindingHistory(findings, correctionTasks, targetOptions = []) {
   if (!findings.length && !correctionTasks.length) {
     return "";
   }
@@ -16405,7 +16441,7 @@ function renderHumanFindingHistory(findings, correctionTasks) {
       <ul class="delivery-detail-list">
         ${findings.map((finding) => `<li>
           <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
-          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` - targets ${escapeHtml(finding.target_deliverable_ids.join(", "))}` : ""}</div>
+          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` · affected work: ${escapeHtml(humanReviewTargetLabels(finding.target_deliverable_ids, targetOptions).join(", "))}` : ""}</div>
           ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
           ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
         </li>`).join("")}
@@ -16422,7 +16458,35 @@ function humanReviewFindingListFieldValue(value) {
   return value === null || value === undefined ? "" : String(value);
 }
 
-function renderHumanReviewFindingRow(finding = {}) {
+function renderHumanReviewTargetSelector(targetOptions, selectedTargetIds) {
+  if ((targetOptions || []).length <= 1) {
+    return "";
+  }
+  const selected = new Set(splitList(selectedTargetIds));
+  return `
+    <div class="human-review-finding-targets" role="group" aria-label="Affected work">
+      <span>Affected work <small>(optional)</small></span>
+      <div class="human-review-finding-target-options">
+        ${targetOptions.map((option) => `
+          <label class="checkbox-label">
+            <input
+              type="checkbox"
+              name="human_finding_target_deliverable_ids"
+              value="${escapeAttr(option.deliverable_id)}"
+              ${selected.has(text(option.deliverable_id)) ? "checked" : ""}
+            />
+            <span>
+              <strong>${escapeHtml(humanReviewTargetOptionLabel(option))}</strong>
+              ${option.summary && text(option.summary) !== text(option.task_title) ? `<small>${escapeHtml(readablePreview(option.summary, 180))}</small>` : ""}
+            </span>
+          </label>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderHumanReviewFindingRow(finding = {}, targetOptions = []) {
   return `
     <div class="human-review-finding-row" data-human-review-finding-row>
       <div class="human-review-finding-row-heading">
@@ -16442,14 +16506,10 @@ function renderHumanReviewFindingRow(finding = {}) {
         >${escapeHtml(finding.text || "")}</textarea>
       </label>
       <div class="human-review-finding-metadata">
-        <label>
-          <span>Target deliverable IDs <small>(optional)</small></span>
-          <textarea
-            name="human_finding_target_deliverable_ids"
-            rows="2"
-            placeholder="One ID per line"
-          >${escapeHtml(humanReviewFindingListFieldValue(finding.target_deliverable_ids))}</textarea>
-        </label>
+        ${renderHumanReviewTargetSelector(
+          targetOptions,
+          finding.target_deliverable_ids,
+        )}
         <label>
           <span>Evidence references <small>(optional)</small></span>
           <textarea
@@ -16463,9 +16523,13 @@ function renderHumanReviewFindingRow(finding = {}) {
   `;
 }
 
-function renderHumanReviewFindingsEditor() {
+function renderHumanReviewFindingsEditor(targetOptions = []) {
   return `
-    <div class="human-review-findings-editor" data-human-review-findings-editor>
+    <div
+      class="human-review-findings-editor"
+      data-human-review-findings-editor
+      data-human-review-target-options="${escapeAttr(JSON.stringify(targetOptions))}"
+    >
       <div class="human-review-findings-heading">
         <strong>Findings</strong>
         <span>Required only when requesting changes.</span>
@@ -16479,6 +16543,15 @@ function renderHumanReviewFindingsEditor() {
       >Add finding</button>
     </div>
   `;
+}
+
+function humanReviewTargetOptionsFromEditor(editor) {
+  try {
+    const options = JSON.parse(editor?.dataset?.humanReviewTargetOptions || "[]");
+    return Array.isArray(options) ? options : [];
+  } catch {
+    return [];
+  }
 }
 
 function syncHumanReviewFindingEditor(editor) {
@@ -16508,7 +16581,10 @@ function addHumanReviewFindingRow(editor, finding = {}) {
     return;
   }
   const wrapper = document.createElement("div");
-  wrapper.innerHTML = renderHumanReviewFindingRow(finding);
+  wrapper.innerHTML = renderHumanReviewFindingRow(
+    finding,
+    humanReviewTargetOptionsFromEditor(editor),
+  );
   const row = wrapper.firstElementChild;
   if (!row) {
     return;
@@ -16530,9 +16606,11 @@ function removeHumanReviewFindingRow(button) {
 function humanReviewFindingFromRow(row) {
   return {
     text: text(row.querySelector('[name="human_finding_text"]')?.value),
-    target_deliverable_ids: splitList(
-      row.querySelector('[name="human_finding_target_deliverable_ids"]')?.value,
-    ),
+    target_deliverable_ids: Array.from(
+      row.querySelectorAll(
+        'input[name="human_finding_target_deliverable_ids"]:checked',
+      ),
+    ).map((field) => text(field.value)).filter(Boolean),
     evidence_refs: splitList(
       row.querySelector('[name="human_finding_evidence_refs"]')?.value,
     ),
@@ -16581,8 +16659,11 @@ function humanReviewFindingsFromForm(form, { validate = false } = {}) {
 function humanReviewFindingDraftFromRow(row) {
   return {
     text: row.querySelector('[name="human_finding_text"]')?.value || "",
-    target_deliverable_ids:
-      row.querySelector('[name="human_finding_target_deliverable_ids"]')?.value || "",
+    target_deliverable_ids: Array.from(
+      row.querySelectorAll(
+        'input[name="human_finding_target_deliverable_ids"]:checked',
+      ),
+    ).map((field) => text(field.value)).filter(Boolean),
     evidence_refs:
       row.querySelector('[name="human_finding_evidence_refs"]')?.value || "",
   };
@@ -16604,8 +16685,9 @@ function restoreHumanReviewFindingsDraft(form, findings) {
   if (!rows || !Array.isArray(findings)) {
     return;
   }
+  const targetOptions = humanReviewTargetOptionsFromEditor(editor);
   rows.innerHTML = findings
-    .map((finding) => renderHumanReviewFindingRow(finding))
+    .map((finding) => renderHumanReviewFindingRow(finding, targetOptions))
     .join("");
   decorateFieldTooltips(rows);
   syncHumanReviewFindingEditor(editor);
@@ -16625,7 +16707,7 @@ function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
       }
       <label>Decision summary<textarea name="summary" rows="3" placeholder="What was tested and why this decision is appropriate"></textarea></label>
       <label>Evidence references<textarea name="evidence_refs" rows="2" placeholder="artifact-space:..., one per line"></textarea></label>
-      ${renderHumanReviewFindingsEditor()}
+      ${renderHumanReviewFindingsEditor(request.target_deliverable_options || [])}
       <div class="record-actions">
         <button type="submit" class="record-action human-review-approve" data-human-review-decision="approved">Approve</button>
         <button type="submit" class="record-action" data-human-review-decision="changes_requested" formnovalidate>Request changes</button>

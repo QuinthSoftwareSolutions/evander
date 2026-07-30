@@ -151,9 +151,11 @@ Use the relationship that describes the real lifecycle:
 
 For example, an investigation child whose result must be integrated belongs
 under the incident outcome. A newly discovered, separately releasable
-improvement is an independent root with optional provenance. Human correction
-tasks are likewise independent roots linked by a correction case; they do not
-rewrite or become children of the accepted historical task.
+improvement is an independent root with optional provenance. Human review
+corrections use one coordination-only parent inside the correction case and one
+child per immutable finding. Those children may retain provenance to the
+historical source task, but they never rewrite or become children of that
+accepted historical task.
 
 ### Explicit integration and final-acceptance boundaries
 

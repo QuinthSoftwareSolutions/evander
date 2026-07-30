@@ -92,7 +92,7 @@ from .mcp import (
     TEAM_ASK_QUESTION_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
-    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
@@ -217,6 +217,10 @@ from .services.domain.preparation_failures import (
     record_review_preparation_failure,
     record_task_preparation_failure,
 )
+from .services.domain.correction_git_source import (
+    HumanReviewCorrectionGitSource,
+    human_review_correction_git_source,
+)
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
 from .services.domain.review import (
@@ -240,6 +244,9 @@ from .services.git_release_service import TeamGitReleaseService
 from .services.human_review_assignment_service import (
     human_review_eligibility_resolver,
     reconcile_current_human_review_assignments,
+)
+from .services.human_correction_reconciliation_service import (
+    HumanCorrectionReconciliationService,
 )
 from .services.release_gate_service import TeamReleaseGateService
 from .services.release_verification_effects import EffectReleaseVerificationExecutor
@@ -267,7 +274,7 @@ from .services.worktree_cleanup_service import (
     team_task_worktree_cleanup_lock,
 )
 
-TEAM_AGENT_GUIDANCE_VERSION = 27
+TEAM_AGENT_GUIDANCE_VERSION = 28
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -2105,6 +2112,25 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        human_correction_reconciliation: dict[str, Any] = {}
+        human_correction_reconciliation_error: str | None = None
+        try:
+            human_correction_reconciliation = (
+                HumanCorrectionReconciliationService(repo).reconcile()
+            )
+            if human_correction_reconciliation.get("events"):
+                human_correction_reconciliation["published_event_ids"] = (
+                    _publish_team_events(
+                        context,
+                        human_correction_reconciliation["events"],
+                    )
+                )
+        except Exception as exc:
+            # Correction reconciliation is durable and retried on the next Team
+            # cycle. A single malformed case must not suppress unrelated wakes.
+            human_correction_reconciliation_error = (
+                str(exc) or exc.__class__.__name__
+            )
         human_review_assignment_reconciliation: dict[str, Any] = {}
         human_review_assignment_reconciliation_error: str | None = None
         try:
@@ -2572,6 +2598,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "human_review_assignment_reconciliation": (human_review_assignment_reconciliation),
             "human_review_assignment_reconciliation_error": (
                 human_review_assignment_reconciliation_error
+            ),
+            "human_correction_reconciliation": human_correction_reconciliation,
+            "human_correction_reconciliation_error": (
+                human_correction_reconciliation_error
             ),
             "errors": errors,
         }
@@ -4067,6 +4097,18 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if not active_dispatches:
                 break
         if finalized_count:
+            try:
+                correction_result = HumanCorrectionReconciliationService(
+                    repo
+                ).reconcile()
+                _publish_team_events(
+                    context,
+                    correction_result.get("events"),
+                )
+            except Exception:
+                # The normal Team reconciliation cycle retries durable
+                # correction-case aggregation without reopening this dispatch.
+                pass
             _publish_team_outbox_events(
                 context=context,
                 repo=repo,
@@ -5996,9 +6038,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "an accepted deliverable satisfying deliverable_contract.\n"
         f"- Use {TEAM_CREATE_CASE_TOOL} and {TEAM_UPDATE_CASE_TOOL} for intake, "
         "source references, priority, owner, lifecycle, and case-task links.\n"
-        f"- For an ambiguous or release-wide human-review finding, use "
-        f"{TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL} to create and retarget "
-        "an independent correction root. After accepted correction deliverables "
+        f"- For an ambiguous human-review finding, use "
+        f"{TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL} to route its existing "
+        "correction child without rewriting the finding or task. After accepted "
+        "correction deliverables "
         f"exist, use {TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL} with concrete "
         "evidence; that proposal never substitutes for the human decision. Close "
         f"a post-release feedback case with {TEAM_CLOSE_POST_RELEASE_CASE_TOOL} "
@@ -7125,23 +7168,46 @@ def _create_project_repo_git_work_contexts(
     ):
         task_id = _required_text(task.get("id"), "task.id")
         agent_branch = _project_repo_agent_branch(session_id, task_id=task_id)
-        dependency_git_sources = _project_repo_task_dependency_git_sources(
+        managed_repo_id = _required_text(
+            project_repo.get("managed_repo_id"),
+            "managed_repo_id",
+        )
+        correction_source = _verified_human_review_correction_git_source(
             context,
             state=state,
             task_id=task_id,
-            managed_repo_id=_required_text(
-                project_repo.get("managed_repo_id"),
-                "managed_repo_id",
-            ),
+            managed_repo_id=managed_repo_id,
         )
-        try:
-            prior_base_commit = _prior_project_repo_task_base_commit(
-                state,
-                agent_id=agent_id,
+        if correction_source is not None:
+            dependency_git_sources = [
+                source.model_dump(mode="json")
+                for source in correction_source.dependency_git_sources
+            ]
+            effective_base_branch = correction_source.release_branch
+            prior_base_commit = correction_source.candidate_commit_sha
+            pinned_base_commit = correction_source.candidate_commit_sha
+            pinned_base_tree = correction_source.candidate_tree_hash
+            composition_git_sources: list[dict[str, str]] = []
+        else:
+            dependency_git_sources = _project_repo_task_dependency_git_sources(
+                context,
+                state=state,
                 task_id=task_id,
-                agent_branch=agent_branch,
-                dependency_git_sources=dependency_git_sources,
+                managed_repo_id=managed_repo_id,
             )
+            effective_base_branch = base_branch
+            pinned_base_commit = None
+            pinned_base_tree = None
+            composition_git_sources = dependency_git_sources
+        try:
+            if correction_source is None:
+                prior_base_commit = _prior_project_repo_task_base_commit(
+                    state,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    agent_branch=agent_branch,
+                    dependency_git_sources=dependency_git_sources,
+                )
         except RuntimeError as exc:
             if dependency_git_sources:
                 raise DependencyGitPreparationError(
@@ -7160,9 +7226,11 @@ def _create_project_repo_git_work_contexts(
                 session_id=session_id,
                 task_id=task_id,
                 agent_branch=agent_branch,
-                base_ref=base_branch or "HEAD",
+                base_ref=effective_base_branch or "HEAD",
                 prior_base_commit=prior_base_commit,
-                dependency_git_sources=dependency_git_sources,
+                pinned_base_commit=pinned_base_commit,
+                pinned_base_tree=pinned_base_tree,
+                dependency_git_sources=composition_git_sources,
             )
             context_id = _project_repo_git_work_context_id(
                 agent_id=agent_id,
@@ -7178,15 +7246,33 @@ def _create_project_repo_git_work_contexts(
                     raise RuntimeError(
                         f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
                     )
-                current_dependency_git_sources = _project_repo_task_dependency_git_sources(
+                current_correction_source = _verified_human_review_correction_git_source(
                     context,
                     state=state,
                     task_id=task_id,
-                    managed_repo_id=_required_text(
-                        project_repo.get("managed_repo_id"),
-                        "managed_repo_id",
-                    ),
+                    managed_repo_id=managed_repo_id,
                 )
+                current_dependency_git_sources = (
+                    [
+                        source.model_dump(mode="json")
+                        for source in current_correction_source.dependency_git_sources
+                    ]
+                    if current_correction_source is not None
+                    else _project_repo_task_dependency_git_sources(
+                        context,
+                        state=state,
+                        task_id=task_id,
+                        managed_repo_id=managed_repo_id,
+                    )
+                )
+                if current_correction_source != correction_source:
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"task {task_id} rejected-candidate Git source changed "
+                            "during worktree preparation; no lease was granted"
+                        ),
+                    )
                 if current_dependency_git_sources != dependency_git_sources:
                     raise DependencyGitPreparationError(
                         task_id=task_id,
@@ -7203,7 +7289,8 @@ def _create_project_repo_git_work_contexts(
                         task_id=task_id,
                         dispatch_id=dispatch_id,
                         agent_branch=agent_branch,
-                        base_branch=base_branch,
+                        base_branch=effective_base_branch,
+                        base_commit=base_commit,
                         worktree_path=worktree_path,
                         dependency_git_sources=dependency_git_sources,
                     )
@@ -7214,7 +7301,7 @@ def _create_project_repo_git_work_contexts(
                         agent_id=agent_id,
                         task_id=task_id,
                         agent_branch=agent_branch,
-                        base_branch=base_branch,
+                        base_branch=effective_base_branch,
                         base_commit=base_commit,
                         dispatch_id=dispatch_id,
                         worktree_path=worktree_path,
@@ -7258,6 +7345,7 @@ def _validate_project_repo_git_work_context(
     dispatch_id: str,
     agent_branch: str,
     base_branch: str | None,
+    base_commit: str | None,
     worktree_path: str,
     dependency_git_sources: Sequence[Mapping[str, str]],
 ) -> None:
@@ -7267,6 +7355,7 @@ def _validate_project_repo_git_work_context(
         "dispatch_id": dispatch_id,
         "agent_branch": agent_branch,
         "base_branch": base_branch,
+        "base_commit": base_commit,
         "worktree_path": worktree_path,
         "dependency_git_sources": [dict(row) for row in dependency_git_sources],
     }
@@ -7294,6 +7383,81 @@ def _project_repo_agent_branch(session_id: str, *, task_id: str) -> str:
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
     return validate_branch_name(f"agents/{session_id}/tasks/{task_slug}-{task_hash}")
+
+
+def _verified_human_review_correction_git_source(
+    context: Any,
+    *,
+    state: Any,
+    task_id: str,
+    managed_repo_id: str,
+) -> HumanReviewCorrectionGitSource | None:
+    try:
+        source = human_review_correction_git_source(
+            state,
+            task_id=task_id,
+        )
+    except ValueError as exc:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=str(exc),
+        ) from None
+    if source is None:
+        return None
+    task = state.tasks.get(task_id)
+    project = state.projects.get(task.project_id) if task is not None else None
+    project_git = getattr(project, "git", None)
+    if project_git is None or project_git.managed_repo_id != managed_repo_id:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                f"human review correction task {task_id} rejected candidate belongs "
+                "to a different managed repository"
+            ),
+        )
+    managed_git = getattr(
+        getattr(context, "admin_service", None),
+        "managed_git_admin",
+        None,
+    )
+    resolve_snapshot = getattr(managed_git, "resolve_snapshot", None)
+    if not callable(resolve_snapshot):
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                "managed Git snapshot verification is unavailable; cannot verify "
+                f"the rejected candidate for correction task {task_id}"
+            ),
+        )
+    try:
+        snapshot = resolve_snapshot(
+            managed_repo_id,
+            project_git.directory_path,
+            source_ref=source.release_branch,
+            commit_sha=source.candidate_commit_sha,
+            tree_hash=source.candidate_tree_hash,
+        )
+    except Exception as exc:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                f"could not verify rejected candidate for correction task "
+                f"{task_id}: {exc}"
+            ),
+        ) from None
+    if (
+        _optional_text(snapshot.get("commit_sha")) or ""
+    ).casefold() != source.candidate_commit_sha or (
+        _optional_text(snapshot.get("tree_hash")) or ""
+    ).casefold() != source.candidate_tree_hash:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                f"managed Git returned incomplete rejected-candidate provenance "
+                f"for correction task {task_id}"
+            ),
+        )
+    return source
 
 
 def _project_repo_task_dependency_git_sources(
@@ -7530,6 +7694,8 @@ def _prepare_project_repo_task_worktree(
     agent_branch: str,
     base_ref: str,
     prior_base_commit: str | None = None,
+    pinned_base_commit: str | None = None,
+    pinned_base_tree: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
 ) -> tuple[str, str | None]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
@@ -7551,11 +7717,11 @@ def _prepare_project_repo_task_worktree(
                 worktree_name=worktree_name,
                 branch=agent_branch,
                 base_ref=base_ref,
-                expected_base_commit_sha=prior_base_commit,
+                expected_base_commit_sha=pinned_base_commit or prior_base_commit,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
             )
         except Exception as exc:
-            if dependency_git_sources:
+            if dependency_git_sources or pinned_base_commit is not None:
                 raise DependencyGitPreparationError(
                     task_id=task_id,
                     message=str(exc),
@@ -7570,19 +7736,31 @@ def _prepare_project_repo_task_worktree(
         if base_commit_sha is None and bool(getattr(record, "created", False)):
             base_commit_sha = _optional_text(record.commit_sha)
         if base_commit_sha is None:
-            base_commit_sha = _optional_text(prior_base_commit)
+            base_commit_sha = _optional_text(pinned_base_commit or prior_base_commit)
         if base_commit_sha is None:
             error = (
                 "reused task worktree did not report its base commit and no "
                 "authoritative prior Git work context can recover it; preserve "
                 f"{record.target_dir} and repair evander.baseCommit before retrying"
             )
-            if dependency_git_sources:
+            if dependency_git_sources or pinned_base_commit is not None:
                 raise DependencyGitPreparationError(
                     task_id=task_id,
                     message=error,
                 )
             raise RuntimeError(error)
+        if (
+            pinned_base_commit is not None
+            and base_commit_sha.casefold() != pinned_base_commit.casefold()
+        ):
+            raise DependencyGitPreparationError(
+                task_id=task_id,
+                message=(
+                    f"prepared worktree {record.target_dir} reports base "
+                    f"{base_commit_sha}, not pinned rejected candidate "
+                    f"{pinned_base_commit}"
+                ),
+            )
         return record.target_dir, base_commit_sha
     if execution_backend != "libvirt_vm":
         raise RuntimeError(
@@ -7595,6 +7773,8 @@ def _prepare_project_repo_task_worktree(
     quoted_branch = shlex.quote(agent_branch)
     quoted_base = shlex.quote(base_ref)
     quoted_prior_base = shlex.quote(prior_base_commit or "")
+    quoted_pinned_base = shlex.quote(pinned_base_commit or "")
+    quoted_pinned_tree = shlex.quote(pinned_base_tree or "")
     dependency_provenance_json = json.dumps(
         [dict(row) for row in dependency_git_sources],
         sort_keys=True,
@@ -7672,7 +7852,10 @@ def _prepare_project_repo_task_worktree(
         f"target={quoted_target}",
         f"branch={quoted_branch}",
         f"base={quoted_base}",
+        'base_commitish="$base"',
         f"expected_prior_base={quoted_prior_base}",
+        f"pinned_base_commit={quoted_pinned_base}",
+        f"pinned_base_tree={quoted_pinned_tree}",
         f"expected_dependency_provenance={quoted_dependency_provenance}",
         f"lock={quoted_lock}",
         'mkdir -p "$(dirname "$lock")"',
@@ -7680,13 +7863,26 @@ def _prepare_project_repo_task_worktree(
         "flock 9",
         'mkdir -p "$(dirname "$target")"',
         "git config extensions.worktreeConfig true",
+        'if [ -n "$pinned_base_commit" ]; then',
+        '  test -n "$pinned_base_tree"',
+        '  git fetch --no-tags origin "refs/heads/$base"',
+        (
+            '  test "$(git rev-parse --verify FETCH_HEAD^{commit})" = '
+            '"$pinned_base_commit"'
+        ),
+        (
+            '  test "$(git rev-parse --verify "$pinned_base_commit^{tree}")" = '
+            '"$pinned_base_tree"'
+        ),
+        '  base_commitish="$pinned_base_commit"',
+        "fi",
         "created=0",
         'if [ -e "$target/.git" ]; then',
         '  test "$(git -C "$target" branch --show-current)" = "$branch"',
         'elif git show-ref --verify --quiet "refs/heads/$branch"; then',
         '  git worktree add "$target" "$branch"',
         "else",
-        '  git worktree add -b "$branch" "$target" "$base"',
+        '  git worktree add -b "$branch" "$target" "$base_commitish"',
         "  created=1",
         "fi",
         'git -C "$target" config --worktree evander.workBranch "$branch"',
@@ -7779,7 +7975,7 @@ def _prepare_project_repo_task_worktree(
             or _optional_text(result.get("message"))
             or f"failed to prepare task worktree {worktree_path}"
         )
-        if dependency_git_sources:
+        if dependency_git_sources or pinned_base_commit is not None:
             raise DependencyGitPreparationError(
                 task_id=task_id,
                 message=error,

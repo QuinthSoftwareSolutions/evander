@@ -56,6 +56,12 @@ HUMAN_REVIEW_TARGET_EXPIRED = "human_review_target_expired"
 HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY = (
     "_human_review_eligibility_resolver"
 )
+HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = (
+    "human_correction_aggregation_task_id"
+)
+HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY = (
+    "human_correction_ambiguous_finding_ids"
+)
 
 
 def human_review_request_for_release(
@@ -626,31 +632,25 @@ def record_human_finding_resolution_proposal(
     return finding
 
 
-def create_human_finding_correction_root(
+def route_human_finding_correction(
     state: TeamState,
     *,
     finding_id: str,
     owner_agent_id: str,
-    title: str,
-    description: str,
-    request_id: str,
     result: dict[str, Any],
-    task_id: str | None = None,
-    originating_task_id: str | None = None,
-    created_by_agent_id: str | None = None,
-    created_by_actor: str | None = None,
+    target_deliverable_ids: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> AgentTask:
-    """Retarget one ambiguous finding to a new independent correction root."""
+    """Route an existing ambiguous finding child without recreating its task."""
 
     normalized_finding_id = str(finding_id or "").strip()
     finding = state.human_review_findings.get(normalized_finding_id)
     if finding is None:
         raise ValueError(f"human review finding {normalized_finding_id} does not exist")
     if finding.state != "open":
-        raise ValueError("resolved findings cannot be retargeted")
+        raise ValueError("resolved findings cannot be routed")
     if finding.proposed_resolution or finding.proposed_by_deliverable_ids:
-        raise ValueError("a finding with a resolution proposal cannot be retargeted")
+        raise ValueError("a finding with a resolution proposal cannot be routed")
 
     source_request = state.human_review_requests.get(
         finding.source_human_review_request_id
@@ -676,100 +676,233 @@ def create_human_finding_correction_root(
         or case.project_id != release.project_id
     ):
         raise ValueError("human review finding has no valid correction case")
-    specific_origin_id, _specific_owner_id = _specific_finding_route(
+    legacy_conversion = not str(
+        case.metadata.get(HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY) or ""
+    ).strip()
+    ensure_human_correction_aggregation(
         state,
-        release=release,
-        target_deliverable_ids=finding.target_deliverable_ids,
+        case=case,
+        result=result,
+        now=now,
     )
-    if specific_origin_id is not None:
+    aggregation_task_id = str(
+        case.metadata.get(HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY) or ""
+    ).strip()
+    aggregation_task = state.tasks.get(aggregation_task_id)
+    if (
+        aggregation_task is None
+        or aggregation_task.case_id != case.id
+        or current_task.id == aggregation_task.id
+        or current_task.parent_task_id != aggregation_task.id
+    ):
         raise ValueError(
-            "only an ambiguous or release-wide finding can be retargeted "
-            "through the triage correction-root command"
+            "human review finding is not attached to a valid correction "
+            "aggregation task"
         )
+    ambiguous_finding_ids = {
+        str(value).strip()
+        for value in (
+            case.metadata.get(HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY) or []
+        )
+        if str(value).strip()
+    }
+    if finding.id not in ambiguous_finding_ids and not legacy_conversion:
+        raise ValueError("only an ambiguous human-review finding can be routed")
 
     project = state.projects.get(release.project_id)
     owner = state.agents.get(str(owner_agent_id or "").strip())
     if project is None or owner is None:
-        raise ValueError("correction root requires a valid project owner")
+        raise ValueError("correction routing requires a valid project owner")
     if (
-        owner.team_id != project.team_id
+        owner.status != AgentStatus.ACTIVE
+        or owner.team_id != project.team_id
         or not agent_has_project_assignment(state, owner.id, project.id)
     ):
         raise ValueError(
-            f"correction root owner {owner.id} is not assigned to project {project.id}"
+            f"correction owner {owner.id} is not an active assignee for "
+            f"project {project.id}"
         )
-    normalized_origin_id = str(originating_task_id or "").strip() or None
-    if normalized_origin_id is not None:
-        origin = state.tasks.get(normalized_origin_id)
-        if origin is None or origin.project_id != project.id:
-            raise ValueError(
-                f"originating task {normalized_origin_id} must belong to "
-                f"project {project.id}"
-            )
-
-    normalized_title = str(title or "").strip()
-    normalized_description = str(description or "").strip()
-    normalized_request_id = str(request_id or "").strip()
-    if not normalized_title:
-        raise ValueError("correction root title is required")
-    if not normalized_description:
-        raise ValueError("correction root description is required")
-    if not normalized_request_id:
-        raise ValueError("request_id is required")
-    if (created_by_agent_id is None) == (created_by_actor is None):
-        raise ValueError("correction root requires exactly one creator identity")
-
-    normalized_task_id = str(task_id or "").strip() or (
-        "human-correction-"
-        + _stable_token(
-            source_request.id,
-            finding.id,
-            normalized_request_id,
-            length=24,
+    if target_deliverable_ids is not None:
+        normalized_target_ids = sorted(
+            {
+                str(value).strip()
+                for value in target_deliverable_ids
+                if str(value).strip()
+            }
         )
-    )
-    if normalized_task_id in state.tasks:
-        raise ValueError(f"task {normalized_task_id} already exists")
+        _validate_human_finding_targets(
+            release,
+            [{"text": finding.text, "target_deliverable_ids": normalized_target_ids}],
+        )
+        finding.target_deliverable_ids = normalized_target_ids
+
     effective_now = now or utc_now()
-    correction_task = AgentTask(
-        id=normalized_task_id,
-        owner_agent_id=owner.id,
-        project_id=project.id,
-        case_id=case.id,
-        priority=current_task.priority,
-        state=TeamTaskState.PENDING,
-        task_kind=TeamTaskKind.SUPPORT,
-        title=normalized_title,
-        description=normalized_description,
-        created_by_agent_id=created_by_agent_id,
-        created_by_actor=created_by_actor,
-        originating_task_id=normalized_origin_id,
-        created_at=effective_now,
-        updated_at=effective_now,
-        state_entered_at=effective_now,
-    )
-    state.tasks[correction_task.id] = correction_task
-    if correction_task.id not in case.task_ids:
-        case.task_ids.append(correction_task.id)
+    previous_owner_id = current_task.owner_agent_id
+    current_task.owner_agent_id = owner.id
+    current_task.updated_at = effective_now
     case.status = TeamCaseStatus.IN_PROGRESS
     case.updated_at = effective_now
-    finding.correction_task_id = correction_task.id
+    ambiguous_finding_ids.discard(finding.id)
+    case.metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = sorted(
+        ambiguous_finding_ids
+    )
+    for item in state.inbox.values():
+        if (
+            item.task_id == current_task.id
+            and item.recipient_agent_id == previous_owner_id
+            and item.state == TeamInboxItemState.PENDING
+        ):
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = effective_now
+            result.setdefault("handled_inbox_item_ids", []).append(item.id)
     _ensure_correction_inbox(
         state,
         request_key=(
-            f"{source_request.id}:retarget:{finding.id}:{correction_task.id}"
+            f"{source_request.id}:route:{finding.id}:{current_task.id}"
         ),
         owner_agent_id=owner.id,
-        task=correction_task,
+        task=current_task,
         case=case,
         result=result,
         now=effective_now,
+        finding_id=finding.id,
+        aggregation_task_id=aggregation_task.id,
     )
     result["human_review_finding_id"] = finding.id
-    result["correction_task_id"] = correction_task.id
-    result.setdefault("created_task_ids", []).append(correction_task.id)
+    result["correction_task_id"] = current_task.id
+    result["previous_owner_agent_id"] = previous_owner_id
+    result["owner_agent_id"] = owner.id
     _recalculate_project_status(state, project.id)
-    return correction_task
+    return current_task
+
+
+def ensure_human_correction_aggregation(
+    state: TeamState,
+    *,
+    case: TeamCase,
+    result: dict[str, Any],
+    now: datetime | None = None,
+) -> AgentTask:
+    """Ensure the deterministic coordination parent for a correction case."""
+
+    if case.source != "human_release_review" or not case.source_ref:
+        raise ValueError("correction aggregation requires a human-review case")
+    request = state.human_review_requests.get(case.source_ref)
+    release = (
+        state.release_packages.get(request.release_package_id)
+        if request is not None
+        else None
+    )
+    if request is None or release is None or release.project_id != case.project_id:
+        raise ValueError("human-review correction case has invalid release lineage")
+    project = state.projects.get(release.project_id)
+    if project is None:
+        raise ValueError("human-review correction case has no valid project")
+    lead_id = project_lead_agent_id(state, project.id) or project.lead_agent_id
+    deterministic_task_id = (
+        f"human-correction-aggregation-"
+        f"{_stable_token(request.id, length=24)}"
+    )
+    configured_task_id = str(
+        case.metadata.get(HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY) or ""
+    ).strip()
+    case_findings = sorted(
+        (
+            finding
+            for finding in state.human_review_findings.values()
+            if finding.source_human_review_request_id == request.id
+            and finding.state == "open"
+        ),
+        key=lambda finding: (finding.created_at, finding.id),
+    )
+    if not configured_task_id:
+        correction_task_ids = [
+            finding.correction_task_id for finding in case_findings
+        ]
+        if len(set(correction_task_ids)) != len(correction_task_ids):
+            raise ValueError(
+                "legacy human-review findings share one correction task and "
+                "cannot be converted automatically"
+            )
+        if len(case_findings) > 1:
+            legacy_ambiguous_ids = {
+                str(value).strip()
+                for value in (
+                    case.metadata.get(
+                        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+                    )
+                    or []
+                )
+                if str(value).strip()
+            }
+            legacy_ambiguous_ids.update(
+                finding.id for finding in case_findings
+            )
+            case.metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = (
+                sorted(legacy_ambiguous_ids)
+            )
+    aggregation_task_id = configured_task_id or deterministic_task_id
+    aggregation_task = state.tasks.get(aggregation_task_id)
+    effective_now = now or utc_now()
+    changed = False
+    if aggregation_task is None:
+        if configured_task_id:
+            raise ValueError(
+                "human-review case references a missing correction aggregation task"
+            )
+        aggregation_task = _ensure_system_task(
+            state,
+            task_id=deterministic_task_id,
+            project_id=project.id,
+            case=case,
+            owner_agent_id=lead_id,
+            title=f"Coordinate human review corrections for {release.id}",
+            description=(
+                "Track the correction findings for this rejected release "
+                "candidate. Child tasks contain the actionable work."
+            ),
+            parent_task_id=None,
+            originating_task_id=None,
+            now=effective_now,
+        )
+        result.setdefault("created_task_ids", []).append(aggregation_task.id)
+        changed = True
+    elif (
+        aggregation_task.case_id != case.id
+        or aggregation_task.project_id != project.id
+        or aggregation_task.parent_task_id is not None
+    ):
+        raise ValueError("correction aggregation task has invalid case lineage")
+    if (
+        case.metadata.get(HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY)
+        != aggregation_task.id
+    ):
+        case.metadata[HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY] = (
+            aggregation_task.id
+        )
+        changed = True
+    if case.metadata.get("human_correction_graph_version") != 1:
+        case.metadata["human_correction_graph_version"] = 1
+        changed = True
+    for finding in case_findings:
+        correction_task = state.tasks.get(finding.correction_task_id)
+        if correction_task is None or correction_task.id == aggregation_task.id:
+            continue
+        if correction_task.case_id != case.id:
+            raise ValueError(
+                f"finding {finding.id} correction task belongs to another case"
+            )
+        if correction_task.parent_task_id != aggregation_task.id:
+            correction_task.parent_task_id = aggregation_task.id
+            correction_task.updated_at = effective_now
+            result.setdefault("reparented_correction_task_ids", []).append(
+                correction_task.id
+            )
+            changed = True
+    if changed:
+        case.updated_at = effective_now
+    result["correction_aggregation_task_id"] = aggregation_task.id
+    return aggregation_task
 
 
 def close_post_release_feedback_case(
@@ -931,6 +1064,7 @@ def report_post_release_feedback(
         owner_agent_id=lead_id,
         title=f"Triage post-release feedback for {release.id}",
         description=case.description,
+        parent_task_id=None,
         originating_task_id=None,
         now=effective_now,
     )
@@ -1015,7 +1149,14 @@ def _apply_changes_requested(
     state.cases[case.id] = case
     result.setdefault("created_case_ids", []).append(case.id)
 
-    ambiguous_task: AgentTask | None = None
+    aggregation_task = ensure_human_correction_aggregation(
+        state,
+        case=case,
+        result=result,
+        now=now,
+    )
+    wake_owner_ids: set[str] = set()
+    ambiguous_finding_ids: set[str] = set()
     for position, raw in enumerate(finding_inputs):
         text = str(raw.get("text") or "").strip()
         if not text:
@@ -1023,52 +1164,43 @@ def _apply_changes_requested(
         target_ids = sorted(
             {
                 str(value).strip()
-                for value in raw.get("target_deliverable_ids", [])
+                for value in (raw.get("target_deliverable_ids") or [])
                 if str(value).strip()
             }
         )
         evidence_refs = sorted(
             {
                 str(value).strip()
-                for value in raw.get("evidence_refs", [])
+                for value in (raw.get("evidence_refs") or [])
                 if str(value).strip()
             }
         )
-        origin_task_id, owner_id = _specific_finding_route(
+        (
+            target_ids,
+            origin_task_id,
+            owner_id,
+            is_ambiguous,
+        ) = _human_finding_route(
             state,
             release=release,
             target_deliverable_ids=target_ids,
         )
         finding_id = f"human-finding-{_stable_token(request.id, str(position), text, length=24)}"
-        if origin_task_id is None:
-            if ambiguous_task is None:
-                ambiguous_task = _ensure_system_task(
-                    state,
-                    task_id=f"human-triage-{_stable_token(request.id, length=24)}",
-                    project_id=project.id,
-                    case=case,
-                    owner_agent_id=lead_id,
-                    title=f"Triage human findings for {release.id}",
-                    description=(
-                        "Route release-wide or multi-owner findings into explicit "
-                        "independent correction roots."
-                    ),
-                    originating_task_id=None,
-                    now=now,
-                )
-            correction_task = ambiguous_task
-        else:
-            correction_task = _ensure_system_task(
-                state,
-                task_id=f"human-correction-{_stable_token(finding_id, length=24)}",
-                project_id=project.id,
-                case=case,
-                owner_agent_id=owner_id,
-                title=f"Correct human finding: {text[:96]}",
-                description=text,
-                originating_task_id=origin_task_id,
-                now=now,
-            )
+        correction_task = _ensure_system_task(
+            state,
+            task_id=f"human-correction-{_stable_token(finding_id, length=24)}",
+            project_id=project.id,
+            case=case,
+            owner_agent_id=owner_id,
+            title=text,
+            description=text,
+            parent_task_id=aggregation_task.id,
+            originating_task_id=origin_task_id,
+            now=now,
+        )
+        result.setdefault("created_task_ids", []).append(correction_task.id)
+        if is_ambiguous:
+            ambiguous_finding_ids.add(finding_id)
         finding = state.human_review_findings.get(finding_id)
         if finding is None:
             finding = HumanReviewFinding(
@@ -1092,6 +1224,24 @@ def _apply_changes_requested(
             case=case,
             result=result,
             now=now,
+            finding_id=finding.id,
+            aggregation_task_id=aggregation_task.id,
+            request_wake=False,
+        )
+        wake_owner_ids.add(correction_task.owner_agent_id)
+
+    case.metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = sorted(
+        ambiguous_finding_ids
+    )
+    for owner_id in sorted(wake_owner_ids):
+        _append_agent_wake_requested_event(
+            state,
+            agent_id=owner_id,
+            result=result,
+            reason="inbox",
+            now=now,
+            delay_seconds=0,
+            idempotency_suffix=f"human-review:{request.id}:corrections",
         )
 
     request.state = "changes_requested"
@@ -1165,38 +1315,28 @@ def _validate_human_review_system_record_ids(
         record_id=case_id,
         record_kind="case",
     )
-    checked_task_ids: set[str] = set()
+    aggregation_task_id = (
+        f"human-correction-aggregation-"
+        f"{_stable_token(request.id, length=24)}"
+    )
+    _require_system_record_id_available(
+        state.tasks,
+        record_id=aggregation_task_id,
+        record_kind="task",
+    )
     for position, raw in enumerate(finding_inputs):
         text = str(raw.get("text") or "").strip()
         if not text:
             raise ValueError(
                 f"human finding {position + 1} requires actionable text"
             )
-        target_ids = sorted(
-            {
-                str(value).strip()
-                for value in (raw.get("target_deliverable_ids") or [])
-                if str(value).strip()
-            }
+        finding_id = (
+            f"human-finding-"
+            f"{_stable_token(request.id, str(position), text, length=24)}"
         )
-        origin_task_id, _owner_id = _specific_finding_route(
-            state,
-            release=release,
-            target_deliverable_ids=target_ids,
+        task_id = (
+            f"human-correction-{_stable_token(finding_id, length=24)}"
         )
-        if origin_task_id is None:
-            task_id = f"human-triage-{_stable_token(request.id, length=24)}"
-        else:
-            finding_id = (
-                f"human-finding-"
-                f"{_stable_token(request.id, str(position), text, length=24)}"
-            )
-            task_id = (
-                f"human-correction-{_stable_token(finding_id, length=24)}"
-            )
-        if task_id in checked_task_ids:
-            continue
-        checked_task_ids.add(task_id)
         _require_system_record_id_available(
             state.tasks,
             record_id=task_id,
@@ -1224,34 +1364,68 @@ def _reviewed_candidate_deliverable_ids(
     return candidate_ids
 
 
-def _specific_finding_route(
+def _human_finding_route(
     state: TeamState,
     *,
     release: ReleasePackage,
     target_deliverable_ids: Sequence[str],
-) -> tuple[str | None, str]:
+) -> tuple[list[str], str | None, str, bool]:
     project = state.projects[release.project_id]
     lead_id = project_lead_agent_id(state, project.id) or project.lead_agent_id
-    if len(target_deliverable_ids) != 1:
-        return None, lead_id
-    deliverable = state.deliverables.get(target_deliverable_ids[0])
-    task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
+    normalized_target_ids = sorted(
+        {
+            str(value).strip()
+            for value in target_deliverable_ids
+            if str(value).strip()
+        }
+    )
+    manifest = release.manifest
     if (
-        deliverable is None
-        or task is None
-        or task.project_id != release.project_id
-        or deliverable.id not in _reviewed_candidate_deliverable_ids(release)
+        not normalized_target_ids
+        and manifest is not None
+        and len(manifest.deliverables) == 1
     ):
-        return None, lead_id
-    owner = state.agents.get(task.owner_agent_id)
+        normalized_target_ids = [manifest.deliverables[0].deliverable_id]
+
+    route_deliverable_ids = (
+        normalized_target_ids
+        if normalized_target_ids
+        else sorted(_reviewed_candidate_deliverable_ids(release))
+    )
+    if not route_deliverable_ids:
+        return normalized_target_ids, None, lead_id, True
+    tasks: list[AgentTask] = []
+    for deliverable_id in route_deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        task = (
+            state.tasks.get(deliverable.task_id)
+            if deliverable is not None
+            else None
+        )
+        if (
+            deliverable is None
+            or task is None
+            or task.project_id != release.project_id
+        ):
+            return normalized_target_ids, None, lead_id, True
+        tasks.append(task)
+    owner_ids = {task.owner_agent_id for task in tasks}
+    origin_task_ids = {task.id for task in tasks}
+    origin_task_id = (
+        next(iter(origin_task_ids)) if len(origin_task_ids) == 1 else None
+    )
+    if len(owner_ids) != 1:
+        return normalized_target_ids, origin_task_id, lead_id, True
+    owner_id = next(iter(owner_ids))
+    owner = state.agents.get(owner_id)
     if (
         owner is None
         or owner.status != AgentStatus.ACTIVE
         or owner.team_id != project.team_id
         or not agent_has_project_assignment(state, owner.id, project.id)
     ):
-        return task.id, lead_id
-    return task.id, owner.id
+        return normalized_target_ids, origin_task_id, lead_id, True
+    return normalized_target_ids, origin_task_id, owner.id, False
 
 
 def _ensure_system_task(
@@ -1263,6 +1437,7 @@ def _ensure_system_task(
     owner_agent_id: str,
     title: str,
     description: str,
+    parent_task_id: str | None,
     originating_task_id: str | None,
     now: datetime,
 ) -> AgentTask:
@@ -1282,6 +1457,7 @@ def _ensure_system_task(
         title=title,
         description=description,
         created_by_actor="system:human-review",
+        parent_task_id=parent_task_id,
         originating_task_id=originating_task_id,
         created_at=now,
         updated_at=now,
@@ -1303,6 +1479,9 @@ def _ensure_correction_inbox(
     case: TeamCase,
     result: dict[str, Any],
     now: datetime,
+    finding_id: str | None = None,
+    aggregation_task_id: str | None = None,
+    request_wake: bool = True,
 ) -> AgentInboxItem:
     inbox_id = f"inbox-human-review-{_stable_token(request_key, owner_agent_id, task.id, length=24)}"
     existing = state.inbox.get(inbox_id)
@@ -1322,6 +1501,16 @@ def _ensure_correction_inbox(
             "human_review_request_id": request_key,
             "case_id": case.id,
             "task_id": task.id,
+            **(
+                {"human_review_finding_id": finding_id}
+                if finding_id is not None
+                else {}
+            ),
+            **(
+                {"correction_aggregation_task_id": aggregation_task_id}
+                if aggregation_task_id is not None
+                else {}
+            ),
         },
         state=TeamInboxItemState.PENDING,
         created_at=now,
@@ -1329,15 +1518,16 @@ def _ensure_correction_inbox(
     )
     state.inbox[item.id] = item
     _mark_agent_work_due(state, agent_id=owner_agent_id, now=now)
-    _append_agent_wake_requested_event(
-        state,
-        agent_id=owner_agent_id,
-        result=result,
-        reason="inbox",
-        now=now,
-        delay_seconds=0,
-        idempotency_suffix=f"human-review:{request_key}:{task.id}",
-    )
+    if request_wake:
+        _append_agent_wake_requested_event(
+            state,
+            agent_id=owner_agent_id,
+            result=result,
+            reason="inbox",
+            now=now,
+            delay_seconds=0,
+            idempotency_suffix=f"human-review:{request_key}:{task.id}",
+        )
     result.setdefault("created_inbox_item_ids", []).append(item.id)
     return item
 
@@ -1657,6 +1847,8 @@ def _stable_token(*values: str, length: int = 32) -> str:
 
 
 __all__ = [
+    "HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY",
+    "HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY",
     "HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE",
     "HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY",
     "HUMAN_REVIEW_PREPARATION_FAILED",
@@ -1665,7 +1857,7 @@ __all__ = [
     "HUMAN_REVIEW_TARGET_EXPIRED",
     "HUMAN_REVIEW_TESTING_BLOCKED",
     "close_post_release_feedback_case",
-    "create_human_finding_correction_root",
+    "ensure_human_correction_aggregation",
     "ensure_human_review_request",
     "expire_human_review_targets",
     "human_review_request_for_release",
@@ -1675,5 +1867,6 @@ __all__ = [
     "record_human_review_decision",
     "record_human_review_preparation_result",
     "report_post_release_feedback",
+    "route_human_finding_correction",
     "resume_human_review",
 ]

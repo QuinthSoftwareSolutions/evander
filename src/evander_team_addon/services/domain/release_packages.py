@@ -50,6 +50,51 @@ from .task_assessment import (
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = (
+    "human_correction_aggregation_task_id"
+)
+
+
+def allowed_release_parent_task_ids(
+    state: TeamState,
+    *,
+    project_id: str,
+    predecessor_release_package_id: str | None,
+) -> set[str]:
+    """Return validated coordination parents allowed in a successor release."""
+
+    if predecessor_release_package_id is None:
+        return set()
+    predecessor_request_ids = {
+        request.id
+        for request in state.human_review_requests.values()
+        if request.release_package_id == predecessor_release_package_id
+        and request.state == "changes_requested"
+    }
+    allowed: set[str] = set()
+    for case in state.cases.values():
+        if (
+            case.source != "human_release_review"
+            or case.source_ref not in predecessor_request_ids
+            or case.project_id != project_id
+        ):
+            continue
+        parent_task_id = _optional_text(
+            case.metadata.get(_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY)
+        )
+        parent = (
+            state.tasks.get(parent_task_id)
+            if parent_task_id is not None
+            else None
+        )
+        if (
+            parent is not None
+            and parent.case_id == case.id
+            and parent.project_id == project_id
+            and parent.parent_task_id is None
+        ):
+            allowed.add(parent.id)
+    return allowed
 
 
 def _release_waiver_requests(value: object) -> list[dict[str, str]]:
@@ -408,11 +453,19 @@ def _build_release_package(
             )
     else:
         deliverable_ids = requested_deliverable_ids
+    allowed_parent_task_ids = allowed_release_parent_task_ids(
+        state,
+        project_id=project_id,
+        predecessor_release_package_id=(
+            predecessor.id if predecessor is not None else None
+        ),
+    )
     try:
         release_scope = require_release_scope(
             state,
             project_id=project_id,
             deliverable_ids=deliverable_ids,
+            allowed_parent_task_ids=allowed_parent_task_ids,
         )
     except TaskAssessmentBoundaryError as exc:
         result["errors"].append(exc.message)
@@ -857,6 +910,9 @@ def _successor_release_request_error(
             "one correction case"
         )
     correction_case = correction_cases[0]
+    coordination_task_id = _optional_text(
+        correction_case.metadata.get("human_correction_aggregation_task_id")
+    )
     correction_case_task_ids = sorted(
         set(correction_case.task_ids)
         | {
@@ -866,6 +922,8 @@ def _successor_release_request_error(
         }
     )
     for task_id in correction_case_task_ids:
+        if task_id == coordination_task_id:
+            continue
         try:
             require_task_resolved(
                 state,
@@ -899,9 +957,6 @@ def _successor_release_request_error(
             "findings to carry"
         )
     correction_set = set(correction_deliverable_ids)
-    current_correction_task_ids = {
-        finding.correction_task_id for finding in open_findings
-    }
     proposed_correction_deliverable_ids = {
         deliverable_id
         for finding in open_findings
@@ -932,11 +987,6 @@ def _successor_release_request_error(
             )
     for deliverable_id in correction_deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
         if (
             deliverable is None
             or deliverable.state != TeamRecordState.ACCEPTED
@@ -946,17 +996,7 @@ def _successor_release_request_error(
                 f"successor correction deliverable {deliverable_id} is not a "
                 "current accepted deliverable"
             )
-        if (
-            deliverable_id not in proposed_correction_deliverable_ids
-            and (
-                task is None
-                or (
-                    task.case_id != correction_case.id
-                    and task.id not in correction_case_task_ids
-                    and task.id not in current_correction_task_ids
-                )
-            )
-        ):
+        if deliverable_id not in proposed_correction_deliverable_ids:
             return (
                 f"successor correction deliverable {deliverable_id} is not "
                 f"authorized by human review case {correction_case.id}"

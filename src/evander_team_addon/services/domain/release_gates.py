@@ -32,6 +32,7 @@ from .human_reviews import (
     ensure_human_review_request,
     human_review_request_for_release,
 )
+from .release_packages import allowed_release_parent_task_ids
 from .task_assessment import deliverable_source_lineage, require_release_scope
 
 
@@ -843,6 +844,13 @@ def _candidate_manifest(
         state,
         project_id=release.project_id,
         deliverable_ids=release.deliverable_ids,
+        allowed_parent_task_ids=allowed_release_parent_task_ids(
+            state,
+            project_id=release.project_id,
+            predecessor_release_package_id=(
+                release.supersedes_release_package_id
+            ),
+        ),
     )
     waivers = {waiver.deliverable_id: waiver for waiver in release.verification_waivers}
     deliverable_rows: list[ReleaseCandidateDeliverableEvidence] = []

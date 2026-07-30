@@ -174,6 +174,11 @@ def human_review_request_detail_payload(
                 if project is not None
                 else None
             ),
+            "target_deliverable_options": (
+                _human_review_target_deliverable_options(state, release)
+                if release is not None
+                else []
+            ),
             "cases": [case.model_dump(mode="json") for case in cases],
             "correction_tasks": [
                 task_payload_with_assessment(
@@ -187,6 +192,67 @@ def human_review_request_detail_payload(
         }
     )
     return payload
+
+
+def _human_review_target_deliverable_options(
+    state: TeamState,
+    release: ReleasePackage,
+) -> list[dict[str, Any]]:
+    manifest = release.manifest
+    manifest_deliverable_ids = (
+        [evidence.deliverable_id for evidence in manifest.deliverables]
+        if manifest is not None
+        else []
+    )
+    top_level_ids = manifest_deliverable_ids or list(release.deliverable_ids)
+    top_level_id_set = set(top_level_ids)
+    ordered_ids: list[str] = []
+    pending_ids = list(top_level_ids)
+    seen_ids: set[str] = set()
+    while pending_ids:
+        deliverable_id = pending_ids.pop(0)
+        if deliverable_id in seen_ids:
+            continue
+        seen_ids.add(deliverable_id)
+        ordered_ids.append(deliverable_id)
+        if manifest is not None:
+            pending_ids.extend(manifest.contribution_graph.get(deliverable_id, ()))
+
+    options: list[dict[str, Any]] = []
+    for deliverable_id in ordered_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        task = (
+            state.tasks.get(deliverable.task_id)
+            if deliverable is not None
+            else None
+        )
+        producer = (
+            state.agents.get(deliverable.producer_agent_id)
+            if deliverable is not None
+            else None
+        )
+        options.append(
+            {
+                "deliverable_id": deliverable_id,
+                "task_id": deliverable.task_id if deliverable is not None else None,
+                "task_title": task.title if task is not None else None,
+                "producer": (
+                    {
+                        "agent_id": deliverable.producer_agent_id,
+                        "display_name": (
+                            producer.display_name or producer.id
+                            if producer is not None
+                            else deliverable.producer_agent_id
+                        ),
+                    }
+                    if deliverable is not None
+                    else None
+                ),
+                "summary": deliverable.summary if deliverable is not None else None,
+                "is_top_level": deliverable_id in top_level_id_set,
+            }
+        )
+    return options
 
 
 def release_human_review_detail_payload(

@@ -981,8 +981,9 @@ class ManagedGitAdminService:
         *,
         source_ref: str | None = None,
         commit_sha: str | None = None,
+        tree_hash: str | None = None,
     ) -> dict[str, Any]:
-        """Resolve and verify the immutable commit used by a read-only consumer."""
+        """Resolve and verify an immutable commit/tree used by a consumer."""
 
         directory = self._normalize_directory_path(directory_path)
         record = self._require_scoped_record(managed_repo_id, directory)
@@ -999,6 +1000,11 @@ class ManagedGitAdminService:
             _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
         )
         expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
+        expected_tree = (
+            _normalize_object_id(tree_hash, field_name="tree_hash")
+            if tree_hash
+            else None
+        )
         with self._repo_lock(managed_repo_id, exclusive=False):
             resolved = self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
             if resolved is None:
@@ -1016,12 +1022,36 @@ class ManagedGitAdminService:
                     },
                 )
             self._require_commit(bare_path, resolved)
-        return {
+            resolved_tree = self._git_output(
+                [
+                    "git",
+                    "--git-dir",
+                    str(bare_path),
+                    "rev-parse",
+                    f"{resolved}^{{tree}}",
+                ]
+            ).strip().lower()
+            if expected_tree is not None and resolved_tree != expected_tree:
+                raise ManagedGitConflictError(
+                    f"Source commit {resolved} has tree {resolved_tree}, "
+                    f"not the pinned tree {expected_tree}",
+                    details={
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_ref,
+                        "commit_sha": resolved,
+                        "expected_tree_hash": expected_tree,
+                        "current_tree_hash": resolved_tree,
+                    },
+                )
+        result = {
             "managed_repo_id": managed_repo_id,
             "directory_path": directory,
             "source_ref": normalized_ref,
             "commit_sha": resolved,
         }
+        if expected_tree is not None:
+            result["tree_hash"] = resolved_tree
+        return result
 
     def materialize_candidate_checkout(
         self,

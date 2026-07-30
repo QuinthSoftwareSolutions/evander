@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-30 - Automatic Human Review Correction Graphs
+
+- Replaced lead-authored correction reconstruction with one deterministic
+  coordination parent and one immutable-text child task per human finding.
+  Single-candidate and single-owner findings route directly; only genuinely
+  ambiguous findings require an explicit owner route.
+- Made affected deliverables optional in the human review form. The platform
+  derives a sole candidate automatically and presents named candidate work
+  choices instead of opaque deliverable-ID text fields when a choice exists.
+- Pinned correction worktrees to the rejected release commit and tree, with
+  authoritative managed-Git verification and idempotent preparation recovery.
+- Added automatic resolution evidence derivation and changed-successor release
+  packaging after all correction children have accepted, reviewed work.
+
 ## 2026-07-29 - Explicit Review Closure Steering
 
 - Interrupted and resumed a matching leased container-worker review dispatch

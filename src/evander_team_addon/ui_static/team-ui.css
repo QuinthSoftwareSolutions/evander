@@ -6566,6 +6566,27 @@ label textarea {
   min-width: 0;
 }
 
+.human-review-finding-targets {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.human-review-finding-targets > span,
+.human-review-finding-target-options small {
+  color: var(--muted);
+}
+
+.human-review-finding-target-options {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.human-review-finding-target-options .checkbox-label > span {
+  display: grid;
+  gap: 0.1rem;
+}
+
 .human-review-finding-metadata {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

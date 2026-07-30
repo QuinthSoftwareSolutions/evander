@@ -22,7 +22,7 @@ from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_CASE_TOOL,
-    TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL,
+    TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
@@ -569,8 +569,8 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     finding_resolution_description = (
         tools[TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL].description or ""
     )
-    correction_root_description = (
-        tools[TEAM_CREATE_HUMAN_FINDING_CORRECTION_ROOT_TOOL].description or ""
+    correction_route_description = (
+        tools[TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL].description or ""
     )
     post_release_close_description = (
         tools[TEAM_CLOSE_POST_RELEASE_CASE_TOOL].description or ""
@@ -579,7 +579,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "git_refs are provenance only" in submit_description
     assert "use commit_sha, not commit" in submit_description
     assert "does not make the human decision" in finding_resolution_description
-    assert "independent correction root" in correction_root_description
+    assert "existing correction child" in correction_route_description
     assert "does not roll back" in post_release_close_description
     assert "Only the superior recorded on that handoff" in decide_deliverable_description
     assert "rejection requires a concrete reason" in decide_deliverable_description

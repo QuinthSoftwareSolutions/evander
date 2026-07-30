@@ -1094,8 +1094,10 @@ def require_release_scope(
     *,
     project_id: str,
     deliverable_ids: Sequence[str],
+    allowed_parent_task_ids: Collection[str] = (),
 ) -> dict[str, Any]:
     normalized_ids = _unique_strings(deliverable_ids)
+    allowed_parent_ids = set(_unique_strings(allowed_parent_task_ids))
     errors: dict[str, list[str]] = {}
     task_assessments: dict[str, TaskAssessment] = {}
     for deliverable_id in normalized_ids:
@@ -1110,7 +1112,10 @@ def require_release_scope(
         else:
             if task.project_id != project_id:
                 deliverable_errors.append("deliverable_outside_project")
-            if task.parent_task_id is not None:
+            if (
+                task.parent_task_id is not None
+                and task.parent_task_id not in allowed_parent_ids
+            ):
                 deliverable_errors.append("release_scope_not_top_level")
             assessment = assess_task(state, task.id)
             task_assessments[task.id] = assessment

@@ -4972,9 +4972,11 @@ Use the relationship that describes the real lifecycle:
 
 For example, an investigation child whose result must be integrated belongs
 under the incident outcome. A newly discovered, separately releasable
-improvement is an independent root with optional provenance. Human correction
-tasks are likewise independent roots linked by a correction case; they do not
-rewrite or become children of the accepted historical task.
+improvement is an independent root with optional provenance. Human review
+corrections use one coordination-only parent inside the correction case and one
+child per immutable finding. Those children may retain provenance to the
+historical source task, but they never rewrite or become children of that
+accepted historical task.
 
 ### Explicit integration and final-acceptance boundaries
 
@@ -5313,9 +5315,11 @@ but its domain cascade follows the same all-or-nothing principle. A
 1. stores the immutable decision and deterministic findings;
 2. ends the pinned release attempt without queuing canonical publication;
 3. creates or reuses one correction <code>TeamCase</code>;
-4. creates independent correction or project-lead triage roots;
-5. links each finding to its current correction task; and
-6. creates or reuses the Team inbox and work-due consequences.
+4. creates one coordination-only parent and one exact-text child per finding;
+5. derives the affected candidate work and direct owner when that mapping is
+   deterministic;
+6. links each finding to its child task; and
+7. creates or reuses the Team inbox, immediate wake, and work-due consequences.
 
 The idempotency key covers the complete cascade. A retry or racing identical
 terminal decision reuses the same decision, case, tasks, notices, and wake
@@ -5323,11 +5327,26 @@ obligations. A failure in any part rolls the transition back; Team never leaves
 a recorded human veto without actionable correction work, or correction work
 without the veto that authorized it.
 
-The system may create those narrowly scoped correction roots because the
-authenticated request and target release already authorize the same-team,
-same-project relationship. It does not grant <code>create_root_task</code> to
-the original agent. Accepted tasks, deliverables, agent reviews, and the
-predecessor candidate remain immutable.
+The affected-deliverable list is optional. A sole reviewed candidate
+deliverable is inferred. With several candidate contributions, the human can
+choose named work in the form; an omitted selection routes directly only when
+all applicable work has one active owner. Otherwise the distinct finding child
+stays with the project lead until
+<code>team_route_human_finding_correction</code> assigns its owner.
+
+The system may create this narrowly scoped graph because the authenticated
+request and target release already authorize the same-team, same-project
+relationship. It does not grant <code>create_root_task</code> to the original
+agent. Accepted tasks, deliverables, agent reviews, and the predecessor
+candidate remain immutable. Correction worktree preparation verifies the
+rejected release ref, commit, and tree, then uses that immutable candidate as
+the base regardless of later movement on the main branch.
+
+After every finding child has exactly one current accepted correction
+deliverable with required review evidence, Team derives the resolution summary
+and evidence from those deliverables and creates one changed successor release
+automatically. The coordination parent produces no deliverable and finishes
+when that successor exists.
 
 ## Idempotency
 
@@ -7262,14 +7281,15 @@ to the supported records described in Chapters 18–24.
    operator recovery, then chooses **Request changes** because the HMI warning
    does not identify the commissioned limit.
 9. The decision atomically ends the attempt without publication, records the
-   finding, creates one human-review correction case, creates an independent
-   HMI correction root with provenance to the UI task, and queues its owner.
-   The accepted original work remains immutable.
-10. The correction root is decomposed, its new contributions are accepted, and
-    the finding receives a proposed resolution plus evidence. The lead requests
-    a successor from the predecessor release and candidate baseline. The new
-    tree must differ, while original scope, corrections, and the carried
-    finding remain visible.
+   finding, creates one human-review correction case and coordination parent,
+   creates one exact-text HMI correction child with provenance to the UI task,
+   and queues its derived owner. The accepted original work remains immutable.
+10. The correction child starts from the verified rejected candidate. Its
+    reviewed correction deliverable is accepted, Team derives the finding's
+    proposed resolution and evidence, and Team automatically creates one
+    successor from the predecessor release and candidate baseline. The new tree
+    must differ, while original scope, corrections, and the carried finding
+    remain visible.
 11. The successor reruns automated and agent gates. Its preview cannot start
     because the simulator allocation is temporarily unavailable, so the same
     human request and candidate become <code>blocked</code>. An operator repairs
@@ -8700,7 +8720,7 @@ The presence of a task, message, or deliverable does not by itself prove that th
 | Release verifier reports `pids_limit_exhausted` or `memory_limit_exhausted` | Structured worker failure cause, live project `resource_limits`, current verification run, and `retry_requested_by` | Container resource exhaustion, not a test-output guess | Repair or deliberately resize the live verifier policy and cite evidence before retrying. If an agent-requested retry already failed, escalate; another agent retry is forbidden |
 | Human release review is blocked with no assignee | Human request, assignment generation, snapshotted groups, current Admin membership/RBAC, and assignment-unavailable blocker | Human assignment reconciliation | Repair membership or use audited reassignment on the same request; never skip the gate or create a replacement attempt |
 | Human preview failed or expired | Human request candidate SHA/tree, preparation generation, safe target metadata, and blocker reason | Preview preparation | Repair the host-owned workflow target and resume the same request to create a new preparation generation |
-| Human requested changes but no publication follows | This is expected: predecessor decision/findings, correction case/root tasks, and successor link | Human correction lifecycle | Complete and accept correction work, propose finding resolutions, and create a changed successor that reruns every gate |
+| Human requested changes but no publication follows | Predecessor decision/findings, correction coordination parent and children, preparation blockers, accepted correction deliverables, and successor link | Human correction lifecycle | Route only ambiguous children, repair any pinned-candidate preparation blocker, and complete reviewed correction work. Team derives proposals and creates the changed successor automatically |
 | Successor is approved but publication is refused | Candidate/approved SHA, human approval, confirmed carried finding IDs, and linked canonical-push promotion | Successor closure or exact-SHA publication guard | Confirm every carried finding and prove one succeeded canonical push for the same SHA/tree and target |
 | Release reports success but remote ref differs | Remote ref readback and recorded published SHA | Publish/readback failure | Treat as failed publication, stop follow-on completion, and reconcile the remote with the exact approved SHA |
 
@@ -8964,7 +8984,9 @@ An untrusted or less-trusted VM/container execution environment. It receives ses
 
 **Human review finding**<br>
 An immutable actionable issue from a human changes-requested decision, linked
-to correction or triage work. It stays open through successor lineage until a
+to its own child under a coordination-only correction parent. A deterministic
+candidate/owner mapping routes that child directly; an ambiguous mapping waits
+for explicit routing. The finding stays open through successor lineage until a
 later approved human decision explicitly confirms its carried resolution.
 
 **Human review request**<br>

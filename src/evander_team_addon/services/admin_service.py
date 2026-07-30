@@ -155,12 +155,12 @@ from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
     close_post_release_feedback_case,
-    create_human_finding_correction_root,
     reassign_human_review,
     record_human_finding_resolution_proposal,
     record_human_review_decision,
     record_human_review_preparation_result,
     report_post_release_feedback,
+    route_human_finding_correction,
     resume_human_review,
 )
 from .domain.release_packages import _build_release_package
@@ -184,6 +184,9 @@ from .domain.task_assessment import (
 )
 from .domain.task_supervision import queue_parent_resolution_transitions
 from .domain.work_due import _mark_agent_work_due
+from .domain.preparation_failures import (
+    create_human_correction_preparation_recovery_inbox,
+)
 from .commands.blocker_commands import _prepare_blocker_source_for_resolution
 from .commands.outbox import _team_event_outbox_records
 
@@ -674,6 +677,11 @@ class TeamAdminService:
                 reference_ids=normalized_refs,
                 metadata={"operator_actor_id": normalized_actor_id},
             )
+            create_human_correction_preparation_recovery_inbox(
+                state,
+                blocker=blocker,
+                result=result,
+            )
             result.update(
                 {
                     "success": True,
@@ -683,7 +691,13 @@ class TeamAdminService:
             )
             return state
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
         result["revision"] = state.revision
         result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
         return state, result
@@ -4577,58 +4591,51 @@ class TeamAdminService:
             expected_state_revision=expected_state_revision,
         )
 
-    def create_human_finding_correction_root_with_result(
+    def route_human_finding_correction_with_result(
         self,
         *,
         finding_id: str,
         owner_agent_id: str,
-        title: str,
-        description: str,
-        created_by_user_id: str,
+        routed_by_user_id: str,
         request_id: str,
         expected_state_revision: int,
-        task_id: str | None = None,
-        originating_task_id: str | None = None,
+        target_deliverable_ids: Sequence[str] | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_finding_id = _required_text(finding_id, "finding_id")
         normalized_owner_id = _required_text(owner_agent_id, "owner_agent_id")
-        normalized_title = _required_text(title, "title")
-        normalized_description = _required_text(description, "description")
         normalized_actor = _required_text(
-            created_by_user_id,
-            "created_by_user_id",
+            routed_by_user_id,
+            "routed_by_user_id",
         )
-        normalized_task_id = _optional_text(task_id)
-        normalized_origin_id = _optional_text(originating_task_id)
+        normalized_target_ids = (
+            _unique_text_list(
+                target_deliverable_ids,
+                "target_deliverable_ids",
+            )
+            if target_deliverable_ids is not None
+            else None
+        )
 
         def _apply(state: TeamState, result: dict[str, Any]) -> None:
-            correction_task = create_human_finding_correction_root(
+            correction_task = route_human_finding_correction(
                 state,
                 finding_id=normalized_finding_id,
                 owner_agent_id=normalized_owner_id,
-                title=normalized_title,
-                description=normalized_description,
-                request_id=request_id,
                 result=result,
-                task_id=normalized_task_id,
-                originating_task_id=normalized_origin_id,
-                created_by_actor=normalized_actor,
+                target_deliverable_ids=normalized_target_ids,
             )
             result["human_review_finding_id"] = normalized_finding_id
             result["correction_task_id"] = correction_task.id
 
         return self._run_idempotent_human_command(
-            operation="team.human_finding.create_correction_root",
+            operation="team.human_finding.route_correction",
             caller_user_id=normalized_actor,
             scope_kind="human_review_finding",
             scope_id=normalized_finding_id,
             request_id=request_id,
             normalized_payload={
                 "owner_agent_id": normalized_owner_id,
-                "title": normalized_title,
-                "description": normalized_description,
-                "task_id": normalized_task_id,
-                "originating_task_id": normalized_origin_id,
+                "target_deliverable_ids": normalized_target_ids,
                 "expected_state_revision": expected_state_revision,
             },
             apply_command=_apply,

@@ -16,11 +16,15 @@ from ...models import (
     TeamBlockerSourceKind,
     TeamBlockerState,
     TeamInboxItemState,
+    TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
 )
 from .common import _ensure_utc, _optional_text, _required_text
+from .correction_git_source import is_human_review_correction_task
+from .work_due import _mark_agent_work_due
 
 
 TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
@@ -187,8 +191,88 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
             )
         ],
     }
+    correction_source = _human_correction_generation_payload(
+        state,
+        task_id=task.id,
+    )
+    if correction_source is not None:
+        payload["human_review_correction_source"] = correction_source
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:20]
+
+
+def _human_correction_generation_payload(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> dict[str, object] | None:
+    """Tolerantly fingerprint correction provenance, including broken states."""
+
+    findings = sorted(
+        (
+            finding
+            for finding in state.human_review_findings.values()
+            if finding.correction_task_id == task_id
+        ),
+        key=lambda finding: finding.id,
+    )
+    if not findings:
+        return None
+    request_ids = sorted(
+        {
+            finding.source_human_review_request_id
+            for finding in findings
+        }
+    )
+    requests = [
+        state.human_review_requests[request_id]
+        for request_id in request_ids
+        if request_id in state.human_review_requests
+    ]
+    release_ids = sorted(
+        {
+            request.release_package_id
+            for request in requests
+        }
+    )
+    releases = [
+        state.release_packages[release_id]
+        for release_id in release_ids
+        if release_id in state.release_packages
+    ]
+    source_deliverable_ids = sorted(
+        {
+            evidence.deliverable_id
+            for release in releases
+            if release.manifest is not None
+            for evidence in release.manifest.deliverables
+        }
+    )
+    return {
+        "finding_ids": [finding.id for finding in findings],
+        "findings": [
+            _semantic_generation_payload(finding)
+            for finding in findings
+        ],
+        "missing_request_ids": sorted(set(request_ids) - set(state.human_review_requests)),
+        "requests": [
+            _semantic_generation_payload(request)
+            for request in requests
+        ],
+        "missing_release_ids": sorted(set(release_ids) - set(state.release_packages)),
+        "releases": [
+            _semantic_generation_payload(release)
+            for release in releases
+        ],
+        "missing_source_deliverable_ids": sorted(
+            set(source_deliverable_ids) - set(state.deliverables)
+        ),
+        "source_deliverables": [
+            _semantic_generation_payload(state.deliverables[deliverable_id])
+            for deliverable_id in source_deliverable_ids
+            if deliverable_id in state.deliverables
+        ],
+    }
 
 
 def task_preparation_source_id(
@@ -351,6 +435,87 @@ def record_task_preparation_failure(
         now=now,
     )
     return blocker
+
+
+def create_human_correction_preparation_recovery_inbox(
+    state: TeamState,
+    *,
+    blocker: TeamBlocker,
+    result: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> AgentInboxItem | None:
+    """Atomically make a repaired human correction task runnable again."""
+
+    if (
+        blocker.reason_code
+        not in TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES
+        or blocker.task_id is None
+        or not is_human_review_correction_task(state, task_id=blocker.task_id)
+    ):
+        return None
+    task = state.tasks.get(blocker.task_id)
+    if task is None or task.state in {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }:
+        return None
+    owner = state.agents.get(task.owner_agent_id)
+    if owner is None:
+        raise ValueError(
+            f"human review correction task {task.id} has no valid owner"
+        )
+    inbox_id = (
+        "inbox-preparation-recovery-"
+        + hashlib.sha256(
+            f"{blocker.id}\0{task.id}".encode("utf-8")
+        ).hexdigest()[:24]
+    )
+    existing = state.inbox.get(inbox_id)
+    if existing is not None:
+        return existing
+    effective_now = _ensure_utc(now or utc_now())
+    item = AgentInboxItem(
+        id=inbox_id,
+        recipient_agent_id=owner.id,
+        sender_agent_id=None,
+        task_id=task.id,
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        response_requested=False,
+        priority=TeamInboxPriority.HIGH,
+        payload={
+            "kind": "human_correction_preparation_recovered",
+            "task_id": task.id,
+            "project_id": task.project_id,
+            "blocker_id": blocker.id,
+            "reason_code": blocker.reason_code,
+            "message": (
+                "Execution preparation was repaired. Resume this correction "
+                "task from its pinned rejected-candidate worktree."
+            ),
+        },
+        created_at=effective_now,
+        updated_at=effective_now,
+    )
+    state.inbox[item.id] = item
+    _mark_agent_work_due(state, agent_id=owner.id, now=effective_now)
+    if result is not None:
+        from .wake import _append_agent_wake_requested_event
+
+        result.setdefault("created_inbox_item_ids", []).append(item.id)
+        _append_agent_wake_requested_event(
+            state,
+            agent_id=owner.id,
+            result=result,
+            reason="inbox",
+            now=effective_now,
+            delay_seconds=0,
+            idempotency_suffix=(
+                f"preparation-recovery:{blocker.id}:{task.id}"
+            ),
+        )
+    return item
 
 
 def record_inbox_preparation_failure(
@@ -602,6 +767,7 @@ __all__ = [
     "INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE",
     "REVIEW_PREPARATION_BLOCKER_REASON_CODE",
     "TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES",
+    "create_human_correction_preparation_recovery_inbox",
     "dispatch_project_work_ids",
     "inbox_has_current_preparation_blocker",
     "preparation_cause_fingerprint",

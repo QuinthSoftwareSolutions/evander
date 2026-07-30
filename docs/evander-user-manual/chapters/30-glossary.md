@@ -218,7 +218,9 @@ An untrusted or less-trusted VM/container execution environment. It receives ses
 
 **Human review finding**<br>
 An immutable actionable issue from a human changes-requested decision, linked
-to correction or triage work. It stays open through successor lineage until a
+to its own child under a coordination-only correction parent. A deterministic
+candidate/owner mapping routes that child directly; an ambiguous mapping waits
+for explicit routing. The finding stays open through successor lineage until a
 later approved human decision explicitly confirms its carried resolution.
 
 **Human review request**<br>

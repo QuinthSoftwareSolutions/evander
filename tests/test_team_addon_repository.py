@@ -6847,25 +6847,42 @@ def test_human_finding_and_post_release_case_commands_are_supported(
             owner_agent_id="lead",
             source="human_release_review",
             source_ref="human-request",
-            task_ids=["human-triage"],
+            metadata={
+                "human_correction_aggregation_task_id": "human-aggregation",
+                "human_correction_ambiguous_finding_ids": ["human-finding"],
+            },
+            task_ids=["human-aggregation", "human-correction"],
         )
-        state.tasks["human-triage"] = AgentTask(
-            id="human-triage",
+        state.tasks["human-aggregation"] = AgentTask(
+            id="human-aggregation",
             owner_agent_id="lead",
             project_id="project",
             case_id="human-case",
             priority=0,
             state=TeamTaskState.PENDING,
             task_kind=TeamTaskKind.SUPPORT,
-            title="Triage release-wide finding",
-            description="Route the ambiguous finding.",
+            title="Coordinate human review corrections",
+            description="Track correction children.",
+            created_by_actor="system:human-review",
+        )
+        state.tasks["human-correction"] = AgentTask(
+            id="human-correction",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="human-case",
+            parent_task_id="human-aggregation",
+            priority=0,
+            state=TeamTaskState.PENDING,
+            task_kind=TeamTaskKind.SUPPORT,
+            title="Release-wide behavior needs correction.",
+            description="Release-wide behavior needs correction.",
             created_by_actor="system:human-review",
         )
         state.human_review_findings["human-finding"] = HumanReviewFinding(
             id="human-finding",
             source_human_review_request_id="human-request",
             text="Release-wide behavior needs correction.",
-            correction_task_id="human-triage",
+            correction_task_id="human-correction",
         )
         state.cases["post-release-case"] = TeamCase(
             id="post-release-case",
@@ -6904,17 +6921,15 @@ def test_human_finding_and_post_release_case_commands_are_supported(
     )
     service = _command_service(repo)
 
-    state, created = service.create_human_finding_correction_root_command(
+    state, created = service.route_human_finding_correction_command(
         session_id="session-lead",
         finding_id="human-finding",
         owner_agent_id="backend",
-        title="Correct release-wide behavior",
-        description="Implement and verify the independent correction.",
-        originating_task_id="human-triage",
-        request_id="create-human-correction-root",
+        request_id="route-human-correction",
     )
     correction_task_id = created["correction_task_id"]
-    assert state.tasks[correction_task_id].parent_task_id is None
+    assert correction_task_id == "human-correction"
+    assert state.tasks[correction_task_id].parent_task_id == "human-aggregation"
     assert state.tasks[correction_task_id].case_id == "human-case"
     assert (
         state.human_review_findings["human-finding"].correction_task_id
@@ -6922,14 +6937,11 @@ def test_human_finding_and_post_release_case_commands_are_supported(
     )
 
     replay_state, replay = (
-        service.create_human_finding_correction_root_command(
+        service.route_human_finding_correction_command(
             session_id="session-lead",
             finding_id="human-finding",
             owner_agent_id="backend",
-            title="Correct release-wide behavior",
-            description="Implement and verify the independent correction.",
-            originating_task_id="human-triage",
-            request_id="create-human-correction-root",
+            request_id="route-human-correction",
         )
     )
     assert replay == created

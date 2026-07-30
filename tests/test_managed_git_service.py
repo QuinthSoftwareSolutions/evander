@@ -361,6 +361,7 @@ def test_git_subprocess_timeout_is_bounded_and_path_free(
 
 def test_resolve_snapshot_and_evidence_are_pinned_and_directory_scoped(tmp_path: Path) -> None:
     source, _, commit_sha = _source_repository(tmp_path)
+    tree_hash = _run("git", "rev-parse", "HEAD^{tree}", cwd=source)
     service = _service(tmp_path)
     record = service.register_repository("root/team-a", str(source))
 
@@ -376,6 +377,24 @@ def test_resolve_snapshot_and_evidence_are_pinned_and_directory_scoped(tmp_path:
         "source_ref": "refs/heads/main",
         "commit_sha": commit_sha,
     }
+    assert service.resolve_snapshot(
+        record["managed_repo_id"],
+        "root/team-a/project",
+        source_ref="main",
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+    ) == {
+        **snapshot,
+        "tree_hash": tree_hash,
+    }
+    with pytest.raises(ManagedGitConflictError, match="not the pinned tree"):
+        service.resolve_snapshot(
+            record["managed_repo_id"],
+            "root/team-a/project",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash="f" * 40,
+        )
     assert (
         service.validate_snapshot_evidence(
             record["managed_repo_id"],

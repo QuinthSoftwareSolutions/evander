@@ -10623,6 +10623,30 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
       evidence_refs: ["artifact-space:preview-manifest"],
       expires_at: "2026-06-10T16:00:00Z",
     },
+    target_deliverable_options: [
+      {
+        deliverable_id: "deliverable-accepted",
+        task_id: "task-accepted",
+        task_title: "Ship accepted delivery",
+        producer: {
+          agent_id: "alpha-lead",
+          display_name: "Alpha Lead",
+        },
+        summary: "Accepted delivery.",
+        is_top_level: true,
+      },
+      {
+        deliverable_id: "deliverable-child-a",
+        task_id: "task-child-a",
+        task_title: "Implement child contribution A",
+        producer: {
+          agent_id: "alpha-lead",
+          display_name: "Alpha Lead",
+        },
+        summary: "Child contribution A.",
+        is_top_level: false,
+      },
+    ],
     decisions: [
       {
         id: "human-decision-prior-block",
@@ -10957,9 +10981,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByText(/human-finding-preview-copy open - The preview footer must show/).waitFor({
     state: "visible",
   });
-  await detail.getByText(/Correction task task-human-preview-copy - targets deliverable-accepted/).waitFor({
-    state: "visible",
-  });
+  await detail
+    .getByText(
+      /Correction task task-human-preview-copy · affected work: Ship accepted delivery · by Alpha Lead · included deliverable/,
+    )
+    .waitFor({ state: "visible" });
   await detail
     .getByText("Resolution proposal: Render the pinned candidate SHA in the footer.")
     .waitFor({ state: "visible" });
@@ -10995,6 +11021,59 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     0,
     "the flat findings editor should begin empty until the reviewer explicitly adds one",
   );
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_target_deliverable_ids"]')
+      .count(),
+    0,
+    "reviewers should never need to enter opaque deliverable IDs",
+  );
+  await findingRows
+    .nth(0)
+    .getByText(
+      "Ship accepted delivery · by Alpha Lead · included deliverable",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  await findingRows
+    .nth(0)
+    .getByText(
+      "Implement child contribution A · by Alpha Lead · contribution",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  const allTargetOptions = humanRequest.target_deliverable_options;
+  state.human_review_requests[humanRequest.id].target_deliverable_options = [
+    allTargetOptions[0],
+  ];
+  state.release_packages["release-human"].detail.human_review.requests[0]
+    .target_deliverable_options = [allTargetOptions[0]];
+  state.revision += 1;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForRevision(page, state.revision);
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  assert.equal(
+    await findingRows.nth(0).locator('[role="group"][aria-label="Affected work"]').count(),
+    0,
+    "a sole candidate deliverable should be inferred rather than shown as a selector",
+  );
+  await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
+  state.human_review_requests[humanRequest.id].target_deliverable_options =
+    allTargetOptions;
+  state.release_packages["release-human"].detail.human_review.requests[0]
+    .target_deliverable_options = allTargetOptions;
+  state.revision += 1;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForRevision(page, state.revision);
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(0)
+    .locator('[role="group"][aria-label="Affected work"]')
+    .waitFor({ state: "visible" });
+  await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
+  assert.equal(await findingRows.count(), 0);
   const decisionEndpoint =
     "**/api/addons/team-addon/human-review-requests/human-review-release-human/decisions";
   let findingsDecisionPayload = null;
@@ -11013,8 +11092,8 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await findingEditor.getByRole("button", { name: "Add finding" }).click();
   await findingRows
     .nth(0)
-    .locator('textarea[name="human_finding_target_deliverable_ids"]')
-    .fill("deliverable-accepted");
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:metadata-only");
   await decisionForm.getByRole("button", { name: "Request changes" }).click();
   assert.equal(
     findingsDecisionPayload,
@@ -11064,8 +11143,10 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .fill("[P2] Keep a second finding intact, too.");
   await findingRows
     .nth(1)
-    .locator('textarea[name="human_finding_target_deliverable_ids"]')
-    .fill("deliverable-pending");
+    .locator(
+      'input[name="human_finding_target_deliverable_ids"][value="deliverable-child-a"]',
+    )
+    .check();
   await findingRows
     .nth(1)
     .locator('textarea[name="human_finding_evidence_refs"]')
@@ -11080,12 +11161,12 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     [
       {
         text: "[P1] Keep this finding intact, including its explanatory comma.",
-        target_deliverable_ids: ["deliverable-accepted"],
+        target_deliverable_ids: [],
         evidence_refs: ["artifact-space:finding-one"],
       },
       {
         text: "[P2] Keep a second finding intact, too.",
-        target_deliverable_ids: ["deliverable-pending"],
+        target_deliverable_ids: ["deliverable-child-a"],
         evidence_refs: ["artifact-space:finding-two"],
       },
     ],
@@ -11113,8 +11194,10 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .fill("Pinned preview footer does not show the release identifier.");
   await findingRows
     .nth(0)
-    .locator('textarea[name="human_finding_target_deliverable_ids"]')
-    .fill("deliverable-accepted");
+    .locator(
+      'input[name="human_finding_target_deliverable_ids"][value="deliverable-accepted"]',
+    )
+    .check();
   await findingRows
     .nth(0)
     .locator('textarea[name="human_finding_evidence_refs"]')
@@ -11126,8 +11209,10 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .fill("Secondary finding survives refresh.");
   await findingRows
     .nth(1)
-    .locator('textarea[name="human_finding_target_deliverable_ids"]')
-    .fill("deliverable-pending");
+    .locator(
+      'input[name="human_finding_target_deliverable_ids"][value="deliverable-child-a"]',
+    )
+    .check();
   await findingRows
     .nth(1)
     .locator('textarea[name="human_finding_evidence_refs"]')
@@ -11165,9 +11250,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   assert.equal(
     await findingRows
       .nth(0)
-      .locator('textarea[name="human_finding_target_deliverable_ids"]')
-      .inputValue(),
-    "deliverable-accepted",
+      .locator(
+        'input[name="human_finding_target_deliverable_ids"][value="deliverable-accepted"]',
+      )
+      .isChecked(),
+    true,
   );
   assert.equal(
     await findingRows
@@ -11184,9 +11271,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   assert.equal(
     await findingRows
       .nth(1)
-      .locator('textarea[name="human_finding_target_deliverable_ids"]')
-      .inputValue(),
-    "deliverable-pending",
+      .locator(
+        'input[name="human_finding_target_deliverable_ids"][value="deliverable-child-a"]',
+      )
+      .isChecked(),
+    true,
   );
   assert.equal(
     await findingRows

@@ -459,14 +459,15 @@ to the supported records described in Chapters 18–24.
    operator recovery, then chooses **Request changes** because the HMI warning
    does not identify the commissioned limit.
 9. The decision atomically ends the attempt without publication, records the
-   finding, creates one human-review correction case, creates an independent
-   HMI correction root with provenance to the UI task, and queues its owner.
-   The accepted original work remains immutable.
-10. The correction root is decomposed, its new contributions are accepted, and
-    the finding receives a proposed resolution plus evidence. The lead requests
-    a successor from the predecessor release and candidate baseline. The new
-    tree must differ, while original scope, corrections, and the carried
-    finding remain visible.
+   finding, creates one human-review correction case and coordination parent,
+   creates one exact-text HMI correction child with provenance to the UI task,
+   and queues its derived owner. The accepted original work remains immutable.
+10. The correction child starts from the verified rejected candidate. Its
+    reviewed correction deliverable is accepted, Team derives the finding's
+    proposed resolution and evidence, and Team automatically creates one
+    successor from the predecessor release and candidate baseline. The new tree
+    must differ, while original scope, corrections, and the carried finding
+    remain visible.
 11. The successor reruns automated and agent gates. Its preview cannot start
     because the simulator allocation is temporarily unavailable, so the same
     human request and candidate become <code>blocked</code>. An operator repairs
