@@ -14,6 +14,14 @@
 - Added automatic resolution evidence derivation and changed-successor release
   packaging after all correction children have accepted, reviewed work.
 
+## 2026-07-30 - Local Container Worker Subscription Login
+
+- Made same-host container-worker setup units start the managed Codex
+  authentication app-server from the configured runner image. Device login no
+  longer falls back to a missing `codex` executable on the worker host.
+- Exported that image through the service environment too, so an operator
+  drop-in that replaces only `ExecStart` retains the managed auth container.
+
 ## 2026-07-29 - Explicit Review Closure Steering
 
 - Interrupted and resumed a matching leased container-worker review dispatch
