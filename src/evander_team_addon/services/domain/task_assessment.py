@@ -841,7 +841,14 @@ def require_task_can_finish(
                     if task.deliverable_contract is not None
                     else None
                 ),
-                "recommended_tool": "team_submit_deliverable",
+                "required_action": (
+                    "submit a deliverable using the review-routing method required "
+                    "by team, role, task, or operator guidance"
+                ),
+                "supported_tools": [
+                    "team_submit_deliverable",
+                    "team_submit_deliverable_for_review",
+                ],
             },
         )
     if task.task_kind != TeamTaskKind.SUPPORT:

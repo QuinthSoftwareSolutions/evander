@@ -2,10 +2,10 @@
 
 ## 2026-07-31 - Agent Release-Review Corrections
 
-- Restored workflow-owned review routing for candidate-correction leaves: top-level
-  agents can submit normally without inventing a superior or selecting reviewers,
-  while contracted leaf tasks still require an accepted Git deliverable before a
-  replacement release can begin.
+- Restored configured-policy review routing for candidate-correction leaves: top-level
+  agents can submit normally without inventing a superior, while contracted leaf tasks
+  still require an accepted Git deliverable before a replacement release can begin;
+  generated correction instructions leave routing decisions to team-specific guidance.
 - Kept true integration boundaries outside leaf-review automation, allowed workflow
   policy to attach fresh reviews to rejected-deliverable replacements, and retained
   explicit manual review submission for deliberately manual teams.

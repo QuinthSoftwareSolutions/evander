@@ -283,8 +283,9 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert task.deliverable_contract.require_git_provenance is True
     assert "Candidate commit: candidate-sha" in task.description
     assert "Do not merge or rebase the current project base branch" in task.description
-    assert "team_submit_deliverable" in task.description
-    assert "Do not select reviewers" in task.description
+    assert "submit the changed Git work as the correction deliverable" in task.description
+    assert "select reviewers" not in task.description
+    assert "workflow policy owns" not in task.description
     assert result["created_task_ids"] == [task.id]
     assert result["verification_correction_task_id"] == task.id
     assert result["verification_correction_task_owner_agent_id"] == "coder"

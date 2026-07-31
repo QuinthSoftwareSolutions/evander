@@ -811,9 +811,10 @@ def test_contracted_leaf_forbids_direct_finish_without_becoming_integration_boun
         require_task_can_finish(state, task.id)
 
     assert raised.value.code == "deliverable_contract_direct_finish_forbidden"
-    assert raised.value.correction_context["recommended_tool"] == (
-        "team_submit_deliverable"
-    )
+    assert raised.value.correction_context["supported_tools"] == [
+        "team_submit_deliverable",
+        "team_submit_deliverable_for_review",
+    ]
 
 
 def test_scoped_integration_coverage_filters_task_and_deliverable_ids_separately() -> None:

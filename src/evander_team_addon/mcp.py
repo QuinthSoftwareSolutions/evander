@@ -2020,8 +2020,9 @@ def _register_slice7_tools(
             "durable review branch is needed. Set supersedes_deliverable_id when "
             "reworking a rejected or blocked same-task deliverable; its open "
             "findings carry forward. Use team_submit_deliverable_for_review only "
-            "when explicit manual-routing policy requires the caller to select "
-            "reviewers. Accepted-deliverable recovery must use that manual tool. "
+            "when explicit team, role, task, or operator manual-routing guidance "
+            "requires the caller to select reviewers. Accepted-deliverable recovery "
+            "must use that manual tool. "
             "Requires task_id, summary, "
             "and request_id."
         ),

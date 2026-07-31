@@ -22,27 +22,6 @@ def _write_workflow_pack(tmp_path: Path, name: str, payload: dict) -> None:
     (packs_dir / name).write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_main_pack_routes_non_integration_deliverables_to_configured_leaf_reviewer() -> None:
-    project_dir = Path(__file__).resolve().parents[1]
-    payload = json.loads(
-        (project_dir / "config" / "workflow-packs" / "main.v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    nodes = {node["id"]: node for node in payload["ir"]["nodes"]}
-
-    assert nodes["main-gate-integration-boundary"]["config"]["when"] == {
-        "equals": False,
-        "left": "${{main-trigger-team-deliverable-created.task.integration_boundary}}",
-    }
-    assert nodes["main-effect-create-team-review-cohort"]["config"]["reviews"] == [
-        {
-            "review_profile_id": "profile-project-team-app-dev-team-true-app-leaf-review",
-            "reviewer_agent_id": "agent-project-team-app-dev-team-true-app-leaf-reviewer",
-        }
-    ]
-
-
 def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)

@@ -2709,7 +2709,7 @@ def test_submit_deliverable_command_without_direct_superior_defers_review_routin
     assert deliverable.state == TeamRecordState.PENDING
     assert state.tasks["manager-task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert any(
-        "workflow or operator policy owns review routing" in hint
+        "team-specific review-routing guidance" in hint
         for hint in result["next_action_hints"]
     )
 

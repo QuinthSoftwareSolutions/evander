@@ -244,6 +244,62 @@ def test_team_deliverable_created_trigger_suppresses_existing_then_emits_new(
     assert provider.poll() == []
 
 
+def test_contracted_leaf_can_flow_through_operator_configured_review_primitives(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _admin(repo).update_task(
+        task_id="task",
+        integration_boundary=False,
+        deliverable_contract={"require_git_provenance": False},
+        set_deliverable_contract=True,
+        expected_revision=repo.read().revision,
+    )
+    trigger = _trigger(tmp_path)
+
+    assert trigger.poll() == []
+
+    _record_deliverable(repo, "contracted-leaf-deliverable")
+    events = trigger.poll()
+
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["task"]["integration_boundary"] is False
+    assert payload["task"]["deliverable_contract"] == {
+        "require_git_provenance": False,
+        "required_contribution_task_ids": [],
+    }
+
+    effect = TeamCreateReviewCohortEffectProvider()
+    effect.initialize(
+        TeamCreateReviewCohortEffectDefinition(
+            id="operator-configured-review",
+            display_name="Operator-configured review",
+            type="effect:team:create-review-cohort",
+            actor_agent_id=payload["producer_agent_id"],
+            deliverable_id=payload["deliverable_id"],
+            reviews=[
+                {
+                    "reviewer_agent_id": "reviewer",
+                    "review_profile_id": "code-review",
+                }
+            ],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = effect.execute()
+
+    assert result["success"] is True
+    assert result["created"] is True
+    assert len(result["created_review_request_ids"]) == 1
+    review = repo.read().review_requests[result["created_review_request_ids"][0]]
+    assert review.deliverable_id == "contracted-leaf-deliverable"
+    assert review.reviewer_agent_id == "reviewer"
+    assert review.review_profile_id == "code-review"
+
+
 def test_create_review_request_effect_uses_team_review_handoff(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     _record_deliverable(repo, "deliverable")
