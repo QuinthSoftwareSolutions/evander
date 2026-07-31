@@ -9999,6 +9999,12 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const waiting = initialState.tasks["task-waiting"];
   const accepted = initialState.tasks["task-accepted"];
   Object.assign(planned, {
+    description: [
+      "The task board must retain this complete task brief.",
+      "It includes the ownership context, acceptance criteria, and handoff notes.",
+      "Operators should be able to read every line without leaving the board.",
+      "This final line ensures the brief uses the expandable board presentation.",
+    ].join("\n"),
     readiness: "waiting_on_children",
     resolution_status: "unresolved",
     integration_ready: false,
@@ -10192,6 +10198,14 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const plannedNode = boardPanel.locator(
     '.task-board-hierarchy-branch[data-task-board-task-id="task-planned"]',
   );
+  const hierarchyBrief = plannedNode.locator(".task-board-task-brief");
+  await hierarchyBrief.locator("summary").click();
+  const hierarchyBriefContent = hierarchyBrief.locator(".task-board-task-brief-content");
+  await hierarchyBriefContent.waitFor({ state: "visible" });
+  assert.match(
+    await hierarchyBriefContent.textContent(),
+    /Operators should be able to read every line without leaving the board\./,
+  );
   await plannedNode.getByRole("button", { name: "Plan alpha delivery", exact: true }).click();
   assert.equal(
     await plannedNode
@@ -10260,6 +10274,13 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     '.task-board-card[data-task-board-task-id="task-planned"]',
   );
   assert.equal(await plannedCard.evaluate((element) => element.classList.contains("task-board-task-selected")), true);
+  const cardBrief = plannedCard.locator(".task-board-task-brief");
+  const cardBriefContent = cardBrief.locator(".task-board-task-brief-content");
+  await cardBriefContent.waitFor({ state: "visible" });
+  assert.match(
+    await cardBriefContent.textContent(),
+    /This final line ensures the brief uses the expandable board presentation\./,
+  );
   assert.equal(await pendingCard.evaluate((element) => element.classList.contains("task-board-task-direct-child")), true);
 });
 

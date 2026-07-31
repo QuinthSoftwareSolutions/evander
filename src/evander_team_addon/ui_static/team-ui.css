@@ -2137,6 +2137,24 @@ button.task-board-task-title {
   font-weight: 700;
 }
 
+.task-board-task-brief {
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.task-board-task-brief-details > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.task-board-task-brief-content {
+  margin-top: 0.45rem;
+  white-space: pre-wrap;
+}
+
 .task-board-card-descendants {
   display: grid;
   gap: 0.4rem;

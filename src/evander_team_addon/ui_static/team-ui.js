@@ -12765,6 +12765,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
           ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
         </div>
         ${warnings.length ? `<div class="task-board-hierarchy-warning">${escapeHtml(warnings.join(" "))}</div>` : ""}
+        ${renderTaskBoardBrief(task)}
         ${renderTaskBoardBlockerLine(task)}
         ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
       </article>
@@ -13065,6 +13066,7 @@ function renderTaskBoardCard(task, focus) {
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
       <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
+      ${renderTaskBoardBrief(task)}
       ${renderTaskBoardUnresolvedDescendants(task.id, unresolvedIds)}
       ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
       ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
@@ -13225,6 +13227,23 @@ function taskBoardSortTime(task) {
 function taskBoardLaneEnteredText(task) {
   const timestamp = task.state_entered_at || task.updated_at || task.created_at;
   return timestamp ? formatTimelineTimestamp(timestamp) : "Unknown";
+}
+
+function renderTaskBoardBrief(task) {
+  const brief = text(task?.description);
+  if (!brief) {
+    return "";
+  }
+  const isLong = brief.length > 240 || brief.split(/\r?\n/).length > 3;
+  if (!isLong) {
+    return `<div class="task-board-task-brief"><strong>Task brief:</strong> ${escapeHtml(brief)}</div>`;
+  }
+  return `
+    <details class="task-board-task-brief task-board-task-brief-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "brief", task.id))}>
+      <summary>Show full task brief: ${escapeHtml(readablePreview(brief, 160))}</summary>
+      <div class="task-board-task-brief-content">${escapeHtml(brief)}</div>
+    </details>
+  `;
 }
 
 function isTaskBoardBlocked(task) {

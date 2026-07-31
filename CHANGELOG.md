@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-31 - Team Task Board Briefs
+
+- Made each Team Task Board card and hierarchy node expose its task brief; long
+  instructions stay compact until the operator opens **Show full task brief**.
+
 ## 2026-07-30 - Empty Manager Fallback Suppression
 
 - Stopped periodic manager-fallback dispatches when a team appears open only
