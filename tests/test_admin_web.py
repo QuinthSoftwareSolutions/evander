@@ -13992,6 +13992,7 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     assert "session_policy" in detail_item["host"]
     assert "metadata" in detail_item["host"]
     assert "executions" not in detail_item["host"]
+    assert detail_item["capabilities"]["logs"] is True
 
     history_response = client.get(
         "/api/admin/agents/container-session-a/executions?directory_path=root/team-a&limit=1"

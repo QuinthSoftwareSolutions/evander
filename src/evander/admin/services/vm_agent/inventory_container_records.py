@@ -361,7 +361,7 @@ class VmAgentContainerRecordInventoryMixin:
                 "resume": False,
                 "enable_disable": False,
                 "kill": False,
-                "logs": bool(execution_records),
+                "logs": execution_count > 0,
                 "stop": active_count > 0,
                 "destroy": True,
             },

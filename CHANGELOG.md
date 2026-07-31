@@ -5,6 +5,8 @@
 - Made summary Agents inventory reads use per-session execution aggregates and
   omit policy metadata and execution histories. The selected agent now loads
   its detail separately, with cursor-paginated container execution history.
+- Restored selected container-agent logs by deriving their availability from
+  the persisted execution summary, rather than the omitted history payload.
 - Switched normal Agents-page polling to cached, state-omitting summaries;
   explicit refreshes still perform live reconciliation and VM-state reads.
 - Kept the Dashboard's 24-hour workflow-activity semantics while aggregating
