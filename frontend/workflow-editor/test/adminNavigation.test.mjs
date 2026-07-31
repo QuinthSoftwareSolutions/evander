@@ -804,7 +804,7 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
       contentType: "text/html",
       body: `<!doctype html>
         <title>Team Add-on</title>
-        <main>Team Add-on</main>
+        <main>Team Add-on <a href="/review-bundle.zip" download>Download review bundle</a></main>
         <script>
           window.addEventListener("message", (event) => {
             const data = event.data || {};
@@ -825,6 +825,15 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
     (storageKey) => window.localStorage.setItem(storageKey, "dark"),
     THEME_STORAGE_KEY,
   );
+  await page.route("**/review-bundle.zip", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "content-disposition": 'attachment; filename="review-bundle.zip"',
+      },
+      body: "review bundle fixture",
+    });
+  });
 
   await page.goto(
     `http://127.0.0.1:${address.port}/#addon:team-addon?view=my-human-reviews&human_review_request_id=review-1&directory_path=ignored&privileged_unlocked=true&unsafe=drop-me`,
@@ -834,7 +843,10 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   await assert.doesNotReject(() => page.getByRole("button", { name: /^Teams\b/ }).waitFor({ state: "visible" }));
   const frame = page.locator('iframe.admin-addon-frame[title="Teams"]');
   await frame.waitFor({ state: "visible" });
-  assert.equal(await frame.getAttribute("sandbox"), "allow-forms allow-modals allow-same-origin allow-scripts");
+  assert.equal(
+    await frame.getAttribute("sandbox"),
+    "allow-downloads allow-forms allow-modals allow-same-origin allow-scripts",
+  );
   const initialFrameSrc = await frame.getAttribute("src");
   assert.ok(initialFrameSrc);
   const initialFrameUrl = new URL(initialFrameSrc, `http://127.0.0.1:${address.port}`);
@@ -848,6 +860,11 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   assert.equal(initialFrameUrl.searchParams.get("human_review_request_id"), "review-1");
   assert.equal(initialFrameUrl.searchParams.get("unsafe"), null);
   await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.frameLocator('iframe[title="Teams"]').getByRole("link", { name: "Download review bundle" }).click(),
+  ]);
+  assert.equal(download.suggestedFilename(), "review-bundle.zip");
   await page
     .frameLocator('iframe[title="Teams"]')
     .locator('html[data-theme="dark"]')

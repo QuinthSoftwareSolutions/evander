@@ -2,6 +2,8 @@
 
 ## 2026-07-31 - Admin Inventory And Dashboard Read Performance
 
+- Allowed downloads from add-on iframes in the Admin Web shell, with browser
+  coverage for downloading a review bundle from the Team add-on.
 - Made summary Agents inventory reads use per-session execution aggregates and
   omit policy metadata and execution histories. The selected agent now loads
   its detail separately, with cursor-paginated container execution history.

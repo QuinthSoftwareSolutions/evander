@@ -884,7 +884,7 @@ function AddonView({
         title={tab.label}
         src={iframeSrc}
         onLoad={handleFrameLoad}
-        sandbox="allow-forms allow-modals allow-same-origin allow-scripts"
+        sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
       />
     );
   }
