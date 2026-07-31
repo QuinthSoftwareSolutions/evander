@@ -9,6 +9,8 @@
 - Kept true integration boundaries outside leaf-review automation, allowed workflow
   policy to attach fresh reviews to rejected-deliverable replacements, and retained
   explicit manual review submission for deliberately manual teams.
+- Corrected the accepted-task manager-fallback regression to assert suppression of
+  non-actionable wakes and to evaluate eligibility after its test state is created.
 - Made rejected agent release reviews create one high-priority, candidate-rooted
   correction task for the recorded release owner, with an immediate durable
   wake and project-lead or team-manager fallback when needed.

@@ -10837,7 +10837,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     json.dumps(leases[0])
 
 
-def test_manager_fallback_leases_for_pending_deliverable_on_terminal_task(
+def test_manager_fallback_skips_pending_deliverable_on_accepted_task(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -10855,21 +10855,16 @@ def test_manager_fallback_leases_for_pending_deliverable_on_terminal_task(
         return state
 
     repo.update(_mark_task_terminal)
+    lease_at = datetime.now(UTC)
     state, leases = _team_runtime_service(repo).lease_due_agents(
-        now=datetime(2026, 1, 1, tzinfo=UTC)
+        now=lease_at,
     )
 
-    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
-    assert leases[0]["reason"] == "manager_fallback"
-    assert state.agent_runtimes["manager"].wake_reason == "manager_fallback"
-    fallback_summary = leases[0]["manager_fallback_summary"]
-    work = {item["id"]: item for item in fallback_summary["open_work"]}
-    assert work["done-task"]["state"] == "accepted"
-    assert work["done-task"]["deliverable_ids"] == ["deliverable-pending"]
-    deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
-    assert deliverables["deliverable-pending"]["state"] == "pending"
-    assert fallback_summary["summary_counts"]["open_task_count"] == 1
-    assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
+    assert leases == []
+    assert state.agent_runtimes["manager"].active_dispatch_id is None
+    assert state.agent_runtimes["manager"].wake_reason is None
+    assert state.tasks["done-task"].state == TeamTaskState.ACCEPTED
+    assert state.deliverables["deliverable-pending"].state == TeamRecordState.PENDING
 
 
 def test_every_wake_context_policy_preserves_low_priority_batching(
