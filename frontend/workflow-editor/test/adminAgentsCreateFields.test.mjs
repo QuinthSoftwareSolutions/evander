@@ -155,6 +155,7 @@ test("shared worker auth is page-wide and agent usage shows its effective source
     /<CodexAuthPanel/,
   );
   assert.match(agentsPage, /function codexUsageForAgent\(/);
+  assert.match(agentsPage, /hostRecord\(agent\.host, "codex_usage"\)/);
   assert.match(agentsPage, /effective_codex_auth_mode/);
   assert.match(agentsPage, /codex_auth_mode_source/);
   assert.match(agentsPage, /Codex usage: \{selectedAgentCodexUsage\.label\}/);

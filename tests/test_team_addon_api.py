@@ -1375,6 +1375,34 @@ def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> No
     assert moved_release.json()["error"] == "Release ref no longer equals the pinned candidate"
 
 
+@pytest.mark.parametrize(
+    "reserved_member",
+    [
+        "EVANDER-REVIEW.json",
+        "./evander-review.json",
+        ".\\EVANDER-REVIEW.json",
+        "source/../EVANDER-REVIEW.json",
+    ],
+)
+def test_human_review_bundle_rejects_reserved_manifest_members(
+    tmp_path: Path,
+    reserved_member: str,
+) -> None:
+    archive_path = tmp_path / "candidate.zip"
+    with zipfile.ZipFile(archive_path, mode="w") as archive:
+        archive.writestr(reserved_member, "candidate-controlled\n")
+
+    with pytest.raises(ValueError, match="reserved review-bundle path"):
+        team_addon_api._append_human_review_bundle_manifest(
+            archive_path,
+            {"schema": "evander.team.human-review-bundle/v1"},
+        )
+
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == [reserved_member]
+        assert archive.read(reserved_member) == b"candidate-controlled\n"
+
+
 def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     tmp_path: Path,
 ) -> None:

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import tempfile
@@ -5490,13 +5491,29 @@ def _human_review_bundle_manifest(
     }
 
 
+HUMAN_REVIEW_BUNDLE_MANIFEST_PATH = "EVANDER-REVIEW.json"
+
+
+def _human_review_bundle_member_reserves_manifest(member_name: str) -> bool:
+    normalized = posixpath.normpath(str(member_name or "").replace("\\", "/"))
+    return normalized.casefold() == HUMAN_REVIEW_BUNDLE_MANIFEST_PATH.casefold()
+
+
 def _append_human_review_bundle_manifest(
     archive_path: Path,
     manifest: Mapping[str, Any],
 ) -> None:
     with zipfile.ZipFile(archive_path, mode="a", compression=zipfile.ZIP_DEFLATED) as archive:
+        if any(
+            _human_review_bundle_member_reserves_manifest(info.filename)
+            for info in archive.infolist()
+        ):
+            raise ValueError(
+                f"Release candidate contains reserved review-bundle path "
+                f"{HUMAN_REVIEW_BUNDLE_MANIFEST_PATH!r}"
+            )
         archive.writestr(
-            "EVANDER-REVIEW.json",
+            HUMAN_REVIEW_BUNDLE_MANIFEST_PATH,
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         )
 

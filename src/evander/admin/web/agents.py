@@ -22,6 +22,7 @@ from evander.admin.web.shared import (
 )
 
 DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
+DASHBOARD_AGENT_INVENTORY_PARAM = "_dashboard_agent_inventory"
 AGENT_EXECUTION_HISTORY_DEFAULT_LIMIT = 50
 AGENT_EXECUTION_HISTORY_MAX_LIMIT = 100
 
@@ -38,7 +39,26 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _compact_agent_host(payload: dict[str, Any]) -> dict[str, Any]:
+def _compact_agent_codex_usage(host: dict[str, Any]) -> dict[str, Any] | None:
+    session_policy = host.get("session_policy")
+    if not isinstance(session_policy, dict):
+        return None
+    compact = {
+        key: _jsonable(session_policy[key])
+        for key in ("effective_codex_auth_mode", "codex_auth_mode_source")
+        if key in session_policy
+    }
+    metadata = session_policy.get("metadata")
+    if isinstance(metadata, dict) and "agent_provider" in metadata:
+        compact["agent_provider"] = _jsonable(metadata["agent_provider"])
+    return compact or None
+
+
+def _compact_agent_host(
+    payload: dict[str, Any],
+    *,
+    include_codex_usage: bool,
+) -> dict[str, Any]:
     host = payload.get("host")
     if not isinstance(host, dict):
         return {}
@@ -68,6 +88,10 @@ def _compact_agent_host(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in host:
             compact[key] = _jsonable(host[key])
+    if include_codex_usage:
+        codex_usage = _compact_agent_codex_usage(host)
+        if codex_usage is not None:
+            compact["codex_usage"] = codex_usage
     return compact
 
 
@@ -89,7 +113,11 @@ def _compact_prompt_queue(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_agent_record_payload(record: Any) -> dict[str, Any]:
+def _compact_agent_record_payload(
+    record: Any,
+    *,
+    include_codex_usage: bool = False,
+) -> dict[str, Any]:
     payload = _jsonable(record)
     if not isinstance(payload, dict):
         return {}
@@ -109,7 +137,10 @@ def _compact_agent_record_payload(record: Any) -> dict[str, Any]:
         )
         if key in payload
     }
-    compact["host"] = _compact_agent_host(payload)
+    compact["host"] = _compact_agent_host(
+        payload,
+        include_codex_usage=include_codex_usage,
+    )
     compact["prompt_queue"] = _compact_prompt_queue(payload)
     return compact
 
@@ -270,6 +301,10 @@ def agent_routes(
         include_inactive = _bool_query(request, "include_inactive", default=True)
         backend = _string_query(request, "backend", default="all")
         summary_only = _bool_query(request, "summary_only", default=False)
+        dashboard_request = _bool_query(request, "_dashboard", default=False)
+        dashboard_agent_inventory = _bool_query(
+            request, DASHBOARD_AGENT_INVENTORY_PARAM, default=False
+        )
         reconcile_containers = _optional_bool_query(request, "reconcile_containers")
         if reconcile_containers is None:
             reconcile_containers = not summary_only
@@ -295,7 +330,14 @@ def agent_routes(
         return JSONResponse(
             {
                 "items": [
-                    _compact_agent_record_payload(record) if summary_only else _jsonable(record)
+                    _compact_agent_record_payload(
+                        record,
+                        include_codex_usage=not (
+                            dashboard_request and dashboard_agent_inventory
+                        ),
+                    )
+                    if summary_only
+                    else _jsonable(record)
                     for record in records
                 ],
                 "directory_path": directory_path or "root",

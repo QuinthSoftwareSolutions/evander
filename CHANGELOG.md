@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-31 - Review Follow-up Fixes
+
+- Kept selected Agent detail views live by merging each fresh polled summary over
+  the richer loaded detail, including status, capabilities, execution counts,
+  and prompt-queue aggregates.
+- Preserved compact Agents-page Codex usage badges by retaining only the
+  effective authentication mode, its source, and the agent provider in summary
+  payloads; Dashboard-only inventory remains policy-free.
+- Reserved `EVANDER-REVIEW.json` in human-review source bundles so candidate
+  archives cannot supply a conflicting manifest entry or normalized alias.
+- Updated the Team wake-node catalog contract for the global-maintenance field.
+
 ## 2026-07-31 - Admin Inventory And Dashboard Read Performance
 
 - Allowed downloads from add-on iframes in the Admin Web shell, with browser

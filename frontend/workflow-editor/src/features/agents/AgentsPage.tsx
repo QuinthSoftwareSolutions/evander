@@ -28,6 +28,7 @@ import {
   submitAgentCreateOperation,
   type AgentCreateSubmitMeta,
 } from "./agentCreateShared";
+import { mergeAgentDetailWithSummary } from "./agentRecordMerge";
 import type {
   AgentActionResponse,
   AgentBackend,
@@ -871,7 +872,9 @@ function promptThreadIdForAgent(agent: AgentRecord | null): string {
 }
 
 function agentUsesCodex(agent: AgentRecord): boolean {
-  const provider = sessionPolicyForAgent(agent)?.metadata.agent_provider;
+  const summaryUsage = hostRecord(agent.host, "codex_usage");
+  const provider = hostString(summaryUsage, "agent_provider")
+    ?? sessionPolicyForAgent(agent)?.metadata.agent_provider;
   return typeof provider !== "string" || !["claude", "anthropic"].includes(provider.trim().toLowerCase());
 }
 
@@ -889,12 +892,18 @@ function codexUsageForAgent(agent: AgentRecord | null): AgentCodexUsage | null {
   ) {
     return null;
   }
+  const summaryUsage = hostRecord(agent.host, "codex_usage");
   const policy = sessionPolicyForAgent(agent);
-  if (!policy) return null;
-  const mode = policy.effective_codex_auth_mode;
-  const sourceLabel = policy.codex_auth_mode_source === "session_override"
+  const summaryMode = hostString(summaryUsage, "effective_codex_auth_mode");
+  const mode = summaryMode === "metered_api" || summaryMode === "chatgpt_subscription"
+    ? summaryMode
+    : policy?.effective_codex_auth_mode;
+  if (!mode) return null;
+  const source = hostString(summaryUsage, "codex_auth_mode_source")
+    ?? policy?.codex_auth_mode_source;
+  const sourceLabel = source === "session_override"
     ? "Agent override"
-    : policy.codex_auth_mode_source === "provider_route"
+    : source === "provider_route"
       ? "Required by provider route"
       : "Directory default";
   return {
@@ -1222,7 +1231,9 @@ export function AgentsPage() {
   const selectedAgentKey = selectedListAgent ? agentKey(selectedListAgent) : null;
   const selectedAgent = useMemo(() => {
     if (selectedAgentDetail && selectedAgentKey === agentKey(selectedAgentDetail)) {
-      return selectedAgentDetail;
+      return selectedListAgent
+        ? mergeAgentDetailWithSummary(selectedAgentDetail, selectedListAgent)
+        : selectedAgentDetail;
     }
     return selectedListAgent;
   }, [selectedAgentDetail, selectedAgentKey, selectedListAgent]);

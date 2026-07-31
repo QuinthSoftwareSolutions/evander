@@ -64,6 +64,11 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
           last_status: "running",
           execution_count: 1,
           active_execution_count: 1,
+          codex_usage: {
+            effective_codex_auth_mode: "chatgpt_subscription",
+            codex_auth_mode_source: "session_override",
+            agent_provider: "codex",
+          },
         },
         capabilities: {
           start: false,
@@ -527,6 +532,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.match(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).locator(".status-pill").innerText(),
     /^running$/i,
+  );
+  assert.match(
+    await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
+    /ChatGPT subscription[\s\S]*Agent override/,
   );
   assert.doesNotMatch(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),

@@ -13838,7 +13838,13 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
                 metadata={
                     "execution_backend": "container_worker_vm",
                     "target_name": target_name,
+                    "agent_provider": "codex",
                 },
+                codex_auth_mode=(
+                    "chatgpt_subscription"
+                    if session_id == "container-session-a"
+                    else None
+                ),
             )
         )
     repository = ContainerWorkerExecutionRepository(
@@ -13978,6 +13984,11 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     summary_container_item = next(
         item for item in summary_payload["items"] if item["backend"] == "container_worker_vm"
     )
+    assert summary_container_item["host"]["codex_usage"] == {
+        "effective_codex_auth_mode": "chatgpt_subscription",
+        "codex_auth_mode_source": "session_override",
+        "agent_provider": "codex",
+    }
     assert "session_policy" not in summary_container_item["host"]
     assert "executions" not in summary_container_item["host"]
     assert list_vms_calls[1]["directory_path"] == "root/team-a"
@@ -14127,6 +14138,10 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
     assert "records" not in summary_item["prompt_queue"]
     assert second.json() == first.json()
     agent_page_item = agent_page_summary.json()["items"][0]
+    assert agent_page_item["host"]["codex_usage"] == {
+        "effective_codex_auth_mode": "metered_api",
+        "codex_auth_mode_source": "directory_default",
+    }
     assert "session_policy" not in agent_page_item["host"]
     assert "metadata" not in agent_page_item["host"]
     assert live.json()["summary_only"] is False

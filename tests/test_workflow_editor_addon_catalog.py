@@ -154,6 +154,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
         "max_no_progress_count",
         "low_priority_wake_after_cycles",
         "respect_wake_interval",
+        "run_global_maintenance",
         "worktree_cleanup_limit",
         "worktree_cleanup_grace_seconds",
         "worktree_cleanup_retry_seconds",
