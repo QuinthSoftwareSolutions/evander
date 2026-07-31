@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-31 - Admin Inventory And Dashboard Read Performance
+
+- Made summary Agents inventory reads use per-session execution aggregates and
+  omit policy metadata and execution histories. The selected agent now loads
+  its detail separately, with cursor-paginated container execution history.
+- Switched normal Agents-page polling to cached, state-omitting summaries;
+  explicit refreshes still perform live reconciliation and VM-state reads.
+- Kept the Dashboard's 24-hour workflow-activity semantics while aggregating
+  SQLite activity by graph, node, source, and status before building the
+  response instead of materializing every raw orchestration record.
+
 ## 2026-07-31 - Team Wake Latency And Bounded Cleanup Evidence
 
 - Replaced routine full Team-state rewrites with record-level SQLite deltas;

@@ -10483,6 +10483,59 @@ def test_workflow_graph_activity_report_initializes_fresh_sqlite_backend(
         }
     assert {"trigger_events", "effect_executions", "gate_executions"} <= table_names
 
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO trigger_events(
+                event_id, idempotency_key, delivery_state, trigger_id, trigger_type,
+                trace_id, occurred_at, inflight_at, delivered_at, clear_reason, error,
+                payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "event-1",
+                    "idempotency-1",
+                    "delivered",
+                    "trigger-ticket",
+                    "trigger:ticket:created",
+                    "shared-trace",
+                    "2026-05-01T10:00:00Z",
+                    None,
+                    "2026-05-01T10:00:00Z",
+                    None,
+                    None,
+                    "{}",
+                ),
+                (
+                    "event-2",
+                    "idempotency-2",
+                    "delivered",
+                    "trigger-ticket",
+                    "trigger:ticket:created",
+                    "shared-trace",
+                    "2026-05-01T11:00:00Z",
+                    None,
+                    "2026-05-01T11:00:00Z",
+                    None,
+                    None,
+                    "{}",
+                ),
+            ],
+        )
+
+    aggregated_report = service.workflow_reports_admin.read_workflow_graph_activity_report(
+        period_start=datetime(2026, 5, 1, tzinfo=UTC),
+        period_end=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+    aggregated_graph = aggregated_report.graphs[0]
+    assert aggregated_graph.activity_count == 2
+    assert aggregated_graph.trigger_event_count == 2
+    assert aggregated_graph.run_count == 1
+    assert aggregated_graph.status_counts == {"delivered": 2}
+    assert aggregated_graph.first_activity_at == datetime(2026, 5, 1, 10, tzinfo=UTC)
+    assert aggregated_graph.latest_activity_at == datetime(2026, 5, 1, 11, tzinfo=UTC)
+
 
 def test_normalize_workflow_failure_signature_canonicalizes_volatile_identifiers() -> None:
     outputs = {

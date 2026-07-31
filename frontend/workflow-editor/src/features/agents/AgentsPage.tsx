@@ -36,6 +36,7 @@ import type {
   AgentCreateEmailMailboxOption,
   AgentCreateHostDirectoryOption,
   AgentCreateRequest,
+  AgentExecutionHistoryResponse,
   AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
@@ -189,6 +190,24 @@ type AgentLogViewState = {
   updatedAt: string | null;
 };
 
+type AgentExecutionHistoryState = {
+  items: AgentExecutionRecord[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  nextCursor: string | null;
+  error: string | null;
+};
+
+const EMPTY_AGENT_EXECUTION_HISTORY: AgentExecutionHistoryState = {
+  items: [],
+  loading: false,
+  loadingMore: false,
+  hasMore: false,
+  nextCursor: null,
+  error: null,
+};
+
 function emptyLogState(text = "Loading..."): AgentLogViewState {
   return {
     text,
@@ -336,6 +355,44 @@ async function loadAgentList(
 ): Promise<AgentListResponse> {
   return fetchJson<AgentListResponse>(
     `/api/admin/agents?${buildAgentListQuery(directoryPath, directOnly, backend, options)}`,
+  );
+}
+
+async function loadAgentDetail(
+  agent: AgentRecord,
+  options: { live?: boolean } = {},
+): Promise<AgentRecord> {
+  const query = new URLSearchParams({
+    backend: agent.backend,
+    directory_path: agent.directory_path,
+    omit_vm_state: String(!options.live),
+    reconcile_containers: String(Boolean(options.live && agent.backend === "container_worker_vm")),
+  });
+  return fetchJson<AgentRecord>(
+    `/api/admin/agents/${encodeURIComponent(agent.agent_id)}?${query.toString()}`,
+  );
+}
+
+async function loadAgentExecutionHistory(
+  agent: AgentRecord,
+  options: { cursor?: string } = {},
+): Promise<AgentExecutionHistoryResponse> {
+  if (agent.backend !== "container_worker_vm") {
+    return {
+      agent_id: agent.agent_id,
+      items: [],
+      limit: 0,
+      has_more: false,
+      next_cursor: null,
+    };
+  }
+  const query = new URLSearchParams({
+    directory_path: agent.directory_path,
+    limit: "50",
+  });
+  if (options.cursor) query.set("cursor", options.cursor);
+  return fetchJson<AgentExecutionHistoryResponse>(
+    `/api/admin/agents/${encodeURIComponent(agent.agent_id)}/executions?${query.toString()}`,
   );
 }
 
@@ -493,19 +550,6 @@ function hostStringListMap(
     );
   }
   return result;
-}
-
-function hostExecutionList(
-  host: Record<string, unknown> | null | undefined,
-  key: string,
-): AgentExecutionRecord[] {
-  const value = host?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is AgentExecutionRecord => {
-    if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
-    const candidate = item as Record<string, unknown>;
-    return typeof candidate.execution_id === "string" && typeof candidate.worker_job_id === "string";
-  });
 }
 
 function hostRecord(
@@ -1001,6 +1045,11 @@ export function AgentsPage() {
   const [hashSelection, setHashSelection] = useState<AgentHashSelection>(() => agentSelectionFromHash());
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [selectedAgentDetail, setSelectedAgentDetail] = useState<AgentRecord | null>(null);
+  const [agentExecutionHistory, setAgentExecutionHistory] = useState<AgentExecutionHistoryState>(
+    EMPTY_AGENT_EXECUTION_HISTORY,
+  );
+  const [agentDetailReloadNonce, setAgentDetailReloadNonce] = useState(0);
   const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
   const [logSearchInput, setLogSearchInput] = useState("");
   const [logView, setLogView] = useState<AgentLogView>("executions");
@@ -1049,6 +1098,7 @@ export function AgentsPage() {
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
   const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
+  const liveAgentDetailRefreshKeyRef = useRef<string | null>(null);
   const operatorSteeringLoadSeqRef = useRef(0);
   const operatorSteeringDraftTargetRef = useRef<string | null>(null);
   const refreshAuthSessionRef = useRef(refreshAuthSession);
@@ -1151,7 +1201,7 @@ export function AgentsPage() {
     } satisfies Record<AgentBackend, AgentRecord[]>;
   }, [filteredItems]);
 
-  const selectedAgent = useMemo(
+  const selectedListAgent = useMemo(
     () => {
       const explicitSelection = selectedKey
         ? filteredItems.find((item) => agentKey(item) === selectedKey) ?? null
@@ -1169,12 +1219,78 @@ export function AgentsPage() {
     },
     [filteredItems, hashSelection, selectedKey],
   );
-  const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
+  const selectedAgentKey = selectedListAgent ? agentKey(selectedListAgent) : null;
+  const selectedAgent = useMemo(() => {
+    if (selectedAgentDetail && selectedAgentKey === agentKey(selectedAgentDetail)) {
+      return selectedAgentDetail;
+    }
+    return selectedListAgent;
+  }, [selectedAgentDetail, selectedAgentKey, selectedListAgent]);
   const selectedAgentPolicy = selectedAgent ? sessionPolicyForAgent(selectedAgent) : null;
   const selectedAgentCodexUsage = codexUsageForAgent(selectedAgent);
   const selectedAgentApprovalNotificationTargetOptions = selectedAgentPolicy?.approval_notification_target_options ?? [];
   const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
   const operatorSteeringSessionId = selectedAgent?.session_id?.trim() ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+    const agent = selectedListAgent;
+    const loadLiveState = liveAgentDetailRefreshKeyRef.current === selectedAgentKey;
+    if (loadLiveState) liveAgentDetailRefreshKeyRef.current = null;
+    setSelectedAgentDetail(null);
+    if (!agent) {
+      setAgentExecutionHistory(EMPTY_AGENT_EXECUTION_HISTORY);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void loadAgentDetail(agent, { live: loadLiveState })
+      .then((detail) => {
+        if (!cancelled) setSelectedAgentDetail(detail);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setAgentExecutionHistory((current) => ({
+            ...current,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }));
+        }
+      });
+
+    if (agent.backend !== "container_worker_vm") {
+      setAgentExecutionHistory(EMPTY_AGENT_EXECUTION_HISTORY);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setAgentExecutionHistory({ ...EMPTY_AGENT_EXECUTION_HISTORY, loading: true });
+    void loadAgentExecutionHistory(agent)
+      .then((payload) => {
+        if (!cancelled) {
+          setAgentExecutionHistory({
+            items: payload.items,
+            loading: false,
+            loadingMore: false,
+            hasMore: payload.has_more,
+            nextCursor: payload.next_cursor,
+            error: null,
+          });
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setAgentExecutionHistory({
+            ...EMPTY_AGENT_EXECUTION_HISTORY,
+            error: reason instanceof Error ? reason.message : String(reason),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentDetailReloadNonce, selectedAgentKey]);
 
   const refreshOperatorSteering = useCallback(async () => {
     const loadSeq = operatorSteeringLoadSeqRef.current + 1;
@@ -1250,7 +1366,7 @@ export function AgentsPage() {
   }, [backendFilter, selectedDirectoryPath]);
 
   const refreshSummaryAgents = useCallback(async () => {
-    await refreshAgents({ summaryOnly: true, dashboardCache: true, omitVmState: false });
+    await refreshAgents({ summaryOnly: true, dashboardCache: true, omitVmState: true });
   }, [refreshAgents]);
 
   const refreshSummaryCache = useCallback(async () => {
@@ -1263,13 +1379,15 @@ export function AgentsPage() {
 
   const refreshLiveAgents = useCallback(async () => {
     const payload = await refreshAgents({
-      summaryOnly: false,
+      summaryOnly: true,
       reconcileContainers: true,
       omitVmState: false,
     });
     await refreshSummaryCache();
+    liveAgentDetailRefreshKeyRef.current = selectedAgentKey;
+    setAgentDetailReloadNonce((current) => current + 1);
     return payload;
-  }, [refreshAgents, refreshSummaryCache]);
+  }, [refreshAgents, refreshSummaryCache, selectedAgentKey]);
 
   const applyCreateOperations = useCallback(async (
     operations: AgentCreateOperation[],
@@ -1970,6 +2088,38 @@ export function AgentsPage() {
     }
   }
 
+  async function loadMoreAgentExecutions() {
+    if (
+      !selectedAgent ||
+      selectedAgent.backend !== "container_worker_vm" ||
+      !agentExecutionHistory.hasMore ||
+      !agentExecutionHistory.nextCursor ||
+      agentExecutionHistory.loadingMore
+    ) {
+      return;
+    }
+    setAgentExecutionHistory((current) => ({ ...current, loadingMore: true, error: null }));
+    try {
+      const payload = await loadAgentExecutionHistory(selectedAgent, {
+        cursor: agentExecutionHistory.nextCursor,
+      });
+      setAgentExecutionHistory((current) => ({
+        items: [...current.items, ...payload.items],
+        loading: false,
+        loadingMore: false,
+        hasMore: payload.has_more,
+        nextCursor: payload.next_cursor,
+        error: null,
+      }));
+    } catch (reason: unknown) {
+      setAgentExecutionHistory((current) => ({
+        ...current,
+        loadingMore: false,
+        error: reason instanceof Error ? reason.message : String(reason),
+      }));
+    }
+  }
+
   const guestAgent = hostRecord(selectedAgent?.host, "agent");
   const agentState = hostString(guestAgent, "state") ?? "unknown";
   const agentPid = hostNumber(guestAgent, "pid");
@@ -1977,7 +2127,7 @@ export function AgentsPage() {
   const selectedRuntimeImage = agentRuntimeImage(selectedAgent);
   const selectedMetadata = metadataForAgent(selectedAgent);
   const selectedLabels = labelsForAgent(selectedAgent);
-  const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
+  const selectedExecutions = agentExecutionHistory.items;
   const selectedPromptQueue = promptQueueForAgent(selectedAgent);
   const selectedExecutionDisplay = selectedAgent ? agentExecutionDisplay(selectedAgent) : null;
   const selectedTargetStateText = selectedAgent ? agentTargetStateText(selectedAgent) : null;
@@ -3185,9 +3335,14 @@ export function AgentsPage() {
                 <summary className="panel-header compact-disclosure-summary">
                   <h3>Executions</h3>
                   <span className="panel-meta">
-                    {selectedExecutions.length} run{selectedExecutions.length === 1 ? "" : "s"}
+                    {agentExecutionHistory.loading
+                      ? "Loading..."
+                      : `${selectedExecutions.length} loaded${agentExecutionHistory.hasMore ? "+" : ""}`}
                   </span>
                 </summary>
+                {agentExecutionHistory.error ? (
+                  <div className="callout error-callout">{agentExecutionHistory.error}</div>
+                ) : null}
                 {selectedExecutions.length > 0 ? (
                   <div className="agent-execution-list">
                     {selectedExecutions.map((execution) => {
@@ -3229,8 +3384,24 @@ export function AgentsPage() {
                     })}
                   </div>
                 ) : (
-                  <div className="empty-state compact-empty-state">No executions have run for this session.</div>
+                  <div className="empty-state compact-empty-state">
+                    {agentExecutionHistory.loading
+                      ? "Loading execution history..."
+                      : "No executions have run for this session."}
+                  </div>
                 )}
+                {agentExecutionHistory.hasMore ? (
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="admin-action-button compact"
+                      onClick={() => void loadMoreAgentExecutions()}
+                      disabled={agentExecutionHistory.loadingMore}
+                    >
+                      {agentExecutionHistory.loadingMore ? "Loading..." : "Load more executions"}
+                    </button>
+                  </div>
+                ) : null}
               </details>
             ) : null}
 

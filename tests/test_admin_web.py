@@ -13978,10 +13978,44 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     summary_container_item = next(
         item for item in summary_payload["items"] if item["backend"] == "container_worker_vm"
     )
-    assert "session_policy" in summary_container_item["host"]
-    assert "executions" in summary_container_item["host"]
+    assert "session_policy" not in summary_container_item["host"]
+    assert "executions" not in summary_container_item["host"]
     assert list_vms_calls[1]["directory_path"] == "root/team-a"
     assert list_vms_calls[1]["omit_state"] is True
+
+    detail_response = client.get(
+        "/api/admin/agents/container-session-a?backend=container_worker_vm"
+        "&directory_path=root/team-a"
+    )
+    assert detail_response.status_code == 200
+    detail_item = detail_response.json()
+    assert "session_policy" in detail_item["host"]
+    assert "metadata" in detail_item["host"]
+    assert "executions" not in detail_item["host"]
+
+    history_response = client.get(
+        "/api/admin/agents/container-session-a/executions?directory_path=root/team-a&limit=1"
+    )
+    assert history_response.status_code == 200
+    history_payload = history_response.json()
+    assert len(history_payload["items"]) == 1
+    assert history_payload["has_more"] is True
+    assert history_payload["next_cursor"]
+    next_history_response = client.get(
+        "/api/admin/agents/container-session-a/executions",
+        params={
+            "directory_path": "root/team-a",
+            "limit": 1,
+            "cursor": history_payload["next_cursor"],
+        },
+    )
+    assert next_history_response.status_code == 200
+    assert len(next_history_response.json()["items"]) == 1
+    assert next_history_response.json()["has_more"] is False
+    invalid_history_response = client.get(
+        "/api/admin/agents/container-session-a/executions?directory_path=root/team-a&cursor=bad"
+    )
+    assert invalid_history_response.status_code == 400
 
     override_response = client.get(
         "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
@@ -14092,8 +14126,8 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
     assert "records" not in summary_item["prompt_queue"]
     assert second.json() == first.json()
     agent_page_item = agent_page_summary.json()["items"][0]
-    assert "session_policy" in agent_page_item["host"]
-    assert "metadata" in agent_page_item["host"]
+    assert "session_policy" not in agent_page_item["host"]
+    assert "metadata" not in agent_page_item["host"]
     assert live.json()["summary_only"] is False
     assert live.json()["reconcile_containers"] is True
     assert live.json()["omit_vm_state"] is False

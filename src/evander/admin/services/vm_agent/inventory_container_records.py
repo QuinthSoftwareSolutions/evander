@@ -250,8 +250,10 @@ class VmAgentContainerRecordInventoryMixin:
         session: SessionManifest,
         *,
         executions: list[Any] | None = None,
+        execution_summary: Any | None = None,
         reconcile: bool = False,
         include_effective_tool_policy: bool = True,
+        include_execution_history: bool = True,
     ) -> AgentRecord:
         metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
         target_name = self._container_session_target_name(session)
@@ -267,31 +269,49 @@ class VmAgentContainerRecordInventoryMixin:
                 key=self._container_execution_sort_key,
                 reverse=True,
             )
-        latest_execution = execution_records[0] if execution_records else None
-        execution_payloads = [
-            self._container_execution_payload(record) for record in execution_records
-        ]
-        lifecycle = self._container_session_lifecycle(session, executions=execution_records)
-        status = self._container_session_status(execution_records)
+        summary_latest_execution = getattr(execution_summary, "latest_execution", None)
+        latest_execution = execution_records[0] if execution_records else summary_latest_execution
+        execution_count = (
+            int(getattr(execution_summary, "execution_count", 0) or 0)
+            if execution_summary is not None
+            else len(execution_records)
+        )
+        active_count = (
+            int(getattr(execution_summary, "active_execution_count", 0) or 0)
+            if execution_summary is not None
+            else sum(
+                1
+                for record in execution_records
+                if self._agent_status_is_active(self._container_agent_status(record.last_status))
+            )
+        )
+        active_running_count = int(getattr(execution_summary, "active_running_count", 0) or 0)
+        execution_payloads = (
+            [self._container_execution_payload(record) for record in execution_records]
+            if include_execution_history
+            else []
+        )
+        lifecycle_records = execution_records or ([latest_execution] if latest_execution else [])
+        lifecycle = self._container_session_lifecycle(session, executions=lifecycle_records)
+        if execution_summary is not None and active_count > 0:
+            status = "running" if active_running_count > 0 else "starting"
+        else:
+            status = self._container_session_status(lifecycle_records)
         if lifecycle is not None and lifecycle.state in {
             ContainerSessionLifecycleState.ABANDONED,
             ContainerSessionLifecycleState.CLEANUP_FAILED,
             ContainerSessionLifecycleState.CLEANED_UP,
         }:
             status = lifecycle.state.value
-        active_count = sum(
-            1
-            for record in execution_records
-            if self._agent_status_is_active(self._container_agent_status(record.last_status))
-        )
         host: dict[str, Any] = {
             "kind": "container_worker_session",
             "metadata": metadata,
             "session_policy": self._agent_session_policy_payload(session),
-            "executions": execution_payloads,
-            "execution_count": len(execution_records),
+            "execution_count": execution_count,
             "active_execution_count": active_count,
         }
+        if include_execution_history:
+            host["executions"] = execution_payloads
         latest_metadata: dict[str, Any] = {}
         if latest_execution is not None:
             latest_metadata = (

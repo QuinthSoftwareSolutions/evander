@@ -220,6 +220,14 @@ export type AgentExecutionRecord = {
   metadata: Record<string, unknown>;
 };
 
+export type AgentExecutionHistoryResponse = {
+  agent_id: string;
+  items: AgentExecutionRecord[];
+  limit: number;
+  has_more: boolean;
+  next_cursor: string | null;
+};
+
 export type AgentCreateRequest = {
   backend: AgentBackend;
   session_id?: string | null;

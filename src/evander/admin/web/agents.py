@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from datetime import date, datetime
 from typing import Any
@@ -20,7 +22,8 @@ from evander.admin.web.shared import (
 )
 
 DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
-DASHBOARD_AGENT_INVENTORY_PARAM = "_dashboard_agent_inventory"
+AGENT_EXECUTION_HISTORY_DEFAULT_LIMIT = 50
+AGENT_EXECUTION_HISTORY_MAX_LIMIT = 100
 
 
 def _jsonable(value: Any) -> Any:
@@ -109,6 +112,34 @@ def _compact_agent_record_payload(record: Any) -> dict[str, Any]:
     compact["host"] = _compact_agent_host(payload)
     compact["prompt_queue"] = _compact_prompt_queue(payload)
     return compact
+
+
+def _encode_agent_execution_cursor(created_at: Any, execution_id: Any) -> str:
+    created_at_text = str(created_at or "").strip().replace(" ", "T")
+    if created_at_text.endswith("+00:00"):
+        created_at_text = created_at_text.removesuffix("+00:00") + "Z"
+    payload = json.dumps(
+        {"created_at": created_at_text, "execution_id": str(execution_id or "")},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_agent_execution_cursor(cursor: str | None) -> tuple[str | None, str | None]:
+    if cursor is None or not cursor.strip():
+        return None, None
+    try:
+        padded = cursor.strip() + "=" * (-len(cursor.strip()) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (UnicodeEncodeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid agent execution cursor.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid agent execution cursor.")
+    created_at = str(payload.get("created_at") or "").strip()
+    execution_id = str(payload.get("execution_id") or "").strip()
+    if not created_at or not execution_id:
+        raise ValueError("Invalid agent execution cursor.")
+    return created_at, execution_id
 
 
 async def _json_body(request: Request) -> dict[str, Any]:
@@ -239,10 +270,6 @@ def agent_routes(
         include_inactive = _bool_query(request, "include_inactive", default=True)
         backend = _string_query(request, "backend", default="all")
         summary_only = _bool_query(request, "summary_only", default=False)
-        dashboard_request = _bool_query(request, "_dashboard", default=False)
-        dashboard_agent_inventory = _bool_query(
-            request, DASHBOARD_AGENT_INVENTORY_PARAM, default=False
-        )
         reconcile_containers = _optional_bool_query(request, "reconcile_containers")
         if reconcile_containers is None:
             reconcile_containers = not summary_only
@@ -268,9 +295,7 @@ def agent_routes(
         return JSONResponse(
             {
                 "items": [
-                    _compact_agent_record_payload(record)
-                    if summary_only and dashboard_request and dashboard_agent_inventory
-                    else _jsonable(record)
+                    _compact_agent_record_payload(record) if summary_only else _jsonable(record)
                     for record in records
                 ],
                 "directory_path": directory_path or "root",
@@ -279,6 +304,68 @@ def agent_routes(
                 "summary_only": summary_only,
                 "reconcile_containers": reconcile_containers,
                 "omit_vm_state": omit_vm_state,
+            }
+        )
+
+    async def get_agent(request: Request) -> JSONResponse:
+        agent_id = request.path_params["agent_id"]
+        try:
+            record = await run_in_threadpool(
+                service.vm_agent_admin.get_agent,
+                agent_id,
+                backend=_string_query(request, "backend"),
+                directory_path=_string_query(request, "directory_path"),
+                reconcile_containers=_bool_query(request, "reconcile_containers", default=False),
+                omit_vm_state=_bool_query(request, "omit_vm_state", default=True),
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=404)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(_jsonable(record))
+
+    async def get_agent_executions(request: Request) -> JSONResponse:
+        agent_id = request.path_params["agent_id"]
+        try:
+            limit = min(
+                AGENT_EXECUTION_HISTORY_MAX_LIMIT,
+                max(
+                    1,
+                    _int_query(
+                        request,
+                        "limit",
+                        default=AGENT_EXECUTION_HISTORY_DEFAULT_LIMIT,
+                    ),
+                ),
+            )
+            before_created_at, before_execution_id = _decode_agent_execution_cursor(
+                _string_query(request, "cursor")
+            )
+            rows = await run_in_threadpool(
+                service.vm_agent_admin.list_container_agent_execution_page,
+                agent_id,
+                directory_path=_string_query(request, "directory_path"),
+                limit=limit + 1,
+                before_created_at=before_created_at,
+                before_execution_id=before_execution_id,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = None
+        if has_more and items:
+            last_item = items[-1]
+            next_cursor = _encode_agent_execution_cursor(
+                last_item.get("created_at"), last_item.get("execution_id")
+            )
+        return JSONResponse(
+            {
+                "agent_id": agent_id,
+                "items": _jsonable(items),
+                "limit": limit,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
             }
         )
 
@@ -523,6 +610,12 @@ def agent_routes(
             get_create_operation,
             methods=["GET"],
         ),
+        Route(
+            "/api/admin/agents/{agent_id:str}/executions",
+            get_agent_executions,
+            methods=["GET"],
+        ),
+        Route("/api/admin/agents/{agent_id:str}", get_agent, methods=["GET"]),
         Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),
         Route("/api/admin/agents/{agent_id:str}", delete_agent, methods=["DELETE"]),
         Route("/api/admin/agents/{agent_id:str}/log", get_agent_log, methods=["GET"]),

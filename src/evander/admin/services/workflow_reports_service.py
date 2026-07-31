@@ -1161,6 +1161,54 @@ class WorkflowReportsAdminService:
             increment_status(node_state["status_counts"], normalized_status)
             update_bounds(node_state, timestamp)
 
+        def register_aggregated_activity(
+            *,
+            graph_id: str,
+            node_id: str,
+            source: str,
+            status: str,
+            activity_count: int,
+            first_activity_at: datetime | None,
+            latest_activity_at: datetime | None,
+        ) -> None:
+            state = graph_states.get(graph_id)
+            if state is None or activity_count <= 0:
+                return
+            state["activity_count"] += activity_count
+            if source == "trigger":
+                state["trigger_event_count"] += activity_count
+            elif source == "gate":
+                state["gate_execution_count"] += activity_count
+            elif source == "effect":
+                state["effect_execution_count"] += activity_count
+            normalized_status = status.strip() or "unknown"
+            state["status_counts"][normalized_status] = (
+                state["status_counts"].get(normalized_status, 0) + activity_count
+            )
+            if first_activity_at is not None:
+                update_bounds(state, first_activity_at)
+            if latest_activity_at is not None:
+                update_bounds(state, latest_activity_at)
+
+            nodes = state["nodes"]
+            node_state = nodes.setdefault(
+                node_id,
+                {
+                    "activity_count": 0,
+                    "status_counts": {},
+                    "first_activity_at": None,
+                    "latest_activity_at": None,
+                },
+            )
+            node_state["activity_count"] += activity_count
+            node_state["status_counts"][normalized_status] = (
+                node_state["status_counts"].get(normalized_status, 0) + activity_count
+            )
+            if first_activity_at is not None:
+                update_bounds(node_state, first_activity_at)
+            if latest_activity_at is not None:
+                update_bounds(node_state, latest_activity_at)
+
         def latest_datetime(*values: object) -> datetime | None:
             parsed_values = [
                 parsed
@@ -1176,85 +1224,108 @@ class WorkflowReportsAdminService:
             db_path = Path(stores["orchestration_store_path"])
             ensure_orchestration_schema(db_path)
             with connect_orchestration_db(db_path) as connection:
-                for (
-                    event_id,
-                    trigger_id,
-                    trace_id,
-                    occurred_at,
-                    delivery_state,
-                ) in connection.execute(
+                connection.execute(
                     """
-                    SELECT event_id, trigger_id, trace_id, occurred_at, delivery_state
-                    FROM trigger_events
-                    WHERE occurred_at BETWEEN ? AND ?
-                    ORDER BY occurred_at ASC, event_id ASC
-                    """,
-                    (start_text, end_text),
-                ):
-                    register_activity(
-                        node_id=str(trigger_id or ""),
-                        timestamp=_coerce_optional_datetime(occurred_at),
-                        source="trigger",
-                        status=_coerce_optional_string(delivery_state) or "event",
-                        run_key=_coerce_optional_string(trace_id)
-                        or _coerce_optional_string(event_id),
+                    CREATE TEMP TABLE workflow_graph_activity_nodes (
+                        node_id TEXT PRIMARY KEY,
+                        graph_id TEXT NOT NULL
                     )
-
-                for (
-                    execution_id,
-                    event_id,
-                    trace_id,
-                    effect_id,
-                    status,
-                    started_at_text,
-                    finished_at_text,
-                ) in connection.execute(
                     """
-                    SELECT execution_id, event_id, trace_id, effect_id, status,
-                           started_at, finished_at
-                    FROM effect_executions
-                    WHERE COALESCE(finished_at, started_at) BETWEEN ? AND ?
-                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
-                    """,
-                    (start_text, end_text),
-                ):
-                    register_activity(
-                        node_id=str(effect_id or ""),
-                        timestamp=latest_datetime(finished_at_text, started_at_text),
-                        source="effect",
-                        status=_coerce_optional_string(status),
-                        run_key=_coerce_optional_string(trace_id)
-                        or _coerce_optional_string(event_id)
-                        or _coerce_optional_string(execution_id),
-                    )
-
-                for (
-                    execution_id,
-                    event_id,
-                    trace_id,
-                    gate_id,
-                    status,
-                    started_at_text,
-                    finished_at_text,
-                ) in connection.execute(
+                )
+                connection.executemany(
                     """
-                    SELECT execution_id, event_id, trace_id, gate_id, status,
-                           started_at, finished_at
-                    FROM gate_executions
-                    WHERE COALESCE(finished_at, started_at) BETWEEN ? AND ?
-                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    INSERT INTO workflow_graph_activity_nodes(node_id, graph_id)
+                    VALUES (?, ?)
                     """,
-                    (start_text, end_text),
-                ):
-                    register_activity(
-                        node_id=str(gate_id or ""),
-                        timestamp=latest_datetime(finished_at_text, started_at_text),
-                        source="gate",
-                        status=_coerce_optional_string(status),
-                        run_key=_coerce_optional_string(trace_id)
-                        or _coerce_optional_string(event_id)
-                        or _coerce_optional_string(execution_id),
+                    tuple(node_to_graph_id.items()),
+                )
+                activity_sql = """
+                    WITH activity AS (
+                        SELECT nodes.graph_id AS graph_id,
+                               events.trigger_id AS node_id,
+                               'trigger' AS source,
+                               COALESCE(NULLIF(events.delivery_state, ''), 'event') AS status,
+                               events.occurred_at AS activity_at,
+                               COALESCE(NULLIF(events.trace_id, ''), events.event_id) AS run_key
+                        FROM trigger_events AS events INDEXED BY idx_trigger_events_occurred
+                        INNER JOIN workflow_graph_activity_nodes AS nodes
+                            ON nodes.node_id = events.trigger_id
+                        WHERE events.occurred_at BETWEEN ? AND ?
+                        UNION ALL
+                        SELECT nodes.graph_id AS graph_id,
+                               executions.effect_id AS node_id,
+                               'effect' AS source,
+                               COALESCE(NULLIF(executions.status, ''), 'unknown') AS status,
+                               COALESCE(executions.finished_at, executions.started_at) AS activity_at,
+                               COALESCE(
+                                   NULLIF(executions.trace_id, ''),
+                                   NULLIF(executions.event_id, ''),
+                                   executions.execution_id
+                               ) AS run_key
+                        FROM effect_executions AS executions
+                            INDEXED BY idx_effect_executions_activity
+                        INNER JOIN workflow_graph_activity_nodes AS nodes
+                            ON nodes.node_id = executions.effect_id
+                        WHERE COALESCE(executions.finished_at, executions.started_at) BETWEEN ? AND ?
+                        UNION ALL
+                        SELECT nodes.graph_id AS graph_id,
+                               executions.gate_id AS node_id,
+                               'gate' AS source,
+                               COALESCE(NULLIF(executions.status, ''), 'unknown') AS status,
+                               COALESCE(executions.finished_at, executions.started_at) AS activity_at,
+                               COALESCE(
+                                   NULLIF(executions.trace_id, ''),
+                                   NULLIF(executions.event_id, ''),
+                                   executions.execution_id
+                               ) AS run_key
+                        FROM gate_executions AS executions
+                            INDEXED BY idx_gate_executions_activity
+                        INNER JOIN workflow_graph_activity_nodes AS nodes
+                            ON nodes.node_id = executions.gate_id
+                        WHERE COALESCE(executions.finished_at, executions.started_at) BETWEEN ? AND ?
                     )
+                """
+                activity_parameters = (
+                    start_text,
+                    end_text,
+                    start_text,
+                    end_text,
+                    start_text,
+                    end_text,
+                )
+                for row in connection.execute(
+                    activity_sql
+                    + """
+                    SELECT graph_id, node_id, source, status,
+                           COUNT(*) AS activity_count,
+                           MIN(activity_at) AS first_activity_at,
+                           MAX(activity_at) AS latest_activity_at
+                    FROM activity
+                    GROUP BY graph_id, node_id, source, status
+                    """,
+                    activity_parameters,
+                ):
+                    register_aggregated_activity(
+                        graph_id=str(row["graph_id"] or ""),
+                        node_id=str(row["node_id"] or ""),
+                        source=str(row["source"] or ""),
+                        status=str(row["status"] or "unknown"),
+                        activity_count=int(row["activity_count"] or 0),
+                        first_activity_at=_coerce_optional_datetime(row["first_activity_at"]),
+                        latest_activity_at=_coerce_optional_datetime(row["latest_activity_at"]),
+                    )
+                for row in connection.execute(
+                    activity_sql
+                    + """
+                    SELECT graph_id, COUNT(DISTINCT run_key) AS run_count
+                    FROM activity
+                    GROUP BY graph_id
+                    """,
+                    activity_parameters,
+                ):
+                    state = graph_states.get(str(row["graph_id"] or ""))
+                    if state is not None:
+                        state["run_count"] = int(row["run_count"] or 0)
         else:
             queue_payload = _read_json_object(stores["event_queue_store_path"])
             effect_payload = _read_json_object(stores["effect_execution_store_path"])
@@ -1342,7 +1413,7 @@ class WorkflowReportsAdminService:
                     user_ids=graph.user_ids,
                     node_ids=graph.node_ids,
                     node_count=len(graph.node_ids),
-                    run_count=len(state["run_keys"]),
+                    run_count=int(state.get("run_count", len(state["run_keys"]))),
                     activity_count=state["activity_count"],
                     trigger_event_count=state["trigger_event_count"],
                     gate_execution_count=state["gate_execution_count"],
