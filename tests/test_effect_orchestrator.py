@@ -6221,7 +6221,12 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert backend.started_specs[0].session_id == "session-1"
     assert backend.started_specs[0].metadata["dispatch_id"] == "caller-dispatch-2"
     assert backend.started_specs[0].image == "runner:queue-image"
+    assert backend.started_specs[0].codex_turn is not None
+    assert str(backend.started_specs[0].codex_turn.mcp_gateway_url).startswith(
+        "http://192.168.250.1:8000/mcp?session_id=session-1"
+    )
     assert "check teams" in str(backend.started_specs[0].command)
+    assert "mcp_servers.evander.url" in str(backend.started_specs[0].command)
     assert "thread-existing" in str(backend.started_specs[0].command)
     waiting_records = list(execution_store.read_all().values())
     assert len(waiting_records) == 1

@@ -4549,6 +4549,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
+    assert "data-resume-release-recovery-blocker-id" in script.text
+    assert "resumeReleaseRecovery" in script.text
+    assert "admin_ui_release_recovery" in script.text
+    assert "Resume release recovery" in script.text
     assert "data-resolve-terminal-blocker-id" in script.text
     assert "resolveTerminalBlocker" in script.text
     assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text

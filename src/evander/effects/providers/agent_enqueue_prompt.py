@@ -562,12 +562,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
-        mcp_gateway_url = self._mcp_gateway_url(
-            config=effective_config,
-            target=session_id,
+        mcp_gateway_url = gateway_url_with_session_context(
+            container_worker_guest_gateway_url(effective_config),
+            session_id=session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-            base_gateway_url=container_worker_guest_gateway_url(effective_config),
+            mcp_session_token=session_mcp_auth_token(session),
         )
         codex_turn = container_codex_turn_spec(
             prompt=prompt,

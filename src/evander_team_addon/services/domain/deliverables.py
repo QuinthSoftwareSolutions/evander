@@ -126,6 +126,12 @@ def _deliverable_submission_next_action_hints(
             "deliverable notice was sent to your superior. Wait for acceptance "
             "or branch-promotion instructions before taking more completion actions."
         )
+    else:
+        hints.append(
+            "No direct-superior notice was created. Configured workflow or operator "
+            "policy owns review routing; do not select reviewers unless an explicit "
+            "manual-routing instruction requires it."
+        )
     verification = _optional_mapping(deliverable.get("verification"), "verification")
     if verification is not None and verification.get("status") == "not_run":
         hints.append(

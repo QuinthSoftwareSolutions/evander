@@ -1708,7 +1708,7 @@ def test_team_addon_mcp_slice8_git_intent_tools_smoke(tmp_path: Path) -> None:
     state = repo.read()
     assert state.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend-slice8"
     assert state.agent_runtimes["lead"].active_dispatch_id == "dispatch-lead-slice8"
-    assert len(repo.list_outbox_records()) == 4
+    assert len(repo.list_outbox_records()) == 5
 
 
 def test_team_addon_mcp_slice8_tool_requires_active_dispatch_without_mutation(

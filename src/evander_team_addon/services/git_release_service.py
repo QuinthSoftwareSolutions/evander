@@ -35,6 +35,7 @@ from .domain.git_promotion import (
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _normalized_release_deliverable_set,
+    _repair_release_review_manifests_from_promotion_evidence,
     allowed_release_parent_task_ids,
 )
 from .domain.human_reviews import (
@@ -46,6 +47,7 @@ from .domain.task_assessment import (
     TaskAssessmentBoundaryError,
     require_release_scope,
 )
+from .domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .commands.outbox import _team_event_outbox_records
 
 
@@ -103,7 +105,25 @@ class TeamGitReleaseService:
                 normalized_promotion_id,
                 "git promotion",
             )
-            promotion.outputs = normalized_outputs
+            if promotion.state == "retired":
+                result["promotion_state"] = promotion.state
+                result["deliverable_id"] = promotion.deliverable_id
+                result["release_package_id"] = promotion.release_package_id
+                result["success"] = True
+                return state_model
+            durable_outputs = (
+                {
+                    key: promotion.outputs[key]
+                    for key in (
+                        "correction_deliverable_ids",
+                        "required_source_ancestor_commit_sha",
+                    )
+                    if key in promotion.outputs
+                }
+                if promotion.promotion_kind == "correction_aggregate"
+                else {}
+            )
+            promotion.outputs = {**normalized_outputs, **durable_outputs}
             if normalized_commit_sha is not None:
                 promotion.commit_sha = normalized_commit_sha
             if success:
@@ -141,6 +161,7 @@ class TeamGitReleaseService:
                     for event in result["events"]
                     if event.get("event_type")
                     in {
+                        AGENT_WAKE_REQUESTED_EVENT_TYPE,
                         HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
                         HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
                     }
@@ -231,6 +252,53 @@ class TeamGitReleaseService:
             return state_model
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        return state, result
+
+    def repair_release_review_manifests(
+        self,
+        *,
+        release_package_id: str,
+        expected_revision: int,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Hydrate missing reviewed manifests from durable pinned-promotion evidence."""
+
+        normalized_release_id = _required_text(
+            release_package_id,
+            "release_package_id",
+        )
+        result: dict[str, Any] = {
+            "success": False,
+            "applied": False,
+            "release_package_id": normalized_release_id,
+            "repaired_review_manifest_ids": [],
+            "updated_deliverable_ids": [],
+            "missing_review_manifest_ids": [],
+            "diagnostics": [],
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            release = _require_present(
+                state_model.release_packages,
+                normalized_release_id,
+                "release package",
+            )
+            missing_manifest_ids = (
+                _repair_release_review_manifests_from_promotion_evidence(
+                    state_model,
+                    release=release,
+                    result=result,
+                )
+            )
+            result["missing_review_manifest_ids"] = missing_manifest_ids
+            result["applied"] = bool(result["repaired_review_manifest_ids"])
+            result["success"] = not missing_manifest_ids
+            return state_model
+
+        state = self._repository.update(
+            _mutate,
+            expected_revision=expected_revision,
+        )
         result["revision"] = state.revision
         return state, result
 

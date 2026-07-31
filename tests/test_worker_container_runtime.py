@@ -221,11 +221,36 @@ def test_subscription_app_server_gets_only_restricted_proxy_configuration(
 
     assert not any("access_token" in value.casefold() for value in run_args + app_server_args)
     assert not any("auth.json" in value for value in run_args + app_server_args)
+    assert not any("OPENAI_API_KEY" in value for value in app_server_args)
     assert not any(value.startswith("HTTPS_PROXY=") for value in run_args)
     assert f"{paths.logs}/codex-turns:/run/evander/codex-turns:ro" in run_args
     assert "/home/agent/.evander/codex-turns" not in " ".join(run_args)
+    subscription_config = paths.root / "codex-subscription-config.toml"
+    subscription_project_config = (
+        paths.root / "codex-subscription-project-config.toml"
+    )
+    assert (
+        f"{subscription_config}:/home/agent/.config/evander/codex/config.toml:ro"
+        in run_args
+    )
+    assert (
+        f"{subscription_project_config}:/home/agent/.codex/config.toml:ro"
+        in run_args
+    )
+    subscription_config_text = subscription_config.read_text(encoding="utf-8")
+    assert 'forced_login_method = "chatgpt"' in subscription_config_text
+    assert 'model_reasoning_effort = "high"' in subscription_config_text
+    assert "[mcp_servers.evander]" in subscription_config_text
+    assert 'url = "http://10.20.30.40:8000/mcp"' in subscription_config_text
+    assert "enabled = true" in subscription_config_text
+    assert "model_provider" not in subscription_config_text
+    assert "model_providers" not in subscription_config_text
+    assert "OPENAI_API_KEY" not in subscription_config_text
+    assert "model_provider" not in subscription_project_config.read_text(encoding="utf-8")
     assert app_server_args[-3:] == ["/usr/local/bin/codex", "app-server", "--stdio"]
     assert "/home/agent/bin/codex" not in app_server_args
+    assert not any(str(turn.mcp_gateway_url) in value for value in app_server_args)
+    assert "CODEX_HOME=/home/agent/.config/evander/codex" in app_server_args
     assert "HTTPS_PROXY=http://172.18.0.1:11889" in app_server_args
     no_proxy = next(value for value in app_server_args if value.startswith("NO_PROXY="))
     assert "10.20.30.40" in no_proxy

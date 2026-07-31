@@ -1444,7 +1444,9 @@ def _register_slice6_tools(
             "integration_boundary=true with deliverable_contract to declare an "
             "explicit final-integration boundary. The contract may require Git "
             "provenance and explicitly name direct-child or dependency task "
-            "contributions. originating_task_id records lineage only and does not "
+            "contributions. A non-integration leaf may also use a deliverable_contract "
+            "with no contribution task IDs when it must resolve through an accepted "
+            "deliverable. originating_task_id records lineage only and does not "
             "seed Git content; when a correction must edit accepted predecessor "
             "content, also put that predecessor in dependency_task_ids so its exact "
             "accepted commit is verified and composed before work starts."
@@ -1651,8 +1653,9 @@ def _register_slice6_tools(
         description=(
             "Update a Team task without accepting or rejecting review work. "
             "Before any deliverable submission, an authorized task-graph editor "
-            "can designate it as an integration boundary by supplying "
-            "integration_boundary=true and deliverable_contract."
+            "can supply a deliverable_contract to require accepted work, and can "
+            "also designate a composite as an integration boundary with "
+            "integration_boundary=true."
         ),
     )
 
@@ -2000,9 +2003,11 @@ def _register_slice7_tools(
         team_submit_deliverable,
         name=TEAM_SUBMIT_DELIVERABLE_TOOL,
         description=(
-            "Submit a work product that requires the caller's direct superior to "
-            "accept it. This always moves the task to waiting_for_review and sends "
-            "the superior a deliverable notice. Finish administrative, delegation, "
+            "Submit a work product for configured acceptance or review routing. "
+            "This always moves the task to waiting_for_review. When the caller has "
+            "a direct superior, it sends that superior a deliverable notice; when "
+            "the caller has no superior, workflow or operator policy must attach "
+            "the required review. Finish administrative, delegation, "
             "coordination, or acknowledgement-only work with team_update_task "
             "state=finished instead. Publishes any artifact_paths from /artifacts "
             "before recording state. Optional "
@@ -2014,8 +2019,10 @@ def _register_slice7_tools(
             "candidate. Call team_publish_review_branch separately only when a "
             "durable review branch is needed. Set supersedes_deliverable_id when "
             "reworking a rejected or blocked same-task deliverable; its open "
-            "findings carry forward. Accepted-deliverable recovery must use "
-            "team_submit_deliverable_for_review instead. Requires task_id, summary, "
+            "findings carry forward. Use team_submit_deliverable_for_review only "
+            "when explicit manual-routing policy requires the caller to select "
+            "reviewers. Accepted-deliverable recovery must use that manual tool. "
+            "Requires task_id, summary, "
             "and request_id."
         ),
     )

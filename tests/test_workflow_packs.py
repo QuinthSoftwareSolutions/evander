@@ -22,6 +22,27 @@ def _write_workflow_pack(tmp_path: Path, name: str, payload: dict) -> None:
     (packs_dir / name).write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_main_pack_routes_non_integration_deliverables_to_configured_leaf_reviewer() -> None:
+    project_dir = Path(__file__).resolve().parents[1]
+    payload = json.loads(
+        (project_dir / "config" / "workflow-packs" / "main.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    nodes = {node["id"]: node for node in payload["ir"]["nodes"]}
+
+    assert nodes["main-gate-integration-boundary"]["config"]["when"] == {
+        "equals": False,
+        "left": "${{main-trigger-team-deliverable-created.task.integration_boundary}}",
+    }
+    assert nodes["main-effect-create-team-review-cohort"]["config"]["reviews"] == [
+        {
+            "review_profile_id": "profile-project-team-app-dev-team-true-app-leaf-review",
+            "reviewer_agent_id": "agent-project-team-app-dev-team-true-app-leaf-reviewer",
+        }
+    ]
+
+
 def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
@@ -467,6 +488,45 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     assert ephemeral_create["type"] == "effect:agent:create"
     assert ephemeral_create["config"]["allowed_tools"] == ["team_report_ephemeral_result"]
     assert ("team-cron", "team-publish-outbox-events") in edges
+    correction_gate = nodes["team-git-promotion-correction-aggregate"]
+    assert correction_gate["config"]["when"]["all"][0]["equals"] == (
+        "correction_aggregate"
+    )
+    assert (
+        "team-git-promotion-requested",
+        "team-git-promotion-correction-aggregate",
+    ) in edges
+    assert (
+        "team-git-promotion-correction-aggregate",
+        "team-consolidate-correction-branches",
+    ) in edges
+    assert (
+        "team-consolidate-correction-branches",
+        "team-record-correction-aggregate-promotion",
+    ) in edges
+    team_graph = next(
+        graph for graph in pack.graphs if graph.id == "team-runtime"
+    )
+    assert "team-git-promotion-correction-aggregate" in team_graph.node_ids
+    assert "team-consolidate-correction-branches" in team_graph.node_ids
+    assert (
+        "team-record-correction-aggregate-promotion"
+        in team_graph.node_ids
+    )
+    assert nodes["team-consolidate-correction-branches"]["config"][
+        "required_source_ancestor_commit_sha"
+    ] == (
+        "${{team-git-promotion-requested.payload."
+        "required_source_ancestor_commit_sha ?? null}}"
+    )
+    recovery_config = nodes["team-promote-release-recovery-branch"]["config"]
+    assert recovery_config["base_commit_sha"] == (
+        "${{team-git-release-recovery-requested.payload.base_commit_sha ?? null}}"
+    )
+    assert recovery_config["required_source_ancestor_commit_sha"] == (
+        "${{team-git-release-recovery-requested.payload."
+        "required_source_ancestor_commit_sha ?? null}}"
+    )
 
 
 def test_checked_in_team_runtime_pack_preserves_git_promotion_evidence() -> None:
@@ -480,8 +540,9 @@ def test_checked_in_team_runtime_pack_preserves_git_promotion_evidence() -> None
         ).read_text(encoding="utf-8")
     )
     nodes = {
-        item["node"]["id"]: item["node"]
+        node["id"]: node
         for item in pack["ir"]["nodes"]
+        for node in [item.get("node", item)]
     }
     required_result_outputs = {
         "base_commit_sha",
@@ -493,6 +554,7 @@ def test_checked_in_team_runtime_pack_preserves_git_promotion_evidence() -> None
 
     for node_id in (
         "team-record-feature-promotion",
+        "team-record-correction-aggregate-promotion",
         "team-record-release-promotion",
         "team-record-release-recovery-promotion",
     ):

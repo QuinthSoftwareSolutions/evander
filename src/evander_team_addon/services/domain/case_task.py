@@ -670,9 +670,13 @@ def _plan_task_creation(
             raise ValueError(
                 "integration boundary task requires deliverable_contract"
             )
-        if not integration_boundary and deliverable_contract is not None:
+        if (
+            not integration_boundary
+            and deliverable_contract is not None
+            and deliverable_contract.required_contribution_task_ids
+        ):
             raise ValueError(
-                "deliverable_contract requires integration_boundary"
+                "leaf deliverable_contract cannot require contribution tasks"
             )
         if (
             deliverable_contract is not None
@@ -1143,8 +1147,12 @@ def _task_deliverable_contract_scope_error(
 ) -> str | None:
     if integration_boundary and deliverable_contract is None:
         return "integration boundary task requires deliverable_contract"
-    if not integration_boundary and deliverable_contract is not None:
-        return "deliverable_contract requires integration_boundary"
+    if (
+        not integration_boundary
+        and deliverable_contract is not None
+        and deliverable_contract.required_contribution_task_ids
+    ):
+        return "leaf deliverable_contract cannot require contribution tasks"
     if deliverable_contract is None:
         return None
     if task_id in deliverable_contract.required_contribution_task_ids:

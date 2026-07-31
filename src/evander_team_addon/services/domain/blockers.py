@@ -60,6 +60,8 @@ def open_or_get_blocker(
     reporter_agent_id: str | None = None,
     reporter_actor: str | None = None,
     initial_owner_agent_id: str | None = None,
+    route_initial_owner_even_if_unavailable: bool = False,
+    wake_owner: bool = True,
     team_id: str | None = None,
     project_id: str | None = None,
     task_id: str | None = None,
@@ -102,7 +104,17 @@ def open_or_get_blocker(
     task = state.tasks.get(_optional_text(task_id) or "")
     parent_task = parent_task_for_child(state, task) if task is not None else None
     parent_owner_id = parent_task.owner_agent_id if parent_task is not None else None
-    if initial_owner_agent_id is not None:
+    if initial_owner_agent_id is not None and route_initial_owner_even_if_unavailable:
+        candidate = state.agents.get(initial_owner_agent_id)
+        owner = (
+            candidate
+            if candidate is not None
+            and candidate.team_id == team.id
+            and candidate.status == AgentStatus.ACTIVE
+            else None
+        )
+        skipped_agent_ids = [] if owner is not None else [initial_owner_agent_id]
+    elif initial_owner_agent_id is not None:
         owner, skipped_agent_ids = nearest_available_agent(
             state,
             start_agent_id=initial_owner_agent_id,
@@ -174,15 +186,17 @@ def open_or_get_blocker(
 
     if owner is not None:
         blocker.owner_agent_id = owner.id
-        create_blocker_inbox(
+        item = create_blocker_inbox(
             state,
             blocker=blocker,
             recipient_agent_id=owner.id,
             sender_agent_id=reporter.id if reporter is not None else None,
             kind="blocker_reported",
-            result=result,
+            result=result if wake_owner else None,
             now=effective_now,
         )
+        if result is not None and not wake_owner:
+            result.setdefault("created_inbox_item_ids", []).append(item.id)
     else:
         route_blocker_terminal(
             state,
@@ -672,6 +686,93 @@ def handle_blocker_inbox_for_agent(
             item.updated_at = effective_now
             handled.append(item.id)
     return handled
+
+
+def assign_blocker_owner(
+    state: TeamState,
+    *,
+    blocker: TeamBlocker,
+    owner_agent_id: str,
+    actor_agent_id: str | None,
+    reason: str,
+    result: dict[str, Any] | None,
+    wake_owner: bool = True,
+    now: datetime | None = None,
+) -> None:
+    """Route an open blocker to an explicitly selected local recovery owner."""
+
+    effective_now = _ensure_utc(now or utc_now())
+    owner = state.agents.get(_required_text(owner_agent_id, "owner_agent_id"))
+    if owner is None or owner.team_id != blocker.team_id or owner.status != AgentStatus.ACTIVE:
+        raise ValueError(
+            f"blocker {blocker.id} owner {owner_agent_id} is not an active team agent"
+        )
+    previous_owner_id = blocker.owner_agent_id
+    route_changed = (
+        blocker.owner_agent_id != owner.id
+        or blocker.delegate_agent_id is not None
+        or blocker.route != TeamBlockerRoute.OWNED
+        or bool(blocker.terminal_reference_ids)
+    )
+    if route_changed:
+        pending_recipient_ids = {
+            item.recipient_agent_id
+            for item in state.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.payload.get("blocker_id") == blocker.id
+            and item.recipient_agent_id != owner.id
+        }
+        for recipient_agent_id in pending_recipient_ids:
+            handle_blocker_inbox_for_agent(
+                state,
+                blocker_id=blocker.id,
+                agent_id=recipient_agent_id,
+                now=effective_now,
+            )
+        for reference_id in blocker.terminal_reference_ids:
+            agenda = state.governance_agenda.get(reference_id)
+            if agenda is not None and agenda.state == GovernanceAgendaItemState.PENDING:
+                agenda.state = GovernanceAgendaItemState.HANDLED
+                agenda.updated_at = effective_now
+        blocker.owner_agent_id = owner.id
+        blocker.delegate_agent_id = None
+        blocker.route = TeamBlockerRoute.OWNED
+        blocker.active_dispatch_id = None
+        blocker.follow_up_at = None
+        blocker.terminal_reference_ids = []
+        blocker.updated_at = effective_now
+        event = append_blocker_event(
+            state,
+            blocker=blocker,
+            event_type=TeamBlockerEventType.OWNER_TRANSFERRED,
+            actor_agent_id=actor_agent_id,
+            from_agent_id=previous_owner_id,
+            to_agent_id=owner.id,
+            note=reason,
+            now=effective_now,
+        )
+        if result is not None:
+            result.setdefault("blocker_event_ids", []).append(event.id)
+
+    if any(
+        item.state == TeamInboxItemState.PENDING
+        and item.recipient_agent_id == owner.id
+        and item.payload.get("blocker_id") == blocker.id
+        for item in state.inbox.values()
+    ):
+        return
+    existing_inbox_ids = set(state.inbox)
+    item = create_blocker_inbox(
+        state,
+        blocker=blocker,
+        recipient_agent_id=owner.id,
+        sender_agent_id=actor_agent_id,
+        kind="blocker_recovery_assigned",
+        result=result if wake_owner else None,
+        now=effective_now,
+    )
+    if result is not None and not wake_owner and item.id not in existing_inbox_ids:
+        result.setdefault("created_inbox_item_ids", []).append(item.id)
 
 
 def blocker_events_for_dispatch(
@@ -1723,6 +1824,9 @@ def open_release_blocker(
     details: str,
     result: dict[str, Any] | None,
     reporter_agent_id: str | None = None,
+    initial_owner_agent_id: str | None = None,
+    route_initial_owner_even_if_unavailable: bool = False,
+    wake_owner: bool = True,
     now: datetime | None = None,
 ) -> tuple[TeamBlocker, bool]:
     release = state.release_packages.get(release_package_id)
@@ -1738,7 +1842,15 @@ def open_release_blocker(
         summary=summary,
         details=details,
         reporter_agent_id=reporter_agent_id,
-        initial_owner_agent_id=(project.lead_agent_id if reporter_agent_id is None else None),
+        initial_owner_agent_id=(
+            initial_owner_agent_id
+            if initial_owner_agent_id is not None
+            else (project.lead_agent_id if reporter_agent_id is None else None)
+        ),
+        route_initial_owner_even_if_unavailable=(
+            route_initial_owner_even_if_unavailable
+        ),
+        wake_owner=wake_owner,
         team_id=project.team_id,
         project_id=project.id,
         result=result,
@@ -1786,6 +1898,7 @@ __all__ = [
     "active_blockers_for_source",
     "agent_can_resolve_blocker",
     "append_blocker_event",
+    "assign_blocker_owner",
     "assign_blockers_to_dispatch",
     "blocker_resolution_line_agent_ids",
     "blocker_events_for_dispatch",

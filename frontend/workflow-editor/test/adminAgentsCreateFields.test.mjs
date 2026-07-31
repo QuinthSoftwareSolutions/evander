@@ -131,11 +131,35 @@ test("container Codex usage can switch per agent without transporting credential
   assert.match(agentsPage, /payload\.codex_auth_mode =/);
   assert.doesNotMatch(codexAuthPanel, /accessToken|refreshToken|OPENAI_API_KEY/);
   assert.match(codexAuthPanel, /\/api\/admin\/codex-auth\/device-login/);
-  assert.match(codexAuthPanel, /Worker ChatGPT subscription/);
+  assert.match(codexAuthPanel, /Shared worker ChatGPT subscription account/);
+  assert.match(codexAuthPanel, /not\s+specific to the selected agent/);
+  assert.match(codexAuthPanel, /does not switch any agent to subscription usage/);
+  assert.match(codexAuthPanel, /selectedAgentUsage\?\.mode === "metered_api"/);
+  assert.match(codexAuthPanel, /selected agent still metered/);
+  assert.match(codexAuthPanel, /is\s+still using Metered API/);
   assert.match(codexAuthPanel, /suffix\(login\.directoryPath\)/);
   assert.match(codexAuthPanel, /const originDirectoryPath = login\.directoryPath;/);
   assert.match(codexAuthPanel, /setLogin\(\{ \.\.\.payload, directoryPath: originDirectoryPath \}\);/);
   assert.match(codexAuthPanel, /login\?\.status === "pending"/);
+});
+
+test("shared worker auth is page-wide and agent usage shows its effective source", () => {
+  const globalControls = sourceBetweenIn(
+    agentsPage,
+    '<section className="agents-global-controls" aria-label="Shared worker account">',
+    '<section className="feature-sidebar">',
+  );
+  assert.match(globalControls, /<CodexAuthPanel/);
+  assert.doesNotMatch(
+    sourceBetweenIn(agentsPage, '<section className="feature-content">', "{showCreateForm ?"),
+    /<CodexAuthPanel/,
+  );
+  assert.match(agentsPage, /function codexUsageForAgent\(/);
+  assert.match(agentsPage, /effective_codex_auth_mode/);
+  assert.match(agentsPage, /codex_auth_mode_source/);
+  assert.match(agentsPage, /Codex usage: \{selectedAgentCodexUsage\.label\}/);
+  assert.match(agentsPage, /agent-list-usage-row/);
+  assert.match(agentsPage, /Directory default/);
 });
 
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {

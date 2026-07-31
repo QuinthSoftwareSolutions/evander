@@ -368,6 +368,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     target_branch: ConfigValue
     base_branch: ConfigValue | None = None
     base_commit_sha: ConfigValue | None = None
+    required_source_ancestor_commit_sha: ConfigValue | None = None
     expected_source_commits: ConfigValue
     allowed_changed_paths: ConfigValue | None = None
 

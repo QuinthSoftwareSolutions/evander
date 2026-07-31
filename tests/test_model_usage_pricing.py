@@ -193,6 +193,119 @@ def test_openai_pricing_estimates_gpt_5_6_cache_writes_from_release_day(
     assert extract_cache_write_input_tokens(event).total == 300_000
 
 
+@pytest.mark.parametrize(
+    ("model", "service_tier", "expected_rule_id", "expected_total"),
+    [
+        (
+            "gpt-5.6",
+            None,
+            "openai:gpt-5.6-sol:text:2026-07-30",
+            Decimal("13.45"),
+        ),
+        (
+            "gpt-5.6-terra",
+            None,
+            "openai:gpt-5.6-terra:text:2026-07-30",
+            Decimal("5.38"),
+        ),
+        (
+            "gpt-5.6-luna",
+            None,
+            "openai:gpt-5.6-luna:text:2026-07-30",
+            Decimal("0.538"),
+        ),
+        (
+            "gpt-5.6-sol",
+            "fast",
+            "openai:gpt-5.6-sol:fast:2026-07-30",
+            Decimal("14.95"),
+        ),
+        (
+            "gpt-5.6-terra",
+            "fast",
+            "openai:gpt-5.6-terra:fast:2026-07-30",
+            Decimal("5.98"),
+        ),
+        (
+            "gpt-5.6-luna",
+            "fast",
+            "openai:gpt-5.6-luna:fast:2026-07-30",
+            Decimal("0.598"),
+        ),
+        (
+            "gpt-5.6-sol",
+            "priority",
+            "openai:gpt-5.6-sol:priority:2026-07-30",
+            Decimal("14.95"),
+        ),
+        (
+            "gpt-5.6-terra",
+            "priority",
+            "openai:gpt-5.6-terra:priority:2026-07-30",
+            Decimal("5.98"),
+        ),
+        (
+            "gpt-5.6-luna",
+            "priority",
+            "openai:gpt-5.6-luna:priority:2026-07-30",
+            Decimal("0.598"),
+        ),
+    ],
+)
+def test_openai_pricing_estimates_gpt_5_6_july_price_changes(
+    model: str,
+    service_tier: str | None,
+    expected_rule_id: str,
+    expected_total: Decimal,
+) -> None:
+    request_metadata = {"path": "/v1/responses"}
+    if service_tier is not None:
+        request_metadata["service_tier"] = service_tier
+    event = _event(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        total_tokens=1_100_000,
+        occurred_at=datetime(2026, 7, 30, tzinfo=UTC),
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens": 1_000_000,
+                "input_tokens_details": {
+                    "cached_tokens": 200_000,
+                    "cache_write_tokens": 300_000,
+                },
+                "output_tokens": 100_000,
+                "total_tokens": 1_100_000,
+            },
+            "request_metadata": request_metadata,
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == expected_rule_id
+    assert estimate.estimated_total == expected_total
+
+
+def test_openai_pricing_applies_gpt_5_6_standard_long_context_rates() -> None:
+    event = _event(
+        model="gpt-5.6-luna",
+        input_tokens=300_000,
+        output_tokens=100_000,
+        total_tokens=400_000,
+        occurred_at=datetime(2026, 7, 30, tzinfo=UTC),
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == "openai:gpt-5.6-luna:text:2026-07-30"
+    assert estimate.input_cost == Decimal("0.12")
+    assert estimate.output_cost == Decimal("0.18")
+    assert estimate.estimated_total == Decimal("0.30")
+
+
 def test_openai_pricing_rejects_rule_currency_mismatches() -> None:
     with pytest.raises(ValueError, match="rule currency must match catalog currency"):
         load_model_pricing_catalog_payload(
@@ -252,7 +365,7 @@ def test_seed_default_model_pricing_catalog_preserves_operator_edits(tmp_path, m
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
     catalog_path = seed_default_model_pricing_catalog(tmp_path)
     seeded_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert seeded_payload["version"] == "openai-anthropic-2026-07-10"
+    assert seeded_payload["version"] == "openai-anthropic-2026-07-30"
 
     operator_payload = _pricing_catalog_payload(
         version="operator-pricing",
@@ -303,7 +416,7 @@ def test_seed_default_model_pricing_catalog_ignores_pristine_legacy_seed(
     )
 
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert payload["version"] == "openai-anthropic-2026-07-10"
+    assert payload["version"] == "openai-anthropic-2026-07-30"
 
 
 def test_openai_pricing_prefers_service_tier_specific_rules() -> None:

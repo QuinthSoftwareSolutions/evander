@@ -8,6 +8,7 @@ ENV PATH=/home/agent/bin:/usr/local/bin:/usr/bin:/bin
 RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
     && apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
       bash \
+      bubblewrap \
       ca-certificates \
       coreutils \
       curl \

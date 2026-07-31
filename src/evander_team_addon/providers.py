@@ -219,7 +219,9 @@ from .services.domain.preparation_failures import (
 )
 from .services.domain.correction_git_source import (
     HumanReviewCorrectionGitSource,
+    RejectedCandidateGitSource,
     human_review_correction_git_source,
+    rejected_candidate_git_source,
 )
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
@@ -4697,6 +4699,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             "target_branch",
             "base_branch",
             "base_commit_sha",
+            "required_source_ancestor_commit_sha",
             "expected_source_commits",
             "allowed_changed_paths",
         )
@@ -4714,6 +4717,9 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             base_value = _optional_text(payload.get("base_branch"))
             base_branch = validate_branch_name(base_value) if base_value else None
             base_commit_sha = _optional_text(payload.get("base_commit_sha"))
+            required_source_ancestor_commit_sha = _optional_text(
+                payload.get("required_source_ancestor_commit_sha")
+            )
             expected_source_commits = {
                 validate_branch_name(str(branch)): _required_text(
                     commit,
@@ -4762,6 +4768,9 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 target_branch=target_branch,
                 base_branch=base_branch,
                 base_commit_sha=base_commit_sha,
+                required_source_ancestor_commit_sha=(
+                    required_source_ancestor_commit_sha
+                ),
                 expected_source_commits=expected_source_commits,
                 allowed_changed_paths=allowed_changed_paths,
             )
@@ -6050,6 +6059,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "successor release automatically. Do not submit a coordination-parent "
         "deliverable, finish that parent directly, propose its finding resolution "
         "manually, or request its successor release.\n"
+        "- Generated rejected-candidate correction tasks for release verification "
+        "or agent release review are also support-typed but are integration "
+        "boundaries: do not finish them directly. Work from the runtime-pinned "
+        "candidate, submit an assessable Git deliverable, and use its accepted "
+        "reviewed result to create the successor release.\n"
         f"- For an ambiguous human-review finding, use "
         f"{TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL} to route its existing "
         "correction child without rewriting the finding or task. Use "
@@ -6121,11 +6135,12 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"{TEAM_REPORT_BLOCKER_TOOL} with a stable reason_code and concrete "
         "explanation instead of a prose-only status report.\n\n"
         "Deliverables and review:\n"
-        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} only for an assessable work product "
-        "that needs acceptance by your direct superior. This always moves the task "
-        "to waiting_for_review and sends the superior a deliverable notice. Use "
-        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} when the deliverable should "
-        "immediately be handed to a reviewer.\n"
+        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} for an assessable work product. "
+        "This always moves the task to waiting_for_review. It sends a deliverable "
+        "notice when a direct superior exists; otherwise configured workflow or "
+        "operator policy owns review routing. Do not select reviewers yourself. "
+        f"Use {TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} only when an explicit "
+        "task or operator instruction selects manual review routing.\n"
         f"- When a deliverable_notice hands a direct subordinate's deliverable to "
         f"you for superior acceptance, use {TEAM_DECIDE_DELIVERABLE_TOOL} to accept "
         "or reject it and handle that notice in the same call. Rejection requires "
@@ -6151,7 +6166,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Artifact-only, administrative, customer-service, and operations work do "
         "not need a Git context.\n"
         f"- Use {TEAM_REQUEST_REVIEW_TOOL} to ask a specific same-team reviewer "
-        "to review a deliverable. Review artifact handoff is through "
+        "to review a deliverable only when an explicit manual-routing instruction "
+        "or a superior-acceptance decision requires specialist review. Review "
+        "artifact handoff is through "
         f"{TEAM_REQUEST_REVIEW_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
         "paths through communication tools.\n"
@@ -6611,9 +6628,11 @@ def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
         "- Include verification.status when you ran checks or could not run them. "
         "Use verification.status=not_run with verification.summary explaining "
         "missing test tooling or unavailable services.\n"
-        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
-        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
-        "paths through communication tools.\n"
+        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} by default and let configured "
+        "workflow or operator policy route reviews. Use "
+        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} only when this task explicitly "
+        "requires manual reviewer selection. Do not pass local artifact paths "
+        "through communication tools.\n"
         "- If no deliverable is ready, use the appropriate MCP tools for notes, "
         "questions, progress reports, or handled inbox items when useful.\n\n"
     )
@@ -7189,12 +7208,11 @@ def _create_project_repo_git_work_contexts(
         agent_id=agent_id,
     ):
         task_id = _required_text(task.get("id"), "task.id")
-        agent_branch = _project_repo_agent_branch(session_id, task_id=task_id)
         managed_repo_id = _required_text(
             project_repo.get("managed_repo_id"),
             "managed_repo_id",
         )
-        correction_source = _verified_human_review_correction_git_source(
+        correction_source = _verified_rejected_candidate_git_source(
             context,
             state=state,
             task_id=task_id,
@@ -7221,6 +7239,15 @@ def _create_project_repo_git_work_contexts(
             pinned_base_commit = None
             pinned_base_tree = None
             composition_git_sources = dependency_git_sources
+        agent_branch = _project_repo_agent_branch(
+            session_id,
+            task_id=task_id,
+            candidate_commit_sha=(
+                correction_source.candidate_commit_sha
+                if correction_source is not None
+                else None
+            ),
+        )
         try:
             if correction_source is None:
                 prior_base_commit = _prior_project_repo_task_base_commit(
@@ -7268,7 +7295,7 @@ def _create_project_repo_git_work_contexts(
                     raise RuntimeError(
                         f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
                     )
-                current_correction_source = _verified_human_review_correction_git_source(
+                current_correction_source = _verified_rejected_candidate_git_source(
                     context,
                     state=state,
                     task_id=task_id,
@@ -7401,10 +7428,23 @@ def _validate_project_repo_git_work_context(
         )
 
 
-def _project_repo_agent_branch(session_id: str, *, task_id: str) -> str:
+def _project_repo_agent_branch(
+    session_id: str,
+    *,
+    task_id: str,
+    candidate_commit_sha: str | None = None,
+) -> str:
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
-    return validate_branch_name(f"agents/{session_id}/tasks/{task_slug}-{task_hash}")
+    candidate_suffix = ""
+    if candidate_commit_sha is not None:
+        normalized_candidate = candidate_commit_sha.strip().casefold()
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized_candidate):
+            raise ValueError("candidate correction task requires a full Git object ID")
+        candidate_suffix = f"-{normalized_candidate[:12]}"
+    return validate_branch_name(
+        f"agents/{session_id}/tasks/{task_slug}-{task_hash}{candidate_suffix}"
+    )
 
 
 def _verified_human_review_correction_git_source(
@@ -7426,6 +7466,53 @@ def _verified_human_review_correction_git_source(
         ) from None
     if source is None:
         return None
+    _verify_rejected_candidate_git_source(
+        context,
+        state=state,
+        task_id=task_id,
+        managed_repo_id=managed_repo_id,
+        source=source,
+    )
+    return source
+
+
+def _verified_rejected_candidate_git_source(
+    context: Any,
+    *,
+    state: Any,
+    task_id: str,
+    managed_repo_id: str,
+) -> RejectedCandidateGitSource | None:
+    try:
+        source = rejected_candidate_git_source(
+            state,
+            task_id=task_id,
+        )
+    except ValueError as exc:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=str(exc),
+        ) from None
+    if source is None:
+        return None
+    _verify_rejected_candidate_git_source(
+        context,
+        state=state,
+        task_id=task_id,
+        managed_repo_id=managed_repo_id,
+        source=source,
+    )
+    return source
+
+
+def _verify_rejected_candidate_git_source(
+    context: Any,
+    *,
+    state: Any,
+    task_id: str,
+    managed_repo_id: str,
+    source: RejectedCandidateGitSource,
+) -> None:
     task = state.tasks.get(task_id)
     project = state.projects.get(task.project_id) if task is not None else None
     project_git = getattr(project, "git", None)
@@ -7433,7 +7520,7 @@ def _verified_human_review_correction_git_source(
         raise DependencyGitPreparationError(
             task_id=task_id,
             message=(
-                f"human review correction task {task_id} rejected candidate belongs "
+                f"correction task {task_id} rejected candidate belongs "
                 "to a different managed repository"
             ),
         )
@@ -7479,7 +7566,6 @@ def _verified_human_review_correction_git_source(
                 f"for correction task {task_id}"
             ),
         )
-    return source
 
 
 def _project_repo_task_dependency_git_sources(
@@ -7723,7 +7809,12 @@ def _prepare_project_repo_task_worktree(
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
-    worktree_name = f"{task_slug}-{task_hash}"
+    candidate_suffix = (
+        f"-{pinned_base_commit.casefold()[:12]}"
+        if pinned_base_commit is not None
+        else ""
+    )
+    worktree_name = f"{task_slug}-{task_hash}{candidate_suffix}"
     directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "root")
     selected_backend, config = selected_execution_backend_for_target(
         context,

@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 40
+SQLITE_SCHEMA_VERSION = 42
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1170,6 +1170,12 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_release_packages",
+                    column_name="owner_agent_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
                     column_name="policy_version",
                     definition="INTEGER NOT NULL DEFAULT 1",
                 )
@@ -1190,6 +1196,7 @@ class TeamStateSqliteStore:
                     "candidate_commit_sha",
                     "candidate_tree_hash",
                     "approved_commit_sha",
+                    "review_correction_task_id",
                 ):
                     _ensure_column(
                         connection,
@@ -3434,6 +3441,7 @@ class TeamStateSqliteStore:
             payload["release_packages"][row["id"]] = {
                 "id": row["id"],
                 "project_id": row["project_id"],
+                "owner_agent_id": row["owner_agent_id"],
                 "summary": row["summary"],
                 "supersedes_release_package_id": row["supersedes_release_package_id"],
                 "deliverable_ids": deliverables.get(row["id"], []),
@@ -3446,6 +3454,7 @@ class TeamStateSqliteStore:
                 "candidate_commit_sha": row["candidate_commit_sha"],
                 "candidate_tree_hash": row["candidate_tree_hash"],
                 "approved_commit_sha": row["approved_commit_sha"],
+                "review_correction_task_id": row["review_correction_task_id"],
                 "verification_run_ids": _json_loads(row["verification_run_ids_json"]),
                 "review_request_ids": _json_loads(row["review_request_ids_json"]),
                 "manifest": _json_loads(row["manifest_json"]),
@@ -3475,19 +3484,21 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_release_packages(
-                    id, project_id, summary, supersedes_release_package_id,
+                    id, project_id, owner_agent_id, summary, supersedes_release_package_id,
                     release_branch, canonical_branch, published_commit_sha,
                     base_commit_sha, candidate_commit_sha, candidate_tree_hash,
-                    approved_commit_sha, verification_run_ids_json, review_request_ids_json,
+                    approved_commit_sha, review_correction_task_id,
+                    verification_run_ids_json, review_request_ids_json,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
                     package["project_id"],
+                    package.get("owner_agent_id"),
                     package.get("summary"),
                     package.get("supersedes_release_package_id"),
                     package.get("release_branch"),
@@ -3497,6 +3508,7 @@ class TeamStateSqliteStore:
                     package.get("candidate_commit_sha"),
                     package.get("candidate_tree_hash"),
                     package.get("approved_commit_sha"),
+                    package.get("review_correction_task_id"),
                     _json_dumps(package.get("verification_run_ids", [])),
                     _json_dumps(package.get("review_request_ids", [])),
                     _json_dumps(package.get("manifest") or {}),
@@ -6229,6 +6241,7 @@ CREATE TABLE IF NOT EXISTS team_chat_attachment_policies (
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
+    owner_agent_id TEXT,
     summary TEXT,
     supersedes_release_package_id TEXT,
     release_branch TEXT,
@@ -6238,6 +6251,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     candidate_commit_sha TEXT,
     candidate_tree_hash TEXT,
     approved_commit_sha TEXT,
+    review_correction_task_id TEXT,
     verification_run_ids_json TEXT NOT NULL DEFAULT '[]',
     review_request_ids_json TEXT NOT NULL DEFAULT '[]',
     manifest_json TEXT NOT NULL DEFAULT '{}',

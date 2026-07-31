@@ -794,6 +794,28 @@ def test_integration_boundary_forbids_direct_finish_and_uses_explicit_dependency
     ]
 
 
+def test_contracted_leaf_forbids_direct_finish_without_becoming_integration_boundary() -> None:
+    state = _state()
+    task = AgentTask(
+        **{
+            **_support_task("contracted-leaf").model_dump(),
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+        }
+    )
+    state.tasks[task.id] = task
+
+    assert task.integration_boundary is False
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_task_can_finish(state, task.id)
+
+    assert raised.value.code == "deliverable_contract_direct_finish_forbidden"
+    assert raised.value.correction_context["recommended_tool"] == (
+        "team_submit_deliverable"
+    )
+
+
 def test_scoped_integration_coverage_filters_task_and_deliverable_ids_separately() -> None:
     state = _state()
     integration = AgentTask(

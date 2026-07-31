@@ -793,6 +793,15 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
       rawPolicy.codex_auth_mode === "chatgpt_subscription"
         ? rawPolicy.codex_auth_mode
         : null,
+    effective_codex_auth_mode:
+      rawPolicy.effective_codex_auth_mode === "chatgpt_subscription"
+        ? "chatgpt_subscription"
+        : "metered_api",
+    codex_auth_mode_source:
+      rawPolicy.codex_auth_mode_source === "session_override" ||
+      rawPolicy.codex_auth_mode_source === "provider_route"
+        ? rawPolicy.codex_auth_mode_source
+        : "directory_default",
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
@@ -820,6 +829,35 @@ function promptThreadIdForAgent(agent: AgentRecord | null): string {
 function agentUsesCodex(agent: AgentRecord): boolean {
   const provider = sessionPolicyForAgent(agent)?.metadata.agent_provider;
   return typeof provider !== "string" || !["claude", "anthropic"].includes(provider.trim().toLowerCase());
+}
+
+type AgentCodexUsage = {
+  mode: "metered_api" | "chatgpt_subscription";
+  label: "Metered API" | "ChatGPT subscription";
+  sourceLabel: "Agent override" | "Directory default" | "Required by provider route";
+};
+
+function codexUsageForAgent(agent: AgentRecord | null): AgentCodexUsage | null {
+  if (
+    !agent ||
+    agent.backend !== "container_worker_vm" ||
+    !agentUsesCodex(agent)
+  ) {
+    return null;
+  }
+  const policy = sessionPolicyForAgent(agent);
+  if (!policy) return null;
+  const mode = policy.effective_codex_auth_mode;
+  const sourceLabel = policy.codex_auth_mode_source === "session_override"
+    ? "Agent override"
+    : policy.codex_auth_mode_source === "provider_route"
+      ? "Required by provider route"
+      : "Directory default";
+  return {
+    mode,
+    label: mode === "chatgpt_subscription" ? "ChatGPT subscription" : "Metered API",
+    sourceLabel,
+  };
 }
 
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
@@ -1133,6 +1171,7 @@ export function AgentsPage() {
   );
   const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
   const selectedAgentPolicy = selectedAgent ? sessionPolicyForAgent(selectedAgent) : null;
+  const selectedAgentCodexUsage = codexUsageForAgent(selectedAgent);
   const selectedAgentApprovalNotificationTargetOptions = selectedAgentPolicy?.approval_notification_target_options ?? [];
   const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
   const operatorSteeringSessionId = selectedAgent?.session_id?.trim() ?? "";
@@ -2076,7 +2115,30 @@ export function AgentsPage() {
   }
 
   return (
-    <div className="feature-page agents-page">
+    <div className="agents-page-shell">
+      <section className="agents-global-controls" aria-label="Shared worker account">
+        <div className="agents-global-controls-heading">
+          <div>
+            <div className="eyebrow">Page-wide worker configuration</div>
+            <h2>Shared worker account</h2>
+          </div>
+          <p className="muted-text">Applies across container agents in this directory.</p>
+        </div>
+        <CodexAuthPanel
+          directoryPath={selectedDirectoryPath}
+          privilegedUnlocked={privilegedUnlocked}
+          selectedAgentUsage={
+            selectedAgent && selectedAgentCodexUsage
+              ? {
+                  agentLabel: selectedAgent.target_name || selectedAgent.agent_id,
+                  mode: selectedAgentCodexUsage.mode,
+                }
+              : null
+          }
+        />
+      </section>
+
+      <div className="feature-page agents-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
@@ -2134,6 +2196,7 @@ export function AgentsPage() {
                   const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
                   const queueSummary = promptQueueForAgent(item);
                   const executionDisplay = agentExecutionDisplay(item);
+                  const codexUsage = codexUsageForAgent(item);
                   const targetStateText = agentTargetStateText(item);
                   const identifier = item.target_name || item.agent_id;
                   const hoverSummary = [
@@ -2142,6 +2205,7 @@ export function AgentsPage() {
                     `Directory: ${item.directory_path}`,
                     targetStateText,
                     runtimeImageSummary,
+                    codexUsage ? `Codex usage: ${codexUsage.label} (${codexUsage.sourceLabel})` : null,
                     queueSummary.record_count > 0 || queueSummary.read_error
                       ? `Prompt queue: ${promptQueueSummaryText(queueSummary)}`
                       : null,
@@ -2173,6 +2237,14 @@ export function AgentsPage() {
                             {executionDisplay.label}
                           </span>
                         </div>
+                        {codexUsage ? (
+                          <div className="agent-list-usage-row">
+                            <span className={`agent-codex-usage mode-${codexUsage.mode}`}>
+                              {codexUsage.label}
+                            </span>
+                            <span>{codexUsage.sourceLabel}</span>
+                          </div>
+                        ) : null}
                       </button>
                     </Tooltip>
                   );
@@ -2193,6 +2265,12 @@ export function AgentsPage() {
                 ? `${backendLabel(selectedAgent.backend)} / ${selectedAgent.directory_path}`
                 : "Choose an agent from the left to inspect details and logs."}
             </p>
+            {selectedAgentCodexUsage ? (
+              <div className="agent-detail-usage">
+                <strong>Codex usage: {selectedAgentCodexUsage.label}</strong>
+                <span>{selectedAgentCodexUsage.sourceLabel}</span>
+              </div>
+            ) : null}
           </div>
           {selectedAgent ? (
             <div className="feature-toolbar-actions icon-actions">
@@ -2360,11 +2438,6 @@ export function AgentsPage() {
 
         {status ? <div className="callout success-callout">{status}</div> : null}
         {error ? <div className="callout error-callout">{error}</div> : null}
-
-        <CodexAuthPanel
-          directoryPath={selectedDirectoryPath}
-          privilegedUnlocked={privilegedUnlocked}
-        />
 
         {showCreateForm ? (
           <AgentCreateDialog
@@ -2910,6 +2983,14 @@ export function AgentsPage() {
                     <dt>Directory</dt>
                     <dd>{selectedAgent.directory_path}</dd>
                   </div>
+                  {selectedAgentCodexUsage ? (
+                    <div>
+                      <dt>Codex usage</dt>
+                      <dd>
+                        {selectedAgentCodexUsage.label} ({selectedAgentCodexUsage.sourceLabel})
+                      </dd>
+                    </div>
+                  ) : null}
                   <div>
                     <dt>Prompt queue</dt>
                     <dd>{promptQueueSummaryText(selectedPromptQueue)}</dd>
@@ -3302,6 +3383,7 @@ export function AgentsPage() {
           <div className="empty-state">Select an agent to inspect details and logs.</div>
         )}
       </section>
+      </div>
     </div>
   );
 }

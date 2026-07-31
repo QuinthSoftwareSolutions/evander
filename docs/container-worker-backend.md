@@ -393,6 +393,15 @@ and receives only the new in-memory snapshot. Auth and refresh responses are red
 logs. This integration uses Codex app-server's experimental external-auth API and should be
 revalidated when upgrading Codex.
 
+Subscription containers retain the session's normal `CODEX_HOME` thread and skill directories,
+but the worker overlays its metered relay `config.toml` and legacy `/home/agent/.codex/config.toml`
+with worker-owned read-only subscription configuration. The overlay forces ChatGPT authentication,
+keeps the image-managed update policy, and contains no custom provider or API-key reference. This
+prevents the app-server model catalog from polling the metered relay and prevents the legacy copy
+from being interpreted as project-local provider configuration. Repository-owned `.codex` settings
+remain visible. The runner image also installs the system `bubblewrap` package so Codex does not
+need to warn and fall back to its bundled helper.
+
 Set the worker's runner image and restricted proxy settings in inventory. The URL must use an
 address that runner containers can reach; do not use loopback unless the containers share that
 network namespace:

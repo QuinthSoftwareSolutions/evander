@@ -2114,6 +2114,16 @@ def _cascade_release_review_decision(
             message=release.error,
         )
         release.updated_at = utc_now()
+        from .release_gates import materialize_release_review_rejection_correction
+
+        materialize_release_review_rejection_correction(
+            state,
+            release=release,
+            review=review,
+            findings=findings,
+            result=result if result is not None else {"events": []},
+            now=release.updated_at,
+        )
         projects_to_recalc.add(release.project_id)
         return
     if decision_state == TeamRecordState.BLOCKED:

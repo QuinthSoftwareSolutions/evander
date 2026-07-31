@@ -551,15 +551,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             if isinstance(record_metadata, dict)
             else ""
         )
-        mcp_gateway_url = None
-        if mcp_tool_approval_lease_id:
-            mcp_gateway_url = gateway_url_with_session_context(
-                container_worker_guest_gateway_url(config),
-                session_id=session_id,
-                workflow_run_id=workflow_run_id or None,
-                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                mcp_session_token=session_mcp_auth_token(session),
-            )
+        mcp_gateway_url = gateway_url_with_session_context(
+            container_worker_guest_gateway_url(config),
+            session_id=session_id,
+            workflow_run_id=workflow_run_id or None,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id or None,
+            mcp_session_token=session_mcp_auth_token(session),
+        )
         effective_resume_thread_id = self._effective_record_resume_thread_id(
             record=record,
             session=session,

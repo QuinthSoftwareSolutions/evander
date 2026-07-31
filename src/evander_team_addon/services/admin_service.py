@@ -185,7 +185,7 @@ from .domain.task_assessment import (
 from .domain.task_supervision import queue_parent_resolution_transitions
 from .domain.work_due import _mark_agent_work_due
 from .domain.preparation_failures import (
-    create_human_correction_preparation_recovery_inbox,
+    create_rejected_candidate_correction_preparation_recovery_inbox,
 )
 from .commands.blocker_commands import _prepare_blocker_source_for_resolution
 from .commands.outbox import _team_event_outbox_records
@@ -677,7 +677,7 @@ class TeamAdminService:
                 reference_ids=normalized_refs,
                 metadata={"operator_actor_id": normalized_actor_id},
             )
-            create_human_correction_preparation_recovery_inbox(
+            create_rejected_candidate_correction_preparation_recovery_inbox(
                 state,
                 blocker=blocker,
                 result=result,

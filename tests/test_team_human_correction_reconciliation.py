@@ -13,6 +13,7 @@ from evander_team_addon.models import (
     DeliverableGitRefs,
     DeliverableReviewManifest,
     DeliverableVerification,
+    GitPromotionRecord,
     HumanReviewFinding,
     HumanReviewRequest,
     HumanReviewRequirementSnapshot,
@@ -26,6 +27,7 @@ from evander_team_addon.models import (
     ReleasePackage,
     ReviewRequest,
     Team,
+    TeamBlocker,
     TeamBlockerSourceKind,
     TeamCase,
     TeamCaseStatus,
@@ -41,10 +43,14 @@ from evander_team_addon.services.domain.human_reviews import (
     HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY,
     route_human_finding_correction,
 )
+from evander_team_addon.services.domain.release_packages import (
+    _apply_git_release_recovery,
+)
 from evander_team_addon.services.human_correction_reconciliation_service import (
     HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY,
     HumanCorrectionReconciliationService,
 )
+from evander_team_addon.services.git_release_service import TeamGitReleaseService
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
@@ -295,6 +301,26 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
         "correction-deliverable",
     }
     assert state.tasks["human-correction-aggregate"].state == TeamTaskState.FINISHED
+    assert len(successor.git_promotion_record_ids) == 1
+    aggregate = state.git_promotions[successor.git_promotion_record_ids[0]]
+    assert aggregate.promotion_kind == "correction_aggregate"
+    assert aggregate.source_branch == (
+        "team/team/features/human-correction-child-owner"
+    )
+    assert aggregate.target_branch == f"team/team/corrections/{successor.id}"
+    assert [(source.source_branch, source.expected_commit_sha) for source in aggregate.sources] == [
+        ("team/team/features/human-correction-child-owner", CORRECTION_COMMIT)
+    ]
+    aggregate_event = next(
+        event
+        for event in first["events"]
+        if event["payload"].get("promotion_id") == aggregate.id
+    )
+    assert aggregate_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
+    assert aggregate_event["payload"]["required_source_ancestor_commit_sha"] == (
+        PREDECESSOR_COMMIT
+    )
+    assert "allowed_changed_paths" not in aggregate_event["payload"]
 
     second = HumanCorrectionReconciliationService(repo).reconcile()
     assert second["changed"] is False
@@ -306,6 +332,254 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
             if release.supersedes_release_package_id == "release-rejected"
         ]
     ) == 1
+
+
+def test_correction_aggregate_success_queues_one_main_based_release_promotion(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    first = HumanCorrectionReconciliationService(repo).reconcile()
+    successor_id = first["created_successor_release_package_ids"][0]
+    state = repo.read()
+    aggregate_id = state.release_packages[
+        successor_id
+    ].git_promotion_record_ids[0]
+
+    state, result = TeamGitReleaseService(repo).record_git_promotion_result(
+        promotion_id=aggregate_id,
+        success=True,
+        commit_sha="e" * 40,
+        outputs={
+            "base_commit_sha": PREDECESSOR_COMMIT,
+            "source_manifests": {
+                "team/team/features/human-correction-child-owner": {
+                    "base_commit_sha": PREDECESSOR_COMMIT,
+                    "reviewed_commit_sha": CORRECTION_COMMIT,
+                    "tree_hash": "d" * 40,
+                    "commit_shas": [CORRECTION_COMMIT],
+                    "changed_paths": ["M\tsrc/correction.cs"],
+                }
+            },
+            "tree_hash": "f" * 40,
+        },
+    )
+
+    successor = state.release_packages[successor_id]
+    release_promotions = [
+        state.git_promotions[promotion_id]
+        for promotion_id in successor.git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "release"
+    ]
+    assert len(release_promotions) == 1
+    release_promotion = release_promotions[0]
+    assert release_promotion.source_branch == f"team/team/corrections/{successor_id}"
+    assert release_promotion.sources[0].expected_commit_sha == "e" * 40
+    release_event = next(
+        event
+        for event in result["events"]
+        if event["payload"].get("promotion_id") == release_promotion.id
+    )
+    assert release_event["payload"]["base_branch"] == "main"
+    assert "base_commit_sha" not in release_event["payload"]
+    assert release_event["payload"]["allowed_changed_paths"] == [
+        "M\tsrc/correction.cs"
+    ]
+    assert state.deliverables[
+        "correction-deliverable"
+    ].review_manifest.base_commit_sha == PREDECESSOR_COMMIT
+
+
+def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    first = HumanCorrectionReconciliationService(repo).reconcile()
+    successor_id = first["created_successor_release_package_ids"][0]
+
+    def _seed_legacy_failure(state: TeamState) -> TeamState:
+        successor = state.release_packages[successor_id]
+        aggregate_id = successor.git_promotion_record_ids[0]
+        state.git_promotions.pop(aggregate_id)
+        legacy_ids = ["legacy-feature-one", "legacy-feature-two"]
+        successor.git_promotion_record_ids = legacy_ids
+        successor.state = TeamRecordState.BLOCKED
+        successor.error = "legacy leaf conflicts"
+        for index, promotion_id in enumerate(legacy_ids):
+            state.git_promotions[promotion_id] = GitPromotionRecord(
+                id=promotion_id,
+                project_id="project",
+                release_package_id=successor.id,
+                task_id="human-correction-child",
+                actor_agent_id="lead",
+                source_branch=f"agents/owner/tasks/legacy-{index}",
+                target_branch=f"team/team/features/legacy-{index}",
+                promotion_kind="feature",
+                state="failed",
+                error="legacy merge conflict",
+                outputs={"error_code": "merge_conflict"},
+            )
+        state.deliverables["correction-deliverable"].review_manifest = (
+            DeliverableReviewManifest(
+                base_commit_sha="9" * 40,
+                reviewed_commit_sha=CORRECTION_COMMIT,
+                changed_paths=["M\tbroad/untrusted.cs"],
+            )
+        )
+        recovery_task = AgentTask(
+            id="legacy-recovery-task",
+            owner_agent_id="owner",
+            project_id="project",
+            priority=0,
+            state=TeamTaskState.PENDING,
+            title="Legacy recovery",
+            description="Recover each leaf.",
+            created_by_actor="system:git-merge-recovery",
+        )
+        state.tasks[recovery_task.id] = recovery_task
+        state.blockers["legacy-release-blocker"] = TeamBlocker(
+            id="legacy-release-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+            source_id=successor.id,
+            owner_agent_id="owner",
+            affected_task_ids=[recovery_task.id],
+            summary="Legacy release blocker",
+        )
+        return state
+
+    repo.update(_seed_legacy_failure)
+    migrated = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+    successor = state.release_packages[successor_id]
+
+    assert migrated["migrated_successor_release_package_ids"] == [successor_id]
+    assert migrated["retired_legacy_promotion_ids"] == [
+        "legacy-feature-one",
+        "legacy-feature-two",
+    ]
+    assert all(
+        state.git_promotions[promotion_id].state == "retired"
+        for promotion_id in migrated["retired_legacy_promotion_ids"]
+    )
+    aggregate_rows = [
+        state.git_promotions[promotion_id]
+        for promotion_id in successor.git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind
+        == "correction_aggregate"
+    ]
+    assert len(aggregate_rows) == 1
+    assert successor.state == TeamRecordState.PENDING
+    assert state.tasks["legacy-recovery-task"].state == TeamTaskState.CANCELLED
+    assert state.blockers["legacy-release-blocker"].state.value == "resolved"
+    aggregate_event = next(
+        event
+        for event in migrated["events"]
+        if event["payload"].get("promotion_id") == aggregate_rows[0].id
+    )
+    assert aggregate_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
+    assert "allowed_changed_paths" not in aggregate_event["payload"]
+    assert state.deliverables[
+        "correction-deliverable"
+    ].review_manifest.base_commit_sha == "9" * 40
+    state, late_legacy_result = TeamGitReleaseService(
+        repo
+    ).record_git_promotion_result(
+        promotion_id="legacy-feature-one",
+        success=True,
+        commit_sha="6" * 40,
+    )
+    assert late_legacy_result["promotion_state"] == "retired"
+    assert late_legacy_result["events"] == []
+    assert state.git_promotions["legacy-feature-one"].state == "retired"
+
+    aggregate = aggregate_rows[0]
+    state, failed = TeamGitReleaseService(repo).record_git_promotion_result(
+        promotion_id=aggregate.id,
+        success=False,
+        error="corrections conflict with one another",
+        outputs={
+            "error_code": "merge_conflict",
+            "base_commit_sha": PREDECESSOR_COMMIT,
+            "conflict_branch": aggregate.source_branch,
+            "source_manifests": {
+                aggregate.source_branch: {
+                    "base_commit_sha": PREDECESSOR_COMMIT,
+                    "reviewed_commit_sha": CORRECTION_COMMIT,
+                    "tree_hash": "d" * 40,
+                    "commit_shas": [CORRECTION_COMMIT],
+                    "changed_paths": ["M\tsrc/correction.cs"],
+                }
+            },
+        },
+    )
+    assert state.deliverables[
+        "correction-deliverable"
+    ].review_manifest.base_commit_sha == PREDECESSOR_COMMIT
+    assert failed["merge_recovery_task_id"] != "legacy-recovery-task"
+    assert state.tasks[failed["merge_recovery_task_id"]].state == TeamTaskState.PENDING
+    assert "correction aggregation" in state.tasks[
+        failed["merge_recovery_task_id"]
+    ].title
+    recovery_result = {
+        "errors": [],
+        "events": [],
+        "updated_deliverable_ids": [],
+    }
+    recovered_id = _apply_git_release_recovery(
+        state,
+        actor=state.agents["owner"],
+        request={
+            "release_package_id": successor_id,
+            "agent_branch": "agents/owner/tasks/resolved-aggregate",
+            "commit_sha": "8" * 40,
+        },
+        result=recovery_result,
+    )
+    assert recovered_id == successor_id
+    assert recovery_result["errors"] == []
+    recovery_payload = recovery_result["events"][0]["payload"]
+    assert recovery_payload["promotion_id"] == aggregate.id
+    assert recovery_payload["promotion_kind"] == "correction_aggregate"
+    assert recovery_payload["base_commit_sha"] == PREDECESSOR_COMMIT
+    assert recovery_payload["required_source_ancestor_commit_sha"] == (
+        PREDECESSOR_COMMIT
+    )
+    assert recovery_payload["allowed_changed_paths"] == ["M\tsrc/correction.cs"]
+    state, recovered = TeamGitReleaseService(repo).record_git_promotion_result(
+        promotion_id=aggregate.id,
+        success=True,
+        commit_sha="8" * 40,
+        outputs={
+            "base_commit_sha": PREDECESSOR_COMMIT,
+            "source_manifests": {
+                "agents/owner/tasks/resolved-aggregate": {
+                    "base_commit_sha": PREDECESSOR_COMMIT,
+                    "reviewed_commit_sha": "8" * 40,
+                    "tree_hash": "7" * 40,
+                    "commit_shas": ["8" * 40],
+                    "changed_paths": ["M\tsrc/correction.cs"],
+                }
+            },
+            "tree_hash": "7" * 40,
+        },
+    )
+    assert recovered["promotion_state"] == "succeeded"
+    assert state.tasks[
+        failed["merge_recovery_task_id"]
+    ].state == TeamTaskState.FINISHED
+    assert len(
+        [
+            promotion_id
+            for promotion_id in state.release_packages[
+                successor_id
+            ].git_promotion_record_ids
+            if state.git_promotions[promotion_id].promotion_kind == "release"
+        ]
+    ) == 1
+
+    replay = HumanCorrectionReconciliationService(repo).reconcile()
+    assert replay["changed"] is False
 
 
 def test_reconciliation_preserves_cancelled_coordination_parent(

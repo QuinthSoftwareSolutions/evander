@@ -2217,6 +2217,22 @@ function bindRecordEditing() {
       return;
     }
 
+    const resumeReleaseRecoveryButton = event.target.closest(
+      "[data-resume-release-recovery-blocker-id]",
+    );
+    if (resumeReleaseRecoveryButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("resume release recoveries")) {
+        return;
+      }
+      void resumeReleaseRecovery(
+        resumeReleaseRecoveryButton,
+        resumeReleaseRecoveryButton.dataset.resumeReleaseRecoveryBlockerId,
+        resumeReleaseRecoveryButton.dataset.resumeReleaseRecoveryTaskId,
+      );
+      return;
+    }
+
     const resolveBlockerButton = event.target.closest("[data-resolve-terminal-blocker-id]");
     if (resolveBlockerButton) {
       event.preventDefault();
@@ -2703,6 +2719,7 @@ const lockedMutationControlSelectors = [
   ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
   ["[data-task-cancel-id]:not(:disabled)", "cancel tasks"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
+  ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -6762,6 +6779,15 @@ function runtimeAttentionRecommendedAction(row) {
   }
   if (row.kind === "failed_ephemeral_assignment") {
     return "Inspect the assignment error, then reconcile or clean up the assignment through its owning ephemeral workflow.";
+  }
+  if (row.kind === "team_blocker" && row.blocker_id) {
+    const blocker = state.blockers?.[row.blocker_id];
+    if (
+      text(blocker?.source_kind) === "release_package" &&
+      releaseRecoveryTaskForBlocker(blocker)
+    ) {
+      return "Resume the existing release-recovery task. The assigned agent must submit the resolved ref through the release recovery lifecycle; do not resolve this blocker generically.";
+    }
   }
   if (category === "blocker") {
     return "Resolve the underlying blocker, dependency, or release gate before continuing.";
@@ -13337,6 +13363,29 @@ function blockerRoutingLabel(blocker) {
   return parts.join(" - ");
 }
 
+function releaseRecoveryTaskForBlocker(blocker) {
+  if (
+    !blocker ||
+    text(blocker.source_kind) !== "release_package" ||
+    !["governance", "operator"].includes(text(blocker.route))
+  ) {
+    return null;
+  }
+  const terminalStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
+  const candidates = uniqueTextList([
+    blocker.task_id,
+    ...(blocker.affected_task_ids || []),
+  ])
+    .map((taskId) => state.tasks?.[taskId])
+    .filter(
+      (task) =>
+        task &&
+        text(task.created_by_actor) === "system:git-merge-recovery" &&
+        !terminalStates.has(text(task.state)),
+    );
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
   if (
     !blocker ||
@@ -13344,6 +13393,30 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
     !["governance", "operator"].includes(text(blocker.route))
   ) {
     return "";
+  }
+  if (text(blocker.source_kind) === "release_package") {
+    const recoveryTask = releaseRecoveryTaskForBlocker(blocker);
+    if (!recoveryTask) {
+      return "";
+    }
+    const pendingDirective = Object.values(state.inbox || {}).find(
+      (item) =>
+        text(item.item_type) === "operator_directive" &&
+        text(item.state) === "pending" &&
+        text(item.task_id) === text(recoveryTask.id) &&
+        text(item.payload?.source) === "admin_ui_release_recovery",
+    );
+    return `
+      <div class="record-actions ${escapeAttr(extraClass)}">
+        <button
+          type="button"
+          class="record-action"
+          data-resume-release-recovery-blocker-id="${escapeAttr(blocker.id)}"
+          data-resume-release-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+          ${pendingDirective ? "disabled aria-disabled=\"true\"" : lockedAttrs("resume release recoveries")}
+        >${pendingDirective ? "Recovery wake queued" : "Resume release recovery"}</button>
+      </div>
+    `;
   }
   return `
     <div class="record-actions ${escapeAttr(extraClass)}">
@@ -20790,6 +20863,89 @@ async function resolveTerminalBlocker(button, blockerId, note) {
     setStatus(`Resolved blocker ${normalizedBlockerId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Blocker resolution failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function resumeReleaseRecovery(button, blockerId, taskId) {
+  if (!guardTeamMutation("resume release recoveries")) {
+    return;
+  }
+  const blocker = state.blockers?.[text(blockerId)];
+  const recoveryTask = state.tasks?.[text(taskId)];
+  if (
+    !blocker ||
+    text(blocker.state) !== "open" ||
+    text(blocker.source_kind) !== "release_package" ||
+    !["governance", "operator"].includes(text(blocker.route))
+  ) {
+    setStatus("This release blocker is no longer eligible for operator recovery.", "error");
+    return;
+  }
+  if (
+    !recoveryTask ||
+    text(recoveryTask.created_by_actor) !== "system:git-merge-recovery" ||
+    text(recoveryTask.owner_agent_id) === "" ||
+    text(recoveryTask.project_id) === ""
+  ) {
+    setStatus("The release blocker has no active merge-recovery task to resume.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  const releaseId = text(blocker.source_id);
+  setStatus(`Queuing release recovery ${recoveryTask.id}.`, "loading");
+  const endpoint = "/operator-directives";
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", {
+          team_id: blocker.team_id,
+          recipient_agent_id: recoveryTask.owner_agent_id,
+          project_id: recoveryTask.project_id,
+          task_id: recoveryTask.id,
+          title: `Resume release recovery for ${releaseId}`,
+          message: (
+            `Resume the existing recovery task ${recoveryTask.id} for release ${releaseId}. ` +
+            "The control-plane schema is current. Reuse the already resolved agents/... ref when valid, " +
+            "then call team_recover_release with its exact commit SHA. Do not create a replacement release package."
+          ),
+          source: "admin_ui_release_recovery",
+          source_message_id: `release-recovery:${blocker.id}:${recoveryTask.id}`,
+          created_by: "operator:admin-ui",
+        }),
+      ),
+    });
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(
+        `Revision conflict. Reloaded revision ${current}; verify the release blocker and resume again.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    await applyMutationResultPayload(await response.json());
+    restoreFormDrafts(drafts);
+    setStatus(`Queued release recovery ${recoveryTask.id} for its assigned agent.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Release recovery could not be resumed.", "error");
   } finally {
     if (button.isConnected) {
       button.disabled = false;

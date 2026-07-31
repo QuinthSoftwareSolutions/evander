@@ -24,7 +24,7 @@ from evander_team_addon.git_naming import (
     normalize_canonical_release_branch_prefix,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
     "text/markdown",
@@ -1253,9 +1253,13 @@ class AgentTask(TeamModel):
             raise ValueError(
                 "integration boundary task requires deliverable_contract"
             )
-        if not self.integration_boundary and self.deliverable_contract is not None:
+        if (
+            not self.integration_boundary
+            and self.deliverable_contract is not None
+            and self.deliverable_contract.required_contribution_task_ids
+        ):
             raise ValueError(
-                "deliverable_contract requires integration_boundary"
+                "leaf deliverable_contract cannot require contribution tasks"
             )
         if (
             self.deliverable_contract is not None
@@ -2735,6 +2739,7 @@ class ReleaseVerificationRun(TeamModel):
     superseded_by_verification_run_id: str | None = None
     retry_reason: str | None = None
     retry_requested_by: str | None = None
+    correction_task_id: str | None = None
     command_results: list[ReleaseVerificationCommandResult] = Field(default_factory=list)
     current_command_index: int = Field(default=0, ge=0)
     error: str | None = None
@@ -2755,6 +2760,7 @@ class ReleaseVerificationRun(TeamModel):
         "superseded_by_verification_run_id",
         "retry_reason",
         "retry_requested_by",
+        "correction_task_id",
         mode="before",
     )
     @classmethod
@@ -3150,6 +3156,7 @@ class ReleaseCandidateManifest(TeamModel):
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
+    owner_agent_id: str | None = None
     summary: str | None = None
     supersedes_release_package_id: str | None = None
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -3162,6 +3169,7 @@ class ReleasePackage(TeamModel):
     candidate_commit_sha: str | None = None
     candidate_tree_hash: str | None = None
     approved_commit_sha: str | None = None
+    review_correction_task_id: str | None = None
     verification_run_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
     manifest: ReleaseCandidateManifest | None = None
@@ -3197,12 +3205,14 @@ class ReleasePackage(TeamModel):
     @field_validator(
         "release_branch",
         "canonical_branch",
+        "owner_agent_id",
         "supersedes_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
         "candidate_commit_sha",
         "candidate_tree_hash",
         "approved_commit_sha",
+        "review_correction_task_id",
         "summary",
         "error",
         mode="before",
@@ -3336,11 +3346,17 @@ class GitPromotionRecord(TeamModel):
     source_branch: str
     sources: list[GitPromotionSource] = Field(default_factory=list)
     target_branch: str
-    promotion_kind: Literal["review", "feature", "release", "canonical_push"]
+    promotion_kind: Literal[
+        "review",
+        "feature",
+        "correction_aggregate",
+        "release",
+        "canonical_push",
+    ]
     task_id: str | None = None
     deliverable_id: str | None = None
     release_package_id: str | None = None
-    state: Literal["pending", "succeeded", "failed"] = "pending"
+    state: Literal["pending", "succeeded", "failed", "retired"] = "pending"
     commit_sha: str | None = None
     outputs: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
@@ -4846,6 +4862,13 @@ class TeamState(TeamModel):
                     f"release {release.id} references missing project {release.project_id}"
                 )
                 continue
+            if release.owner_agent_id is not None:
+                owner = self.agents.get(release.owner_agent_id)
+                if owner is None or owner.team_id != project.team_id:
+                    errors.append(
+                        f"release {release.id} references invalid owner "
+                        f"{release.owner_agent_id}"
+                    )
             if release.supersedes_release_package_id is not None:
                 predecessor = self.release_packages.get(release.supersedes_release_package_id)
                 if predecessor is None:
@@ -4905,6 +4928,16 @@ class TeamState(TeamModel):
                         f"{run.candidate_commit_sha}, not candidate "
                         f"{release.candidate_commit_sha}"
                     )
+                if run.correction_task_id is not None:
+                    correction_task = self.tasks.get(run.correction_task_id)
+                    if (
+                        correction_task is None
+                        or correction_task.project_id != release.project_id
+                    ):
+                        errors.append(
+                            f"release verification run {run.id} references invalid "
+                            f"correction task {run.correction_task_id}"
+                        )
                 if run.supersedes_verification_run_id is not None:
                     previous = self.release_verification_runs.get(
                         run.supersedes_verification_run_id
@@ -6296,7 +6329,11 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             f"{failed_promotion.id}: {failed_promotion.source_branch} -> "
             f"{failed_promotion.target_branch}."
         )
-        if failed_promotion.promotion_kind in {"feature", "release"}:
+        if failed_promotion.promotion_kind in {
+            "feature",
+            "correction_aggregate",
+            "release",
+        }:
             parts.append(
                 "Assign semantic conflicts to the owning coder, have the resolved "
                 "commit pushed to an agents/... ref, then submit "
@@ -6308,7 +6345,8 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
         else:
             parts.append(
                 f"This blocker is a failed {failed_promotion.promotion_kind} "
-                "promotion, not a recoverable feature or release promotion; do not submit "
+                "promotion, not a recoverable correction, feature, or release promotion; "
+                "do not submit "
                 "git_release_recoveries. Resolve and commit on failed promotion "
                 f"target branch {failed_promotion.target_branch}, or escalate "
                 "for operator/orchestrator retry."
@@ -6318,6 +6356,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     if release.error and "merge conflict" in release.error.casefold():
         if failed_promotion is not None and failed_promotion.promotion_kind in {
             "feature",
+            "correction_aggregate",
             "release",
         }:
             parts.append(
@@ -6328,7 +6367,8 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
         else:
             parts.append(
                 "Resolve the merge conflict on the failed promotion target branch; "
-                "git_release_recoveries only applies to failed feature or release promotions."
+                "git_release_recoveries only applies to failed correction-aggregate, "
+                "feature, or release promotions."
             )
     if failed_promotion is None:
         parts.append(

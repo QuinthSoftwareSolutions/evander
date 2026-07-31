@@ -15,6 +15,7 @@ from evander.admin.services import VmAgentAdminDependencies, VmAgentAdminService
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
 from evander.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from evander.admin.services.vm_agent_service import AgentCreateOperation
+from evander.codex_auth import CodexAuthMode
 from evander.config import GatewayConfig
 from evander.models import SessionManifest, ToolName, VmActionResult
 
@@ -111,6 +112,54 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_classmethod_delegates
         "_normalize_agent_backend_filter",
     }
     assert all(callable(getattr(VmAgentAdminService, name, None)) for name in wrapper_names)
+
+
+def test_agent_session_policy_reports_effective_codex_auth_mode_and_source() -> None:
+    session = SessionManifest(
+        session_id="container-session",
+        directory_path="root/team",
+        vm_provider="container_worker_vm",
+        vm_provider_id="container-target",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        metadata={"execution_backend": "container_worker_vm"},
+    )
+    admin = FakeAdmin(sessions=FakeSessionsStore({"container-session": session}))
+    admin.runtime.provider_config = SimpleNamespace(
+        resolve_for_directory=lambda directory_path: SimpleNamespace(
+            container_worker_codex_auth_mode="chatgpt_subscription",
+            model_provider_mode="openai_public",
+        )
+    )
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    inherited = service.agent_session_policy_payload(session)
+    assert inherited is not None
+    assert inherited["codex_auth_mode"] is None
+    assert inherited["effective_codex_auth_mode"] == "chatgpt_subscription"
+    assert inherited["codex_auth_mode_source"] == "directory_default"
+
+    explicit_session = session.model_copy(
+        update={"codex_auth_mode": CodexAuthMode.METERED_API}
+    )
+    explicit = service.agent_session_policy_payload(explicit_session)
+    assert explicit is not None
+    assert explicit["effective_codex_auth_mode"] == "metered_api"
+    assert explicit["codex_auth_mode_source"] == "session_override"
+
+    provider_routed_session = session.model_copy(
+        update={
+            "codex_auth_mode": CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            "metadata": {
+                **session.metadata,
+                "model_provider_mode": "local_openai",
+            },
+        }
+    )
+    provider_routed = service.agent_session_policy_payload(provider_routed_session)
+    assert provider_routed is not None
+    assert provider_routed["effective_codex_auth_mode"] == "metered_api"
+    assert provider_routed["codex_auth_mode_source"] == "provider_route"
 
 
 class FakeVmAgentService:

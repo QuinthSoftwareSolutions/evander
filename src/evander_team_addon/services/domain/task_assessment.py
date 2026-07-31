@@ -818,11 +818,20 @@ def require_task_can_finish(
             task_id,
             boundary="finish",
         )
-    if task.integration_boundary:
+    if task.integration_boundary or task.deliverable_contract is not None:
+        boundary_kind = (
+            "integration boundary"
+            if task.integration_boundary
+            else "contracted leaf"
+        )
         raise TaskAssessmentBoundaryError(
-            code="integration_boundary_direct_finish_forbidden",
+            code=(
+                "integration_boundary_direct_finish_forbidden"
+                if task.integration_boundary
+                else "deliverable_contract_direct_finish_forbidden"
+            ),
             message=(
-                f"integration boundary task {task_id} must resolve through an "
+                f"{boundary_kind} task {task_id} must resolve through an "
                 "accepted deliverable satisfying its deliverable contract"
             ),
             correction_context={
@@ -832,7 +841,7 @@ def require_task_can_finish(
                     if task.deliverable_contract is not None
                     else None
                 ),
-                "recommended_tool": "team_submit_deliverable_for_review",
+                "recommended_tool": "team_submit_deliverable",
             },
         )
     if task.task_kind != TeamTaskKind.SUPPORT:
@@ -899,11 +908,7 @@ def require_task_deliverable_contract_provenance(
             correction_context={"task_id": task_id},
         )
     contract = task.deliverable_contract
-    if (
-        not task.integration_boundary
-        or contract is None
-        or not contract.require_git_provenance
-    ):
+    if contract is None or not contract.require_git_provenance:
         return
     reference_values = {
         "branch_context_id": git_refs.branch_context_id,
@@ -972,7 +977,7 @@ def require_task_deliverable_contract_provenance(
             code="task_git_deliverable_contract_unsatisfied",
             message=(
                 f"{target} does not carry authoritative pinned Git provenance "
-                "required by its integration contract"
+                "required by its deliverable contract"
             ),
             correction_context={
                 "task_id": task.id,
@@ -1442,7 +1447,7 @@ def _local_lifecycle_invalid_reason_codes(
         invalid.add("support_task_accepted_instead_of_finished")
 
     if (
-        task.integration_boundary
+        task.deliverable_contract is not None
         and task.state
         in {
             TeamTaskState.FINISHED,
@@ -1454,11 +1459,14 @@ def _local_lifecycle_invalid_reason_codes(
             for deliverable in current_deliverables
             if deliverable.state == TeamRecordState.ACCEPTED
         ]
+        boundary_prefix = (
+            "integration_boundary"
+            if task.integration_boundary
+            else "deliverable_contract"
+        )
         if not accepted_deliverables:
-            invalid.add(
-                "integration_boundary_missing_accepted_deliverable"
-            )
-        if not contribution_coverage.get("complete"):
+            invalid.add(f"{boundary_prefix}_missing_accepted_deliverable")
+        if task.integration_boundary and not contribution_coverage.get("complete"):
             invalid.add(
                 "integration_boundary_contribution_contract_unsatisfied"
             )
@@ -1472,9 +1480,7 @@ def _local_lifecycle_invalid_reason_codes(
                     deliverable_id=deliverable.id,
                 )
             except TaskAssessmentBoundaryError:
-                invalid.add(
-                    "integration_boundary_git_provenance_unsatisfied"
-                )
+                invalid.add(f"{boundary_prefix}_git_provenance_unsatisfied")
 
     if (
         task.state == TeamTaskState.WAITING_FOR_REVIEW

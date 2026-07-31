@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-07-31 - Agent Release-Review Corrections
+
+- Restored workflow-owned review routing for candidate-correction leaves: top-level
+  agents can submit normally without inventing a superior or selecting reviewers,
+  while contracted leaf tasks still require an accepted Git deliverable before a
+  replacement release can begin.
+- Kept true integration boundaries outside leaf-review automation, allowed workflow
+  policy to attach fresh reviews to rejected-deliverable replacements, and retained
+  explicit manual review submission for deliberately manual teams.
+- Made rejected agent release reviews create one high-priority, candidate-rooted
+  correction task for the recorded release owner, with an immediate durable
+  wake and project-lead or team-manager fallback when needed.
+- Persisted the package-to-correction-task link, aggregated concurrent reviewer
+  findings into that task, and issued a fresh durable wake for each new rejection.
+- Extended rejected-candidate worktree validation to agent release-review
+  corrections so implementation starts from the reviewed candidate snapshot.
+- Required candidate corrections to resolve through an accepted Git deliverable,
+  extended successor-release validation and aggregation to rejected agent reviews,
+  and made preparation recovery cover every candidate-rooted correction route.
+- Routed source-provenance mismatches through the standard terminal recovery
+  inbox, and scoped candidate-correction branches and worktree identities to
+  the pinned rejected candidate.
+- Persisted verification infrastructure and timeout wakes, retained high-priority
+  Team visibility when human-review recovery routes to an Admin owner, and routed
+  configuration or invariant gate rejections through a durable Team blocker.
+
 ## 2026-07-31 - Team Correction Worktree Recovery
 
 - Made persistent container-worker clones fetch newly created Team release
@@ -22,6 +48,32 @@
   Delivery Pipeline gate evidence so operators can diagnose exact failures
   without searching other views.
 
+## 2026-07-30 - Candidate-Rooted Verification Corrections
+
+- Made candidate verification failures create one high-priority correction task
+  automatically, with the failed command results, release branch, candidate
+  commit and tree, and assignment rationale recorded in the task and inbox.
+- Routed the task to the unique producer whose reviewed paths appear in the
+  verifier evidence, then to the recorded release owner, project lead, or team
+  manager when provenance is ambiguous or unavailable.
+- Linked verification runs durably to their correction tasks and made worker
+  worktree preparation verify and start from the exact rejected candidate
+  snapshot, without composing dependencies onto current `main`.
+- Added explicit release ownership to new release packages and persisted it
+  through the SQLite schema.
+
+## 2026-07-30 - Subscription Team Tool Attachment
+
+- Added the session-scoped Evander MCP server to the worker-owned ChatGPT
+  subscription config before Codex app-server startup. Subscription turns now
+  receive Team action tools instead of relying on a late thread-resume override
+  that does not initialize the MCP connection.
+- Preserved the baseline session gateway for container prompts without a
+  temporary run-scoped approval lease, while retaining lease-qualified gateway
+  URLs when a workflow grants additional tools for one run.
+- Kept the session credential out of app-server process arguments and logs by
+  retaining the generated config as a worker-owned, read-only mount.
+
 ## 2026-07-30 - Empty Manager Fallback Suppression
 
 - Stopped periodic manager-fallback dispatches when a team appears open only
@@ -31,11 +83,77 @@
 - Preserved manager fallback wakes for genuinely actionable team oversight and
   review-routing work.
 
+## 2026-07-30 - UI Release Recovery Resumption
+
+- Replaced the misleading generic blocker-resolution action for routed release
+  blockers with a lifecycle-aware **Resume release recovery** control.
+- Made that control queue a task-linked operator directive and immediate wake
+  for the existing merge-recovery owner. The release recovery effect remains
+  responsible for resolving the blocker and finishing the recovery task.
+- Suppressed duplicate UI recovery wakes while an earlier recovery directive
+  remains pending.
+
 ## 2026-07-30 - Workflow Generator Model Compatibility
 
 - Stopped sending the unsupported `temperature` parameter from workflow-generation
   Responses API requests, allowing models that reject sampling controls to generate
   draft workflows.
+
+## 2026-07-30 - Agent Subscription Scope Clarity
+
+- Moved the shared worker ChatGPT subscription account out of the selected-agent
+  detail region and labeled its page-wide scope explicitly.
+- Added each container Codex agent's effective Metered API or ChatGPT
+  subscription mode, including whether it comes from an agent override,
+  directory default, or provider-route constraint, to the agent list and detail
+  view.
+- Warned when the shared worker account is signed in while the selected agent
+  remains on metered API usage.
+
+## 2026-07-30 - Automatic Release Merge Recovery Work
+
+- Materialized one idempotent package-level task when an active feature,
+  correction-aggregate, or release promotion boundary reports merge conflicts,
+  preserving promotion IDs, branches, conflict details, and supported recovery
+  instructions.
+- Routed unambiguous conflict work directly to its active source coder with an
+  immediate durable wake when runnable, while mixed or unavailable ownership
+  falls back to the project lead or team manager. Active stand-downs retain the
+  work without waking until revocation.
+- Granted the active recovery-task owner narrow authority to submit the
+  resolved agents ref through the existing release recovery command.
+- Linked the recovery task to the existing release blocker and preserved the
+  blocked package and promotion audit trail without retrying or resolving Git
+  conflicts automatically.
+
+## 2026-07-30 - Package-Level Human Correction Successors
+
+- Replaced per-finding feature promotions for rejected human-review successors
+  with one deterministic correction aggregate rooted at the immutable rejected
+  candidate, while retaining every finding, deliverable, review, and manifest
+  as separate evidence.
+- Added pinned-source ancestor enforcement and rejected-candidate-derived
+  manifests before one final integration with current `main`; release gates now
+  evaluate that final candidate.
+- Added idempotent reconciliation for candidate-less legacy successors:
+  per-leaf failures remain as retired audit records, obsolete recovery
+  tasks/blockers are safely closed, and one aggregate promotion is queued
+  without trusting legacy main-based manifests.
+- Kept correction-aggregation and aggregate-to-main conflicts as distinct
+  serial recovery boundaries, each reusing its failed promotion's pinned base.
+
+## 2026-07-30 - Durable Review Manifests on Promotion Failure
+
+- Persisted the pinned source manifest produced by Managed Git even when a
+  feature promotion ends in a merge conflict, preventing the conflict from
+  making its own reviewed evidence unavailable to recovery.
+- Added a revision-guarded repair service for legacy blocked packages whose
+  failed promotions contain one unambiguous manifest matching the deliverable's
+  accepted immutable review; retired and superseded reviews remain excluded.
+- Kept release recovery promotion-specific. Human-correction successors expose
+  one active aggregate or release boundary; generic multi-feature packages
+  retain one-at-a-time recovery only where those feature boundaries genuinely
+  remain independent.
 
 ## 2026-07-30 - Team UI Record Ordering
 
@@ -62,6 +180,14 @@
   process/thread limits through Admin Web session metadata, including accepted
   fields, new-job timing, Playwright precedence, worker defaults, and the
   separate Team release-verifier policy.
+
+## 2026-07-30 - Quiet Subscription App-Server Startup
+
+- Isolated ChatGPT-subscription app-server configuration from the metered relay while preserving
+  the session's durable Codex threads and skills, eliminating project-local provider warnings and
+  API-key model-catalog refresh failures without injecting credentials or changing billing mode.
+- Added the system Bubblewrap package to the managed runner image so Codex no longer warns before
+  falling back to its bundled sandbox helper.
 
 ## 2026-07-30 - Automatic Human Review Correction Graphs
 

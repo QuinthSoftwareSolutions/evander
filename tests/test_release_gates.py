@@ -3,12 +3,20 @@ from __future__ import annotations
 import pytest
 
 from evander_team_addon.models import (
+    AgentProjectAssignment,
+    AgentStatus,
+    AgentTask,
+    Deliverable,
+    DeliverableGitRefs,
+    DeliverableReviewManifest,
+    DeliverableVerification,
     GitPromotionRecord,
     PersistentAgent,
     Project,
     ProjectGitConfig,
     ProjectReleasePolicy,
     ReleaseCandidateManifest,
+    ReleaseCandidateDeliverableEvidence,
     ReleaseGateFailure,
     ReleasePackage,
     ReleaseReviewRequirement,
@@ -19,12 +27,27 @@ from evander_team_addon.models import (
     ReviewRequest,
     TeamRecordState,
     TeamState,
+    Team,
+    TeamRole,
+    TeamTaskState,
 )
 from evander_team_addon.services.domain.release_gates import (
+    begin_release_gates,
     create_release_reviews_or_approve,
     record_release_verification_result,
     retry_release_gate,
 )
+from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.domain.release_packages import (
+    _build_release_package,
+    _successor_release_request_error,
+)
+from evander_team_addon.services.domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_task_can_finish,
+)
+from evander_team_addon.services.release_gate_service import TeamReleaseGateService
+from evander_team_addon.repository import TeamStateRepository
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
@@ -168,9 +191,22 @@ def test_successful_verification_only_policy_approves_release() -> None:
     assert canonical_push.sources[0].expected_commit_sha == "candidate-sha"
 
 
-def test_candidate_verification_failure_wakes_project_lead_for_delegated_rework() -> None:
+def test_candidate_verification_failure_creates_candidate_rooted_correction_task() -> None:
     command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
     release, _promotion = _release_and_promotion(verification_commands=[command])
+    release.owner_agent_id = "lead"
+    release.deliverable_ids = ["source-deliverable"]
+    assert release.manifest is not None
+    release.manifest.deliverables = [
+        ReleaseCandidateDeliverableEvidence(
+            deliverable_id="source-deliverable",
+            review_manifest=DeliverableReviewManifest(
+                base_commit_sha="base-sha",
+                reviewed_commit_sha="candidate-sha",
+                changed_paths=["M\tSrc/App/OpcWriteStep.cs"],
+            ),
+        )
+    ]
     run = ReleaseVerificationRun(
         id="verification-run",
         release_package_id=release.id,
@@ -196,6 +232,19 @@ def test_candidate_verification_failure_wakes_project_lead_for_delegated_rework(
         session_id="session-coder",
         reports_to_agent_id="lead",
     )
+    state.project_assignments["coder-project"] = AgentProjectAssignment(
+        id="coder-project",
+        team_id="team",
+        project_id="project",
+        agent_id="coder",
+    )
+    state.deliverables["source-deliverable"] = Deliverable(
+        id="source-deliverable",
+        task_id="source-task",
+        producer_agent_id="coder",
+        summary="Source change",
+        state=TeamRecordState.ACCEPTED,
+    )
     state.release_packages[release.id] = release
     state.release_verification_runs[run.id] = run
 
@@ -212,7 +261,10 @@ def test_candidate_verification_failure_wakes_project_lead_for_delegated_rework(
                 name=command.name,
                 state="failed",
                 exit_code=1,
-                log_excerpt="assertion failed",
+                log_excerpt=(
+                    "/home/agent/worktrees/repo/Src/App/OpcWriteStep.cs(17,1): "
+                    "error CS0105: duplicate using"
+                ),
             )
         ],
         error="release tests failed",
@@ -220,29 +272,207 @@ def test_candidate_verification_failure_wakes_project_lead_for_delegated_rework(
     )
 
     assert release.state == TeamRecordState.REJECTED
+    assert run.correction_task_id is not None
+    task = state.tasks[run.correction_task_id]
+    assert task.owner_agent_id == "coder"
+    assert task.project_id == release.project_id
+    assert task.state.value == "pending"
+    assert task.created_by_actor == "system:release-verification-correction"
+    assert task.integration_boundary is False
+    assert task.deliverable_contract is not None
+    assert task.deliverable_contract.require_git_provenance is True
+    assert "Candidate commit: candidate-sha" in task.description
+    assert "Do not merge or rebase the current project base branch" in task.description
+    assert "team_submit_deliverable" in task.description
+    assert "Do not select reviewers" in task.description
+    assert result["created_task_ids"] == [task.id]
+    assert result["verification_correction_task_id"] == task.id
+    assert result["verification_correction_task_owner_agent_id"] == "coder"
+    assert (
+        result["verification_correction_assignment_reason"]
+        == "single_failed_path_source_owner"
+    )
     assert len(result["created_inbox_item_ids"]) == 1
     item = state.inbox[result["created_inbox_item_ids"][0]]
-    assert item.recipient_agent_id == "lead"
+    assert item.recipient_agent_id == "coder"
+    assert item.task_id == task.id
     assert item.priority.value == "high"
-    assert item.payload["kind"] == "release_verification_candidate_failure"
+    assert item.payload["kind"] == "release_verification_correction_work"
     assert item.payload["verification_run_id"] == run.id
     assert item.payload["candidate_commit_sha"] == "candidate-sha"
+    assert item.payload["assignment_reason"] == "single_failed_path_source_owner"
     assert item.payload["failed_command_results"] == [
         {
             "name": "tests",
             "state": "failed",
             "exit_code": 1,
-            "log_excerpt": "assertion failed",
+            "log_excerpt": (
+                "/home/agent/worktrees/repo/Src/App/OpcWriteStep.cs(17,1): "
+                "error CS0105: duplicate using"
+            ),
         }
     ]
-    assert "delegate" in item.payload["next_action"]
-    assert "Pin the failed candidate_commit_sha" in item.payload["next_action"]
-    assert "dependency_task_ids for every accepted Git-backed predecessor" in (
-        item.payload["next_action"]
+    assert "rooted at candidate_commit_sha" in item.payload["next_action"]
+    assert "Do not merge or rebase" in item.payload["next_action"]
+    wake = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
     )
-    assert "originating_task_id alone does not seed" in item.payload["next_action"]
-    assert "base-branch-only implementation" in item.payload["next_action"]
-    assert not any(row.recipient_agent_id == "coder" for row in state.inbox.values())
+    assert wake["payload"]["agent_id"] == "coder"
+    assert wake["payload"]["reason"] == "inbox"
+
+
+def test_candidate_verification_failure_falls_back_to_team_manager() -> None:
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    release, _promotion = _release_and_promotion(verification_commands=[command])
+    run = ReleaseVerificationRun(
+        id="verification-run",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        session_id="verification-session",
+    )
+    release.verification_run_ids = [run.id]
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="manager",
+        project_ids=["project"],
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(verification_commands=[command])
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+        status=AgentStatus.PAUSED,
+    )
+    state.agents["manager"] = PersistentAgent(
+        id="manager",
+        team_id="team",
+        role_id="manager-role",
+        session_id="session-manager",
+    )
+    state.release_packages[release.id] = release
+    state.release_verification_runs[run.id] = run
+
+    result = _result()
+    record_release_verification_result(
+        state,
+        release_package_id=release.id,
+        verification_run_id=run.id,
+        candidate_commit_sha="candidate-sha",
+        verification_state="failed",
+        failure_kind="candidate",
+        command_results=[
+            ReleaseVerificationCommandResult(
+                name=command.name,
+                state="failed",
+                exit_code=1,
+                log_excerpt="release tests failed",
+            )
+        ],
+        error="release tests failed",
+        result=result,
+    )
+
+    assert run.correction_task_id is not None
+    task = state.tasks[run.correction_task_id]
+    assert task.owner_agent_id == "manager"
+    assert result["verification_correction_assignment_reason"] == "team_manager_fallback"
+    item = state.inbox[result["created_inbox_item_ids"][0]]
+    assert item.recipient_agent_id == "manager"
+
+
+def test_rejected_release_review_creates_candidate_rooted_correction_task() -> None:
+    release, _promotion = _release_and_promotion()
+    release.owner_agent_id = "lead"
+    release.candidate_tree_hash = "d" * 40
+    assert release.manifest is not None
+    release.manifest.candidate_tree_hash = release.candidate_tree_hash
+    review = ReviewRequest(
+        id="release-review",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        reviewed_commit_sha="candidate-sha",
+        reviewer_agent_id="reviewer",
+    )
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.roles["lead-role"] = TeamRole(
+        id="lead-role",
+        team_id="team",
+        project_id="project",
+        name="Lead",
+    )
+    state.roles["reviewer-role"] = TeamRole(
+        id="reviewer-role",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(allow_ungated=True)
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.agents["reviewer"] = PersistentAgent(
+        id="reviewer",
+        team_id="team",
+        role_id="reviewer-role",
+        session_id="session-reviewer",
+    )
+    state.project_assignments["lead-project"] = AgentProjectAssignment(
+        id="lead-project",
+        team_id="team",
+        project_id="project",
+        agent_id="lead",
+    )
+    state.release_packages[release.id] = release
+    state.review_requests[review.id] = review
+
+    result = _result()
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.REJECTED,
+        findings=["PLC device mappings persist opcTagId 0."],
+        projects_to_recalc=set(),
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.review_correction_task_id is not None
+    task = state.tasks[release.review_correction_task_id]
+    assert task.owner_agent_id == "lead"
+    assert task.created_by_actor == "system:release-review-correction"
+    assert task.integration_boundary is False
+    assert task.deliverable_contract is not None
+    assert task.deliverable_contract.require_git_provenance is True
+    assert "Release reviews: release-review" in task.description
+    assert "PLC device mappings persist opcTagId 0." in task.description
+    assert result["created_task_ids"] == [task.id]
+    assert result["release_review_correction_task_id"] == task.id
+    assert result["release_review_correction_task_owner_agent_id"] == "lead"
+    assert result["release_review_correction_assignment_reason"] == "release_owner"
+    inbox = state.inbox[result["created_inbox_item_ids"][0]]
+    assert inbox.recipient_agent_id == "lead"
+    assert inbox.task_id == task.id
+    assert inbox.priority.value == "high"
+    assert inbox.payload["kind"] == "release_review_rejection_correction_work"
+    assert inbox.payload["review_request_id"] == review.id
     wake = next(
         event
         for event in result["events"]
@@ -250,6 +480,439 @@ def test_candidate_verification_failure_wakes_project_lead_for_delegated_rework(
     )
     assert wake["payload"]["agent_id"] == "lead"
     assert wake["payload"]["reason"] == "inbox"
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_task_can_finish(state, task.id)
+    assert raised.value.code == "deliverable_contract_direct_finish_forbidden"
+
+
+def test_multiple_rejected_release_reviews_aggregate_context_and_wake_again() -> None:
+    release, _promotion = _release_and_promotion()
+    release.owner_agent_id = "lead"
+    release.candidate_tree_hash = "d" * 40
+    assert release.manifest is not None
+    release.manifest.candidate_tree_hash = release.candidate_tree_hash
+    reviews = [
+        ReviewRequest(
+            id=f"release-review-{suffix}",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            reviewed_commit_sha="candidate-sha",
+            reviewer_agent_id=f"reviewer-{suffix}",
+        )
+        for suffix in ("a", "b")
+    ]
+    release.review_request_ids = [review.id for review in reviews]
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.roles["lead-role"] = TeamRole(
+        id="lead-role",
+        team_id="team",
+        project_id="project",
+        name="Lead",
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(allow_ungated=True)
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.project_assignments["lead-project"] = AgentProjectAssignment(
+        id="lead-project",
+        team_id="team",
+        project_id="project",
+        agent_id="lead",
+    )
+    for review in reviews:
+        state.agents[review.reviewer_agent_id] = PersistentAgent(
+            id=review.reviewer_agent_id,
+            team_id="team",
+            role_id="lead-role",
+            session_id=f"session-{review.reviewer_agent_id}",
+        )
+        state.review_requests[review.id] = review
+    state.release_packages[release.id] = release
+
+    first_result = _result()
+    _cascade_review_decision(
+        state,
+        review=reviews[0],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["First release-blocking finding."],
+        projects_to_recalc=set(),
+        result=first_result,
+    )
+    second_result = _result()
+    _cascade_review_decision(
+        state,
+        review=reviews[1],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Second release-blocking finding."],
+        projects_to_recalc=set(),
+        result=second_result,
+    )
+
+    task_id = release.review_correction_task_id
+    assert task_id is not None
+    task = state.tasks[task_id]
+    assert "release-review-a" in task.description
+    assert "release-review-b" in task.description
+    assert "First release-blocking finding." in task.description
+    assert "Second release-blocking finding." in task.description
+    assert len(
+        [
+            candidate
+            for candidate in state.tasks.values()
+            if candidate.created_by_actor == "system:release-review-correction"
+        ]
+    ) == 1
+    assert len(second_result["created_inbox_item_ids"]) == 1
+    second_inbox = state.inbox[second_result["created_inbox_item_ids"][0]]
+    assert second_inbox.payload["review_request_ids"] == [
+        "release-review-a",
+        "release-review-b",
+    ]
+    assert second_inbox.payload["findings"] == [
+        "First release-blocking finding.",
+        "Second release-blocking finding.",
+    ]
+    second_wake = next(
+        event
+        for event in second_result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    )
+    assert second_wake["payload"]["agent_id"] == "lead"
+
+
+def test_configuration_gate_rejection_routes_high_priority_team_blocker() -> None:
+    release, promotion = _release_and_promotion()
+    release.owner_agent_id = "lead"
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.roles["lead-role"] = TeamRole(
+        id="lead-role",
+        team_id="team",
+        project_id="project",
+        name="Lead",
+    )
+    project = _project(
+        release_policy=ProjectReleasePolicy(allow_ungated=True)
+    )
+    project.release_policy = None
+    state.projects[project.id] = project
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.project_assignments["lead-project"] = AgentProjectAssignment(
+        id="lead-project",
+        team_id="team",
+        project_id="project",
+        agent_id="lead",
+    )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    blocker = state.blockers[result["release_remediation_blocker_id"]]
+    assert blocker.owner_agent_id == "lead"
+    assert blocker.priority.value == "high"
+    assert blocker.reason_code == "release_gate_configuration_configuration"
+    assert "escalate it to an operator" in blocker.details
+    inbox = state.inbox[result["created_inbox_item_ids"][0]]
+    assert inbox.recipient_agent_id == "lead"
+    assert inbox.payload["blocker_id"] == blocker.id
+    wake = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    )
+    assert wake["payload"]["agent_id"] == "lead"
+
+
+@pytest.mark.parametrize(
+    ("verification_state", "failure_kind"),
+    [
+        ("failed", "infrastructure"),
+        ("timed_out", None),
+    ],
+)
+def test_non_candidate_verification_failure_persists_team_wake(
+    tmp_path,
+    verification_state: str,
+    failure_kind: str | None,
+) -> None:
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    release, promotion = _release_and_promotion(verification_commands=[command])
+    release.owner_agent_id = "lead"
+    run = ReleaseVerificationRun(
+        id="verification-run",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        session_id="verification-session",
+        command_results=[ReleaseVerificationCommandResult(name=command.name)],
+    )
+    release.verification_run_ids = [run.id]
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.roles["lead-role"] = TeamRole(
+        id="lead-role",
+        team_id="team",
+        project_id="project",
+        name="Lead",
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(verification_commands=[command])
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.project_assignments["lead-project"] = AgentProjectAssignment(
+        id="lead-project",
+        team_id="team",
+        project_id="project",
+        agent_id="lead",
+    )
+    state.release_packages[release.id] = release
+    state.release_verification_runs[run.id] = run
+    state.git_promotions[promotion.id] = promotion
+    repository = TeamStateRepository(tmp_path)
+    repository.update(lambda _current: state, expected_revision=0)
+
+    updated, result = TeamReleaseGateService(repository).record_verification_result(
+        release_package_id=release.id,
+        verification_run_id=run.id,
+        candidate_commit_sha="candidate-sha",
+        verification_state=verification_state,
+        failure_kind=failure_kind,
+        command_results=[
+            {
+                "name": command.name,
+                "state": verification_state,
+                "log_excerpt": "verification worker disconnected",
+            }
+        ],
+        error="verification worker disconnected",
+    )
+    wake = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    )
+    wake_outbox = repository.list_outbox_records(
+        intent_type="team.agent.wake_requested"
+    )
+
+    assert updated.release_packages[release.id].state == TeamRecordState.BLOCKED
+    assert wake["payload"]["agent_id"] == "lead"
+    assert any(
+        record.idempotency_key == wake["idempotency_key"]
+        for record in wake_outbox
+    )
+
+
+def test_resolved_verification_correction_can_create_successor_release() -> None:
+    release, _promotion = _release_and_promotion()
+    release.state = TeamRecordState.REJECTED
+    release.candidate_commit_sha = "c" * 40
+    release.candidate_tree_hash = "d" * 40
+    assert release.manifest is not None
+    release.manifest.candidate_commit_sha = release.candidate_commit_sha
+    release.manifest.candidate_tree_hash = release.candidate_tree_hash
+    release.gate_failure = ReleaseGateFailure(
+        stage="verification",
+        kind="candidate",
+        source_id="verification-run",
+        message="release tests failed",
+    )
+    correction_task = AgentTask(
+        id="correction-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Correct release verification",
+        description="Fix the failed candidate.",
+        created_by_actor="system:release-verification-correction",
+        deliverable_ids=["correction-deliverable"],
+    )
+    correction_deliverable = Deliverable(
+        id="correction-deliverable",
+        task_id=correction_task.id,
+        producer_agent_id="coder",
+        summary="Corrected release verification",
+        state=TeamRecordState.ACCEPTED,
+    )
+    verification_run = ReleaseVerificationRun(
+        id="verification-run",
+        release_package_id=release.id,
+        candidate_commit_sha=release.candidate_commit_sha,
+        session_id="verification-session",
+        state="failed",
+        failure_kind="candidate",
+        correction_task_id=correction_task.id,
+    )
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(allow_ungated=True)
+    )
+    state.release_packages[release.id] = release
+    state.release_verification_runs[verification_run.id] = verification_run
+    state.tasks[correction_task.id] = correction_task
+    state.deliverables[correction_deliverable.id] = correction_deliverable
+
+    error = _successor_release_request_error(
+        state,
+        project_id="project",
+        predecessor=release,
+        correction_deliverable_ids=[correction_deliverable.id],
+    )
+
+    assert error is None
+
+def test_resolved_release_review_correction_can_create_successor_release() -> None:
+    release, _promotion = _release_and_promotion()
+    release.state = TeamRecordState.REJECTED
+    release.candidate_commit_sha = "c" * 40
+    release.candidate_tree_hash = "d" * 40
+    assert release.manifest is not None
+    release.manifest.candidate_commit_sha = release.candidate_commit_sha
+    release.manifest.candidate_tree_hash = release.candidate_tree_hash
+    release.gate_failure = ReleaseGateFailure(
+        stage="review",
+        kind="rejected",
+        source_id="release-review",
+        message="PLC device mappings persist opcTagId 0.",
+    )
+    correction_task = AgentTask(
+        id="review-correction-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Correct rejected release review",
+        description="Fix the review finding.",
+        created_by_actor="system:release-review-correction",
+        deliverable_ids=["review-correction-deliverable"],
+    )
+    correction_deliverable = Deliverable(
+        id="review-correction-deliverable",
+        task_id=correction_task.id,
+        producer_agent_id="coder",
+        summary="Corrected release review finding",
+        state=TeamRecordState.ACCEPTED,
+    )
+    review = ReviewRequest(
+        id="release-review",
+        release_package_id=release.id,
+        candidate_commit_sha=release.candidate_commit_sha,
+        reviewed_commit_sha=release.candidate_commit_sha,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.REJECTED,
+        findings=["PLC device mappings persist opcTagId 0."],
+    )
+    release.review_correction_task_id = correction_task.id
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(allow_ungated=True)
+    )
+    state.release_packages[release.id] = release
+    state.review_requests[review.id] = review
+    state.tasks[correction_task.id] = correction_task
+    state.deliverables[correction_deliverable.id] = correction_deliverable
+
+    error = _successor_release_request_error(
+        state,
+        project_id="project",
+        predecessor=release,
+        correction_deliverable_ids=[correction_deliverable.id],
+    )
+
+    assert error is None
+
+    correction_commit = "e" * 40
+    correction_deliverable.git_refs = DeliverableGitRefs(
+        agent_branch="agents/coder/review-correction",
+        commit_sha=correction_commit,
+        submitted_commit_sha=correction_commit,
+    )
+    correction_deliverable.review_manifest = DeliverableReviewManifest(
+        base_commit_sha=release.candidate_commit_sha,
+        reviewed_commit_sha=correction_commit,
+        tree_hash="f" * 40,
+        commit_shas=[correction_commit],
+        changed_paths=["M\tsrc/PlcDeviceMapping.cs"],
+    )
+    correction_deliverable.verification = DeliverableVerification(status="passed")
+    correction_review = ReviewRequest(
+        id="review-correction-review",
+        deliverable_id=correction_deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=correction_commit,
+    )
+    correction_deliverable.review_request_ids = [correction_review.id]
+    state.review_requests[correction_review.id] = correction_review
+    result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "git_promotion_event_ids": [],
+    }
+
+    successor_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "review-correction-successor",
+            "deliverable_ids": [correction_deliverable.id],
+            "supersedes_release_package_id": release.id,
+        },
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="coder",
+        team_id="team",
+    )
+
+    assert successor_id == "review-correction-successor"
+    assert result["errors"] == []
+    successor = state.release_packages[successor_id]
+    assert len(successor.git_promotion_record_ids) == 1
+    aggregate = state.git_promotions[successor.git_promotion_record_ids[0]]
+    assert aggregate.promotion_kind == "correction_aggregate"
+    assert aggregate.outputs["required_source_ancestor_commit_sha"] == "c" * 40
+    assert result["events"][0]["payload"]["base_commit_sha"] == "c" * 40
 
 
 def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:

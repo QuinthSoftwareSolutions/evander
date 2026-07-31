@@ -25,6 +25,7 @@ from evander_team_addon.models import (
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.providers import (
     _prepare_project_repo_task_worktree,
+    _project_repo_agent_branch,
     _prior_project_repo_task_base_commit,
 )
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -881,7 +882,9 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
         {
             "session_id": "session-backend",
             "repo_name": "project",
-            "worktree_name": f"task-{hashlib.sha256(b'task').hexdigest()[:8]}",
+            "worktree_name": (
+                f"task-{hashlib.sha256(b'task').hexdigest()[:8]}-{_BASE_COMMIT[:12]}"
+            ),
             "branch": "agents/session-backend/tasks/task-12345678",
             "base_ref": "team/team/releases/release-1234",
             "expected_base_commit_sha": _BASE_COMMIT,
@@ -889,6 +892,17 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
             "dependency_git_sources": [],
         }
     ]
+
+
+def test_candidate_correction_branch_is_scoped_to_the_pinned_candidate() -> None:
+    ordinary = _project_repo_agent_branch("session", task_id="correction-task")
+    candidate = _project_repo_agent_branch(
+        "session",
+        task_id="correction-task",
+        candidate_commit_sha="a" * 40,
+    )
+
+    assert candidate == f"{ordinary}-{'a' * 12}"
 
 
 def test_container_preparation_recovers_legacy_base_from_prior_team_context(

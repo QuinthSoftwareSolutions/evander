@@ -79,7 +79,7 @@ def _seed_team_repository(tmp_path: Path) -> TeamStateRepository:
     return repository
 
 
-def test_repository_round_trips_integration_deliverable_contract_and_defaults_legacy_tasks(
+def test_repository_round_trips_integration_and_leaf_deliverable_contracts(
     tmp_path: Path,
 ) -> None:
     repository = _seed_team_repository(tmp_path)
@@ -92,6 +92,19 @@ def test_repository_round_trips_integration_deliverable_contract_and_defaults_le
         title="Implement component",
         description="Produce the component contribution.",
         created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="contracted-leaf",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=15,
+        title="Correct candidate",
+        description="Produce one reviewed Git correction.",
+        created_by_actor="system:release-review-correction",
+        integration_boundary=False,
+        deliverable_contract=TaskDeliverableContract(
+            require_git_provenance=True,
+        ).model_dump(mode="json"),
     )
     admin.create_or_reprioritize_task(
         task_id="integration",
@@ -114,6 +127,11 @@ def test_repository_round_trips_integration_deliverable_contract_and_defaults_le
     legacy = reloaded.tasks["dependency"]
     assert legacy.integration_boundary is False
     assert legacy.deliverable_contract is None
+    contracted_leaf = reloaded.tasks["contracted-leaf"]
+    assert contracted_leaf.integration_boundary is False
+    assert contracted_leaf.deliverable_contract is not None
+    assert contracted_leaf.deliverable_contract.require_git_provenance is True
+    assert contracted_leaf.deliverable_contract.required_contribution_task_ids == []
     integration = reloaded.tasks["integration"]
     assert integration.integration_boundary is True
     assert integration.deliverable_contract is not None
@@ -358,6 +376,7 @@ def test_repository_round_trips_unified_hierarchy_human_review_records(
                 "release-one": ReleasePackage(
                     id="release-one",
                     project_id="project",
+                    owner_agent_id="lead",
                     deliverable_ids=["aggregate-deliverable"],
                     release_branch="release/project/one",
                     base_commit_sha="base-one",
@@ -561,6 +580,7 @@ def test_repository_round_trips_unified_hierarchy_human_review_records(
     assert dispatch.project_ids == ["project"]
     assert dispatch.managed_repo_ids == [MANAGED_REPO_ID]
     successor = reloaded.release_packages["release-two"]
+    assert reloaded.release_packages["release-one"].owner_agent_id == "lead"
     assert successor.supersedes_release_package_id == "release-one"
     assert successor.manifest is not None
     assert successor.manifest.predecessor_release_package_id == "release-one"
@@ -1053,7 +1073,7 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
         "review_cohort_sealed_at",
     } <= deliverable_columns
     assert {"reason_code", "reporter_actor"} <= blocker_columns
-    assert "supersedes_release_package_id" in release_columns
+    assert {"owner_agent_id", "supersedes_release_package_id"} <= release_columns
     assert "resolved_by_human_review_request_id" in finding_columns
     assert {
         "team_deliverable_sources",

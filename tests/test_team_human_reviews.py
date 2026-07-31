@@ -1259,11 +1259,33 @@ def test_empty_assignment_blocks_and_reassignment_resumes_same_request() -> None
     assert blocker.reason_code == "human_review_assignment_unavailable"
     assert blocker.route == TeamBlockerRoute.OPERATOR
     assert blocker.owner_agent_id == "lead"
-    assert all(
-        item.state == TeamInboxItemState.HANDLED
+    blocker_items = [
+        item
         for item in state.inbox.values()
         if item.payload.get("blocker_id") == blocker.id
+    ]
+    assert any(
+        item.state == TeamInboxItemState.HANDLED
+        and item.payload.get("kind") == "blocker_reported"
+        for item in blocker_items
     )
+    visibility_item = next(
+        item
+        for item in blocker_items
+        if item.payload.get("kind")
+        == "human_review_operator_recovery_visibility"
+    )
+    assert visibility_item.state == TeamInboxItemState.PENDING
+    assert visibility_item.recipient_agent_id == "lead"
+    assert visibility_item.priority.value == "high"
+    assert visibility_item.payload["route"] == "operator"
+    visibility_wake = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "lead"
+    )
+    assert visibility_wake["payload"]["reason"] == "inbox"
     routing_event = next(
         event
         for event in state.blocker_events.values()

@@ -427,6 +427,8 @@ export type AgentSessionPolicy = {
   labels: Record<string, string>;
   web_search_enabled: boolean;
   codex_auth_mode: "metered_api" | "chatgpt_subscription" | null;
+  effective_codex_auth_mode: "metered_api" | "chatgpt_subscription";
+  codex_auth_mode_source: "session_override" | "directory_default" | "provider_route";
 };
 
 export type AgentListResponse = {

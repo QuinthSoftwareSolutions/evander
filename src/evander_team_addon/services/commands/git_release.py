@@ -539,6 +539,9 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "release_recovery_event_ids": recovery_event_ids,
                     "promotion_id": failed_promotion.id if failed_promotion else None,
                     "promotion_event_ids": ([failed_promotion.id] if failed_promotion else []),
+                    "repaired_review_manifest_ids": list(
+                        intent_result.get("repaired_review_manifest_ids") or []
+                    ),
                     "agent_branch": _normalize_agent_branch_ref(normalized_agent_branch),
                     "target_branch": (
                         release.release_branch

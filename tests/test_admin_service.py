@@ -3626,6 +3626,10 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert result["status"] == "dispatched"
     assert result["execution_id"] == backend.started_specs[0].target_name
     assert backend.started_specs[0].image == "runner:admin-image"
+    assert backend.started_specs[0].codex_turn is not None
+    assert str(backend.started_specs[0].codex_turn.mcp_gateway_url).startswith(
+        "http://192.168.250.1:8000/mcp?session_id=container-session"
+    )
     assert len(records) == 1
     assert records[0].status == "waiting"
     assert records[0].effect_type == "effect:agent:enqueue-prompt"

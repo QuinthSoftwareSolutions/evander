@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -9,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from evander.codex_auth import CodexTurnSpec
 
@@ -35,6 +37,13 @@ from .sandbox_profile import (
 
 
 _CODEX_IMAGE_BINARY = "/usr/local/bin/codex"
+_CODEX_HOME_CONTAINER_PATH = "/home/agent/.config/evander/codex"
+_CODEX_CONFIG_CONTAINER_PATH = f"{_CODEX_HOME_CONTAINER_PATH}/config.toml"
+_CODEX_LEGACY_CONFIG_CONTAINER_PATH = "/home/agent/.codex/config.toml"
+_CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME = "codex-subscription-config.toml"
+_CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME = (
+    "codex-subscription-project-config.toml"
+)
 _PIDS_EXHAUSTION_MARKER_SUFFIX = ".pids-limit-exhausted"
 _PIDS_EVENT_POLL_SECONDS = 0.05
 _PIDS_MONITOR_TERMINAL_JOIN_SECONDS = 0.25
@@ -341,6 +350,8 @@ class DockerContainerRuntime:
             f"HTTP_PROXY={self.codex_egress_proxy_url}",
             "-e",
             f"NO_PROXY={','.join(dict.fromkeys(no_proxy))}",
+            "-e",
+            f"CODEX_HOME={_CODEX_HOME_CONTAINER_PATH}",
             record.container_id or record.container_name,
             _CODEX_IMAGE_BINARY,
             "app-server",
@@ -364,6 +375,7 @@ class DockerContainerRuntime:
         paths.assert_contained()
         identity_mounts = self._container_identity_mounts(paths)
         subscription_completion_mount: str | None = None
+        subscription_config_mounts: tuple[str, ...] = ()
         if (
             request.codex_turn is not None
             and request.codex_turn.auth_mode.value == "chatgpt_subscription"
@@ -383,6 +395,10 @@ class DockerContainerRuntime:
             reject_unsafe_mount(completion_dir, CODEX_COMPLETION_MARKER_CONTAINER_DIR)
             subscription_completion_mount = (
                 f"{completion_dir}:{CODEX_COMPLETION_MARKER_CONTAINER_DIR}:ro"
+            )
+            subscription_config_mounts = self._subscription_config_mounts(
+                paths,
+                request.codex_turn,
             )
 
         args = [
@@ -405,6 +421,8 @@ class DockerContainerRuntime:
             args.extend(["-v", mount])
         if subscription_completion_mount is not None:
             args.extend(["-v", subscription_completion_mount])
+        for mount in subscription_config_mounts:
+            args.extend(["-v", mount])
         for mount in self.read_only_mounts:
             args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
@@ -470,6 +488,66 @@ class DockerContainerRuntime:
             f"{group_path}:/etc/group:ro",
         ]
 
+    def _subscription_config_mounts(
+        self,
+        paths: WorkerSessionPaths,
+        turn: CodexTurnSpec,
+    ) -> tuple[str, ...]:
+        """Overlay metered provider config for one subscription job only.
+
+        Container session bootstrap deliberately keeps relay configuration in both
+        the active Codex home and the legacy ``~/.codex`` location. A subscription
+        app-server must retain the same persisted thread store, but it must not load
+        that metered provider or treat the legacy copy as project-local config.
+        Worker-owned read-only overlays preserve the thread/skill directories while
+        keeping external-token authentication independent of ``OPENAI_API_KEY``.
+        The per-session MCP server must be present before app-server starts; a
+        thread-resume config override alone does not initialize a newly introduced
+        MCP connection.
+        """
+
+        config_path = paths.root / _CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME
+        project_config_path = (
+            paths.root / _CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME
+        )
+        for description, path in (
+            ("Codex subscription config", config_path),
+            ("Codex subscription project config", project_config_path),
+        ):
+            ensure_resolved_path_within(
+                base=paths.root,
+                candidate=path,
+                description=description,
+            )
+        config_content = (
+            'forced_login_method = "chatgpt"\n'
+            "check_for_update_on_startup = false\n"
+            'model_reasoning_effort = "high"\n'
+            'personality = "pragmatic"\n'
+            "\n"
+            '[projects."/home/agent"]\n'
+            'trust_level = "trusted"\n'
+        )
+        if turn.mcp_gateway_url is not None:
+            config_content += (
+                "\n"
+                "[mcp_servers.evander]\n"
+                f"url = {json.dumps(str(turn.mcp_gateway_url))}\n"
+                "enabled = true\n"
+            )
+        _write_worker_owned_config(config_path, config_content)
+        _write_worker_owned_config(
+            project_config_path,
+            (
+                "# The metered relay provider is intentionally hidden from\n"
+                "# subscription-authenticated app-server turns.\n"
+            ),
+        )
+        return (
+            f"{config_path}:{_CODEX_CONFIG_CONTAINER_PATH}:ro",
+            f"{project_config_path}:{_CODEX_LEGACY_CONFIG_CONTAINER_PATH}:ro",
+        )
+
 
 def _numeric_container_identity(user: str | None) -> tuple[int, int] | None:
     normalized = str(user or "").strip()
@@ -488,6 +566,23 @@ def _numeric_container_identity(user: str | None) -> tuple[int, int] | None:
 def _write_container_identity_file(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o644)
+
+
+def _write_worker_owned_config(path: Path, content: str) -> None:
+    try:
+        if path.is_file() and not path.is_symlink():
+            if path.read_text(encoding="utf-8") == content:
+                path.chmod(0o600)
+                return
+    except OSError:
+        pass
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def docker_state_to_status(state: dict[str, Any]) -> str:

@@ -148,6 +148,14 @@ and evidence from those deliverables and creates one changed successor release
 automatically. The coordination parent produces no deliverable and finishes
 when that successor exists.
 
+No agent is asked to author a fifth, combined deliverable. Successor creation
+queues one platform-owned <code>correction_aggregate</code> promotion: its
+ordered sources are the accepted correction SHAs, its exact base is the
+rejected candidate, and every source must descend from that candidate. The
+resulting aggregate is then integrated once with the current configured base
+branch to produce the candidate that enters release gates. Conflicts are
+recovered at whichever one of those two serial boundaries actually failed.
+
 ## Idempotency
 
 **Idempotency** means that repeating the same request has the same business effect as making it once. It matters when the caller cannot tell whether a timeout happened before or after Team committed the command.

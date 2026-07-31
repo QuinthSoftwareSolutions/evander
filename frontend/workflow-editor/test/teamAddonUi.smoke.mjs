@@ -48,6 +48,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, />Stand down subtree</);
   assert.match(script, /and every subordinate in that agent's subtree/);
   assert.match(script, /data-stand-down-revoke-agent-id/);
+  assert.match(script, /data-resume-release-recovery-blocker-id/);
+  assert.match(script, /Resume release recovery/);
+  assert.match(script, /admin_ui_release_recovery/);
+  assert.match(script, /resumeReleaseRecovery/);
   assert.match(markup, /id="task-cancellation-modal"/);
   assert.match(script, /data-task-cancel-id/);
   assert.match(script, /\/cancel/);
@@ -3507,7 +3511,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
   for (const stage of [
     "Candidate prepared",
     "Automated verification",
-    "Agent review",
+    "Release agent review",
     "Human review",
     "Publication",
   ]) {

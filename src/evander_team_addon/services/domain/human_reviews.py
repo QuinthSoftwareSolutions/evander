@@ -35,6 +35,7 @@ from ...models import (
 from .blockers import (
     active_blockers_for_source,
     append_blocker_event,
+    create_blocker_inbox,
     handle_blocker_inbox_for_agent,
     open_or_get_blocker,
     resolve_blocker,
@@ -1585,6 +1586,7 @@ def _block_human_review(
         summary=summary,
         details=details,
         reason_code=reason_code,
+        priority=TeamInboxPriority.HIGH,
         reporter_actor="system:human-review",
         initial_owner_agent_id=lead_id,
         team_id=project.team_id,
@@ -1607,6 +1609,15 @@ def _block_human_review(
                 state,
                 blocker_id=blocker.id,
                 agent_id=previous_owner_id,
+                now=now,
+            )
+            create_blocker_inbox(
+                state,
+                blocker=blocker,
+                recipient_agent_id=previous_owner_id,
+                sender_agent_id=None,
+                kind="human_review_operator_recovery_visibility",
+                result=result,
                 now=now,
             )
         append_blocker_event(

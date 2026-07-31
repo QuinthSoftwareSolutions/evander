@@ -19,7 +19,10 @@ from evander_team_addon.models import (
     ProjectGitConfig,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
+    ReleaseGateFailure,
     ReleasePackage,
+    ReleaseVerificationRun,
+    ReviewRequest,
     Team,
     TeamBlockerRoute,
     TeamRecordState,
@@ -31,14 +34,18 @@ from evander_team_addon.providers import (
     _create_project_repo_git_work_contexts,
     _prepare_project_repo_task_worktree,
     _verified_human_review_correction_git_source,
+    _verified_rejected_candidate_git_source,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.correction_git_source import (
     human_review_correction_git_source,
+    release_review_correction_git_source,
+    release_verification_correction_git_source,
 )
 from evander_team_addon.services.domain.preparation_failures import (
     create_human_correction_preparation_recovery_inbox,
+    create_rejected_candidate_correction_preparation_recovery_inbox,
     record_task_preparation_failure,
     task_preparation_generation,
 )
@@ -179,6 +186,54 @@ def _correction_state() -> TeamState:
     return state
 
 
+def _verification_correction_state() -> TeamState:
+    state = _correction_state()
+    state.human_review_findings.clear()
+    state.human_review_requests.clear()
+    release = state.release_packages["rejected-release"]
+    release.gate_failure = ReleaseGateFailure(
+        stage="verification",
+        kind="candidate",
+        source_id="verification-run",
+        message="release tests failed",
+    )
+    state.release_verification_runs["verification-run"] = ReleaseVerificationRun(
+        id="verification-run",
+        release_package_id=release.id,
+        candidate_commit_sha=CANDIDATE_COMMIT,
+        session_id="verification-session",
+        state="failed",
+        failure_kind="candidate",
+        correction_task_id="correction-task",
+        error="release tests failed",
+    )
+    return state
+
+
+def _release_review_correction_state() -> TeamState:
+    state = _correction_state()
+    state.human_review_findings.clear()
+    state.human_review_requests.clear()
+    release = state.release_packages["rejected-release"]
+    release.gate_failure = ReleaseGateFailure(
+        stage="review",
+        kind="rejected",
+        source_id="release-review",
+        message="PLC device mappings persist opcTagId 0.",
+    )
+    release.review_correction_task_id = "correction-task"
+    state.review_requests["release-review"] = ReviewRequest(
+        id="release-review",
+        release_package_id=release.id,
+        candidate_commit_sha=CANDIDATE_COMMIT,
+        reviewed_commit_sha=CANDIDATE_COMMIT,
+        reviewer_agent_id="lead",
+        state=TeamRecordState.REJECTED,
+        findings=["PLC device mappings persist opcTagId 0."],
+    )
+    return state
+
+
 def test_correction_source_is_derived_from_rejected_release_not_main() -> None:
     source = human_review_correction_git_source(
         _correction_state(),
@@ -200,6 +255,100 @@ def test_correction_source_is_derived_from_rejected_release_not_main() -> None:
             "commit_sha": FEATURE_COMMIT,
         }
     ]
+
+
+def test_verification_correction_source_is_derived_from_failed_candidate() -> None:
+    source = release_verification_correction_git_source(
+        _verification_correction_state(),
+        task_id="correction-task",
+    )
+
+    assert source is not None
+    assert source.release_verification_run_id == "verification-run"
+    assert source.release_package_id == "rejected-release"
+    assert source.release_branch == RELEASE_BRANCH
+    assert source.candidate_commit_sha == CANDIDATE_COMMIT
+    assert source.candidate_tree_hash == CANDIDATE_TREE
+    assert [
+        item.model_dump(mode="json")
+        for item in source.dependency_git_sources
+    ] == [
+        {
+            "dependency_task_id": "source-task",
+            "deliverable_id": "source-deliverable",
+            "branch": FEATURE_BRANCH,
+            "commit_sha": FEATURE_COMMIT,
+        }
+    ]
+
+
+def test_release_review_correction_source_is_derived_from_rejected_candidate() -> None:
+    source = release_review_correction_git_source(
+        _release_review_correction_state(),
+        task_id="correction-task",
+    )
+
+    assert source is not None
+    assert source.release_review_request_id == "release-review"
+    assert source.release_package_id == "rejected-release"
+    assert source.release_branch == RELEASE_BRANCH
+    assert source.candidate_commit_sha == CANDIDATE_COMMIT
+    assert source.candidate_tree_hash == CANDIDATE_TREE
+    assert [
+        item.model_dump(mode="json")
+        for item in source.dependency_git_sources
+    ] == [
+        {
+            "dependency_task_id": "source-task",
+            "deliverable_id": "source-deliverable",
+            "branch": FEATURE_BRANCH,
+            "commit_sha": FEATURE_COMMIT,
+        }
+    ]
+
+
+def test_verification_correction_source_requires_matching_gate_failure() -> None:
+    state = _verification_correction_state()
+    state.release_packages["rejected-release"].gate_failure = ReleaseGateFailure(
+        stage="verification",
+        kind="candidate",
+        source_id="different-run",
+        message="different failure",
+    )
+
+    with pytest.raises(ValueError, match="active candidate failure"):
+        release_verification_correction_git_source(
+            state,
+            task_id="correction-task",
+        )
+
+
+def test_verification_correction_link_and_release_owner_round_trip(tmp_path) -> None:
+    state = _verification_correction_state()
+    state.release_packages["rejected-release"].owner_agent_id = "lead"
+    repo = TeamStateRepository(tmp_path)
+
+    repo.update(lambda _state: state, expected_revision=0)
+    reloaded = repo.read()
+
+    assert (
+        reloaded.release_verification_runs["verification-run"].correction_task_id
+        == "correction-task"
+    )
+    assert reloaded.release_packages["rejected-release"].owner_agent_id == "lead"
+
+
+def test_release_review_correction_link_round_trips(tmp_path) -> None:
+    state = _release_review_correction_state()
+    repo = TeamStateRepository(tmp_path)
+
+    repo.update(lambda _state: state, expected_revision=0)
+    reloaded = repo.read()
+
+    assert (
+        reloaded.release_packages["rejected-release"].review_correction_task_id
+        == "correction-task"
+    )
 
 
 def test_correction_source_fails_closed_on_request_release_tree_mismatch() -> None:
@@ -235,6 +384,76 @@ def test_correction_source_verifies_authoritative_ref_commit_and_tree() -> None:
     )
 
     assert source is not None
+    assert calls == [
+        (
+            (MANAGED_REPO_ID, "root"),
+            {
+                "source_ref": RELEASE_BRANCH,
+                "commit_sha": CANDIDATE_COMMIT,
+                "tree_hash": CANDIDATE_TREE,
+            },
+        )
+    ]
+
+
+def test_verification_correction_source_verifies_authoritative_snapshot() -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _ManagedGit:
+        def resolve_snapshot(self, *args: object, **kwargs: object) -> dict[str, object]:
+            calls.append((args, kwargs))
+            return {
+                "commit_sha": CANDIDATE_COMMIT,
+                "tree_hash": CANDIDATE_TREE,
+            }
+
+    source = _verified_rejected_candidate_git_source(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": "/runtime"},
+            admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+        ),
+        state=_verification_correction_state(),
+        task_id="correction-task",
+        managed_repo_id=MANAGED_REPO_ID,
+    )
+
+    assert source is not None
+    assert source.release_package_id == "rejected-release"
+    assert calls == [
+        (
+            (MANAGED_REPO_ID, "root"),
+            {
+                "source_ref": RELEASE_BRANCH,
+                "commit_sha": CANDIDATE_COMMIT,
+                "tree_hash": CANDIDATE_TREE,
+            },
+        )
+    ]
+
+
+def test_release_review_correction_source_verifies_authoritative_snapshot() -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _ManagedGit:
+        def resolve_snapshot(self, *args: object, **kwargs: object) -> dict[str, object]:
+            calls.append((args, kwargs))
+            return {
+                "commit_sha": CANDIDATE_COMMIT,
+                "tree_hash": CANDIDATE_TREE,
+            }
+
+    source = _verified_rejected_candidate_git_source(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": "/runtime"},
+            admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+        ),
+        state=_release_review_correction_state(),
+        task_id="correction-task",
+        managed_repo_id=MANAGED_REPO_ID,
+    )
+
+    assert source is not None
+    assert source.release_package_id == "rejected-release"
     assert calls == [
         (
             (MANAGED_REPO_ID, "root"),
@@ -297,7 +516,7 @@ def test_libvirt_correction_worktree_fetches_and_checks_pinned_candidate() -> No
         pinned_base_tree=CANDIDATE_TREE,
     )
 
-    assert path.endswith("/correction-task-63eb884d")
+    assert path.endswith(f"/correction-task-63eb884d-{CANDIDATE_COMMIT[:12]}")
     assert base_commit == CANDIDATE_COMMIT
     command = str(executor.calls[0]["command"])
     syntax = subprocess.run(
@@ -425,6 +644,7 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
             error="candidate checkout unavailable",
             result=result,
         )
+        blocker.reason_code = "source_provenance_mismatch"
         blocker.route = TeamBlockerRoute.OPERATOR
         blocker.terminal_reference_ids = ["operator-repair-required"]
         return state
@@ -441,7 +661,8 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
     recovery_items = [
         item
         for item in resolved.inbox.values()
-        if item.payload.get("kind") == "human_correction_preparation_recovered"
+        if item.payload.get("kind")
+        == "rejected_candidate_correction_preparation_recovered"
     ]
     assert len(recovery_items) == 1
     assert recovery_items[0].recipient_agent_id == "owner"
@@ -481,7 +702,7 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
             item
             for item in replayed.inbox.values()
             if item.payload.get("kind")
-            == "human_correction_preparation_recovered"
+            == "rejected_candidate_correction_preparation_recovered"
         ]
     ) == 1
     assert [
@@ -490,6 +711,32 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
             intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
         )
     ] == [wake_outbox[0].id]
+
+
+def test_release_review_correction_preparation_recovery_uses_candidate_route() -> None:
+    state = _release_review_correction_state()
+    result: dict[str, object] = {"events": []}
+    blocker = record_task_preparation_failure(
+        state,
+        task_id="correction-task",
+        reporter_agent_id="owner",
+        error="candidate checkout unavailable",
+        result=result,
+    )
+
+    recovery_result: dict[str, object] = {"events": []}
+    item = create_rejected_candidate_correction_preparation_recovery_inbox(
+        state,
+        blocker=blocker,
+        result=recovery_result,
+    )
+
+    assert item is not None
+    assert item.task_id == "correction-task"
+    assert item.recipient_agent_id == "owner"
+    assert item.payload["kind"] == "rejected_candidate_correction_preparation_recovered"
+    assert len(recovery_result["events"]) == 1
+    assert recovery_result["events"][0]["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
 
 
 def test_correction_preparation_generation_changes_when_provenance_is_repaired() -> None:

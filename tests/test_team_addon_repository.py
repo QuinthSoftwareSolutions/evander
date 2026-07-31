@@ -2673,7 +2673,7 @@ def test_direct_deliverable_decision_rejects_wrong_superior_and_formal_review_pa
     assert unchanged.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
-def test_submit_deliverable_command_requires_direct_superior_before_publication(
+def test_submit_deliverable_command_without_direct_superior_defers_review_routing(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -2689,21 +2689,29 @@ def test_submit_deliverable_command_requires_direct_superior_before_publication(
         session_id="session-manager",
         id="manager-deliverable",
         task_id="manager-task",
-        summary="Top-level work cannot wait for a nonexistent superior.",
+        summary="Top-level work is ready for workflow-owned review routing.",
         artifact_paths=["reports/manager.txt"],
         request_id="request-manager-deliverable",
         artifact_publisher=publish,
     )
 
-    assert result["success"] is False
-    assert result["errors"][0]["code"] == "direct_superior_required"
-    assert result["errors"][0]["correction_context"]["recommended_tools"] == [
-        "team_submit_deliverable_for_review",
-        "team_update_task",
-    ]
-    assert published == []
-    assert state.deliverables == {}
-    assert state.tasks["manager-task"].state == TeamTaskState.PENDING
+    assert result["success"] is True
+    assert result["created_inbox_item_ids"] == []
+    assert len(published) == 1
+    assert published[0]["agent"].id == "manager"  # type: ignore[union-attr]
+    assert published[0]["team_id"] == "team"
+    assert published[0]["project_id"] == "project"
+    assert published[0]["deliverable_id"] == "manager-deliverable"
+    assert published[0]["dispatch_id"] == "dispatch-manager"
+    assert published[0]["artifact_paths"] == ["reports/manager.txt"]
+    deliverable = state.deliverables["manager-deliverable"]
+    assert deliverable.acceptance_recipient_agent_id is None
+    assert deliverable.state == TeamRecordState.PENDING
+    assert state.tasks["manager-task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    assert any(
+        "workflow or operator policy owns review routing" in hint
+        for hint in result["next_action_hints"]
+    )
 
 
 def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -> None:
@@ -6565,6 +6573,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "required_outcome_kinds_json" in review_profile_columns
     assert "gate_failure_json" in release_columns
     assert "summary" in release_columns
+    assert "owner_agent_id" in release_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
     assert "team_outbox" in tables
@@ -14741,20 +14750,6 @@ def test_sealed_review_cohort_collects_all_results_before_rework(
     assert publisher_calls == []
     assert "deliverable-cohort-replacement" not in state.deliverables
 
-    state, plain = _command_service(repo).submit_deliverable_command(
-        session_id="session-backend",
-        task_id="task",
-        id="deliverable-cohort-plain-bypass",
-        summary="A plain replacement without a review cohort.",
-        supersedes_deliverable_id="deliverable-cohort",
-        request_id="request-replace-cohort-plain",
-    )
-    assert plain["success"] is False
-    assert plain["errors"][0]["code"] == (
-        "sealed_review_cohort_replacement_requires_fresh_reviews"
-    )
-    assert "deliverable-cohort-plain-bypass" not in state.deliverables
-
     state, legacy = _team_agent_action_service(repo).apply_agent_action(
         session_id="session-backend",
         action={
@@ -14786,6 +14781,31 @@ def test_sealed_review_cohort_collects_all_results_before_rework(
         "deliverable-cohort-admin-bypass"
         not in repo.read().deliverables
     )
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-replace-through-workflow",
+    )
+    state, plain = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        task_id="task",
+        id="deliverable-cohort-workflow-routed",
+        summary="A plain replacement awaiting workflow-owned review routing.",
+        supersedes_deliverable_id="deliverable-cohort",
+        request_id="request-replace-cohort-workflow-routed",
+    )
+    assert plain["success"] is True, plain.get("errors")
+    assert state.deliverables["deliverable-cohort"].superseded_by_deliverable_id == (
+        "deliverable-cohort-workflow-routed"
+    )
+    replacement = state.deliverables["deliverable-cohort-workflow-routed"]
+    assert replacement.review_request_ids == []
+    assert replacement.review_cohort_id is None
+    assert [finding.text for finding in replacement.carried_findings] == [
+        "The UI workflow fails at the final confirmation."
+    ]
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
 def test_review_cohort_retry_cannot_collapse_onto_another_member(
@@ -16082,7 +16102,8 @@ def test_recover_release_command_records_retryable_recovery_outbox(
     assert result["release_package_id"] == "rel-1"
     assert result["promotion_id"] == release_promotion_id
     assert result["agent_branch"] == "agents/lead/release-resolved"
-    assert len(repo.list_outbox_records()) == 2
+    assert result["repaired_review_manifest_ids"] == []
+    assert len(repo.list_outbox_records()) == 3
     recovery_outbox = [
         record
         for record in repo.list_outbox_records()
@@ -16106,6 +16127,145 @@ def test_recover_release_command_records_retryable_recovery_outbox(
         )
     )
     assert duplicate.id == recovery_outbox[0].id
+
+
+def test_failed_promotions_persist_manifests_and_legacy_repair_is_revision_safe(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_review_sources(
+        repo,
+        task_id="task-a",
+        sources={"deliverable-a": "team/team/reviews/deliverable-a"},
+    )
+    _seed_accepted_review_sources(
+        repo,
+        task_id="task-b",
+        sources={"deliverable-b": "team/team/reviews/deliverable-b"},
+    )
+
+    def _seed_retired_leaf_review(current: TeamState) -> TeamState:
+        retired_review_id = "review-deliverable-a-retired-tester"
+        current.review_requests[retired_review_id] = ReviewRequest(
+            id=retired_review_id,
+            deliverable_id="deliverable-a",
+            reviewer_agent_id="worker",
+            state=TeamRecordState.PENDING,
+            reviewed_commit_sha="obsolete-tester-commit",
+            retired_at=datetime(2026, 7, 29, 20, 4, 33, tzinfo=UTC),
+            retired_by="system:leaf-review-policy",
+            retirement_reason=(
+                "Leaf-review policy changed: tester is reserved for "
+                "release-candidate review."
+            ),
+        )
+        current.deliverables["deliverable-a"].review_request_ids.append(
+            retired_review_id
+        )
+        return current
+
+    repo.update(_seed_retired_leaf_review)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-package-recovery-command",
+    )
+    state, release_result = _command_service(repo).request_release_command(
+        session_id="session-lead",
+        id="rel-package-recovery",
+        project_id="project",
+        deliverable_ids=["deliverable-a", "deliverable-b"],
+        request_id="request-package-before-recovery",
+    )
+    promotion_ids = release_result["promotion_event_ids"]
+    assert len(promotion_ids) == 2
+    promotion_by_task = {
+        state.git_promotions[promotion_id].task_id: promotion_id
+        for promotion_id in promotion_ids
+    }
+    evidence_by_task = {
+        "task-a": (
+            "team/team/reviews/deliverable-a",
+            "deliverable-a-reviewed",
+            "src/a.py",
+        ),
+        "task-b": (
+            "team/team/reviews/deliverable-b",
+            "deliverable-b-reviewed",
+            "src/b.py",
+        ),
+    }
+    for task_id, promotion_id in promotion_by_task.items():
+        source_branch, reviewed_commit_sha, changed_path = evidence_by_task[task_id]
+        state, _failure = _team_git_release_service(repo).record_git_promotion_result(
+            promotion_id=promotion_id,
+            success=False,
+            error=f"merge conflict while merging {source_branch}",
+            outputs={
+                "error_code": "merge_conflict",
+                "source_manifests": {
+                    source_branch: {
+                        "base_commit_sha": "base-reviewed",
+                        "reviewed_commit_sha": reviewed_commit_sha,
+                        "tree_hash": f"tree-{task_id}",
+                        "commit_shas": [reviewed_commit_sha],
+                        "changed_paths": [f"M\t{changed_path}"],
+                    }
+                },
+            },
+        )
+    assert state.release_packages["rel-package-recovery"].state == TeamRecordState.BLOCKED
+    assert state.deliverables["deliverable-a"].review_manifest is not None
+    assert state.deliverables["deliverable-b"].review_manifest is not None
+    assert not [
+        record
+        for record in repo.list_outbox_records(
+            intent_type="team.agent.wake_requested"
+        )
+        if record.payload["payload"]["agent_id"] == "worker"
+    ]
+
+    def _simulate_legacy_missing_manifests(current: TeamState) -> TeamState:
+        current.deliverables["deliverable-a"].review_manifest = None
+        current.deliverables["deliverable-b"].review_manifest = None
+        return current
+
+    state = repo.update(_simulate_legacy_missing_manifests)
+    with pytest.raises(TeamStateConflictError):
+        _team_git_release_service(repo).repair_release_review_manifests(
+            release_package_id="rel-package-recovery",
+            expected_revision=state.revision - 1,
+        )
+    state, repair = _team_git_release_service(repo).repair_release_review_manifests(
+        release_package_id="rel-package-recovery",
+        expected_revision=state.revision,
+    )
+    assert repair["success"] is True
+    assert repair["applied"] is True
+    assert repair["missing_review_manifest_ids"] == []
+    assert repair["repaired_review_manifest_ids"] == [
+        "deliverable-a",
+        "deliverable-b",
+    ]
+    assert state.deliverables["deliverable-a"].review_manifest.changed_paths == [
+        "M\tsrc/a.py"
+    ]
+    assert state.deliverables["deliverable-b"].review_manifest.changed_paths == [
+        "M\tsrc/b.py"
+    ]
+
+    second_state, second_repair = _team_git_release_service(
+        repo
+    ).repair_release_review_manifests(
+        release_package_id="rel-package-recovery",
+        expected_revision=state.revision,
+    )
+    assert second_repair["success"] is True
+    assert second_repair["applied"] is False
+    assert second_repair["repaired_review_manifest_ids"] == []
+    assert second_state.deliverables["deliverable-a"].review_manifest is not None
+    assert second_state.deliverables["deliverable-b"].review_manifest is not None
 
 
 def test_apply_ephemeral_action_accepts_matching_agent_branch(tmp_path: Path) -> None:
@@ -17629,7 +17789,11 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
     assert len(verification_failure["created_inbox_item_ids"]) == 1
     failure_notice = state.inbox[verification_failure["created_inbox_item_ids"][0]]
     assert failure_notice.recipient_agent_id == "lead"
-    assert failure_notice.payload["kind"] == "release_verification_candidate_failure"
+    assert failure_notice.payload["kind"] == "release_verification_correction_work"
+    assert (
+        failure_notice.task_id
+        == state.release_verification_runs[run_id].correction_task_id
+    )
     wake_event = next(
         event
         for event in verification_failure["events"]
@@ -17658,7 +17822,7 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
         },
     )
     replacement_promotion_id = replacement["git_promotion_event_ids"][0]
-    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+    state, unchanged_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=replacement_promotion_id,
         success=True,
         commit_sha="candidate-new-commit",
@@ -17670,6 +17834,23 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
     assert unchanged.gate_failure is not None
     assert unchanged.gate_failure.kind == "candidate"
     assert "unchanged from failed release release-broken" in (unchanged.error or "")
+    remediation_blocker = state.blockers[
+        unchanged_result["release_remediation_blocker_id"]
+    ]
+    assert remediation_blocker.owner_agent_id == "lead"
+    assert remediation_blocker.priority == TeamInboxPriority.HIGH
+    assert "escalate it to an operator" in remediation_blocker.details
+    remediation_wake = next(
+        event
+        for event in unchanged_result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert any(
+        record.idempotency_key == remediation_wake["idempotency_key"]
+        for record in repo.list_outbox_records(
+            intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+        )
+    )
 
 
 def test_transient_verification_retry_creates_linked_attempt_for_same_candidate(

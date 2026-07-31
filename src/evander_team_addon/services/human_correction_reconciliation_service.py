@@ -6,10 +6,12 @@ from typing import Any
 
 from ..models import (
     HumanReviewFinding,
+    TaskCancellation,
     TeamCase,
     TeamBlockerSourceKind,
     TeamInboxPriority,
     TeamRecordState,
+    TeamDispatchStatus,
     TeamTaskState,
     project_lead_agent_id,
     utc_now,
@@ -17,7 +19,11 @@ from ..models import (
 from ..repository import TeamStateConflictError, TeamStateRepository
 from .commands.outbox import _team_event_outbox_records
 from .domain.project_status import _recalculate_project_status
-from .domain.blockers import active_blockers_for_source, open_or_get_blocker
+from .domain.blockers import (
+    active_blockers_for_source,
+    open_or_get_blocker,
+    resolve_active_blockers_for_source,
+)
 from .domain.human_reviews import (
     HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY,
     HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY,
@@ -25,6 +31,8 @@ from .domain.human_reviews import (
 )
 from .domain.release_packages import (
     _build_release_package,
+    _correction_aggregate_promotion,
+    _create_correction_aggregate_promotion,
     _reviewed_commit_for_release,
     _successor_release_request_error,
 )
@@ -170,6 +178,15 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
     findings = _case_findings(state, case)
     successors = _successors(state, predecessor.id)
     if successors:
+        if any(
+            _legacy_successor_needs_migration(
+                state,
+                predecessor=predecessor,
+                successor=successor,
+            )
+            for successor in successors
+        ):
+            return True
         parent = state.tasks.get(_coordination_parent_id(case) or "")
         return (
             parent is not None
@@ -234,6 +251,199 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
             is None
         )
     return False
+
+
+def _legacy_successor_promotions(state: Any, successor: Any) -> list[Any]:
+    linked_ids = set(successor.git_promotion_record_ids)
+    return sorted(
+        (
+            promotion
+            for promotion in state.git_promotions.values()
+            if promotion.promotion_kind == "feature"
+            and promotion.state != "retired"
+            and (
+                promotion.release_package_id == successor.id
+                or promotion.id in linked_ids
+            )
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+
+
+def _legacy_successor_needs_migration(
+    state: Any,
+    *,
+    predecessor: Any,
+    successor: Any,
+) -> bool:
+    if (
+        predecessor.state != TeamRecordState.REJECTED
+        or successor.state
+        not in {
+            TeamRecordState.PENDING,
+            TeamRecordState.IN_PROGRESS,
+            TeamRecordState.BLOCKED,
+        }
+        or successor.candidate_commit_sha is not None
+        or _correction_aggregate_promotion(state, successor) is not None
+    ):
+        return False
+    linked_ids = set(successor.git_promotion_record_ids)
+    if any(
+        promotion.promotion_kind in {"release", "canonical_push"}
+        and promotion.state != "retired"
+        and (
+            promotion.release_package_id == successor.id
+            or promotion.id in linked_ids
+        )
+        for promotion in state.git_promotions.values()
+    ):
+        return False
+    legacy_promotions = _legacy_successor_promotions(state, successor)
+    return bool(legacy_promotions) and all(
+        promotion.state == "failed" for promotion in legacy_promotions
+    )
+
+
+def _cancel_obsolete_merge_recovery_tasks(
+    state: Any,
+    *,
+    successor: Any,
+    aggregate_promotion_id: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    active_dispatch_states = {
+        TeamDispatchStatus.PREPARING,
+        TeamDispatchStatus.LEASED,
+    }
+    for task in state.tasks.values():
+        if (
+            task.created_by_actor != "system:git-merge-recovery"
+            or task.project_id != successor.project_id
+            or task.state != TeamTaskState.PENDING
+            or task.deliverable_ids
+        ):
+            continue
+        linked = any(
+            blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE
+            and blocker.source_id == successor.id
+            and task.id in blocker.affected_task_ids
+            for blocker in state.blockers.values()
+        )
+        has_context = any(
+            context.task_id == task.id
+            for context in state.git_work_contexts.values()
+        )
+        has_active_dispatch = any(
+            task.id in dispatch.task_ids
+            and dispatch.status in active_dispatch_states
+            for dispatch in state.dispatches.values()
+        )
+        if not linked or has_context or has_active_dispatch:
+            continue
+        task.cancellation = TaskCancellation(
+            reason_code="promotion_boundary_superseded",
+            reason=(
+                "Legacy per-correction merge recovery was superseded by the "
+                f"package-level aggregate promotion {aggregate_promotion_id}."
+            ),
+            actor_kind="system",
+            actor_id="system:human-review",
+            successor_task_id=None,
+            cancelled_at=now,
+        )
+        task.state = TeamTaskState.CANCELLED
+        task.state_entered_at = now
+        task.updated_at = now
+        result.setdefault("cancelled_merge_recovery_task_ids", []).append(task.id)
+
+
+def _migrate_legacy_successor(
+    state: Any,
+    *,
+    predecessor: Any,
+    successor: Any,
+    result: dict[str, Any],
+    now: datetime,
+) -> bool:
+    legacy_promotions = _legacy_successor_promotions(state, successor)
+    if not _legacy_successor_needs_migration(
+        state,
+        predecessor=predecessor,
+        successor=successor,
+    ):
+        return False
+    correction_ids = [
+        deliverable_id
+        for deliverable_id in successor.deliverable_ids
+        if deliverable_id not in set(predecessor.deliverable_ids)
+    ]
+    migration_result = _package_result()
+    aggregate = _create_correction_aggregate_promotion(
+        state,
+        release=successor,
+        predecessor=predecessor,
+        correction_deliverable_ids=correction_ids,
+        actor_agent_id=(
+            project_lead_agent_id(state, successor.project_id)
+            or state.projects[successor.project_id].lead_agent_id
+        ),
+        result=migration_result,
+    )
+    if aggregate is None:
+        result.setdefault("migration_errors", {})[successor.id] = list(
+            migration_result["errors"]
+        )
+        return False
+    for promotion in legacy_promotions:
+        promotion.state = "retired"
+        promotion.outputs["retired_at"] = now.isoformat()
+        promotion.outputs["retirement_reason"] = (
+            "Superseded by one rejected-candidate-rooted correction aggregate."
+        )
+        promotion.outputs["superseded_by_promotion_id"] = aggregate.id
+        promotion.updated_at = now
+    successor.feature_branches = []
+    successor.state = TeamRecordState.PENDING
+    successor.error = None
+    if successor.scope_validation is not None:
+        successor.scope_validation.state = "pending"
+        successor.scope_validation.unexpected_paths = []
+        successor.scope_validation.unexpected_commit_shas = []
+        successor.scope_validation.release_commit_sha = None
+        successor.scope_validation.validated_at = None
+    successor.updated_at = now
+    _cancel_obsolete_merge_recovery_tasks(
+        state,
+        successor=successor,
+        aggregate_promotion_id=aggregate.id,
+        result=result,
+        now=now,
+    )
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=successor.id,
+        actor_agent_id=None,
+        dispatch_id=None,
+        note=(
+            "Legacy per-correction promotion boundaries were retired in favor "
+            f"of package-level aggregate {aggregate.id}."
+        ),
+        reference_ids=[aggregate.id],
+        result=result,
+        now=now,
+    )
+    result.setdefault("retired_legacy_promotion_ids", []).extend(
+        promotion.id for promotion in legacy_promotions
+    )
+    result.setdefault("migrated_successor_release_package_ids", []).append(
+        successor.id
+    )
+    result.setdefault("events", []).extend(migration_result["events"])
+    result.setdefault("git_promotion_event_ids", []).append(aggregate.id)
+    return True
 
 
 def _open_aggregation_blocker(
@@ -332,6 +542,18 @@ def _reconcile_case(
     findings = _case_findings(state, case)
     successors = _successors(state, predecessor.id)
     if successors:
+        migrated = False
+        for successor in successors:
+            migrated = (
+                _migrate_legacy_successor(
+                    state,
+                    predecessor=predecessor,
+                    successor=successor,
+                    result=result,
+                    now=now,
+                )
+                or migrated
+            )
         parent = state.tasks.get(_coordination_parent_id(case) or "")
         changed = (
             _finish_coordination_parent(parent, now=now)
@@ -341,7 +563,7 @@ def _reconcile_case(
         result.setdefault("existing_successor_release_package_ids", []).extend(
             release.id for release in successors
         )
-        return changed
+        return changed or migrated
     before_created = set(result.get("created_task_ids") or [])
     before_reparented = set(result.get("reparented_correction_task_ids") or [])
     try:

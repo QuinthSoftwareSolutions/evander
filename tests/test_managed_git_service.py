@@ -2053,6 +2053,7 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         "team/releases/release-1",
         directory_path="root",
         base_branch="main",
+        required_source_ancestor_commit_sha=base_commit,
         expected_source_commits={
             "agents/session-1/a": first_feature,
             "agents/session-2/b": second_feature,
@@ -2115,6 +2116,58 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         )
         == ""
     )
+
+
+def test_consolidation_rejects_source_outside_required_ancestor(
+    tmp_path: Path,
+) -> None:
+    source, _, base_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    base_tree = _run("git", "rev-parse", f"{base_commit}^{{tree}}", cwd=source)
+    unrelated_commit = _run(
+        "git",
+        "commit-tree",
+        base_tree,
+        "-m",
+        "unrelated correction source",
+        cwd=source,
+    )
+    _run(
+        "git",
+        "update-ref",
+        "refs/heads/agents/session-1/unrelated",
+        unrelated_commit,
+        cwd=source,
+    )
+    _run(
+        "git",
+        "push",
+        str(bare),
+        "agents/session-1/unrelated",
+        cwd=source,
+    )
+
+    result = service.consolidate_branches(
+        repo_id,
+        ["agents/session-1/unrelated"],
+        "team/corrections/release-1",
+        directory_path="root",
+        base_commit_sha=base_commit,
+        required_source_ancestor_commit_sha=base_commit,
+        expected_source_commits={
+            "agents/session-1/unrelated": unrelated_commit,
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "scope_mismatch"
+    assert result["non_descendant_source_branches"] == [
+        "agents/session-1/unrelated"
+    ]
+    assert result["required_source_ancestor_commit_sha"] == base_commit
 
 
 def test_reconcile_removes_only_lock_free_managed_stale_worktrees(tmp_path: Path) -> None:

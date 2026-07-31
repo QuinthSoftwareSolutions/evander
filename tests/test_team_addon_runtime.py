@@ -2123,8 +2123,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "a superior may set state: finished on a subordinate non-terminal task" in guidance
     assert "administrative, delegation, coordination, acknowledgement" in guidance
     assert "do not manufacture a routing report deliverable" in guidance
-    assert "needs acceptance by your direct superior" in guidance
+    assert "Use team_submit_deliverable for an assessable work product" in guidance
     assert "This always moves the task to waiting_for_review" in guidance
+    assert "configured workflow or operator policy owns review routing" in guidance
+    assert "Do not select reviewers yourself" in guidance
     assert "use team_decide_deliverable to accept or reject it" in guidance
     assert "Rejection requires a concrete reason" in guidance
     assert "Do not accept or reject someone else's task" in guidance

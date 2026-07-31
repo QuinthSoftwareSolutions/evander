@@ -48,8 +48,11 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-git-promote-review-branch",
                 "team-record-review-promotion",
                 "team-git-promotion-feature",
+                "team-git-promotion-correction-aggregate",
                 "team-consolidate-feature-branches",
                 "team-record-feature-promotion",
+                "team-consolidate-correction-branches",
+                "team-record-correction-aggregate-promotion",
                 "team-git-promotion-release",
                 "team-consolidate-release-branches",
                 "team-record-release-promotion",
@@ -194,6 +197,19 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                     "all": [
                         {
                             "equals": "feature",
+                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "team-git-promotion-correction-aggregate",
+                "display_name": "Git promotion is a correction aggregate",
+                "type": "gate:filter",
+                "when": {
+                    "all": [
+                        {
+                            "equals": "correction_aggregate",
                             "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
                         }
                     ]
@@ -464,6 +480,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "base_commit_sha": (
                     "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
                 ),
+                "required_source_ancestor_commit_sha": (
+                    "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha ?? null}}"
+                ),
                 "expected_source_commits": (
                     "${{team-git-promotion-requested.payload.expected_source_commits}}"
                 ),
@@ -504,6 +523,68 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 },
             },
             {
+                "id": "team-consolidate-correction-branches",
+                "display_name": "Aggregate reviewed corrections",
+                "type": "effect:team:consolidate-git-branches",
+                "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                "directory_path": (
+                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+                ),
+                "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
+                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+                "base_commit_sha": (
+                    "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
+                ),
+                "required_source_ancestor_commit_sha": (
+                    "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha ?? null}}"
+                ),
+                "expected_source_commits": (
+                    "${{team-git-promotion-requested.payload.expected_source_commits}}"
+                ),
+                "allowed_changed_paths": (
+                    "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
+            },
+            {
+                "id": "team-record-correction-aggregate-promotion",
+                "display_name": "Record correction aggregate result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                "success": "${{team-consolidate-correction-branches.success}}",
+                "commit_sha": (
+                    "${{team-consolidate-correction-branches.commit_sha ?? null}}"
+                ),
+                "error": "${{team-consolidate-correction-branches.error ?? null}}",
+                "result_outputs": {
+                    "merged_branches": (
+                        "${{team-consolidate-correction-branches.merged_branches ?? null}}"
+                    ),
+                    "conflict_branch": (
+                        "${{team-consolidate-correction-branches.conflict_branch ?? null}}"
+                    ),
+                    "output": "${{team-consolidate-correction-branches.output ?? null}}",
+                    "error_code": (
+                        "${{team-consolidate-correction-branches.error_code ?? null}}"
+                    ),
+                    "unexpected_commit_shas": (
+                        "${{team-consolidate-correction-branches.unexpected_commit_shas ?? null}}"
+                    ),
+                    "base_commit_sha": (
+                        "${{team-consolidate-correction-branches.base_commit_sha ?? null}}"
+                    ),
+                    "source_manifests": (
+                        "${{team-consolidate-correction-branches.source_manifests ?? null}}"
+                    ),
+                    "unexpected_paths": (
+                        "${{team-consolidate-correction-branches.unexpected_paths ?? null}}"
+                    ),
+                    "tree_hash": (
+                        "${{team-consolidate-correction-branches.tree_hash ?? null}}"
+                    ),
+                },
+            },
+            {
                 "id": "team-consolidate-release-branches",
                 "display_name": "Consolidate feature branches into release branch",
                 "type": "effect:team:consolidate-git-branches",
@@ -516,6 +597,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
                 "base_commit_sha": (
                     "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
+                ),
+                "required_source_ancestor_commit_sha": (
+                    "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha ?? null}}"
                 ),
                 "expected_source_commits": (
                     "${{team-git-promotion-requested.payload.expected_source_commits}}"
@@ -586,6 +670,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "target_branch": ("${{team-git-release-recovery-requested.payload.target_branch}}"),
                 "base_branch": (
                     "${{team-git-release-recovery-requested.payload.base_branch ?? null}}"
+                ),
+                "base_commit_sha": (
+                    "${{team-git-release-recovery-requested.payload.base_commit_sha ?? null}}"
+                ),
+                "required_source_ancestor_commit_sha": (
+                    "${{team-git-release-recovery-requested.payload.required_source_ancestor_commit_sha ?? null}}"
                 ),
                 "expected_source_commits": (
                     "${{team-git-release-recovery-requested.payload.expected_source_commits}}"
@@ -733,6 +823,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             },
             {
                 "source_id": "team-git-promotion-requested",
+                "target_id": "team-git-promotion-correction-aggregate",
+            },
+            {
+                "source_id": "team-git-promotion-requested",
                 "target_id": "team-git-promotion-release",
             },
             {
@@ -752,8 +846,16 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "target_id": "team-consolidate-feature-branches",
             },
             {
+                "source_id": "team-git-promotion-correction-aggregate",
+                "target_id": "team-consolidate-correction-branches",
+            },
+            {
                 "source_id": "team-consolidate-feature-branches",
                 "target_id": "team-record-feature-promotion",
+            },
+            {
+                "source_id": "team-consolidate-correction-branches",
+                "target_id": "team-record-correction-aggregate-promotion",
             },
             {
                 "source_id": "team-git-promotion-release",

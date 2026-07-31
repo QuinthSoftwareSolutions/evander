@@ -32,7 +32,7 @@ from ..domain.blockers import (
 )
 from ..domain.common import _ensure_utc, _optional_text, _required_text
 from ..domain.preparation_failures import (
-    create_human_correction_preparation_recovery_inbox,
+    create_rejected_candidate_correction_preparation_recovery_inbox,
 )
 from ..domain.stand_down import _active_stand_downs_for_agent
 from .executor import TeamCommandExecutor
@@ -543,7 +543,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         now=now,
                     )
                     event_ids.append(event.id)
-                    create_human_correction_preparation_recovery_inbox(
+                    create_rejected_candidate_correction_preparation_recovery_inbox(
                         state,
                         blocker=blocker,
                         result=result,

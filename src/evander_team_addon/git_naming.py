@@ -72,6 +72,12 @@ def feature_branch(team_id: str, task_id: str, agent_id: str) -> str:
     return validate_branch_name(f"team/{team_id}/features/{task_id}-{agent_id}")
 
 
+def correction_aggregate_branch(team_id: str, release_id: str) -> str:
+    """Package-level correction aggregate rooted at the rejected candidate."""
+
+    return validate_branch_name(f"team/{team_id}/corrections/{release_id}")
+
+
 def release_branch(team_id: str, release_id: str) -> str:
     """``team/<team-id>/releases/<release-id>`` — an internal release branch."""
 

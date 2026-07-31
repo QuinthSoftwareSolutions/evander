@@ -24,6 +24,33 @@ class HumanReviewCorrectionGitSource:
     dependency_git_sources: tuple[DependencyGitSource, ...]
 
 
+@dataclass(frozen=True)
+class ReleaseVerificationCorrectionGitSource:
+    release_verification_run_id: str
+    release_package_id: str
+    release_branch: str
+    candidate_commit_sha: str
+    candidate_tree_hash: str
+    dependency_git_sources: tuple[DependencyGitSource, ...]
+
+
+@dataclass(frozen=True)
+class ReleaseReviewCorrectionGitSource:
+    release_review_request_id: str
+    release_package_id: str
+    release_branch: str
+    candidate_commit_sha: str
+    candidate_tree_hash: str
+    dependency_git_sources: tuple[DependencyGitSource, ...]
+
+
+RejectedCandidateGitSource = (
+    HumanReviewCorrectionGitSource
+    | ReleaseVerificationCorrectionGitSource
+    | ReleaseReviewCorrectionGitSource
+)
+
+
 def is_human_review_correction_task(
     state: TeamState,
     *,
@@ -186,8 +213,374 @@ def human_review_correction_git_source(
     )
 
 
+def is_release_verification_correction_task(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> bool:
+    return any(
+        run.correction_task_id == task_id
+        for run in state.release_verification_runs.values()
+    )
+
+
+def release_verification_correction_git_source(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> ReleaseVerificationCorrectionGitSource | None:
+    """Return the immutable failed candidate source for verifier correction work."""
+
+    matches = sorted(
+        (
+            run
+            for run in state.release_verification_runs.values()
+            if run.correction_task_id == task_id
+        ),
+        key=lambda run: run.id,
+    )
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError(
+            f"task {task_id} is linked to multiple release verification runs: "
+            + ", ".join(run.id for run in matches)
+        )
+    run = matches[0]
+    if run.state != "failed" or run.failure_kind != "candidate":
+        raise ValueError(
+            f"release verification correction task {task_id} references run "
+            f"{run.id} in state {run.state}/{run.failure_kind or 'none'}"
+        )
+    release = state.release_packages.get(run.release_package_id)
+    if release is None:
+        raise ValueError(
+            f"release verification run {run.id} references missing release "
+            f"{run.release_package_id}"
+        )
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise ValueError(
+            f"release verification correction task {task_id} does not exist"
+        )
+    if release.project_id != task.project_id:
+        raise ValueError(
+            f"release verification correction task {task_id} belongs to project "
+            f"{task.project_id}, not rejected release project {release.project_id}"
+        )
+    if (
+        release.state != TeamRecordState.REJECTED
+        or release.gate_failure is None
+        or release.gate_failure.stage != "verification"
+        or release.gate_failure.kind != "candidate"
+        or release.gate_failure.source_id != run.id
+    ):
+        raise ValueError(
+            f"release verification correction task {task_id} does not reference "
+            f"the active candidate failure on release {release.id}"
+        )
+    manifest = release.manifest
+    if manifest is None or manifest.evidence_status != "complete":
+        raise ValueError(
+            f"rejected release {release.id} has no complete candidate manifest"
+        )
+
+    candidate_commit_sha = run.candidate_commit_sha.casefold()
+    candidate_tree_hash = (
+        release.candidate_tree_hash.casefold()
+        if release.candidate_tree_hash is not None
+        else ""
+    )
+    release_branch = release.release_branch or manifest.release_branch
+    if not release_branch:
+        raise ValueError(f"rejected release {release.id} has no release branch")
+    if (
+        release.candidate_commit_sha is None
+        or release.candidate_commit_sha.casefold() != candidate_commit_sha
+        or manifest.candidate_commit_sha.casefold() != candidate_commit_sha
+    ):
+        raise ValueError(
+            f"release verification run {run.id} does not match rejected release "
+            f"{release.id} candidate commit"
+        )
+    if (
+        not candidate_tree_hash
+        or manifest.candidate_tree_hash is None
+        or manifest.candidate_tree_hash.casefold() != candidate_tree_hash
+    ):
+        raise ValueError(
+            f"release verification run {run.id} does not match rejected release "
+            f"{release.id} candidate tree"
+        )
+    if manifest.release_branch != release_branch:
+        raise ValueError(
+            f"rejected release {release.id} has inconsistent release branch provenance"
+        )
+    for field_name, value in (
+        ("candidate commit", candidate_commit_sha),
+        ("candidate tree", candidate_tree_hash),
+    ):
+        if _FULL_OBJECT_ID_RE.fullmatch(value) is None:
+            raise ValueError(
+                f"rejected release {release.id} records an invalid {field_name}"
+            )
+
+    dependency_sources: list[DependencyGitSource] = []
+    for evidence in sorted(
+        manifest.deliverables,
+        key=lambda item: item.deliverable_id,
+    ):
+        deliverable = state.deliverables.get(evidence.deliverable_id)
+        if deliverable is None:
+            raise ValueError(
+                f"rejected release {release.id} manifest references missing "
+                f"deliverable {evidence.deliverable_id}"
+            )
+        if deliverable.state != TeamRecordState.ACCEPTED:
+            raise ValueError(
+                f"rejected release {release.id} source deliverable "
+                f"{deliverable.id} is no longer accepted"
+            )
+        source_task = state.tasks.get(deliverable.task_id)
+        if source_task is None or source_task.project_id != release.project_id:
+            raise ValueError(
+                f"rejected release {release.id} source deliverable "
+                f"{deliverable.id} has invalid task provenance"
+            )
+        feature_branch = evidence.feature_branch
+        feature_commit_sha = evidence.feature_commit_sha
+        if feature_branch is None and feature_commit_sha is None:
+            continue
+        if feature_branch is None or feature_commit_sha is None:
+            raise ValueError(
+                f"rejected release {release.id} source deliverable "
+                f"{deliverable.id} has partial Git provenance"
+            )
+        dependency_sources.append(
+            DependencyGitSource(
+                dependency_task_id=deliverable.task_id,
+                deliverable_id=deliverable.id,
+                branch=feature_branch,
+                commit_sha=feature_commit_sha,
+            )
+        )
+
+    return ReleaseVerificationCorrectionGitSource(
+        release_verification_run_id=run.id,
+        release_package_id=release.id,
+        release_branch=release_branch,
+        candidate_commit_sha=candidate_commit_sha,
+        candidate_tree_hash=candidate_tree_hash,
+        dependency_git_sources=tuple(dependency_sources),
+    )
+
+
+def is_release_review_correction_task(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> bool:
+    return any(
+        release.review_correction_task_id == task_id
+        for release in state.release_packages.values()
+    )
+
+
+def is_rejected_candidate_correction_task(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> bool:
+    """Whether a task is durably linked to one rejected candidate source."""
+
+    return (
+        is_human_review_correction_task(state, task_id=task_id)
+        or is_release_verification_correction_task(state, task_id=task_id)
+        or is_release_review_correction_task(state, task_id=task_id)
+    )
+
+
+def release_review_correction_git_source(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> ReleaseReviewCorrectionGitSource | None:
+    """Return the immutable rejected candidate for agent release-review work."""
+
+    matches = sorted(
+        (
+            release
+            for release in state.release_packages.values()
+            if release.review_correction_task_id == task_id
+        ),
+        key=lambda release: release.id,
+    )
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError(
+            f"task {task_id} is linked to multiple agent release reviews: "
+            + ", ".join(release.id for release in matches)
+        )
+    release = matches[0]
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise ValueError(f"release review correction task {task_id} does not exist")
+    if task.project_id != release.project_id:
+        raise ValueError(
+            f"release review correction task {task_id} belongs to project "
+            f"{task.project_id}, not rejected release project {release.project_id}"
+        )
+    failure = release.gate_failure
+    if (
+        release.state != TeamRecordState.REJECTED
+        or failure is None
+        or failure.stage != "review"
+        or failure.kind != "rejected"
+        or failure.source_id is None
+    ):
+        raise ValueError(
+            f"release review correction task {task_id} does not reference an active "
+            f"agent review rejection on release {release.id}"
+        )
+    review = state.review_requests.get(failure.source_id)
+    if (
+        review is None
+        or review.release_package_id != release.id
+        or review.state != TeamRecordState.REJECTED
+    ):
+        raise ValueError(
+            f"release review correction task {task_id} references missing rejected "
+            f"release review {failure.source_id}"
+        )
+    manifest = release.manifest
+    if manifest is None or manifest.evidence_status != "complete":
+        raise ValueError(
+            f"rejected release {release.id} has no complete candidate manifest"
+        )
+
+    candidate_commit_sha = (release.candidate_commit_sha or "").casefold()
+    candidate_tree_hash = (release.candidate_tree_hash or "").casefold()
+    release_branch = release.release_branch or manifest.release_branch
+    if not release_branch:
+        raise ValueError(f"rejected release {release.id} has no release branch")
+    if (
+        not candidate_commit_sha
+        or review.candidate_commit_sha is None
+        or review.candidate_commit_sha.casefold() != candidate_commit_sha
+        or manifest.candidate_commit_sha.casefold() != candidate_commit_sha
+    ):
+        raise ValueError(
+            f"release review {review.id} does not match rejected release {release.id} "
+            "candidate commit"
+        )
+    if (
+        not candidate_tree_hash
+        or manifest.candidate_tree_hash is None
+        or manifest.candidate_tree_hash.casefold() != candidate_tree_hash
+    ):
+        raise ValueError(
+            f"release review {review.id} does not match rejected release {release.id} "
+            "candidate tree"
+        )
+    if manifest.release_branch != release_branch:
+        raise ValueError(
+            f"rejected release {release.id} has inconsistent release branch provenance"
+        )
+    for field_name, value in (
+        ("candidate commit", candidate_commit_sha),
+        ("candidate tree", candidate_tree_hash),
+    ):
+        if _FULL_OBJECT_ID_RE.fullmatch(value) is None:
+            raise ValueError(
+                f"rejected release {release.id} records an invalid {field_name}"
+            )
+
+    dependency_sources: list[DependencyGitSource] = []
+    for evidence in sorted(
+        manifest.deliverables,
+        key=lambda item: item.deliverable_id,
+    ):
+        deliverable = state.deliverables.get(evidence.deliverable_id)
+        if deliverable is None:
+            raise ValueError(
+                f"rejected release {release.id} manifest references missing "
+                f"deliverable {evidence.deliverable_id}"
+            )
+        if deliverable.state != TeamRecordState.ACCEPTED:
+            raise ValueError(
+                f"rejected release {release.id} source deliverable "
+                f"{deliverable.id} is no longer accepted"
+            )
+        source_task = state.tasks.get(deliverable.task_id)
+        if source_task is None or source_task.project_id != release.project_id:
+            raise ValueError(
+                f"rejected release {release.id} source deliverable "
+                f"{deliverable.id} has invalid task provenance"
+            )
+        feature_branch = evidence.feature_branch
+        feature_commit_sha = evidence.feature_commit_sha
+        if feature_branch is None and feature_commit_sha is None:
+            continue
+        if feature_branch is None or feature_commit_sha is None:
+            raise ValueError(
+                f"rejected release {release.id} source deliverable "
+                f"{deliverable.id} has partial Git provenance"
+            )
+        dependency_sources.append(
+            DependencyGitSource(
+                dependency_task_id=deliverable.task_id,
+                deliverable_id=deliverable.id,
+                branch=feature_branch,
+                commit_sha=feature_commit_sha,
+            )
+        )
+
+    return ReleaseReviewCorrectionGitSource(
+        release_review_request_id=review.id,
+        release_package_id=release.id,
+        release_branch=release_branch,
+        candidate_commit_sha=candidate_commit_sha,
+        candidate_tree_hash=candidate_tree_hash,
+        dependency_git_sources=tuple(dependency_sources),
+    )
+
+
+def rejected_candidate_git_source(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> RejectedCandidateGitSource | None:
+    """Resolve exactly one durable rejected-candidate source for a task."""
+
+    human_source = human_review_correction_git_source(state, task_id=task_id)
+    verification_source = release_verification_correction_git_source(
+        state,
+        task_id=task_id,
+    )
+    review_source = release_review_correction_git_source(state, task_id=task_id)
+    source_count = sum(
+        source is not None
+        for source in (human_source, verification_source, review_source)
+    )
+    if source_count > 1:
+        raise ValueError(
+            f"task {task_id} is linked to multiple rejected-candidate failures"
+        )
+    return human_source or verification_source or review_source
+
+
 __all__ = [
     "HumanReviewCorrectionGitSource",
+    "RejectedCandidateGitSource",
+    "ReleaseReviewCorrectionGitSource",
+    "ReleaseVerificationCorrectionGitSource",
     "human_review_correction_git_source",
     "is_human_review_correction_task",
+    "is_rejected_candidate_correction_task",
+    "is_release_review_correction_task",
+    "is_release_verification_correction_task",
+    "rejected_candidate_git_source",
+    "release_review_correction_git_source",
+    "release_verification_correction_git_source",
 ]

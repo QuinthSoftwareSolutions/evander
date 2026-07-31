@@ -2543,6 +2543,7 @@ class ManagedGitAdminService:
         directory_path: str,
         base_branch: str | None = None,
         base_commit_sha: str | None = None,
+        required_source_ancestor_commit_sha: str | None = None,
         expected_source_commits: Mapping[str, str] | None = None,
         allowed_changed_paths: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -2577,6 +2578,14 @@ class ManagedGitAdminService:
                 field_name="base_commit_sha",
             )
             if base_commit_sha
+            else None
+        )
+        normalized_required_source_ancestor = (
+            _normalize_object_id(
+                required_source_ancestor_commit_sha,
+                field_name="required_source_ancestor_commit_sha",
+            )
+            if required_source_ancestor_commit_sha
             else None
         )
         allowed_paths = (
@@ -2649,6 +2658,42 @@ class ManagedGitAdminService:
                 }
             for commit in expected.values():
                 self._require_commit(bare_path, commit)
+            if normalized_required_source_ancestor is not None:
+                self._require_commit(bare_path, normalized_required_source_ancestor)
+                non_descendant_sources = [
+                    branch
+                    for branch in normalized_sources
+                    if not self._is_ancestor(
+                        bare_path,
+                        normalized_required_source_ancestor,
+                        expected[branch],
+                    )
+                ]
+                if non_descendant_sources:
+                    return {
+                        "success": False,
+                        "managed_repo_id": managed_repo_id,
+                        "target_branch": target,
+                        "merged_branches": [],
+                        "commit_sha": None,
+                        "conflict_branch": None,
+                        "output": None,
+                        "error": (
+                            "One or more correction sources do not descend from "
+                            "the required rejected candidate"
+                        ),
+                        "error_code": "scope_mismatch",
+                        "unexpected_commit_shas": sorted(
+                            expected[branch] for branch in non_descendant_sources
+                        ),
+                        "non_descendant_source_branches": non_descendant_sources,
+                        "required_source_ancestor_commit_sha": (
+                            normalized_required_source_ancestor
+                        ),
+                        "base_commit_sha": base_commit,
+                        "source_manifests": {},
+                        "tree_hash": None,
+                    }
 
             base_operation_ref = f"{operation_root}/base"
             pin_commands = []

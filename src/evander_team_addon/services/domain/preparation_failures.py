@@ -23,13 +23,18 @@ from ...models import (
     TeamTaskState,
 )
 from .common import _ensure_utc, _optional_text, _required_text
-from .correction_git_source import is_human_review_correction_task
+from .correction_git_source import is_rejected_candidate_correction_task
 from .work_due import _mark_agent_work_due
 
 
 TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
     {
         "dependency_git_preparation_failed",
+        # A candidate-rooted correction must never continue from a worktree
+        # whose immutable source differs from its pinned rejected candidate.
+        # This is a preparation failure, even when the agent reports it through
+        # the generic operator-escalation route rather than the preparer.
+        "source_provenance_mismatch",
         "task_execution_preparation_failed",
     }
 )
@@ -450,20 +455,23 @@ def record_task_preparation_failure(
     return blocker
 
 
-def create_human_correction_preparation_recovery_inbox(
+def create_rejected_candidate_correction_preparation_recovery_inbox(
     state: TeamState,
     *,
     blocker: TeamBlocker,
     result: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> AgentInboxItem | None:
-    """Atomically make a repaired human correction task runnable again."""
+    """Atomically make a repaired candidate-rooted correction runnable again."""
 
     if (
         blocker.reason_code
         not in TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES
         or blocker.task_id is None
-        or not is_human_review_correction_task(state, task_id=blocker.task_id)
+        or not is_rejected_candidate_correction_task(
+            state,
+            task_id=blocker.task_id,
+        )
     ):
         return None
     task = state.tasks.get(blocker.task_id)
@@ -477,7 +485,7 @@ def create_human_correction_preparation_recovery_inbox(
     owner = state.agents.get(task.owner_agent_id)
     if owner is None:
         raise ValueError(
-            f"human review correction task {task.id} has no valid owner"
+            f"rejected-candidate correction task {task.id} has no valid owner"
         )
     inbox_id = (
         "inbox-preparation-recovery-"
@@ -498,7 +506,7 @@ def create_human_correction_preparation_recovery_inbox(
         response_requested=False,
         priority=TeamInboxPriority.HIGH,
         payload={
-            "kind": "human_correction_preparation_recovered",
+            "kind": "rejected_candidate_correction_preparation_recovered",
             "task_id": task.id,
             "project_id": task.project_id,
             "blocker_id": blocker.id,
@@ -529,6 +537,23 @@ def create_human_correction_preparation_recovery_inbox(
             ),
         )
     return item
+
+
+def create_human_correction_preparation_recovery_inbox(
+    state: TeamState,
+    *,
+    blocker: TeamBlocker,
+    result: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> AgentInboxItem | None:
+    """Backward-compatible alias for candidate-rooted recovery."""
+
+    return create_rejected_candidate_correction_preparation_recovery_inbox(
+        state,
+        blocker=blocker,
+        result=result,
+        now=now,
+    )
 
 
 def record_inbox_preparation_failure(
@@ -781,6 +806,7 @@ __all__ = [
     "REVIEW_PREPARATION_BLOCKER_REASON_CODE",
     "TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES",
     "TASK_PREPARATION_CONTRACT_VERSION",
+    "create_rejected_candidate_correction_preparation_recovery_inbox",
     "create_human_correction_preparation_recovery_inbox",
     "dispatch_project_work_ids",
     "inbox_has_current_preparation_blocker",

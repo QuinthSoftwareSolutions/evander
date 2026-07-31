@@ -363,7 +363,7 @@ reopened. A finding that clearly targets one deliverable routes to that task's
 current owner and records the original task as provenance. A finding without a
 deterministic owner remains with the project lead until that lead routes its
 existing child. The coordination parent groups the response but has no combined
-deliverable of its own.
+deliverable or agent-authored integration branch of its own.
 
 Each finding child starts from the verified rejected candidate and must produce
 exactly one current accepted correction deliverable with required review
@@ -377,6 +377,23 @@ automatically creates one successor with
 - carries every still-open human finding with proposed resolution and evidence;
 - requires a different candidate tree; and
 - reruns verification, agent review, and human review.
+
+The platform, not the coordination-parent owner, performs the Git aggregation.
+It orders the correction sources deterministically by finding and deliverable,
+pins every accepted reviewed source SHA, verifies that every source descends
+from the rejected candidate, and merges them once into
+<code>team/&lt;team&gt;/corrections/&lt;successor&gt;</code> with the rejected
+candidate as the exact base. The separate finding deliverables and reviews
+remain the evidence records; they do not become independent merges against
+<code>main</code>.
+
+After that correction aggregate succeeds, Team performs one final release
+promotion from the pinned aggregate onto the then-current configured base
+branch. That main-integration result becomes the candidate before verification
+and review gates begin. A correction-to-correction conflict and a later
+aggregate-to-main conflict are therefore two distinct, serial package-level
+recovery boundaries. Recovery reuses the failed boundary's pinned base and
+never fans the package back out into per-finding promotions.
 
 The coordination parent finishes when that successor exists. The new human
 approval must explicitly confirm every carried finding ID. Only then do those

@@ -18,7 +18,6 @@ from .deliverable_helpers import (
     _publish_command_deliverable_artifacts,
     _team_submit_deliverable_for_review_normalized_payload,
     _team_submit_deliverable_normalized_payload,
-    _validate_command_deliverable_has_acceptance_recipient,
     _validate_command_deliverable_submission_pre_publication,
 )
 from .executor import TeamCommandExecutor
@@ -300,7 +299,6 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 agent=agent,
                 task_id=normalized_deliverable["task_id"],
             )
-            _validate_command_deliverable_has_acceptance_recipient(agent)
             deliverable_id = _command_deliverable_id(
                 state,
                 deliverable=normalized_deliverable,
@@ -319,25 +317,6 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 normalized_deliverable.get("supersedes_deliverable_id")
             )
             predecessor = state.deliverables.get(predecessor_id or "")
-            if (
-                predecessor is not None
-                and predecessor.review_cohort_id is not None
-                and predecessor.review_cohort_sealed_at is not None
-            ):
-                raise TeamCommandValidationError(
-                    code="sealed_review_cohort_replacement_requires_fresh_reviews",
-                    message=(
-                        f"replacement for sealed-cohort deliverable "
-                        f"{predecessor.id} must atomically create a complete "
-                        "fresh review cohort"
-                    ),
-                    correction_context={
-                        "task_id": task.id,
-                        "supersedes_deliverable_id": predecessor.id,
-                        "review_cohort_id": predecessor.review_cohort_id,
-                        "recommended_tool": "team_submit_deliverable_for_review",
-                    },
-                )
             if (
                 predecessor is not None
                 and predecessor.state == TeamRecordState.ACCEPTED

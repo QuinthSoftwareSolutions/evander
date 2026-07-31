@@ -41,10 +41,6 @@ class TeamReleaseGateService:
         normalized_results = [
             ReleaseVerificationCommandResult.model_validate(item) for item in command_results
         ]
-        is_candidate_failure = verification_state == "failed" and failure_kind in {
-            None,
-            "candidate",
-        }
         result: dict[str, Any] = {
             "success": False,
             "release_package_id": release_package_id,
@@ -84,13 +80,10 @@ class TeamReleaseGateService:
                     if (
                         event.get("event_type")
                         in {
+                            AGENT_WAKE_REQUESTED_EVENT_TYPE,
                             HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
                             HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
                         }
-                        or (
-                            is_candidate_failure
-                            and event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
-                        )
                     )
                 ]
             ),
