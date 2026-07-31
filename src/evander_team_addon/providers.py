@@ -7740,6 +7740,7 @@ def _prepare_project_repo_task_worktree(
                 branch=agent_branch,
                 base_ref=base_ref,
                 expected_base_commit_sha=pinned_base_commit or prior_base_commit,
+                expected_base_tree_hash=pinned_base_tree,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
             )
         except Exception as exc:

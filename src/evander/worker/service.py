@@ -1161,6 +1161,14 @@ class WorkerDaemon:
                     request.base_ref,
                     env=env,
                 )
+                self._verify_task_base_provenance(
+                    repo_dir=repo_dir,
+                    base_ref=request.base_ref,
+                    base_commit_sha=base_commit_sha,
+                    expected_base_commit_sha=request.expected_base_commit_sha,
+                    expected_base_tree_hash=request.expected_base_tree_hash,
+                    env=env,
+                )
                 args.extend(["-b", request.branch, str(target_dir), base_commit_sha])
             subprocess.run(
                 args,
@@ -1242,6 +1250,20 @@ class WorkerDaemon:
                 )
             if base_commit_sha is None:
                 base_commit_sha = request.expected_base_commit_sha
+        if request.expected_base_tree_hash is not None:
+            if base_commit_sha is None:
+                raise ValueError(
+                    "task worktree base tree cannot be verified without an "
+                    "authoritative base commit"
+                )
+            self._verify_task_base_provenance(
+                repo_dir=repo_dir,
+                base_ref=request.base_ref,
+                base_commit_sha=base_commit_sha,
+                expected_base_commit_sha=request.expected_base_commit_sha,
+                expected_base_tree_hash=request.expected_base_tree_hash,
+                env=env,
+            )
         base_commit_sha = self._compose_task_dependency_git_sources(
             repo_dir=repo_dir,
             target_dir=target_dir,
@@ -2711,6 +2733,47 @@ class WorkerDaemon:
         return normalized_local_commit
 
     @staticmethod
+    def _verify_task_base_provenance(
+        *,
+        repo_dir: Path,
+        base_ref: str,
+        base_commit_sha: str,
+        expected_base_commit_sha: str | None,
+        expected_base_tree_hash: str | None,
+        env: dict[str, str],
+    ) -> None:
+        normalized_commit = base_commit_sha.strip().casefold()
+        if (
+            expected_base_commit_sha is not None
+            and normalized_commit != expected_base_commit_sha
+        ):
+            raise ValueError(
+                f"task worktree base ref {base_ref!r} resolved to "
+                f"{normalized_commit}, expected authoritative Team base commit "
+                f"{expected_base_commit_sha}"
+            )
+        if expected_base_tree_hash is None:
+            return
+        resolved_tree = (
+            subprocess.run(
+                ["git", "rev-parse", "--verify", f"{normalized_commit}^{{tree}}"],
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            .stdout.strip()
+            .casefold()
+        )
+        if resolved_tree != expected_base_tree_hash:
+            raise ValueError(
+                f"task worktree base ref {base_ref!r} resolved to tree "
+                f"{resolved_tree}, expected authoritative Team base tree "
+                f"{expected_base_tree_hash}"
+            )
+
+    @staticmethod
     def _task_base_fetch_ref(
         repo_dir: Path,
         base_ref: str,
@@ -2730,6 +2793,23 @@ class WorkerDaemon:
         remote_prefix = "refs/remotes/origin/"
         if symbolic.startswith(remote_prefix):
             return f"refs/heads/{symbolic.removeprefix(remote_prefix)}"
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base_ref.casefold()):
+            return None
+        candidate = (
+            f"refs/heads/{base_ref.removeprefix('origin/')}"
+            if base_ref.startswith("origin/")
+            else f"refs/heads/{base_ref}"
+        )
+        valid_branch = subprocess.run(
+            ["git", "check-ref-format", "--branch", candidate.removeprefix("refs/heads/")],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if valid_branch.returncode == 0:
+            return candidate
         return None
 
     def _sync_git_ssh_into_agent_home(

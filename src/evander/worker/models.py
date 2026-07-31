@@ -373,6 +373,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
     branch: str
     base_ref: str
     expected_base_commit_sha: str | None = None
+    expected_base_tree_hash: str | None = None
     dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
 
     @field_validator("repo_name", "worktree_name", mode="before")
@@ -398,6 +399,18 @@ class WorkerTaskWorktreeRequest(BaseModel):
             return None
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
             raise ValueError("expected_base_commit_sha must be a full Git object ID")
+        return text
+
+    @field_validator("expected_base_tree_hash", mode="before")
+    @classmethod
+    def normalize_expected_base_tree_hash(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().casefold()
+        if not text:
+            return None
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
+            raise ValueError("expected_base_tree_hash must be a full Git object ID")
         return text
 
 

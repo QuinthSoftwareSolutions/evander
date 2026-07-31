@@ -1267,6 +1267,15 @@ def test_dispatch_failure_and_expiry_are_durable_terminal_states(
     assert failed_dispatch.error == "repository preparation failed"
     assert failed_dispatch.completed_at == LEASE_NOW
     assert failed_state.agent_runtimes["worker"].active_dispatch_id is None
+    assert failed_state.agent_runtimes["worker"].next_wake_at is None
+
+    retried_at = LEASE_NOW + timedelta(seconds=1)
+    _retried_state, retry_leases = failed_runtime.lease_due_agents(
+        agent_id="worker",
+        now=retried_at,
+    )
+    assert len(retry_leases) == 1
+    assert retry_leases[0]["dispatch_id"] != failed_dispatch_id
 
     expired_repository = _seed_agent_with_task(tmp_path / "expired")
     expired_runtime = TeamRuntimeService(expired_repository)

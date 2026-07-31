@@ -1609,6 +1609,200 @@ def test_worker_pins_new_task_worktree_to_fresh_remote_base_without_moving_exist
     assert detached.base_commit_sha == initial_commit
 
 
+def test_worker_fetches_new_release_branch_missing_from_persistent_clone(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    checkout = WorkerSessionPaths.resolve(daemon.worker_root, "session-1").repo_root / "repo"
+    release_branch = "team/team/releases/release-new"
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", f"{release_branch}^{{commit}}"],
+            cwd=checkout,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        != 0
+    )
+
+    subprocess.run(["git", "checkout", "-q", "-b", release_branch], cwd=source, check=True)
+    (source / "release.txt").write_text("rejected candidate\n", encoding="utf-8")
+    subprocess.run(["git", "add", "release.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "release candidate"], cwd=source, check=True)
+    release_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD^{commit}"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    release_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    prepared = daemon.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name="correction-1234",
+            branch="agents/session-1/tasks/correction-1234",
+            base_ref=release_branch,
+            expected_base_commit_sha=release_commit,
+            expected_base_tree_hash=release_tree,
+        ),
+    )
+
+    assert prepared.created is True
+    assert prepared.commit_sha == release_commit
+    assert prepared.base_commit_sha == release_commit
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=(
+                tmp_path
+                / "worker-root"
+                / "sessions"
+                / "session-1"
+                / "agent_home"
+                / "worktrees"
+                / "repo"
+                / "correction-1234"
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == release_tree
+    )
+
+
+def test_worker_rejects_release_branch_that_does_not_match_pinned_candidate(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD^{commit}"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    expected_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    release_branch = "team/team/releases/release-moved"
+    subprocess.run(["git", "checkout", "-q", "-b", release_branch], cwd=source, check=True)
+    (source / "moved.txt").write_text("unexpected candidate\n", encoding="utf-8")
+    subprocess.run(["git", "add", "moved.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "moved candidate"], cwd=source, check=True)
+    moved_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD^{commit}"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with pytest.raises(ValueError, match="expected authoritative Team base commit"):
+        daemon.prepare_task_worktree(
+            "session-1",
+            WorkerTaskWorktreeRequest(
+                repo_name="repo",
+                worktree_name="correction-moved-1234",
+                branch="agents/session-1/tasks/correction-moved-1234",
+                base_ref=release_branch,
+                expected_base_commit_sha=expected_commit,
+                expected_base_tree_hash=expected_tree,
+            ),
+        )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    assert not (
+        paths.agent_home
+        / "worktrees"
+        / "repo"
+        / "correction-moved-1234"
+    ).exists()
+    assert (
+        subprocess.run(
+            [
+                "git",
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/heads/agents/session-1/tasks/correction-moved-1234",
+            ],
+            cwd=paths.repo_root / "repo",
+            check=False,
+        ).returncode
+        != 0
+    )
+
+    with pytest.raises(ValueError, match="expected authoritative Team base tree"):
+        daemon.prepare_task_worktree(
+            "session-1",
+            WorkerTaskWorktreeRequest(
+                repo_name="repo",
+                worktree_name="correction-wrong-tree-1234",
+                branch="agents/session-1/tasks/correction-wrong-tree-1234",
+                base_ref=release_branch,
+                expected_base_commit_sha=moved_commit,
+                expected_base_tree_hash=expected_tree,
+            ),
+        )
+    assert not (
+        paths.agent_home
+        / "worktrees"
+        / "repo"
+        / "correction-wrong-tree-1234"
+    ).exists()
+
+
 def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     tmp_path: Path,
 ) -> None:

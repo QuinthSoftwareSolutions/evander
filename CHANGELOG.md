@@ -1,9 +1,26 @@
 # Changelog
 
+## 2026-07-31 - Team Correction Worktree Recovery
+
+- Made persistent container-worker clones fetch newly created Team release
+  branches before preparing correction worktrees, while verifying the exact
+  pinned candidate commit and tree before creating the task branch.
+- Released the scheduled wake interval when dispatch preparation fails before
+  inference, and versioned preparation generations so tasks blocked by the
+  repaired worktree contract receive one immediate bounded retry.
+
 ## 2026-07-31 - Team Task Board Briefs
 
 - Made each Team Task Board card and hierarchy node expose its task brief; long
   instructions stay compact until the operator opens **Show full task brief**.
+
+## 2026-07-31 - Release Verification Failure Evidence
+
+- Surfaced the failed verification command, exit code or worker failure cause,
+  and a concise decisive error directly in failed release progress.
+- Added readable, expandable command-log excerpts to release detail and
+  Delivery Pipeline gate evidence so operators can diagnose exact failures
+  without searching other views.
 
 ## 2026-07-30 - Empty Manager Fallback Suppression
 

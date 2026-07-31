@@ -7120,6 +7120,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
     runtime = reread.agent_runtimes["backend"]
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
+    assert runtime.next_wake_at is None
     assert reread.action_records == {}
     durable_dispatch = reread.dispatches[str(failed_repo_preparation["dispatch_id"])]
     assert durable_dispatch.status == TeamDispatchStatus.FAILED

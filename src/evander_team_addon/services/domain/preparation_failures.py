@@ -46,6 +46,7 @@ EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
 )
 _TASK_PREPARATION_SOURCE_PREFIX = "execution-preparation:task:"
 _INBOX_PREPARATION_SOURCE_PREFIX = "execution-preparation:inbox:"
+TASK_PREPARATION_CONTRACT_VERSION = 2
 _TASK_PREPARATION_GENERATION_FIELDS = (
     "id",
     "owner_agent_id",
@@ -166,6 +167,11 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
     dependency_ids = sorted(set(task.dependency_task_ids))
     relevant_task_ids = {task.id, *dependency_ids}
     payload = {
+        # Bump this contract version when a durable repository/worktree
+        # preparation defect is repaired. Existing generation-keyed blockers
+        # then receive one bounded retry under the corrected implementation;
+        # a still-persistent cause opens a fresh blocker for the new version.
+        "preparation_contract_version": TASK_PREPARATION_CONTRACT_VERSION,
         "task": _task_generation_payload(task),
         "project_git": (
             _semantic_generation_payload(project.git)
@@ -384,6 +390,13 @@ def reconcile_stale_task_preparation_blockers(
             reference_ids=[task_preparation_generation(state, blocker.task_id)],
             now=effective_now,
         )
+        task = state.tasks.get(blocker.task_id)
+        if task is not None:
+            _mark_agent_work_due(
+                state,
+                agent_id=task.owner_agent_id,
+                now=effective_now,
+            )
         resolved_ids.append(blocker.id)
     if resolved_ids:
         result.setdefault("resolved_blocker_ids", []).extend(resolved_ids)
@@ -767,6 +780,7 @@ __all__ = [
     "INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE",
     "REVIEW_PREPARATION_BLOCKER_REASON_CODE",
     "TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES",
+    "TASK_PREPARATION_CONTRACT_VERSION",
     "create_human_correction_preparation_recovery_inbox",
     "dispatch_project_work_ids",
     "inbox_has_current_preparation_blocker",

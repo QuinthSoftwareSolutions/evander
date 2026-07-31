@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
@@ -25,6 +25,7 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.services.domain.blockers import resolve_blocker
 from evander_team_addon.services.domain.preparation_failures import (
+    TASK_PREPARATION_CONTRACT_VERSION,
     task_preparation_generation,
 )
 from evander_team_addon.services.domain.review import retry_blocked_review
@@ -103,6 +104,54 @@ def test_task_preparation_failure_reuses_incident_and_unlocks_on_generation_chan
     )
     assert len(resumed) == 1
     assert changed.blockers[first_blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_preparation_contract_upgrade_retries_legacy_failure_immediately(
+    tmp_path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    runtime = TeamRuntimeService(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+    lease = leases[0]
+    runtime.fail_agent_dispatch(
+        agent_id="backend",
+        dispatch_id=lease["dispatch_id"],
+        error="task worktree base ref does not resolve",
+    )
+    failed = _record_dependency_git_preparation_blocker(
+        repo,
+        lease=lease,
+        task_id="task",
+        error="task worktree base ref does not resolve",
+    )
+    blocker = next(iter(failed.blockers.values()))
+    cause = blocker.source_id.rsplit(":", 1)[-1]
+
+    def _mark_as_prior_contract(state):
+        state.blockers[blocker.id].source_id = (
+            f"execution-preparation:task:task:contract-"
+            f"{TASK_PREPARATION_CONTRACT_VERSION - 1}:{cause}"
+        )
+        state.agent_runtimes["backend"].next_wake_at = datetime(
+            2099,
+            1,
+            1,
+            tzinfo=UTC,
+        )
+        return state
+
+    repo.update(_mark_as_prior_contract)
+    retried_state, retry_leases = runtime.lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+
+    assert len(retry_leases) == 1
+    assert retry_leases[0]["dispatch_id"] != lease["dispatch_id"]
+    assert retried_state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
 
 
 def test_task_preparation_generation_ignores_scheduling_bookkeeping(

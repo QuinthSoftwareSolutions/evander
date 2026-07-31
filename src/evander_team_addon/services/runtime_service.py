@@ -2109,6 +2109,7 @@ def _fail_dispatch_preparation_in_state(
     completed_at: datetime,
 ) -> None:
     dispatch = state.dispatches[dispatch_id]
+    failed_while_preparing = dispatch.status == TeamDispatchStatus.PREPARING
     finalize_active_git_work_contexts_for_dispatch(
         state,
         agent_id=dispatch.agent_id,
@@ -2129,6 +2130,13 @@ def _fail_dispatch_preparation_in_state(
             runtime.context_handoff_preparation_pending = False
             runtime.context_handoff_preparation_status = "failed"
             runtime.next_wake_at = completed_at
+        elif failed_while_preparing:
+            # Reserving a dispatch advances the ordinary wake interval before
+            # repository/worktree preparation runs. If preparation fails
+            # before inference, release that interval as well as the lease so
+            # transient infrastructure recovery can be picked up immediately.
+            # Durable preparation blockers still suppress unchanged causes.
+            runtime.next_wake_at = None
         runtime.updated_at = completed_at
     _mark_dispatch_terminal(
         state,

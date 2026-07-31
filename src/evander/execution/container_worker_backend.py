@@ -291,6 +291,7 @@ class ContainerWorkerVmExecutionBackend:
         branch: str,
         base_ref: str,
         expected_base_commit_sha: str | None = None,
+        expected_base_tree_hash: str | None = None,
         dependency_git_sources: list[dict[str, str]] | None = None,
     ) -> WorkerTaskWorktreeRecord:
         return self.client.prepare_task_worktree(
@@ -301,6 +302,7 @@ class ContainerWorkerVmExecutionBackend:
                 branch=branch,
                 base_ref=base_ref,
                 expected_base_commit_sha=expected_base_commit_sha,
+                expected_base_tree_hash=expected_base_tree_hash,
                 dependency_git_sources=[
                     WorkerTaskDependencyGitSource.model_validate(source)
                     for source in dependency_git_sources or []

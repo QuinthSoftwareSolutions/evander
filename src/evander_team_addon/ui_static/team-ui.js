@@ -15643,6 +15643,69 @@ function releaseAgentReviews(release) {
     .filter((review) => review && !review.superseded_by_review_request_id);
 }
 
+function releaseVerificationCommandFailed(result) {
+  const resultState = text(result?.state);
+  const hasNonzeroExitCode =
+    result?.exit_code !== null &&
+    result?.exit_code !== undefined &&
+    Number(result.exit_code) !== 0;
+  return (
+    ["failed", "timed_out", "blocked", "rejected"].includes(resultState) ||
+    hasNonzeroExitCode ||
+    Boolean(text(result?.failure_cause))
+  );
+}
+
+function releaseVerificationDecisiveError(result, run = null) {
+  const excerpt = text(result?.log_excerpt || run?.error);
+  if (!excerpt) {
+    return "";
+  }
+  const lines = excerpt
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return "";
+  }
+  const diagnosticPattern =
+    /\b(?:error|failed|failure|fatal|exception|traceback|timed?\s*out|exit(?:ed)?)\b|(?:TS|CS)\d{3,}|ERR!/i;
+  const diagnosticLines = lines.filter((line) => diagnosticPattern.test(line));
+  return readablePreview(diagnosticLines.at(-1) || lines.at(-1), 220);
+}
+
+function releaseVerificationFailureSummary(runs) {
+  const failedRuns = (runs || []).filter((run) =>
+    ["failed", "timed_out", "blocked", "rejected"].includes(text(run.state)),
+  );
+  const run = failedRuns.at(-1);
+  if (!run) {
+    return "";
+  }
+  const failedResults = (run.command_results || []).filter(
+    releaseVerificationCommandFailed,
+  );
+  const result = failedResults.at(-1);
+  if (!result) {
+    return run.error
+      ? `Checks need attention · Error: ${readablePreview(run.error, 190)}`
+      : "Checks need attention";
+  }
+  const parts = [`Failed command: ${text(result.name) || "Unnamed command"}`];
+  if (result.exit_code !== null && result.exit_code !== undefined) {
+    parts.push(`exit code ${Number(result.exit_code)}`);
+  }
+  if (result.failure_cause) {
+    parts.push(`failure cause: ${humanizeToken(result.failure_cause)}`);
+  }
+  const decisiveError = releaseVerificationDecisiveError(result, run);
+  if (decisiveError) {
+    parts.push(`Error: ${decisiveError}`);
+  }
+  return readablePreview(parts.join(" · "), 260);
+}
+
 function releaseProgressStages(release) {
   const manifest = release.manifest || null;
   const modern = Number(release.policy_version || 1) >= 2 || Boolean(manifest);
@@ -15676,7 +15739,7 @@ function releaseProgressStages(release) {
     stages.push({
       label: "Automated verification",
       state: failed ? "blocked" : completed ? "complete" : "pending",
-      detail: failed ? "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
+      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
     });
   }
 
@@ -16280,6 +16343,63 @@ function renderReleaseContributionGraph(graph, releaseId) {
   `;
 }
 
+function renderReleaseVerificationCommandResult(
+  result,
+  run,
+  disclosureKey,
+) {
+  const failed = releaseVerificationCommandFailed(result);
+  const decisiveError = failed
+    ? releaseVerificationDecisiveError(result, run)
+    : "";
+  const metadata = [];
+  if (result.exit_code !== null && result.exit_code !== undefined) {
+    metadata.push(`Exit code: ${Number(result.exit_code)}`);
+  }
+  if (result.failure_cause) {
+    metadata.push(`Failure cause: ${humanizeToken(result.failure_cause)}`);
+  }
+  if (result.duration_seconds !== null && result.duration_seconds !== undefined) {
+    metadata.push(`Duration: ${Number(result.duration_seconds)} seconds`);
+  }
+  const logExcerpt = text(result.log_excerpt);
+  return `
+    <li class="release-verification-command-result${failed ? " release-verification-command-failed" : ""}">
+      <div class="release-verification-command-heading">
+        <strong>${failed ? "Failed command" : "Command"}: ${escapeHtml(result.name || "Unnamed command")}</strong>
+        <span class="state-pill ${escapeAttr(result.state)}">${escapeHtml(humanizeToken(result.state))}</span>
+      </div>
+      ${metadata.length ? `<div class="meta-line">${escapeHtml(metadata.join(" · "))}</div>` : ""}
+      ${decisiveError ? `<div class="release-verification-decisive-error"><strong>Decisive error:</strong> ${escapeHtml(decisiveError)}</div>` : ""}
+      ${
+        logExcerpt
+          ? `<details class="release-verification-log" ${teamDisclosureAttributes(disclosureKey)}>
+              <summary>Show captured command log</summary>
+              <pre>${escapeHtml(logExcerpt)}</pre>
+            </details>`
+          : ""
+      }
+    </li>
+  `;
+}
+
+function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
+  const results = run.command_results || [];
+  if (!results.length) {
+    return "";
+  }
+  return `
+    <ul class="release-verification-command-list">
+      ${results.map((result, index) =>
+        renderReleaseVerificationCommandResult(
+          result,
+          run,
+          teamDisclosureKey(disclosureKeyPrefix, run.id, "command", String(index), "log"),
+        )).join("")}
+    </ul>
+  `;
+}
+
 function renderReleaseVerificationRuns(runs, commands, releaseId) {
   if (!runs.length && !commands.length) {
     return "";
@@ -16292,7 +16412,7 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${(run.command_results || []).length ? `<ul class="inline-list">${run.command_results.map((result) => `<li>${escapeHtml(result.name)}: ${escapeHtml(result.state)}${result.log_excerpt ? ` - ${escapeHtml(result.log_excerpt)}` : ""}</li>`).join("")}</ul>` : ""}
+              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`)}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}
@@ -18232,6 +18352,7 @@ function renderDeliveryPipelineGateEvidence(release) {
             <strong>Automated verification attempt ${Number(run.attempt_number || 1)}</strong>
             <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
             ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
+            ${renderReleaseVerificationCommandResults(run, `delivery:${release.id}:verification`)}
           </li>
         `).join("")}
         ${releaseReviews.map((review) => `

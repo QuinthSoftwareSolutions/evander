@@ -870,7 +870,9 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
         session_id="session-backend",
         task_id="task",
         agent_branch="agents/session-backend/tasks/task-12345678",
-        base_ref="main",
+        base_ref="team/team/releases/release-1234",
+        pinned_base_commit=_BASE_COMMIT,
+        pinned_base_tree="3" * 40,
     )
 
     assert path == _WORKTREE_PATH
@@ -881,8 +883,9 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
             "repo_name": "project",
             "worktree_name": f"task-{hashlib.sha256(b'task').hexdigest()[:8]}",
             "branch": "agents/session-backend/tasks/task-12345678",
-            "base_ref": "main",
-            "expected_base_commit_sha": None,
+            "base_ref": "team/team/releases/release-1234",
+            "expected_base_commit_sha": _BASE_COMMIT,
+            "expected_base_tree_hash": "3" * 40,
             "dependency_git_sources": [],
         }
     ]

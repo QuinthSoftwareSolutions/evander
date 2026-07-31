@@ -3186,6 +3186,32 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     project_id: "project",
     deliverable_ids: ["deliverable-rejected"],
     state: "rejected",
+    policy_version: 2,
+    candidate_commit_sha: "rejected-candidate-sha",
+    manifest: {
+      candidate_commit_sha: "rejected-candidate-sha",
+      verification_commands: [{ name: "solution tests" }],
+    },
+    verification_runs: [
+      {
+        id: "verification-rejected-1",
+        state: "failed",
+        attempt_number: 1,
+        failure_kind: "infrastructure",
+        command_results: [
+          {
+            name: "solution tests",
+            state: "failed",
+            exit_code: 17,
+            failure_cause: "pids_limit_exhausted",
+            log_excerpt: [
+              "Starting solution tests",
+              "runner: error: process limit exhausted",
+            ].join("\n"),
+          },
+        ],
+      },
+    ],
     published_at: "2026-06-12T00:30:00Z",
     updated_at: "2026-06-12T00:30:00Z",
     created_at: "2026-06-12T00:00:00Z",
@@ -3244,6 +3270,19 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     await releasesSection.locator(".release-list .record-item").first().getAttribute("data-release-id"),
     "release-rejected",
   );
+  const rejectedReleaseCard = releasesSection.locator(
+    '[data-release-id="release-rejected"]',
+  );
+  await rejectedReleaseCard.locator("summary.compact-record-summary").click();
+  const failedVerificationStage = rejectedReleaseCard
+    .locator(".release-progress > .release-progress-stage")
+    .filter({ hasText: "Automated verification" });
+  await failedVerificationStage
+    .getByText(
+      "Failed command: solution tests · exit code 17 · failure cause: Pids Limit Exhausted · Error: runner: error: process limit exhausted",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
 
   const releaseCard = releasesSection.locator('[data-release-id="release-12"]');
   await releaseCard.locator("summary.compact-record-summary").click();
@@ -3344,14 +3383,27 @@ test("team add-on delivery records lead with human subjects and progressive tech
         },
       },
       verification_runs: [
-        {
-          id: "verification-rich-failed",
-          state: "failed",
-          candidate_commit_sha: "abc123rich",
-          superseded_by_verification_run_id: "verification-rich-1",
-        },
-        {
-          id: "verification-rich-1",
+      {
+        id: "verification-rich-failed",
+        state: "failed",
+        attempt_number: 1,
+        failure_kind: "candidate",
+        candidate_commit_sha: "abc123rich",
+        superseded_by_verification_run_id: "verification-rich-1",
+        command_results: [
+          {
+            name: "focused-smoke",
+            state: "failed",
+            exit_code: 2,
+            log_excerpt: [
+              "> npm run focused-smoke",
+              "src/operator.ts(42,17): error TS2339: Property 'gate' does not exist.",
+            ].join("\n"),
+          },
+        ],
+      },
+      {
+        id: "verification-rich-1",
           state: "passed",
           candidate_commit_sha: "abc123rich",
           supersedes_verification_run_id: "verification-rich-failed",
@@ -3509,6 +3561,39 @@ test("team add-on delivery records lead with human subjects and progressive tech
     state: "visible",
   });
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), releaseId);
+
+  await releaseCard.getByRole("button", { name: "Open release detail" }).click();
+  const releaseDetail = releaseCard.locator(".release-review-detail");
+  await releaseDetail.waitFor({ state: "visible" });
+  const failedCommand = releaseDetail.locator(
+    ".release-verification-command-failed",
+  );
+  await failedCommand
+    .getByText("Failed command: focused-smoke", { exact: true })
+    .waitFor({ state: "visible" });
+  await failedCommand.getByText("Exit code: 2", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await failedCommand
+    .getByText(
+      "Decisive error: src/operator.ts(42,17): error TS2339: Property 'gate' does not exist.",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  const failedCommandLog = failedCommand.locator(
+    "details.release-verification-log",
+  );
+  assert.equal(await failedCommandLog.locator("pre").isVisible(), false);
+  await failedCommandLog
+    .getByText("Show captured command log", { exact: true })
+    .click();
+  assert.equal(
+    await failedCommandLog.locator("pre").innerText(),
+    [
+      "> npm run focused-smoke",
+      "src/operator.ts(42,17): error TS2339: Property 'gate' does not exist.",
+    ].join("\n"),
+  );
 });
 
 test("team add-on Cases defaults to active work and pages durable case history", async (t) => {
@@ -9251,6 +9336,17 @@ test("team add-on UI renders git refs and releases and submits a review decision
         attempt_number: 1,
         failure_kind: "timeout",
         superseded_by_verification_run_id: "verification-accepted-2",
+        command_results: [
+          {
+            name: "targeted-dotnet",
+            state: "timed_out",
+            exit_code: 124,
+            log_excerpt: [
+              "Starting targeted tests",
+              "error: test host timed out waiting for worker response",
+            ].join("\n"),
+          },
+        ],
       },
       {
         id: "verification-accepted-2",
@@ -9468,6 +9564,32 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await gateEvidence.getByText("Failure type: Timeout", { exact: true }).waitFor({
     state: "visible",
   });
+  const failedGateCommand = gateEvidence.locator(
+    ".release-verification-command-failed",
+  );
+  await failedGateCommand
+    .getByText("Failed command: targeted-dotnet", { exact: true })
+    .waitFor({ state: "visible" });
+  await failedGateCommand.getByText("Exit code: 124", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await failedGateCommand
+    .getByText(
+      "Decisive error: error: test host timed out waiting for worker response",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  const failedGateLog = failedGateCommand.locator(
+    "details.release-verification-log",
+  );
+  await failedGateLog.getByText("Show captured command log", { exact: true }).click();
+  assert.equal(
+    await failedGateLog.locator("pre").innerText(),
+    [
+      "Starting targeted tests",
+      "error: test host timed out waiting for worker response",
+    ].join("\n"),
+  );
 
   await projectFocus.selectOption("beta-project");
   await deliveryFilter("rejected").click();
