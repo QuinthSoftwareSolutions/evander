@@ -832,6 +832,20 @@ def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path)
     assert "/home/agent/.evander/locks/task-worktree-project.lock" in command
     assert 'exec 9>"$lock"' in command
     assert "flock 9" in command
+    fresh_base_fetch = "\n".join(
+        (
+            '  if [ -z "$pinned_base_commit" ]; then',
+            '    if [ "$base" = "HEAD" ]; then',
+            '      git fetch --no-tags origin HEAD',
+            "    else",
+            '      git fetch --no-tags origin "refs/heads/$base"',
+            "    fi",
+            '    base_commitish="$(git rev-parse --verify FETCH_HEAD^{commit})"',
+            "  fi",
+            '  git worktree add -b "$branch" "$target" "$base_commitish"',
+        )
+    )
+    assert fresh_base_fetch in command
     assert 'git -C "$target" rev-parse HEAD' in command
 
 

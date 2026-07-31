@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-31 - Fresh Team Task Bases
+
+- Made first-time libvirt Team task worktrees fetch their configured managed-Git
+  base before pinning it, matching the container-worker backend. New independent
+  tasks now start from the current canonical base while reused worktrees retain
+  their original immutable pin.
+
 ## 2026-07-31 - Human Review Source Bundles
 
 - Added a **Download review bundle** action to Team human-review cards. It

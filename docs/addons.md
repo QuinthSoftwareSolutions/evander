@@ -1596,6 +1596,12 @@ checkout as a control checkout. If any preparation fails, the complete dispatch
 fails, created contexts are finalized, and the runtime reservation is released;
 Team never silently drops one scoped task.
 
+On first creation of an ordinary task worktree, Team fetches the configured
+base branch from the managed remote before recording its immutable base commit.
+The managed remote refreshes from canonical upstream before serving that fetch,
+so a new no-predecessor task begins at the current configured base at
+preparation time. Reused worktrees retain their original pinned base.
+
 Preparation failures are durable and target-specific so the cron loop does not
 repeat the same failing setup before inference:
 
