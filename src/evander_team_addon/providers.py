@@ -482,6 +482,16 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 default_value=True,
             ),
             _catalog_field(
+                "run_global_maintenance",
+                "Run global maintenance",
+                "boolean",
+                description=(
+                    "Run correction, human-review assignment, and worktree cleanup "
+                    "reconciliation before leasing agents. Disable for targeted immediate wakes."
+                ),
+                default_value=True,
+            ),
+            _catalog_field(
                 "worktree_cleanup_limit",
                 "Worktree cleanup limit",
                 "number",
@@ -967,8 +977,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 required=True,
                 description=(
-                    "Team agent whose authority is used to request the complete "
-                    "review cohort."
+                    "Team agent whose authority is used to request the complete review cohort."
                 ),
                 placeholder="${{team-deliverable-created.producer_agent_id}}",
             ),
@@ -1093,8 +1102,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Integration boundary",
                 "boolean",
                 description=(
-                    "Designate this task as the explicit final integration and "
-                    "acceptance boundary."
+                    "Designate this task as the explicit final integration and acceptance boundary."
                 ),
                 default_value=False,
             ),
@@ -2097,6 +2105,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "max_no_progress_count",
             "low_priority_wake_after_cycles",
             "respect_wake_interval",
+            "run_global_maintenance",
             "worktree_cleanup_limit",
             "worktree_cleanup_grace_seconds",
             "worktree_cleanup_retry_seconds",
@@ -2114,82 +2123,85 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        run_global_maintenance = _optional_bool(
+            payload.get("run_global_maintenance"),
+            default=True,
+        )
         human_correction_reconciliation: dict[str, Any] = {}
         human_correction_reconciliation_error: str | None = None
-        try:
-            human_correction_reconciliation = (
-                HumanCorrectionReconciliationService(repo).reconcile()
-            )
-            if human_correction_reconciliation.get("events"):
-                human_correction_reconciliation["published_event_ids"] = (
-                    _publish_team_events(
+        if run_global_maintenance:
+            try:
+                human_correction_reconciliation = HumanCorrectionReconciliationService(
+                    repo
+                ).reconcile()
+                if human_correction_reconciliation.get("events"):
+                    human_correction_reconciliation["published_event_ids"] = _publish_team_events(
                         context,
                         human_correction_reconciliation["events"],
                     )
-                )
-        except Exception as exc:
-            # Correction reconciliation is durable and retried on the next Team
-            # cycle. A single malformed case must not suppress unrelated wakes.
-            human_correction_reconciliation_error = (
-                str(exc) or exc.__class__.__name__
-            )
+            except Exception as exc:
+                # Correction reconciliation is durable and retried on the next Team
+                # cycle. A single malformed case must not suppress unrelated wakes.
+                human_correction_reconciliation_error = str(exc) or exc.__class__.__name__
         human_review_assignment_reconciliation: dict[str, Any] = {}
         human_review_assignment_reconciliation_error: str | None = None
-        try:
-            human_review_assignment_reconciliation = reconcile_current_human_review_assignments(
-                repository=repo,
-                user_store=AdminWebUserStore(_runtime_dir(context) / "admin-web.db"),
-            )
-        except Exception as exc:
-            # Directory/RBAC drift must be visible, but it must not suppress
-            # unrelated agent wakes or worktree cleanup.
-            human_review_assignment_reconciliation_error = str(exc) or exc.__class__.__name__
+        if run_global_maintenance:
+            try:
+                human_review_assignment_reconciliation = reconcile_current_human_review_assignments(
+                    repository=repo,
+                    user_store=AdminWebUserStore(_runtime_dir(context) / "admin-web.db"),
+                )
+            except Exception as exc:
+                # Directory/RBAC drift must be visible, but it must not suppress
+                # unrelated agent wakes or worktree cleanup.
+                human_review_assignment_reconciliation_error = str(exc) or exc.__class__.__name__
         worktree_cleanup: dict[str, Any] = {}
         worktree_cleanup_error: str | None = None
-        try:
-            worktree_cleanup = (
-                TeamWorktreeCleanupService(
-                    repo,
-                    EffectTaskWorktreeCleanupBackend(context, repository=repo),
-                )
-                .reconcile(
-                    limit=_optional_int(
-                        payload.get("worktree_cleanup_limit"),
-                        default=10,
+        if run_global_maintenance:
+            try:
+                worktree_cleanup = (
+                    TeamWorktreeCleanupService(
+                        repo,
+                        EffectTaskWorktreeCleanupBackend(context, repository=repo),
                     )
-                    or 0,
-                    grace_seconds=_optional_int(
-                        payload.get("worktree_cleanup_grace_seconds"),
-                        default=300,
-                    )
-                    or 0,
-                    retry_seconds=_optional_int(
-                        payload.get("worktree_cleanup_retry_seconds"),
-                        default=300,
-                    )
-                    or 0,
-                    recovery_seconds=_optional_int(
-                        payload.get("worktree_cleanup_recovery_seconds"),
-                        default=900,
-                    )
-                    or 1,
-                    dry_run=(
-                        _optional_bool(
-                            payload.get("worktree_cleanup_dry_run"),
-                            default=True,
+                    .reconcile(
+                        limit=_optional_int(
+                            payload.get("worktree_cleanup_limit"),
+                            default=10,
                         )
-                        if _payload_field_configured(
-                            "worktree_cleanup_dry_run",
-                            definition_fields=definition_fields,
-                            resolved_fields=resolved_fields,
+                        or 0,
+                        grace_seconds=_optional_int(
+                            payload.get("worktree_cleanup_grace_seconds"),
+                            default=300,
                         )
-                        else None
-                    ),
+                        or 0,
+                        retry_seconds=_optional_int(
+                            payload.get("worktree_cleanup_retry_seconds"),
+                            default=300,
+                        )
+                        or 0,
+                        recovery_seconds=_optional_int(
+                            payload.get("worktree_cleanup_recovery_seconds"),
+                            default=900,
+                        )
+                        or 1,
+                        dry_run=(
+                            _optional_bool(
+                                payload.get("worktree_cleanup_dry_run"),
+                                default=True,
+                            )
+                            if _payload_field_configured(
+                                "worktree_cleanup_dry_run",
+                                definition_fields=definition_fields,
+                                resolved_fields=resolved_fields,
+                            )
+                            else None
+                        ),
+                    )
+                    .model_dump()
                 )
-                .model_dump()
-            )
-        except Exception as exc:  # cleanup must not suppress unrelated Team wakes
-            worktree_cleanup_error = str(exc) or exc.__class__.__name__
+            except Exception as exc:  # cleanup must not suppress unrelated Team wakes
+                worktree_cleanup_error = str(exc) or exc.__class__.__name__
         current_state = repo.read()
         session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
@@ -2352,11 +2364,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
                     agent_id=agent["id"],
                     dispatch_id=lease["dispatch_id"],
-                    lease_seconds=(
-                        120
-                        if context_handoff_preparation
-                        else agent_lease_seconds
-                    ),
+                    lease_seconds=(120 if context_handoff_preparation else agent_lease_seconds),
                 )
                 lease = {
                     **lease,
@@ -2393,11 +2401,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             )
                         ),
                     )
-                    state, created_blocker_ids = (
-                        _record_review_artifact_preparation_blockers(
-                            repo,
-                            grouped_errors=grouped_errors,
-                        )
+                    state, created_blocker_ids = _record_review_artifact_preparation_blockers(
+                        repo,
+                        grouped_errors=grouped_errors,
                     )
                     preparation_blocker_ids.extend(created_blocker_ids)
                     errors.append(
@@ -2412,8 +2418,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 effective_resume_mode = (
                     resume_mode
                     if context_handoff_preparation
-                    else
-                    "new_context"
+                    else "new_context"
                     if wake_uses_fresh_context(
                         lease,
                         effective_resume_mode=resume_mode,
@@ -2565,13 +2570,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             )
                         )
                     elif isinstance(exc, ProjectGitPreparationError):
-                        state, created_blocker_ids = (
-                            _record_project_git_preparation_blockers(
-                                repo,
-                                lease=lease,
-                                project_id=exc.project_id,
-                                error=error,
-                            )
+                        state, created_blocker_ids = _record_project_git_preparation_blockers(
+                            repo,
+                            lease=lease,
+                            project_id=exc.project_id,
+                            error=error,
                         )
                         preparation_blocker_ids.extend(created_blocker_ids)
                 except Exception as release_exc:  # pragma: no cover - defensive diagnostics
@@ -2602,9 +2605,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 human_review_assignment_reconciliation_error
             ),
             "human_correction_reconciliation": human_correction_reconciliation,
-            "human_correction_reconciliation_error": (
-                human_correction_reconciliation_error
-            ),
+            "human_correction_reconciliation_error": (human_correction_reconciliation_error),
             "errors": errors,
         }
 
@@ -2683,11 +2684,8 @@ def _dispatch_queued_team_chat_messages(
                 ordinary_team_context=ordinary_team_context,
                 fresh_context=fresh_context,
                 rotation_handoff_summary=(
-                    _optional_text(
-                        chat_lease.get("runtime", {}).get("last_handoff_summary")
-                    )
-                    if fresh_context
-                    and isinstance(chat_lease.get("runtime"), Mapping)
+                    _optional_text(chat_lease.get("runtime", {}).get("last_handoff_summary"))
+                    if fresh_context and isinstance(chat_lease.get("runtime"), Mapping)
                     else None
                 ),
             )
@@ -2727,20 +2725,18 @@ def _dispatch_queued_team_chat_messages(
                     "reason": runtime_payload.get("context_rotation_reason"),
                 }
             dispatch_payload = {
-                    "agent_id": agent_id,
-                    "session_id": agent.session_id,
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                    "dispatch_id": dispatch_id,
-                    "agent_guidance": guidance_result,
-                    "team_chat_mcp_tools": tool_grant_result,
-                    "result": result_payload,
-                    "resume_mode": effective_resume_mode,
-                }
+                "agent_id": agent_id,
+                "session_id": agent.session_id,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "dispatch_id": dispatch_id,
+                "agent_guidance": guidance_result,
+                "team_chat_mcp_tools": tool_grant_result,
+                "result": result_payload,
+                "resume_mode": effective_resume_mode,
+            }
             if ordinary_team_context is not None:
-                dispatch_payload["team_context_mode"] = ordinary_team_context[
-                    "context_mode"
-                ]
+                dispatch_payload["team_context_mode"] = ordinary_team_context["context_mode"]
             if project_repos:
                 dispatch_payload["project_repos"] = project_repos
             if context_rotation is not None:
@@ -2793,12 +2789,7 @@ def _team_chat_wake_lease(
             not mutation_allowed
             or prior.cause_kind != "team_chat"
             or bool(
-                (
-                    prior_message := state.conversation_messages.get(
-                        prior.cause_id or ""
-                    )
-                )
-                is not None
+                (prior_message := state.conversation_messages.get(prior.cause_id or "")) is not None
                 and prior_message.metadata.get("ordinary_context_seeded") is True
             )
         )
@@ -3538,13 +3529,10 @@ class TeamCreateReviewCohortEffectProvider(EffectProviderBase):
                         )
                         reviewer = state.agents.get(reviewer_id)
                         if reviewer is None:
-                            raise ValueError(
-                                f"reviewer agent {reviewer_id} does not exist"
-                            )
+                            raise ValueError(f"reviewer agent {reviewer_id} does not exist")
                         if reviewer.status != AgentStatus.ACTIVE:
                             raise ValueError(
-                                f"recipient agent {reviewer.id} is "
-                                f"{reviewer.status.value}"
+                                f"recipient agent {reviewer.id} is {reviewer.status.value}"
                             )
                 (
                     review_cohort_id,
@@ -4100,9 +4088,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 break
         if finalized_count:
             try:
-                correction_result = HumanCorrectionReconciliationService(
-                    repo
-                ).reconcile()
+                correction_result = HumanCorrectionReconciliationService(repo).reconcile()
                 _publish_team_events(
                     context,
                     correction_result.get("events"),
@@ -4768,9 +4754,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 target_branch=target_branch,
                 base_branch=base_branch,
                 base_commit_sha=base_commit_sha,
-                required_source_ancestor_commit_sha=(
-                    required_source_ancestor_commit_sha
-                ),
+                required_source_ancestor_commit_sha=(required_source_ancestor_commit_sha),
                 expected_source_commits=expected_source_commits,
                 allowed_changed_paths=allowed_changed_paths,
             )
@@ -6396,10 +6380,7 @@ def _build_prompt(
         "\n"
         if fresh_context
         and isinstance(runtime, Mapping)
-        and (
-            runtime.get("context_rotation_pending")
-            or effective_resume_mode == "new_context"
-        )
+        and (runtime.get("context_rotation_pending") or effective_resume_mode == "new_context")
         else ""
     )
     review_artifact_section = (
@@ -6517,8 +6498,7 @@ def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
     if not assignments:
         return ""
     labels = ", ".join(
-        f"{review_id} (deliverable {deliverable_id})"
-        for review_id, deliverable_id in assignments
+        f"{review_id} (deliverable {deliverable_id})" for review_id, deliverable_id in assignments
     )
     return (
         "Assigned deliverable review procedure for this wake:\n"
@@ -6738,9 +6718,7 @@ def _build_team_chat_prompt(
             "The current immutable dispatch delta is below.\n"
             if ordinary_team_context is not None
             else (
-                "\n\nThis reply-only chat wake starts a fresh context.\n"
-                if fresh_context
-                else ""
+                "\n\nThis reply-only chat wake starts a fresh context.\n" if fresh_context else ""
             )
         )
     )
@@ -7246,9 +7224,7 @@ def _create_project_repo_git_work_contexts(
             session_id,
             task_id=task_id,
             candidate_commit_sha=(
-                correction_source.candidate_commit_sha
-                if correction_source is not None
-                else None
+                correction_source.candidate_commit_sha if correction_source is not None else None
             ),
         )
         try:
@@ -7552,10 +7528,7 @@ def _verify_rejected_candidate_git_source(
     except Exception as exc:
         raise DependencyGitPreparationError(
             task_id=task_id,
-            message=(
-                f"could not verify rejected candidate for correction task "
-                f"{task_id}: {exc}"
-            ),
+            message=(f"could not verify rejected candidate for correction task {task_id}: {exc}"),
         ) from None
     if (
         _optional_text(snapshot.get("commit_sha")) or ""
@@ -7813,9 +7786,7 @@ def _prepare_project_repo_task_worktree(
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
     candidate_suffix = (
-        f"-{pinned_base_commit.casefold()[:12]}"
-        if pinned_base_commit is not None
-        else ""
+        f"-{pinned_base_commit.casefold()[:12]}" if pinned_base_commit is not None else ""
     )
     worktree_name = f"{task_slug}-{task_hash}{candidate_suffix}"
     directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "root")
@@ -7983,14 +7954,8 @@ def _prepare_project_repo_task_worktree(
         'if [ -n "$pinned_base_commit" ]; then',
         '  test -n "$pinned_base_tree"',
         '  git fetch --no-tags origin "refs/heads/$base"',
-        (
-            '  test "$(git rev-parse --verify FETCH_HEAD^{commit})" = '
-            '"$pinned_base_commit"'
-        ),
-        (
-            '  test "$(git rev-parse --verify "$pinned_base_commit^{tree}")" = '
-            '"$pinned_base_tree"'
-        ),
+        ('  test "$(git rev-parse --verify FETCH_HEAD^{commit})" = "$pinned_base_commit"'),
+        ('  test "$(git rev-parse --verify "$pinned_base_commit^{tree}")" = "$pinned_base_tree"'),
         '  base_commitish="$pinned_base_commit"',
         "fi",
         "created=0",
@@ -8001,7 +7966,7 @@ def _prepare_project_repo_task_worktree(
         "else",
         '  if [ -z "$pinned_base_commit" ]; then',
         '    if [ "$base" = "HEAD" ]; then',
-        '      git fetch --no-tags origin HEAD',
+        "      git fetch --no-tags origin HEAD",
         "    else",
         '      git fetch --no-tags origin "refs/heads/$base"',
         "    fi",
@@ -8022,10 +7987,7 @@ def _prepare_project_repo_task_worktree(
         ),
         'head_before="$(git -C "$target" rev-parse HEAD)"',
         'if [ -n "$pinned_base_commit" ]; then',
-        (
-            '  git -C "$target" merge-base --is-ancestor '
-            '"$pinned_base_commit" "$head_before"'
-        ),
+        ('  git -C "$target" merge-base --is-ancestor "$pinned_base_commit" "$head_before"'),
         "fi",
         'if [ -n "$expected_prior_base" ]; then',
         (
@@ -9076,11 +9038,7 @@ def _record_project_git_preparation_blockers(
     error: str,
 ) -> tuple[TeamState, list[str]]:
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
-    dispatch = (
-        lease.get("dispatch")
-        if isinstance(lease.get("dispatch"), Mapping)
-        else {}
-    )
+    dispatch = lease.get("dispatch") if isinstance(lease.get("dispatch"), Mapping) else {}
     result: dict[str, Any] = {"events": []}
 
     def _mutate(state: TeamState) -> TeamState:
@@ -9093,9 +9051,7 @@ def _record_project_git_preparation_blockers(
             record_review_preparation_failure(
                 state,
                 review_request_id=review_id,
-                error=(
-                    f"Repository preparation failed before review inference: {error}"
-                ),
+                error=(f"Repository preparation failed before review inference: {error}"),
                 result=result,
             )
         for task_id in task_ids:
@@ -9124,9 +9080,7 @@ def _record_project_git_preparation_blockers(
 
     state = repo.update_with_outbox(
         _mutate,
-        outbox_records=lambda: _team_event_outbox_records(
-            result.get("events") or []
-        ),
+        outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
     )
     return state, list(result.get("created_blocker_ids") or [])
 
@@ -9140,14 +9094,11 @@ def _review_artifact_preparation_errors(
         if review_id is None:
             continue
         message = (
-            _optional_text(record.get("error"))
-            or "declared review artifact could not be prepared"
+            _optional_text(record.get("error")) or "declared review artifact could not be prepared"
         )
         grouped.setdefault(review_id, []).append(message)
     if not grouped:
-        raise RuntimeError(
-            "review artifact preparation failed without a review request identity"
-        )
+        raise RuntimeError("review artifact preparation failed without a review request identity")
     return {
         review_id: "; ".join(sorted(set(messages)))
         for review_id, messages in sorted(grouped.items())
@@ -9173,9 +9124,7 @@ def _record_review_artifact_preparation_blockers(
 
     state = repo.update_with_outbox(
         _mutate,
-        outbox_records=lambda: _team_event_outbox_records(
-            result.get("events") or []
-        ),
+        outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
     )
     return state, list(result.get("created_blocker_ids") or [])
 
@@ -9479,8 +9428,7 @@ def _review_cohort_effect_success_result(
         "review_cohort_id": review_cohort_id,
         "review_cohort_sealed_at": (
             deliverable.review_cohort_sealed_at.isoformat()
-            if deliverable is not None
-            and deliverable.review_cohort_sealed_at is not None
+            if deliverable is not None and deliverable.review_cohort_sealed_at is not None
             else None
         ),
         "deliverable_id": deliverable.id if deliverable is not None else None,

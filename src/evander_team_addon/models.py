@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -24,7 +25,8 @@ from evander_team_addon.git_naming import (
     normalize_canonical_release_branch_prefix,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
     "text/markdown",
@@ -317,6 +319,27 @@ class TeamModel(BaseModel):
         return value
 
 
+def summarize_worktree_cleanup_inventory(
+    value: object,
+) -> tuple[list[str], int, str | None, bool]:
+    """Return bounded, deterministic evidence for a complete ignored-path inventory."""
+    inventory = sorted(set(_text_list(value or [], "ignored_file_inventory")))
+    count = len(inventory)
+    digest = (
+        hashlib.sha256(
+            json.dumps(inventory, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        if inventory
+        else None
+    )
+    return (
+        inventory[:WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT],
+        count,
+        digest,
+        count > WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT,
+    )
+
+
 class EphemeralAgentPolicy(TeamModel):
     max_concurrent: int = Field(default=0, ge=0)
 
@@ -341,6 +364,7 @@ class AgentAvatar(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
 
 class AgentVoiceProfile(TeamModel):
     voice: str | None = None
@@ -431,9 +455,8 @@ class GovernanceGoal(TeamModel):
             return value
         payload = dict(value)
         if _optional_text(payload.get("name")) is None:
-            payload["name"] = (
-                _optional_text(payload.get("id"))
-                or _optional_text(payload.get("description"))
+            payload["name"] = _optional_text(payload.get("id")) or _optional_text(
+                payload.get("description")
             )
         return payload
 
@@ -876,7 +899,9 @@ class AgentRuntime(TeamModel):
     context_rotation_request_note: str | None = None
     last_handoff_summary: str | None = None
     context_handoff_preparation_pending: bool = False
-    context_handoff_preparation_status: Literal["pending", "recorded", "failed", "timed_out"] | None = None
+    context_handoff_preparation_status: (
+        Literal["pending", "recorded", "failed", "timed_out"] | None
+    ) = None
     last_agent_handoff_summary: str | None = None
     last_agent_handoff_at: datetime | None = None
     last_context_rotated_at: datetime | None = None
@@ -1250,25 +1275,18 @@ class AgentTask(TeamModel):
         if self.task_kind == TeamTaskKind.SUPPORT and self.completion is not None:
             raise ValueError("support task cannot define structured completion")
         if self.integration_boundary and self.deliverable_contract is None:
-            raise ValueError(
-                "integration boundary task requires deliverable_contract"
-            )
+            raise ValueError("integration boundary task requires deliverable_contract")
         if (
             not self.integration_boundary
             and self.deliverable_contract is not None
             and self.deliverable_contract.required_contribution_task_ids
         ):
-            raise ValueError(
-                "leaf deliverable_contract cannot require contribution tasks"
-            )
+            raise ValueError("leaf deliverable_contract cannot require contribution tasks")
         if (
             self.deliverable_contract is not None
-            and self.id
-            in self.deliverable_contract.required_contribution_task_ids
+            and self.id in self.deliverable_contract.required_contribution_task_ids
         ):
-            raise ValueError(
-                "task cannot require itself as a deliverable contribution"
-            )
+            raise ValueError("task cannot require itself as a deliverable contribution")
         if self.state == TeamTaskState.CANCELLED and self.cancellation is None:
             raise ValueError("cancelled task requires a cancellation disposition")
         if self.state != TeamTaskState.CANCELLED and self.cancellation is not None:
@@ -1536,12 +1554,8 @@ class Deliverable(TeamModel):
 
     @model_validator(mode="after")
     def _validate_review_cohort(self) -> "Deliverable":
-        if (self.review_cohort_id is None) != (
-            self.review_cohort_sealed_at is None
-        ):
-            raise ValueError(
-                "review_cohort_id and review_cohort_sealed_at must be set together"
-            )
+        if (self.review_cohort_id is None) != (self.review_cohort_sealed_at is None):
+            raise ValueError("review_cohort_id and review_cohort_sealed_at must be set together")
         return self
 
     @model_validator(mode="after")
@@ -1752,13 +1766,8 @@ class ReviewRequest(TeamModel):
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
-        if (
-            self.release_package_id is not None
-            and self.review_cohort_id is not None
-        ):
-            raise ValueError(
-                "release review request cannot carry review_cohort_id"
-            )
+        if self.release_package_id is not None and self.review_cohort_id is not None:
+            raise ValueError("release review request cannot carry review_cohort_id")
         if self.supersedes_review_request_id is not None and (
             self.retry_reason is None or self.retry_requested_by is None
         ):
@@ -2079,9 +2088,7 @@ class TeamDispatchReviewRoutingAuthority(TeamModel):
 
     @model_validator(mode="after")
     def _validate_consumption(self) -> "TeamDispatchReviewRoutingAuthority":
-        if (self.consumed_at is None) != (
-            self.consumed_by_review_request_id is None
-        ):
+        if (self.consumed_at is None) != (self.consumed_by_review_request_id is None):
             raise ValueError(
                 "dispatch review routing authority consumption requires both "
                 "consumed_at and consumed_by_review_request_id"
@@ -2144,9 +2151,7 @@ class TeamDispatch(TeamModel):
         if len(authority_keys) != len(set(authority_keys)):
             raise ValueError("dispatch review routing authorities must be unique")
         if self.review_routing_authorities and self.cause_kind != "manager_fallback":
-            raise ValueError(
-                "dispatch review routing authorities require manager_fallback cause"
-            )
+            raise ValueError("dispatch review routing authorities require manager_fallback cause")
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -2185,12 +2190,37 @@ class WorktreeCleanupCandidate(TeamModel):
     last_safety_check: str | None = None
     last_error: str | None = None
     ignored_file_inventory: list[str] = Field(default_factory=list)
+    ignored_file_count: int = Field(default=0, ge=0)
+    ignored_file_inventory_sha256: str | None = None
+    ignored_file_inventory_truncated: bool = False
     ignored_bytes: int = Field(default=0, ge=0)
     worktree_bytes: int = Field(default=0, ge=0)
     reclaimed_bytes: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bounded_ignored_file_evidence(cls, data: object) -> object:
+        if not isinstance(data, Mapping):
+            return data
+        migrated = dict(data)
+        inventory = migrated.get("ignored_file_inventory") or []
+        if not all(
+            field_name in migrated
+            for field_name in (
+                "ignored_file_count",
+                "ignored_file_inventory_sha256",
+                "ignored_file_inventory_truncated",
+            )
+        ):
+            sample, count, digest, truncated = summarize_worktree_cleanup_inventory(inventory)
+            migrated["ignored_file_inventory"] = sample
+            migrated["ignored_file_count"] = count
+            migrated["ignored_file_inventory_sha256"] = digest
+            migrated["ignored_file_inventory_truncated"] = truncated
+        return migrated
 
     @field_validator(
         "id",
@@ -2214,6 +2244,7 @@ class WorktreeCleanupCandidate(TeamModel):
         "retained_commit_sha",
         "last_safety_check",
         "last_error",
+        "ignored_file_inventory_sha256",
         mode="before",
     )
     @classmethod
@@ -2223,7 +2254,10 @@ class WorktreeCleanupCandidate(TeamModel):
     @field_validator("ignored_file_inventory", mode="before")
     @classmethod
     def _ignored_file_inventory(cls, value: object) -> list[str]:
-        return _unique_text_list(value or [], "ignored_file_inventory")
+        inventory = sorted(_unique_text_list(value or [], "ignored_file_inventory"))
+        if len(inventory) > WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT:
+            raise ValueError("ignored_file_inventory exceeds the bounded evidence sample limit")
+        return inventory
 
 
 class TeamDispatchActivityStatus(str, Enum):
@@ -4318,16 +4352,12 @@ class TeamState(TeamModel):
                             f"deliverable {deliverable.id} supersedes deliverable "
                             f"{previous.id} without a reciprocal superseded_by link"
                         )
-                    if (
-                        previous.state
-                        not in {
-                            TeamRecordState.REJECTED,
-                            TeamRecordState.BLOCKED,
-                        }
-                        and not (
-                            previous.state == TeamRecordState.ACCEPTED
-                            and previous.rework_requested_at is not None
-                        )
+                    if previous.state not in {
+                        TeamRecordState.REJECTED,
+                        TeamRecordState.BLOCKED,
+                    } and not (
+                        previous.state == TeamRecordState.ACCEPTED
+                        and previous.rework_requested_at is not None
                     ):
                         errors.append(
                             f"deliverable {deliverable.id} supersedes a deliverable "
@@ -4360,16 +4390,12 @@ class TeamState(TeamModel):
                             f"deliverable {deliverable.id} is superseded by deliverable "
                             f"{replacement.id} without a reciprocal supersedes link"
                         )
-                    if (
-                        deliverable.state
-                        not in {
-                            TeamRecordState.REJECTED,
-                            TeamRecordState.BLOCKED,
-                        }
-                        and not (
-                            deliverable.state == TeamRecordState.ACCEPTED
-                            and deliverable.rework_requested_at is not None
-                        )
+                    if deliverable.state not in {
+                        TeamRecordState.REJECTED,
+                        TeamRecordState.BLOCKED,
+                    } and not (
+                        deliverable.state == TeamRecordState.ACCEPTED
+                        and deliverable.rework_requested_at is not None
                     ):
                         errors.append(
                             f"deliverable {deliverable.id} cannot be superseded without "
@@ -4470,8 +4496,7 @@ class TeamState(TeamModel):
             if (
                 review.review_cohort_id is not None
                 and deliverable is not None
-                and review.review_cohort_id
-                != deliverable.review_cohort_id
+                and review.review_cohort_id != deliverable.review_cohort_id
             ):
                 errors.append(
                     f"review request {review.id} cohort "
@@ -4483,8 +4508,7 @@ class TeamState(TeamModel):
                 and deliverable.review_cohort_id is not None
                 and review.superseded_by_review_request_id is None
                 and review.retired_at is None
-                and review.review_cohort_id
-                != deliverable.review_cohort_id
+                and review.review_cohort_id != deliverable.review_cohort_id
             ):
                 errors.append(
                     f"current review request {review.id} must carry deliverable "
@@ -4829,17 +4853,12 @@ class TeamState(TeamModel):
                     f"external chat ingress {record.id} conversation does not match message"
                 )
             if message.dispatch_id != record.dispatch_id:
-                errors.append(
-                    f"external chat ingress {record.id} dispatch does not match message"
-                )
+                errors.append(f"external chat ingress {record.id} dispatch does not match message")
         delivery_keys: set[tuple[str, str]] = set()
         for record in self.external_chat_deliveries.values():
             key = (record.agent_reply_message_id, record.communication_target_id)
             if key in delivery_keys:
-                errors.append(
-                    "external chat delivery has duplicate reply/target identity "
-                    f"{key!r}"
-                )
+                errors.append(f"external chat delivery has duplicate reply/target identity {key!r}")
             delivery_keys.add(key)
             reply = self.conversation_messages.get(record.agent_reply_message_id)
             if reply is None or reply.sender != "agent":
@@ -4866,8 +4885,7 @@ class TeamState(TeamModel):
                 owner = self.agents.get(release.owner_agent_id)
                 if owner is None or owner.team_id != project.team_id:
                     errors.append(
-                        f"release {release.id} references invalid owner "
-                        f"{release.owner_agent_id}"
+                        f"release {release.id} references invalid owner {release.owner_agent_id}"
                     )
             if release.supersedes_release_package_id is not None:
                 predecessor = self.release_packages.get(release.supersedes_release_package_id)
@@ -4930,10 +4948,7 @@ class TeamState(TeamModel):
                     )
                 if run.correction_task_id is not None:
                     correction_task = self.tasks.get(run.correction_task_id)
-                    if (
-                        correction_task is None
-                        or correction_task.project_id != release.project_id
-                    ):
+                    if correction_task is None or correction_task.project_id != release.project_id:
                         errors.append(
                             f"release verification run {run.id} references invalid "
                             f"correction task {run.correction_task_id}"
@@ -5227,16 +5242,11 @@ class TeamState(TeamModel):
                         f"{deliverable.id} does not belong to task {authority.task_id}"
                     )
                 consumed_review = (
-                    self.review_requests.get(
-                        authority.consumed_by_review_request_id
-                    )
+                    self.review_requests.get(authority.consumed_by_review_request_id)
                     if authority.consumed_by_review_request_id is not None
                     else None
                 )
-                if (
-                    authority.consumed_by_review_request_id is not None
-                    and consumed_review is None
-                ):
+                if authority.consumed_by_review_request_id is not None and consumed_review is None:
                     errors.append(
                         f"dispatch {dispatch.id} review routing authority references "
                         "missing consuming review "
@@ -5244,8 +5254,7 @@ class TeamState(TeamModel):
                     )
                 elif consumed_review is not None and (
                     consumed_review.deliverable_id != authority.deliverable_id
-                    or consumed_review.reviewer_agent_id
-                    != authority.reviewer_agent_id
+                    or consumed_review.reviewer_agent_id != authority.reviewer_agent_id
                     or consumed_review.requested_by_agent_id != dispatch.agent_id
                 ):
                     errors.append(
@@ -6279,9 +6288,9 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             and gate_failure.kind in {"infrastructure", "timeout"}
         ):
             current_run = _current_release_verification_run(state, release)
-            if current_run is not None and (
-                current_run.retry_requested_by or ""
-            ).startswith("agent:"):
+            if current_run is not None and (current_run.retry_requested_by or "").startswith(
+                "agent:"
+            ):
                 return (
                     f"Do not retry verification gate {current_run.id} as an agent: the "
                     "agent-requested retry already failed against the unchanged candidate "
@@ -6401,9 +6410,9 @@ def _release_next_action(state: TeamState, release: ReleasePackage) -> str:
             and failure.kind in {"infrastructure", "timeout"}
         ):
             current_run = _current_release_verification_run(state, release)
-            if current_run is not None and (
-                current_run.retry_requested_by or ""
-            ).startswith("agent:"):
+            if current_run is not None and (current_run.retry_requested_by or "").startswith(
+                "agent:"
+            ):
                 return "escalate_release_verification_recovery"
             return "retry_release_verification"
         if (
@@ -7542,8 +7551,7 @@ def _runtime_attention_metadata(
         reconciliation_context = [
             context
             for context in terminal_context
-            if context["kind"]
-            in {"task", "deliverable", "release_package", "dispatch", "session"}
+            if context["kind"] in {"task", "deliverable", "release_package", "dispatch", "session"}
         ]
     else:
         reconciliation_context = [
@@ -7623,9 +7631,7 @@ def _runtime_attention_links(
 ) -> dict[str, list[str]]:
     scope_team_ids = _runtime_attention_source_team_ids(state, row)
     extracted = _runtime_attention_payload_links(row)
-    links: dict[str, set[str]] = {
-        key: set(values) for key, values in extracted.items()
-    }
+    links: dict[str, set[str]] = {key: set(values) for key, values in extracted.items()}
 
     def add(key: str, *values: object) -> None:
         for value in values:

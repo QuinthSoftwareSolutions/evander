@@ -22,6 +22,12 @@ Agent MCP commands use a runtime identity and dispatch contract. The caller supp
 
 Both paths end in the same validated SQLite state, but they solve different problems:
 
+Routine persistence compares records within explicit table-owning groups and
+writes only changed owners and their ordered child rows. A no-match lease or
+Chat claim, or any other domain no-op, performs no normalized state write and
+does not advance the Team revision. Append-only audit or delivery records keep
+their own transaction and retention semantics.
+
 | Concern | Admin mutation | Team command |
 |---|---|---|
 | Human or automation identity | Admin authentication or workflow context | Ambient MCP session plus resolved Team scope |

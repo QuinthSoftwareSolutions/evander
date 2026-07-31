@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-31 - Team Wake Latency And Bounded Cleanup Evidence
+
+- Replaced routine full Team-state rewrites with record-level SQLite deltas;
+  no-op eligibility and Chat claim checks now preserve the state revision and
+  issue no normalized state writes.
+- Kept global correction, human-review assignment, and task-worktree cleanup
+  maintenance on scheduled wakes while targeted Chat and requested-agent wakes
+  proceed directly to eligibility and dispatch.
+- Bounded persisted ignored-file cleanup evidence to a deterministic 200-path
+  sample plus the exact file count, full-list SHA-256, byte totals, and a
+  truncation marker, including automatic migration of existing candidates.
+
 ## 2026-07-31 - Fresh Team Task Bases
 
 - Made first-time libvirt Team task worktrees fetch their configured managed-Git

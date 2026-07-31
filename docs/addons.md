@@ -1707,10 +1707,19 @@ is excluded; the selected backend then acquires its repository-local lock. It
 validates the deterministic path, exact branch and commit, Git registration,
 tracked changes, and non-ignored untracked files, then repeats the physical
 inspection immediately before removal. Ignored caches are inventoried with byte
-counts and may be reclaimed only after those checks pass. Refusals remain
-`recovery_required` with the exact path, branch, failed check, timestamp,
-inventory, and size evidence; successful cleanup is audited before obsolete
+counts and may be reclaimed only after those checks pass. Durable evidence
+retains the exact file count, byte totals, a SHA-256 of the complete sorted
+inventory, and at most the first 200 sorted paths;
+`ignored_file_inventory_truncated` says whether the sample is partial.
+Refusals remain `recovery_required` with the exact path, branch, failed check,
+timestamp, and bounded evidence; successful cleanup is audited before obsolete
 unreferenced Git-context metadata is pruned.
+
+`effect:team:wake-due-agents` accepts `run_global_maintenance`, defaulting to
+`true` for compatibility. The bundled scheduled wake leaves it enabled. The
+queued-Chat and requested-agent routes set it to `false` so unrelated global
+correction, review-assignment, and worktree-cleanup scans do not delay an
+immediate dispatch.
 
 - `review` — `team_publish_review_branch` can promote an ephemeral assignment
   branch after the assignment is completed or accepted with an `agent_branch`, or

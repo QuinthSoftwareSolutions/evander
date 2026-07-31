@@ -3116,6 +3116,9 @@ most once every five minutes.
 
 Persistent Team task worktrees use a separate durable cleanup candidate and are
 reconciled by `effect:team:wake-due-agents`. Set
+`run_global_maintenance: true` on a scheduled maintenance wake; the bundled
+targeted Chat and requested-agent wakes set it to `false` so cleanup cannot
+delay an immediate dispatch. Set
 `worktree_cleanup_dry_run: true` for safety audits only. Set it to `false` to
 allow an eligible candidate's first pass to attempt physical removal. Leave it
 omitted for the staged default: the first pass records a safe dry run, and a
@@ -3123,6 +3126,14 @@ later pass attempts physical removal only after
 `worktree_cleanup_retry_seconds`. Omitted therefore does not mean `true`.
 Regardless of mode, never bypass a deferred or `recovery_required` candidate
 with `git-repos maintenance` or a recursive delete.
+
+Team state schema 5 / SQLite schema 43 adds bounded cleanup evidence and
+record-level persistence. Deploy it with a coordinated Team restart: stop the
+gateway, Admin Web, trigger orchestrator, and effect orchestrator; take a
+consistent `state.db` backup; start one new-version process to run and validate
+the migration; then restart the remaining services, with the trigger
+orchestrator last. Do not run old and new Team readers concurrently during this
+migration.
 
 Issue, session, and Team deletion removes bindings and SSH authorization, not the shared
 repository. Unpublished refs and repositories are retained until an operator explicitly deletes

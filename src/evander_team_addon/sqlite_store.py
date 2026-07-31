@@ -22,12 +22,13 @@ from .models import (
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamState,
+    summarize_worktree_cleanup_inventory,
 )
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 42
+SQLITE_SCHEMA_VERSION = 43
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -93,10 +94,14 @@ class TeamStateSqliteStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 payload = self._read_payload(connection)
+                previous_state = TeamState.model_validate(payload)
                 result = updater(payload)
-                state = TeamState.model_validate(payload)
-                self._write_state(connection, state)
-                return result
+                state = self._persist_updated_payload(
+                    connection,
+                    previous_state=previous_state,
+                    payload=payload,
+                )
+                return _replace_state_result(result, state)
 
     def update_object_with_command_transaction(
         self,
@@ -106,13 +111,55 @@ class TeamStateSqliteStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 payload = self._read_payload(connection)
+                previous_state = TeamState.model_validate(payload)
+                transaction = TeamStateSqliteCommandTransaction(self, connection)
                 result = updater(
                     payload,
-                    TeamStateSqliteCommandTransaction(self, connection),
+                    transaction,
                 )
-                state = TeamState.model_validate(payload)
-                self._write_state(connection, state)
-                return result
+                state = self._persist_updated_payload(
+                    connection,
+                    previous_state=previous_state,
+                    payload=payload,
+                )
+                return _replace_state_result(result, state)
+
+    def _persist_updated_payload(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        previous_state: TeamState,
+        payload: dict[str, Any],
+    ) -> TeamState:
+        candidate = TeamState.model_validate(payload)
+        previous_content = _state_content_payload(previous_state)
+        candidate_content = _state_content_payload(candidate)
+        state_changed = previous_content != candidate_content
+        if not state_changed:
+            payload.clear()
+            payload.update(previous_state.model_dump(mode="json"))
+            return previous_state
+        updated_at = (
+            candidate.updated_at if candidate.updated_at != previous_state.updated_at else utc_now()
+        )
+        state = TeamState.model_validate(
+            candidate.model_copy(
+                update={
+                    "schema_version": SCHEMA_VERSION,
+                    "revision": previous_state.revision + 1,
+                    "updated_at": updated_at,
+                },
+                deep=True,
+            ).model_dump(mode="json")
+        )
+        payload.clear()
+        payload.update(state.model_dump(mode="json"))
+        self._write_state_delta(
+            connection,
+            previous_state=previous_state,
+            state=state,
+        )
+        return state
 
     def append_dispatch_activity(
         self,
@@ -1294,6 +1341,8 @@ class TeamStateSqliteStore:
                 )
                 if previous_schema_version < 31:
                     _migrate_legacy_outcome_kind_definitions(connection)
+                if previous_schema_version < 43:
+                    _migrate_worktree_cleanup_evidence(connection)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -1522,6 +1571,83 @@ class TeamStateSqliteStore:
                 ("state_schema_version", str(payload["schema_version"])),
                 ("revision", str(payload["revision"])),
                 ("updated_at", str(payload["updated_at"])),
+            ),
+        )
+
+    def _write_state_delta(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        previous_state: TeamState,
+        state: TeamState,
+    ) -> None:
+        previous = previous_state.model_dump(mode="json")
+        current = state.model_dump(mode="json")
+        changed_by_field: dict[str, set[str]] = {}
+        for fields, _delete_specs, _writer_name in _PERSISTENCE_GROUPS:
+            for field_name in fields:
+                before = previous[field_name]
+                after = current[field_name]
+                changed_by_field[field_name] = {
+                    record_id
+                    for record_id in set(before) | set(after)
+                    if _json_dumps(before.get(record_id)) != _json_dumps(after.get(record_id))
+                }
+
+        for fields, delete_specs, writer_name in _PERSISTENCE_GROUPS:
+            if not any(changed_by_field[field_name] for field_name in fields):
+                continue
+            for table_name, owner_column, field_name in delete_specs:
+                record_ids = sorted(changed_by_field[field_name])
+                if not record_ids:
+                    continue
+                placeholders = ", ".join("?" for _ in record_ids)
+                connection.execute(
+                    f"DELETE FROM {table_name} WHERE {owner_column} IN ({placeholders})",
+                    record_ids,
+                )
+            if writer_name == "_write_human_reviews":
+                self._write_human_reviews(
+                    connection,
+                    requests={
+                        record_id: current["human_review_requests"][record_id]
+                        for record_id in changed_by_field["human_review_requests"]
+                        if record_id in current["human_review_requests"]
+                    },
+                    decisions={
+                        record_id: current["human_review_decisions"][record_id]
+                        for record_id in changed_by_field["human_review_decisions"]
+                        if record_id in current["human_review_decisions"]
+                    },
+                    findings={
+                        record_id: current["human_review_findings"][record_id]
+                        for record_id in changed_by_field["human_review_findings"]
+                        if record_id in current["human_review_findings"]
+                    },
+                )
+                continue
+            field_name = fields[0]
+            writer = getattr(self, writer_name)
+            writer(
+                connection,
+                {
+                    record_id: current[field_name][record_id]
+                    for record_id in changed_by_field[field_name]
+                    if record_id in current[field_name]
+                },
+            )
+
+        connection.executemany(
+            """
+            INSERT INTO team_state_metadata(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (
+                ("sqlite_schema_version", str(SQLITE_SCHEMA_VERSION)),
+                ("state_schema_version", str(SCHEMA_VERSION)),
+                ("revision", str(state.revision)),
+                ("updated_at", state.updated_at.isoformat()),
             ),
         )
 
@@ -2082,7 +2208,9 @@ class TeamStateSqliteStore:
                 "context_rotation_reason": row["context_rotation_reason"],
                 "context_rotation_request_note": row["context_rotation_request_note"],
                 "last_handoff_summary": row["last_handoff_summary"],
-                "context_handoff_preparation_pending": _bool(row["context_handoff_preparation_pending"]),
+                "context_handoff_preparation_pending": _bool(
+                    row["context_handoff_preparation_pending"]
+                ),
                 "context_handoff_preparation_status": row["context_handoff_preparation_status"],
                 "last_agent_handoff_summary": row["last_agent_handoff_summary"],
                 "last_agent_handoff_at": row["last_agent_handoff_at"],
@@ -2394,9 +2522,7 @@ class TeamStateSqliteStore:
                 "review_cohort_id": row["review_cohort_id"],
                 "review_cohort_sealed_at": row["review_cohort_sealed_at"],
                 "rework_requested_at": row["rework_requested_at"],
-                "rework_requested_by_agent_id": row[
-                    "rework_requested_by_agent_id"
-                ],
+                "rework_requested_by_agent_id": row["rework_requested_by_agent_id"],
                 "rework_reason": row["rework_reason"],
                 "created_at": row["created_at"],
             }
@@ -3196,7 +3322,9 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
-    def _read_external_chat_ingress(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+    def _read_external_chat_ingress(
+        connection: sqlite3.Connection, payload: dict[str, Any]
+    ) -> None:
         for row in connection.execute(
             "SELECT * FROM team_external_chat_ingress ORDER BY created_at, id"
         ):
@@ -3887,9 +4015,7 @@ class TeamStateSqliteStore:
                     dispatch["session_id"],
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
-                    _json_dumps(
-                        dispatch.get("review_routing_authorities", [])
-                    ),
+                    _json_dumps(dispatch.get("review_routing_authorities", [])),
                     dispatch["status"],
                     dispatch["created_at"],
                     dispatch.get("prepared_at"),
@@ -4119,9 +4245,7 @@ class TeamStateSqliteStore:
                 "base_commit": row["base_commit"],
                 "agent_branch": row["agent_branch"],
                 "commit_sha": row["commit_sha"],
-                "dependency_git_sources": _json_loads(
-                    row["dependency_git_sources_json"]
-                ),
+                "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -4233,6 +4357,21 @@ class TeamStateSqliteCommandTransaction:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _state_content_payload(state: TeamState) -> dict[str, Any]:
+    payload = state.model_dump(mode="json")
+    for field_name in ("schema_version", "revision", "updated_at"):
+        payload.pop(field_name, None)
+    return payload
+
+
+def _replace_state_result(result: T, state: TeamState) -> T:
+    if isinstance(result, TeamState):
+        return state  # type: ignore[return-value]
+    if isinstance(result, tuple) and result and isinstance(result[0], TeamState):
+        return (state, *result[1:])  # type: ignore[return-value]
+    return result
 
 
 def _json_loads(value: str | None) -> Any:
@@ -4673,6 +4812,29 @@ def _migrate_human_review_relationships(connection: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        "SELECT id, payload_json FROM team_worktree_cleanup_candidates ORDER BY id"
+    ).fetchall()
+    for row in rows:
+        payload = _json_loads(row["payload_json"])
+        raw_inventory = payload.get("ignored_file_inventory") or []
+        if not isinstance(raw_inventory, list):
+            raw_inventory = []
+        inventory = [
+            item.strip() for item in raw_inventory if isinstance(item, str) and item.strip()
+        ]
+        sample, count, digest, truncated = summarize_worktree_cleanup_inventory(inventory)
+        payload["ignored_file_inventory"] = sample
+        payload["ignored_file_count"] = count
+        payload["ignored_file_inventory_sha256"] = digest
+        payload["ignored_file_inventory_truncated"] = truncated
+        connection.execute(
+            "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = ?",
+            (_json_dumps(payload), row["id"]),
+        )
+
+
 def _backfill_position_values(
     connection: sqlite3.Connection,
     *,
@@ -4778,11 +4940,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
 
     def project_team_id(project_id: str | None) -> str | None:
         project = projects.get(project_id) if project_id is not None else None
-        return (
-            optional_text(project.get("team_id"))
-            if isinstance(project, Mapping)
-            else None
-        )
+        return optional_text(project.get("team_id")) if isinstance(project, Mapping) else None
 
     def definition_for(
         *,
@@ -4828,9 +4986,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
             return existing
         known = _KNOWN_OUTCOME_KIND_MIGRATIONS.get(kind)
         name = (
-            known["name"]
-            if known is not None
-            else kind.replace("_", " ").replace("-", " ").title()
+            known["name"] if known is not None else kind.replace("_", " ").replace("-", " ").title()
         )
         description = (
             known["description"]
@@ -4846,12 +5002,11 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         evidence_requirements = (
             known["evidence_requirements"]
             if known is not None
-            else profile_guidance
-            or "Provide evidence sufficient to verify the claimed outcome."
+            else profile_guidance or "Provide evidence sufficient to verify the claimed outcome."
         )
-        digest = hashlib.sha256(
-            f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")
-        ).hexdigest()[:16]
+        digest = hashlib.sha256(f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")).hexdigest()[
+            :16
+        ]
         base_id = f"outcome-kind-{digest}"
         definition_id = base_id
         suffix = 2
@@ -4888,12 +5043,8 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
             "kind": kind,
             "name": name,
             "description": text(definition.get("description")),
-            "reference_requirements": text(
-                definition.get("reference_requirements")
-            ),
-            "evidence_requirements": text(
-                definition.get("evidence_requirements")
-            ),
+            "reference_requirements": text(definition.get("reference_requirements")),
+            "evidence_requirements": text(definition.get("evidence_requirements")),
         }
 
     for profile in profiles.values():
@@ -4902,12 +5053,16 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         team_id = optional_text(profile.get("team_id"))
         project_id = optional_text(profile.get("project_id"))
         criteria = profile.get("criteria")
-        guidance = "; ".join(
-            text(criterion.get("description") or criterion.get("label"))
-            for criterion in criteria
-            if isinstance(criterion, Mapping)
-            and text(criterion.get("description") or criterion.get("label"))
-        ) if isinstance(criteria, list) else ""
+        guidance = (
+            "; ".join(
+                text(criterion.get("description") or criterion.get("label"))
+                for criterion in criteria
+                if isinstance(criterion, Mapping)
+                and text(criterion.get("description") or criterion.get("label"))
+            )
+            if isinstance(criteria, list)
+            else ""
+        )
         for kind in kind_list(profile.get("required_outcome_kinds")):
             add_definition(
                 team_id=team_id,
@@ -4948,11 +5103,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         if not isinstance(deliverable, Mapping):
             continue
         task = tasks.get(optional_text(deliverable.get("task_id")))
-        project_id = (
-            optional_text(task.get("project_id"))
-            if isinstance(task, Mapping)
-            else None
-        )
+        project_id = optional_text(task.get("project_id")) if isinstance(task, Mapping) else None
         team_id = project_team_id(project_id)
         outcomes = deliverable.get("outcomes")
         if not isinstance(outcomes, list):
@@ -5004,11 +5155,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         if not isinstance(deliverable, Mapping):
             continue
         task = tasks.get(optional_text(deliverable.get("task_id")))
-        project_id = (
-            optional_text(task.get("project_id"))
-            if isinstance(task, Mapping)
-            else None
-        )
+        project_id = optional_text(task.get("project_id")) if isinstance(task, Mapping) else None
         team_id = project_team_id(project_id)
         outcomes = deliverable.get("outcomes")
         if not isinstance(outcomes, list):
@@ -5034,9 +5181,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         if not isinstance(profile, Mapping):
             continue
         team_id = optional_text(profile.get("team_id"))
-        deliverable = deliverables.get(
-            optional_text(review.get("deliverable_id"))
-        )
+        deliverable = deliverables.get(optional_text(review.get("deliverable_id")))
         task = (
             tasks.get(optional_text(deliverable.get("task_id")))
             if isinstance(deliverable, Mapping)
@@ -5524,6 +5669,249 @@ _STATE_TABLES = (
     "team_roles",
     "team_governance_groups",
     "team_teams",
+)
+
+# Each normalized TeamState table belongs to exactly one persistence group.  The
+# field name on each delete spec identifies the record IDs that own those rows.
+_PERSISTENCE_GROUPS = (
+    (
+        ("teams",),
+        (("team_team_projects", "team_id", "teams"), ("team_teams", "id", "teams")),
+        "_write_teams",
+    ),
+    (
+        ("governance_groups",),
+        (
+            ("team_governance_group_members", "governance_group_id", "governance_groups"),
+            ("team_governance_group_goals", "governance_group_id", "governance_groups"),
+            ("team_governance_groups", "id", "governance_groups"),
+        ),
+        "_write_governance_groups",
+    ),
+    (
+        ("governance_agenda",),
+        (("team_governance_agenda", "id", "governance_agenda"),),
+        "_write_governance_agenda",
+    ),
+    (
+        ("governance_runtimes",),
+        (("team_governance_runtimes", "governance_group_id", "governance_runtimes"),),
+        "_write_governance_runtimes",
+    ),
+    (
+        ("roles",),
+        (("team_role_permissions", "role_id", "roles"), ("team_roles", "id", "roles")),
+        "_write_roles",
+    ),
+    (
+        ("projects",),
+        (("team_project_goals", "project_id", "projects"), ("team_projects", "id", "projects")),
+        "_write_projects",
+    ),
+    (
+        ("agents",),
+        (("team_agent_subordinates", "agent_id", "agents"), ("team_agents", "id", "agents")),
+        "_write_agents",
+    ),
+    (
+        ("project_assignments",),
+        (("team_project_assignments", "id", "project_assignments"),),
+        "_write_project_assignments",
+    ),
+    (("stand_downs",), (("team_agent_stand_downs", "id", "stand_downs"),), "_write_stand_downs"),
+    (
+        ("agent_runtimes",),
+        (("team_agent_runtimes", "agent_id", "agent_runtimes"),),
+        "_write_agent_runtimes",
+    ),
+    (("cases",), (("team_cases", "id", "cases"),), "_write_cases"),
+    (
+        ("tasks",),
+        (
+            ("team_task_dependencies", "task_id", "tasks"),
+            ("team_task_deliverables", "task_id", "tasks"),
+            ("team_tasks", "id", "tasks"),
+        ),
+        "_write_tasks",
+    ),
+    (
+        ("deliverables",),
+        (
+            ("team_deliverable_artifacts", "deliverable_id", "deliverables"),
+            ("team_deliverable_reviews", "deliverable_id", "deliverables"),
+            ("team_deliverable_promotion_records", "deliverable_id", "deliverables"),
+            ("team_deliverable_sources", "deliverable_id", "deliverables"),
+            ("team_deliverables", "id", "deliverables"),
+        ),
+        "_write_deliverables",
+    ),
+    (
+        ("outcome_kind_definitions",),
+        (("team_outcome_kind_definitions", "id", "outcome_kind_definitions"),),
+        "_write_outcome_kind_definitions",
+    ),
+    (
+        ("review_profiles",),
+        (
+            ("team_review_profile_roles", "profile_id", "review_profiles"),
+            ("team_review_profile_criteria", "profile_id", "review_profiles"),
+            ("team_review_profiles", "id", "review_profiles"),
+        ),
+        "_write_review_profiles",
+    ),
+    (
+        ("review_requests",),
+        (
+            ("team_review_request_findings", "review_request_id", "review_requests"),
+            ("team_review_request_criteria", "review_request_id", "review_requests"),
+            ("team_review_requests", "id", "review_requests"),
+        ),
+        "_write_review_requests",
+    ),
+    (("inbox",), (("team_inbox", "id", "inbox"),), "_write_inbox"),
+    (
+        ("blockers",),
+        (
+            ("team_blocker_affected_tasks", "blocker_id", "blockers"),
+            ("team_blockers", "id", "blockers"),
+        ),
+        "_write_blockers",
+    ),
+    (
+        ("blocker_events",),
+        (("team_blocker_events", "id", "blocker_events"),),
+        "_write_blocker_events",
+    ),
+    (
+        ("action_records",),
+        (("team_action_records", "id", "action_records"),),
+        "_write_action_records",
+    ),
+    (
+        ("memories",),
+        (
+            ("team_memory_tags", "memory_id", "memories"),
+            ("team_memory_source_refs", "memory_id", "memories"),
+            ("team_memory_artifact_refs", "memory_id", "memories"),
+            ("team_memories", "id", "memories"),
+        ),
+        "_write_memories",
+    ),
+    (("conversations",), (("team_conversations", "id", "conversations"),), "_write_conversations"),
+    (
+        ("conversation_messages",),
+        (("team_conversation_messages", "id", "conversation_messages"),),
+        "_write_conversation_messages",
+    ),
+    (
+        ("external_chat_ingress",),
+        (("team_external_chat_ingress", "id", "external_chat_ingress"),),
+        "_write_external_chat_ingress",
+    ),
+    (
+        ("external_chat_deliveries",),
+        (("team_external_chat_deliveries", "id", "external_chat_deliveries"),),
+        "_write_external_chat_deliveries",
+    ),
+    (
+        ("chat_attachments",),
+        (("team_chat_attachments", "id", "chat_attachments"),),
+        "_write_chat_attachments",
+    ),
+    (
+        ("chat_attachment_policies",),
+        (("team_chat_attachment_policies", "directory_path", "chat_attachment_policies"),),
+        "_write_chat_attachment_policies",
+    ),
+    (
+        ("release_packages",),
+        (
+            ("team_release_deliverables", "package_id", "release_packages"),
+            ("team_release_artifacts", "package_id", "release_packages"),
+            ("team_release_feature_branches", "package_id", "release_packages"),
+            ("team_release_git_promotions", "package_id", "release_packages"),
+            ("team_release_packages", "id", "release_packages"),
+        ),
+        "_write_release_packages",
+    ),
+    (
+        ("release_verification_runs",),
+        (("team_release_verification_runs", "id", "release_verification_runs"),),
+        "_write_release_verification_runs",
+    ),
+    (
+        ("human_review_requests", "human_review_decisions", "human_review_findings"),
+        (
+            (
+                "team_human_review_request_configured_groups",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            (
+                "team_human_review_request_initial_users",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            (
+                "team_human_review_request_current_users",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            (
+                "team_human_review_request_explicit_users",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            ("team_human_review_requests", "id", "human_review_requests"),
+            (
+                "team_human_review_decision_confirmed_findings",
+                "human_review_decision_id",
+                "human_review_decisions",
+            ),
+            ("team_human_review_decisions", "id", "human_review_decisions"),
+            ("team_human_review_finding_targets", "finding_id", "human_review_findings"),
+            ("team_human_review_finding_proposals", "finding_id", "human_review_findings"),
+            ("team_human_review_findings", "id", "human_review_findings"),
+        ),
+        "_write_human_reviews",
+    ),
+    (
+        ("dispatches",),
+        (
+            ("team_dispatch_tasks", "dispatch_id", "dispatches"),
+            ("team_dispatch_blockers", "dispatch_id", "dispatches"),
+            ("team_dispatch_reviews", "dispatch_id", "dispatches"),
+            ("team_dispatch_inbox", "dispatch_id", "dispatches"),
+            ("team_dispatch_projects", "dispatch_id", "dispatches"),
+            ("team_dispatch_repositories", "dispatch_id", "dispatches"),
+            ("team_dispatches", "id", "dispatches"),
+        ),
+        "_write_dispatches",
+    ),
+    (
+        ("worktree_cleanup_candidates",),
+        (("team_worktree_cleanup_candidates", "id", "worktree_cleanup_candidates"),),
+        "_write_worktree_cleanup_candidates",
+    ),
+    (
+        ("ephemeral_assignments",),
+        (
+            ("team_ephemeral_assignment_artifacts", "assignment_id", "ephemeral_assignments"),
+            ("team_ephemeral_assignment_allowed_tools", "assignment_id", "ephemeral_assignments"),
+            ("team_ephemeral_assignments", "id", "ephemeral_assignments"),
+        ),
+        "_write_ephemeral_assignments",
+    ),
+    (
+        ("git_promotions",),
+        (("team_git_promotions", "id", "git_promotions"),),
+        "_write_git_promotions",
+    ),
+    (
+        ("git_work_contexts",),
+        (("team_git_work_contexts", "id", "git_work_contexts"),),
+        "_write_git_work_contexts",
+    ),
 )
 
 

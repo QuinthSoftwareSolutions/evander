@@ -31,6 +31,7 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     max_no_progress_count: ConfigValue | None = None
     low_priority_wake_after_cycles: ConfigValue | None = None
     respect_wake_interval: ConfigValue | None = None
+    run_global_maintenance: ConfigValue | None = None
     worktree_cleanup_limit: ConfigValue | None = None
     worktree_cleanup_grace_seconds: ConfigValue | None = None
     worktree_cleanup_retry_seconds: ConfigValue | None = None

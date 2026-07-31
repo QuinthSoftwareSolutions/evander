@@ -211,10 +211,12 @@ workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
 The `effect:team:wake-due-agents` node also reconciles durable task-worktree
-cleanup candidates. Its cleanup fields are:
+cleanup candidates when global maintenance is enabled. Its maintenance fields
+are:
 
 | Field | Default | Meaning |
 |---|---:|---|
+| `run_global_maintenance` | `true` | Run global correction, human-review assignment, and worktree-cleanup reconciliation before leasing. The bundled immediate Chat and requested-agent nodes set this to `false`; the scheduled node leaves it enabled. |
 | `worktree_cleanup_limit` | `10` | Maximum candidates reconciled in one wake cycle. |
 | `worktree_cleanup_grace_seconds` | `300` | Delay after a checkout becomes cleanup-eligible before its first safety pass. |
 | `worktree_cleanup_retry_seconds` | `300` | Delay before a dry-run-safe, deferred, or recovery-required candidate becomes eligible again. |

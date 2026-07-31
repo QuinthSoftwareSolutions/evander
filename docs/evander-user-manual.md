@@ -3198,6 +3198,9 @@ repository, path, branch, <code>HEAD</code>, and dirty-file state before and
 under the execution backend's repository lock. A refusal remains visible as a
 deferred or <code>recovery_required</code> candidate; managed-repository
 maintenance and recursive deletion are not substitutes for this lifecycle.
+The durable ignored-file evidence contains byte totals, the exact file count,
+a SHA-256 of the complete sorted inventory, and a deterministic sample of at
+most 200 paths rather than an unbounded path list.
 
 ## Administrator reference: artifact lifecycle
 
@@ -5250,6 +5253,12 @@ Agent MCP commands use a runtime identity and dispatch contract. The caller supp
 
 Both paths end in the same validated SQLite state, but they solve different problems:
 
+Routine persistence compares records within explicit table-owning groups and
+writes only changed owners and their ordered child rows. A no-match lease or
+Chat claim, or any other domain no-op, performs no normalized state write and
+does not advance the Team revision. Append-only audit or delivery records keep
+their own transaction and retention semantics.
+
 | Concern | Admin mutation | Team command |
 |---|---|---|
 | Human or automation identity | Admin authentication or workflow context | Ambient MCP session plus resolved Team scope |
@@ -5829,8 +5838,9 @@ removal and Git pruning succeed may Team prune obsolete, unreferenced context
 metadata.
 
 A refusal becomes <code>recovery_required</code> with the task, repository,
-exact path, branch, failed safety check, timestamp, inventory, and size
-evidence. Preserve and inspect that recovery item. Never bypass it with a broad
+exact path, branch, failed safety check, timestamp, byte totals, exact ignored
+file count, full-inventory SHA-256, and a deterministic sample of at most 200
+paths. Preserve and inspect that recovery item. Never bypass it with a broad
 recursive delete.
 
 ## Northstar wake sequence
@@ -5854,7 +5864,13 @@ The bundled pack coordinates:
 - persistent dispatch finalization;
 - Chat claims, governance wakes, ephemeral lifecycle, outbox publication, Git, release, and escalation routes described later.
 
-The primary runtime provider is <code>effect:team:wake-due-agents</code>. Operators should inspect its outputs, including leased agents and repository-preparation failures, rather than assuming a workflow run with no prompt is a model failure.
+The primary runtime provider is <code>effect:team:wake-due-agents</code>.
+<code>run_global_maintenance</code> defaults to enabled; the bundled scheduled
+wake uses that behavior, while targeted Chat and requested-agent routes disable
+it so global correction, reviewer-assignment, and worktree scans do not delay
+the requested agent. Operators should inspect effect outputs, including leased
+agents and repository-preparation failures, rather than assuming a workflow run
+with no prompt is a model failure.
 
 The Operations view and Team runtime-attention reads expose wake due state, leases, stand-down, context policy, no-progress counters, and downstream failures. Core session logs remain necessary for startup and provider failures.
 

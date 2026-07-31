@@ -304,10 +304,11 @@ before `git worktree remove` and pruning.
 
 Ignored caches may be reclaimed only after tracked and non-ignored untracked
 source checks pass. A refusal remains `recovery_required` with the exact task,
-repository, path, branch, failed check, timestamp, inventory, and byte counts.
-Successful physical removal is audited before obsolete unreferenced context
-metadata is pruned. Do not use managed-Git operation maintenance or a recursive
-delete as a substitute for this task-checkout recovery path.
+repository, path, branch, failed check, timestamp, byte counts, exact ignored
+file count, full-inventory SHA-256, and a deterministic sample of at most 200
+paths. Successful physical removal is audited before obsolete unreferenced
+context metadata is pruned. Do not use managed-Git operation maintenance or a
+recursive delete as a substitute for this task-checkout recovery path.
 
 ## Credentials
 

@@ -219,6 +219,9 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     candidate = next(iter(final_state.worktree_cleanup_candidates.values()))
     assert candidate.state == WorktreeCleanupState.SUCCEEDED
     assert candidate.ignored_file_inventory == [".cache/generated.bin"]
+    assert candidate.ignored_file_count == 1
+    assert candidate.ignored_file_inventory_sha256 is not None
+    assert candidate.ignored_file_inventory_truncated is False
     assert candidate.ignored_bytes == 64
     assert candidate.worktree_bytes == 512
     assert candidate.reclaimed_bytes == 512
@@ -229,6 +232,31 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert audit[0].audit_record_id == candidate.id
     assert audit[0].status.value == "success"
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
+
+
+def test_cleanup_retains_bounded_deterministic_inventory_evidence(tmp_path) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    outcome = _removed_outcome()
+    outcome["ignored_paths"] = [
+        f"node_modules/cache/{index:04d}.bin" for index in range(250, -1, -1)
+    ]
+    outcome["ignored_paths"].append("node_modules/cache/0042.bin")
+    backend = FakeCleanupBackend([outcome])
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+
+    result = TeamWorktreeCleanupService(repository, backend).reconcile(
+        now=now,
+        grace_seconds=0,
+        retry_seconds=0,
+        dry_run=False,
+    )
+
+    assert result.succeeded_count == 1
+    candidate = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert candidate.ignored_file_count == 251
+    assert candidate.ignored_file_inventory == sorted(set(outcome["ignored_paths"]))[:200]
+    assert candidate.ignored_file_inventory_sha256 is not None
+    assert candidate.ignored_file_inventory_truncated is True
 
 
 def test_automatic_cleanup_audits_then_removes_on_later_eligible_pass(
@@ -510,9 +538,7 @@ def test_cleanup_metadata_refresh_preserves_recovery_backoff_across_maintenance(
     )
 
     assert early.attempted_count == 0
-    still_deferred = next(
-        iter(repository.read().worktree_cleanup_candidates.values())
-    )
+    still_deferred = next(iter(repository.read().worktree_cleanup_candidates.values()))
     assert still_deferred.state == WorktreeCleanupState.RECOVERY_REQUIRED
     assert still_deferred.expected_head == current_commit
     assert still_deferred.attempt_count == 1
@@ -836,7 +862,7 @@ def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path)
         (
             '  if [ -z "$pinned_base_commit" ]; then',
             '    if [ "$base" = "HEAD" ]; then',
-            '      git fetch --no-tags origin HEAD',
+            "      git fetch --no-tags origin HEAD",
             "    else",
             '      git fetch --no-tags origin "refs/heads/$base"',
             "    fi",

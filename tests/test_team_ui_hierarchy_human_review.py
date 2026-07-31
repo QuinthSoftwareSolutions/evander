@@ -148,6 +148,17 @@ def test_task_ui_renders_self_contained_inherited_blocker_reasons() -> None:
     assert "task-inherited-blocker-card" in source
 
 
+def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "candidate.ignored_file_count" in source
+    assert "candidate.ignored_file_inventory_truncated" in source
+    assert "candidate.ignored_file_inventory_sha256" in source
+    assert "(candidate.ignored_file_inventory || []).slice(0, 5)" in source
+
+
 def test_human_review_non_approval_actions_bypass_required_checklist_validation() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"

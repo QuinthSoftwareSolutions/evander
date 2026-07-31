@@ -142,6 +142,9 @@ from evander_team_addon.services.agent_action_service import TeamAgentActionServ
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
+from evander_team_addon.services.human_correction_reconciliation_service import (
+    HumanCorrectionReconciliationService,
+)
 from evander_team_addon.services.runtime_service import (
     TeamRuntimeService,
     _has_prior_successful_ordinary_wake,
@@ -454,6 +457,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     }
     assert effects["team-wake-due-agents"]["low_priority_wake_after_cycles"] == 4
     assert effects["team-wake-due-agents"].get("respect_wake_interval", True) is True
+    assert effects["team-wake-due-agents"].get("run_global_maintenance", True) is True
+    assert effects["team-wake-queued-chat-message"]["run_global_maintenance"] is False
+    assert effects["team-wake-requested-agent"]["run_global_maintenance"] is False
     assert "outputs" not in effects["team-record-review-promotion"]
     assert effects["team-record-review-promotion"]["result_outputs"] == {
         "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
@@ -713,9 +719,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
         expected_revision=repo.read().revision,
     )
     subtree_stand_down_id = next(
-        item.id
-        for item in state.stand_downs.values()
-        if item.agent_id == "lead" and item.active
+        item.id for item in state.stand_downs.values() if item.agent_id == "lead" and item.active
     )
     state = runtime.stand_down_agent(
         agent_id="backend",
@@ -725,9 +729,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
         expected_revision=state.revision,
     )
     backend_stand_down_id = next(
-        item.id
-        for item in state.stand_downs.values()
-        if item.agent_id == "backend" and item.active
+        item.id for item in state.stand_downs.values() if item.agent_id == "backend" and item.active
     )
 
     with pytest.raises(TeamStateConflictError):
@@ -762,9 +764,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
         "delay_seconds": 0.0,
     }
     assert lead_wake.idempotency_key is not None
-    assert lead_wake.idempotency_key.endswith(
-        f":stand-down-revocation:{subtree_stand_down_id}"
-    )
+    assert lead_wake.idempotency_key.endswith(f":stand-down-revocation:{subtree_stand_down_id}")
     assert lead_wake.status.value == "completed"
     published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
     assert len(published) == 1
@@ -785,9 +785,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
     assert backend_wake.payload["delay_seconds"] == 0.0
     assert backend_wake.payload["payload"]["reason"] == "task_ready"
     assert backend_wake.idempotency_key is not None
-    assert backend_wake.idempotency_key.endswith(
-        f":stand-down-revocation:{backend_stand_down_id}"
-    )
+    assert backend_wake.idempotency_key.endswith(f":stand-down-revocation:{backend_stand_down_id}")
     assert backend_wake.status.value == "completed"
     published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
     assert len(published) == 2
@@ -799,10 +797,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
             revoked_by="operator:test",
             expected_revision=state.revision,
         )
-    assert (
-        len(repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE))
-        == 2
-    )
+    assert len(repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)) == 2
 
 
 def test_operator_stand_down_revocation_rolls_back_when_wake_outbox_fails(
@@ -1121,8 +1116,8 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     assert "projects" not in retained
     assert "outcome_kinds" not in retained
     assert "subordinates" not in retained
-    assert retained["tasks"][0]["deliverable_contract"] == (
-        fresh["tasks"][0]["deliverable_contract"]
+    assert (
+        retained["tasks"][0]["deliverable_contract"] == (fresh["tasks"][0]["deliverable_contract"])
     )
     assert "Task creation mandate for this wake" not in retained_prompt
     assert len(retained_prompt) < len(fresh_prompt)
@@ -1214,9 +1209,9 @@ def test_legacy_agent_action_enforces_and_persists_integration_sources(
         },
     )
     assert submitted["success"] is True
-    assert state.deliverables[
-        "deliverable-integrated"
-    ].source_deliverable_ids == ["deliverable-contribution"]
+    assert state.deliverables["deliverable-integrated"].source_deliverable_ids == [
+        "deliverable-contribution"
+    ]
 
 
 def test_legacy_agent_action_rejects_artifact_only_git_integration(
@@ -2034,6 +2029,50 @@ def test_wake_due_agents_cleanup_mode_distinguishes_omitted_from_explicit(
     assert observed == [expected_dry_run]
 
 
+def test_immediate_wake_can_skip_global_maintenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_maintenance(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("global maintenance ran on an immediate wake")
+
+    monkeypatch.setattr(
+        HumanCorrectionReconciliationService,
+        "reconcile",
+        _unexpected_maintenance,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers.reconcile_current_human_review_assignments",
+        _unexpected_maintenance,
+    )
+    monkeypatch.setattr(
+        TeamWorktreeCleanupService,
+        "reconcile",
+        _unexpected_maintenance,
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            run_global_maintenance=False,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["human_correction_reconciliation"] == {}
+    assert result["human_review_assignment_reconciliation"] == {}
+    assert result["worktree_cleanup"] == {}
+
+
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     _team_admin_service(repo).set_agent_avatar(
@@ -2572,8 +2611,7 @@ def test_wake_due_agents_provider_respects_review_artifact_space_read_grants(
     reread = repo.read()
     assert reread.review_requests["review-luke"].state == TeamRecordState.BLOCKED
     assert any(
-        blocker.source_id == "review-luke"
-        and blocker.reason_code == "review_preparation_failed"
+        blocker.source_id == "review-luke" and blocker.reason_code == "review_preparation_failed"
         for blocker in reread.blockers.values()
     )
 
@@ -2788,8 +2826,7 @@ def test_wake_due_agents_provider_reports_review_artifact_import_errors(
     reread = repo.read()
     assert reread.review_requests["review-luke"].state == TeamRecordState.BLOCKED
     assert any(
-        blocker.source_id == "review-luke"
-        and blocker.reason_code == "review_preparation_failed"
+        blocker.source_id == "review-luke" and blocker.reason_code == "review_preparation_failed"
         for blocker in reread.blockers.values()
     )
 
@@ -3157,10 +3194,7 @@ def test_reply_only_chat_does_not_consume_manual_rotation_baseline(
     reread = repo.read()
     assert reread.agent_runtimes["backend"].context_rotation_pending is True
     assert (
-        reread.conversation_messages[message.id].metadata.get(
-            "ordinary_context_seeded"
-        )
-        is not True
+        reread.conversation_messages[message.id].metadata.get("ordinary_context_seeded") is not True
     )
 
     def _complete_reply_only(state: TeamState) -> TeamState:
@@ -3237,12 +3271,7 @@ def test_every_wake_policy_applies_to_mutation_enabled_chat_and_seeds_context(
     reread = repo.read()
     assert reread.agent_runtimes["backend"].context_rotation_pending is False
     assert reread.agent_runtimes["backend"].last_thread_id == "mutation-chat-thread"
-    assert (
-        reread.conversation_messages[message.id].metadata[
-            "ordinary_context_seeded"
-        ]
-        is True
-    )
+    assert reread.conversation_messages[message.id].metadata["ordinary_context_seeded"] is True
     assert not _has_prior_successful_ordinary_wake(
         reread,
         reread.agents["backend"],
@@ -3315,9 +3344,7 @@ def test_every_wake_reply_only_chat_keeps_ordinary_rotation_pending(
     assert "Team context JSON:" not in str(resumer.calls[0]["prompt"])
     reread = repo.read()
     assert reread.agent_runtimes["backend"].context_rotation_pending is True
-    assert "ordinary_context_seeded" not in reread.conversation_messages[
-        message.id
-    ].metadata
+    assert "ordinary_context_seeded" not in reread.conversation_messages[message.id].metadata
 
 
 def test_mutation_chat_does_not_prepare_git_or_review_artifacts(
@@ -3343,9 +3370,7 @@ def test_mutation_chat_does_not_prepare_git_or_review_artifacts(
             deliverable_id="chat-review-deliverable",
             reviewer_agent_id="backend",
         )
-        state.deliverables["chat-review-deliverable"].review_request_ids = [
-            "chat-review"
-        ]
+        state.deliverables["chat-review-deliverable"].review_request_ids = ["chat-review"]
         return state
 
     repo.update(_seed_git_and_review)
@@ -3977,9 +4002,7 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "Composite review path:" in prompt
     assert "deliverable_contract.required_contribution_task_ids" in prompt
     assert "for a legacy non-integration parent, use its direct child_task_ids" in prompt
-    assert (
-        "assessment.contribution_coverage.required_source_deliverable_ids"
-    ) in prompt
+    assert ("assessment.contribution_coverage.required_source_deliverable_ids") in prompt
     assert "repeat this procedure recursively" in prompt
     assert "coverage alone is not proof of correct integration" in prompt
     assert "decide blocked and name the missing record IDs" in prompt
@@ -4194,9 +4217,7 @@ def test_build_prompt_escalates_after_agent_requested_verification_retry_fails(
     )
     lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
 
-    release = _team_context_from_prompt(_build_prompt(lease))["release_packages"][
-        "rel-retry"
-    ]
+    release = _team_context_from_prompt(_build_prompt(lease))["release_packages"]["rel-retry"]
     assert release["next_action"] == "escalate_release_verification_recovery"
     assert "Do not retry" in release["next_action_hint"]
     assert "concrete infrastructure recovery requirement" in release["next_action_hint"]
@@ -5698,9 +5719,7 @@ def test_context_handoff_completion_without_summary_continues_fresh_rotation(
     preparation_dispatch_id = first["dispatches"][0]["dispatch_id"]
     assert resumer.calls[0]["resume_mode"] == "same_context"
 
-    finalized_state, finalized = _team_runtime_service(
-        repo
-    ).finalize_agent_dispatch_from_activity(
+    finalized_state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id=preparation_dispatch_id,
     )
@@ -6605,7 +6624,12 @@ def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
         nonlocal calls
         calls += 1
         if calls == 1:
-            repo.update(lambda state: state)
+
+            def _concurrent_change(state: TeamState) -> TeamState:
+                state.projects["project"].name = "Project updated concurrently"
+                return state
+
+            repo.update(_concurrent_change)
         return original(self, **kwargs)
 
     monkeypatch.setattr(TeamAdminService, "create_git_work_context_with_id", _race_once)
@@ -7892,9 +7916,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     assert task.integration_boundary is True
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
-    assert task.deliverable_contract.required_contribution_task_ids == [
-        "workflow-dependency"
-    ]
+    assert task.deliverable_contract.required_contribution_task_ids == ["workflow-dependency"]
     assert reread.cases["case"].task_ids == ["workflow-task"]
 
 

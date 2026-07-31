@@ -273,6 +273,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "wake_interval_seconds": 900,
                 "max_no_progress_count": 3,
                 "low_priority_wake_after_cycles": 4,
+                "run_global_maintenance": False,
                 "resume_mode": "same_context",
             },
             {
@@ -318,6 +319,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "max_no_progress_count": 3,
                 "low_priority_wake_after_cycles": 4,
                 "respect_wake_interval": False,
+                "run_global_maintenance": False,
                 "resume_mode": "same_context",
             },
             {

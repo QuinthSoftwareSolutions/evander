@@ -212,6 +212,9 @@ repository, path, branch, <code>HEAD</code>, and dirty-file state before and
 under the execution backend's repository lock. A refusal remains visible as a
 deferred or <code>recovery_required</code> candidate; managed-repository
 maintenance and recursive deletion are not substitutes for this lifecycle.
+The durable ignored-file evidence contains byte totals, the exact file count,
+a SHA-256 of the complete sorted inventory, and a deterministic sample of at
+most 200 paths rather than an unbounded path list.
 
 ## Administrator reference: artifact lifecycle
 

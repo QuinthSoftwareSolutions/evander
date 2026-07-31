@@ -14539,12 +14539,21 @@ function renderTaskWorktreeMapping(task) {
 
 function renderTaskCleanupCandidate(candidate) {
   const recovery = text(candidate.state) === "recovery_required";
+  const ignoredCount = Number(candidate.ignored_file_count || 0);
+  const ignoredSample = (candidate.ignored_file_inventory || []).slice(0, 5);
   const details = [
     `cleanup ${candidate.state}`,
     candidate.last_safety_check ? `check ${candidate.last_safety_check}` : "",
     candidate.last_error,
     candidate.worktree_path,
     candidate.branch,
+    ignoredCount
+      ? `${ignoredCount} ignored file${ignoredCount === 1 ? "" : "s"}${candidate.ignored_file_inventory_truncated ? " (sampled)" : ""}`
+      : "",
+    candidate.ignored_file_inventory_sha256
+      ? `inventory sha256 ${candidate.ignored_file_inventory_sha256}`
+      : "",
+    ignoredSample.length ? `sample ${ignoredSample.join(", ")}` : "",
     Number(candidate.reclaimed_bytes || 0) ? `reclaimed ${candidate.reclaimed_bytes} bytes` : "",
   ].filter(Boolean).join(" - ");
   return `<div class="${recovery ? "task-cleanup-recovery" : "meta-line"}">${escapeHtml(details)}</div>`;
