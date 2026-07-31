@@ -1845,10 +1845,17 @@ candidate match. There is no MCP human-decision tool. Admin routes are:
 
 - `GET /api/addons/team-addon/human-review-requests?assigned_to=me`
 - `GET /api/addons/team-addon/human-review-requests/{id}`
+- `GET /api/addons/team-addon/human-review-requests/{id}/review-bundle`
 - `POST /api/addons/team-addon/human-review-requests/{id}/decisions`
 - `POST /api/addons/team-addon/human-review-requests/{id}/reassign`
 - `POST /api/addons/team-addon/human-review-requests/{id}/resume`
 - internal authenticated `POST .../{id}/preparation-result`
+
+The review-bundle route is available only to a real authenticated human-review
+reader. It writes a source-only ZIP for the exact pinned candidate and appends
+`EVANDER-REVIEW.json` with its release/request provenance and test
+instructions. It includes neither Git history nor credentials, and refuses a
+release ref that no longer matches the recorded candidate commit and tree.
 
 `blocked` preserves the same request and candidate for source-aware recovery.
 `changes_requested` atomically records the decision and findings, ends the

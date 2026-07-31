@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import threading
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 
@@ -1566,6 +1567,49 @@ def test_materialize_candidate_checkout_creates_exact_detached_checkout_without_
     )
     assert internal_path not in git_metadata
     assert str(service.runtime_dir / "git-worktrees") not in git_metadata
+
+
+def test_export_pinned_source_archive_writes_verified_source_only_zip(
+    tmp_path: Path,
+) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team", str(source))
+    tree_hash = _run("git", "rev-parse", f"{commit_sha}^{{tree}}", cwd=source)
+    archive_path = tmp_path / "candidate-review.zip"
+
+    result = service.export_pinned_source_archive(
+        record["managed_repo_id"],
+        "root/team/project",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+        archive_path=archive_path,
+    )
+
+    assert result == {
+        "managed_repo_id": record["managed_repo_id"],
+        "directory_path": "root/team/project",
+        "source_ref": "refs/heads/main",
+        "commit_sha": commit_sha,
+        "tree_hash": tree_hash,
+    }
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["README.md"]
+        assert archive.read("README.md") == b"first\n"
+
+    _commit(source, "README.md", "second\n", "move main")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(record["managed_repo_id"])
+    with pytest.raises(ManagedGitConflictError, match=f"not {commit_sha}"):
+        service.export_pinned_source_archive(
+            record["managed_repo_id"],
+            "root/team/project",
+            source_ref="refs/heads/main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            archive_path=tmp_path / "moved-candidate-review.zip",
+        )
 
 
 def test_materialize_candidate_checkout_refuses_existing_or_mismatched_targets(

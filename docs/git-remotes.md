@@ -93,6 +93,13 @@ it is configuration identity, not a private repository path. The resulting check
 canonical repository URL as `origin`; it retains no private managed-repository
 or temporary-worktree path.
 
+When the Admin Web is remote, an authorized reviewer can instead use
+**Download review bundle** on the human-review request. The ZIP is a
+source-only export of the verified candidate and includes
+`EVANDER-REVIEW.json` with the pinned ref, commit, tree, and release-review
+provenance. It is not a Git checkout: unpack it and run the repository's usual
+dependency setup locally, such as `dotnet restore` or `npm ci` where relevant.
+
 The explicit refresh command is an operator diagnostic and recovery surface. Normal managed Git
 reads do not require it: restricted SSH keys provisioned by Evander require the host-owned
 `evander-managed-git-refresh.service` to refresh the exact authorized repository before

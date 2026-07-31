@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shlex
+import tempfile
+import zipfile
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
@@ -18,6 +22,10 @@ from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from evander.addons import AddonContext
+from evander.admin.services.managed_git_common import (
+    ManagedGitConflictError,
+    ManagedGitNotFoundError,
+)
 from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     TEAM_CHATS_READ_ALL_PERMISSION,
@@ -2709,6 +2717,110 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             human_review_request_detail_payload(state, human_request)
         )
 
+    async def download_human_review_bundle(request: Request) -> FileResponse | JSONResponse:
+        identity = _strict_human_identity_from_request(context.auth, request)
+        state = repository.read()
+        human_request = state.human_review_requests.get(
+            request.path_params["human_review_request_id"]
+        )
+        if human_request is None:
+            return JSONResponse(
+                {"error": "human review request not found"},
+                status_code=404,
+            )
+        if not _can_read_human_review_request(
+            context.auth,
+            request,
+            human_request,
+            identity=identity,
+        ):
+            raise PermissionError("Human review request is not assigned to this user")
+
+        release = state.release_packages.get(human_request.release_package_id)
+        if release is None:
+            return JSONResponse(
+                {"error": "release package not found"},
+                status_code=404,
+            )
+        project = state.projects.get(release.project_id)
+        git = getattr(project, "git", None)
+        candidate_sha = str(getattr(release, "candidate_commit_sha", "") or "").strip()
+        candidate_tree = str(getattr(release, "candidate_tree_hash", "") or "").strip()
+        release_branch = str(getattr(release, "release_branch", "") or "").strip()
+        if (
+            git is None
+            or not candidate_sha
+            or not candidate_tree
+            or not release_branch
+            or human_request.candidate_commit_sha != candidate_sha
+            or human_request.candidate_tree_hash != candidate_tree
+        ):
+            raise ValueError(
+                "Human review request does not have an exportable pinned release candidate"
+            )
+        manifest = getattr(release, "manifest", None)
+        if manifest is not None and (
+            str(getattr(manifest, "candidate_commit_sha", "") or "").strip() != candidate_sha
+            or str(getattr(manifest, "candidate_tree_hash", "") or "").strip() != candidate_tree
+        ):
+            raise ValueError("Release manifest does not match the pinned human-review candidate")
+        managed_git_admin = getattr(context.service, "managed_git_admin", None)
+        export_archive = getattr(managed_git_admin, "export_pinned_source_archive", None)
+        if not callable(export_archive):
+            return JSONResponse(
+                {"error": "Pinned source bundle export is unavailable"},
+                status_code=503,
+            )
+
+        release_ref = (
+            release_branch if release_branch.startswith("refs/") else f"refs/heads/{release_branch}"
+        )
+        descriptor, archive_name = tempfile.mkstemp(
+            prefix="evander-human-review-",
+            suffix=".zip",
+        )
+        os.close(descriptor)
+        archive_path = Path(archive_name)
+        try:
+            await run_in_threadpool(
+                export_archive,
+                git.managed_repo_id,
+                git.directory_path,
+                source_ref=release_ref,
+                commit_sha=candidate_sha,
+                tree_hash=candidate_tree,
+                archive_path=archive_path,
+            )
+            _append_human_review_bundle_manifest(
+                archive_path,
+                _human_review_bundle_manifest(
+                    human_request=human_request,
+                    release=release,
+                    project=project,
+                    source_ref=release_ref,
+                ),
+            )
+        except ManagedGitNotFoundError as exc:
+            _delete_temporary_file(archive_path)
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except ManagedGitConflictError as exc:
+            _delete_temporary_file(archive_path)
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except Exception:
+            _delete_temporary_file(archive_path)
+            raise
+
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=_human_review_bundle_filename(release.id),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+            background=BackgroundTask(_delete_temporary_file, archive_path),
+        )
+
     async def decide_human_review(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         _reconcile_human_review_request_assignment(
@@ -3599,6 +3711,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/human-review-requests/{human_review_request_id}",
             get_human_review_request,
+            methods=["GET"],
+        ),
+        route(
+            "/human-review-requests/{human_review_request_id}/review-bundle",
+            download_human_review_bundle,
             methods=["GET"],
         ),
         route(
@@ -5337,6 +5454,67 @@ def _release_candidate_checkout_metadata(
         "candidate_tree_hash": candidate_tree,
         "checkout_command": checkout_command,
     }
+
+
+def _human_review_bundle_manifest(
+    *,
+    human_request: Any,
+    release: Any,
+    project: Any | None,
+    source_ref: str,
+) -> dict[str, Any]:
+    release_manifest = getattr(release, "manifest", None)
+    release_manifest_payload = (
+        release_manifest.model_dump(mode="json")
+        if release_manifest is not None and callable(getattr(release_manifest, "model_dump", None))
+        else None
+    )
+    requirement = getattr(human_request, "requirement_snapshot", None)
+    git = getattr(project, "git", None)
+    return {
+        "schema": "evander.team.human-review-bundle/v1",
+        "release_package_id": str(getattr(release, "id", "") or ""),
+        "human_review_request_id": str(getattr(human_request, "id", "") or ""),
+        "project": {
+            "id": str(getattr(project, "id", "") or ""),
+            "name": str(getattr(project, "name", "") or ""),
+            "directory_path": str(getattr(git, "directory_path", "") or ""),
+        },
+        "candidate": {
+            "source_ref": source_ref,
+            "commit_sha": str(getattr(release, "candidate_commit_sha", "") or ""),
+            "tree_hash": str(getattr(release, "candidate_tree_hash", "") or ""),
+        },
+        "test_instructions": str(getattr(requirement, "test_instructions", "") or ""),
+        "release_manifest": release_manifest_payload,
+    }
+
+
+def _append_human_review_bundle_manifest(
+    archive_path: Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    with zipfile.ZipFile(archive_path, mode="a", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "EVANDER-REVIEW.json",
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        )
+
+
+def _human_review_bundle_filename(release_package_id: str) -> str:
+    safe_release_id = re.sub(
+        r"[^A-Za-z0-9._-]+",
+        "-",
+        str(release_package_id or ""),
+    ).strip(".-")
+    return f"{safe_release_id or 'release'}-review-bundle.zip"
+
+
+def _delete_temporary_file(path: str | Path) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _auth_can(

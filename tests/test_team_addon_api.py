@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import zipfile
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from evander.addons import AddonContext
+from evander.admin.services.managed_git_common import ManagedGitConflictError
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.events.internal import InternalEventBus, internal_event_store_path
@@ -1208,6 +1210,169 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     assert managed_repo_calls == [
         ("mr_0123456789abcdefabcd", "root/team")
     ]
+
+
+def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _attach_project_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team",
+        )
+        return state
+
+    repo.update(_attach_project_git)
+    _attach_pending_human_review(repo)
+    archive_calls: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        @staticmethod
+        def export_pinned_source_archive(
+            managed_repo_id: str,
+            directory_path: str,
+            *,
+            source_ref: str,
+            commit_sha: str,
+            tree_hash: str,
+            archive_path: Path,
+        ) -> dict[str, str]:
+            archive_calls.append(
+                {
+                    "managed_repo_id": managed_repo_id,
+                    "directory_path": directory_path,
+                    "source_ref": source_ref,
+                    "commit_sha": commit_sha,
+                    "tree_hash": tree_hash,
+                }
+            )
+            with zipfile.ZipFile(archive_path, mode="w") as archive:
+                archive.writestr("src/Feature.cs", "namespace ReviewBundle;\n")
+            return {
+                "managed_repo_id": managed_repo_id,
+                "directory_path": directory_path,
+                "source_ref": source_ref,
+                "commit_sha": commit_sha,
+                "tree_hash": tree_hash,
+            }
+
+    addon_service = SimpleNamespace(managed_git_admin=_ManagedGit())
+    reviewer_auth = _HumanApiAuthStub(login="reviewer@example.com")
+    reviewer_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=reviewer_auth,
+                    service=addon_service,
+                )
+            )
+        )
+    )
+
+    response = reviewer_client.get("/human-review-requests/human-review-1/review-bundle")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/zip")
+    assert response.headers["cache-control"] == "no-store"
+    assert 'filename="release-1-review-bundle.zip"' in response.headers["content-disposition"]
+    assert archive_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root/team",
+            "source_ref": "refs/heads/team/team/releases/release-1",
+            "commit_sha": "candidate-sha",
+            "tree_hash": "candidate-tree",
+        }
+    ]
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["src/Feature.cs", "EVANDER-REVIEW.json"]
+        assert archive.read("src/Feature.cs") == b"namespace ReviewBundle;\n"
+        manifest = json.loads(archive.read("EVANDER-REVIEW.json"))
+    assert {
+        key: manifest[key]
+        for key in (
+            "schema",
+            "release_package_id",
+            "human_review_request_id",
+            "project",
+            "candidate",
+            "test_instructions",
+        )
+    } == {
+        "schema": "evander.team.human-review-bundle/v1",
+        "release_package_id": "release-1",
+        "human_review_request_id": "human-review-1",
+        "project": {
+            "id": "project",
+            "name": "Project",
+            "directory_path": "root/team",
+        },
+        "candidate": {
+            "source_ref": "refs/heads/team/team/releases/release-1",
+            "commit_sha": "candidate-sha",
+            "tree_hash": "candidate-tree",
+        },
+        "test_instructions": "Exercise the candidate before deciding.",
+    }
+    assert manifest["release_manifest"]["candidate_commit_sha"] == "candidate-sha"
+    assert manifest["release_manifest"]["candidate_tree_hash"] == "candidate-tree"
+    assert manifest["release_manifest"]["release_branch"] == "team/team/releases/release-1"
+    assert [
+        deliverable["deliverable_id"]
+        for deliverable in manifest["release_manifest"]["deliverables"]
+    ] == ["deliverable"]
+    assert (
+        manifest["release_manifest"]["human_review_requirement"]["test_instructions"]
+        == "Exercise the candidate before deciding."
+    )
+
+    outsider_auth = _HumanApiAuthStub(login="outsider@example.com")
+    outsider_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=outsider_auth,
+                    service=addon_service,
+                )
+            )
+        )
+    )
+    assert (
+        outsider_client.get("/human-review-requests/human-review-1/review-bundle").status_code
+        == 403
+    )
+    assert len(archive_calls) == 1
+
+    class _MovedReleaseManagedGit:
+        @staticmethod
+        def export_pinned_source_archive(*_args, **_kwargs) -> None:
+            raise ManagedGitConflictError("Release ref no longer equals the pinned candidate")
+
+    moved_release_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=reviewer_auth,
+                    service=SimpleNamespace(managed_git_admin=_MovedReleaseManagedGit()),
+                )
+            )
+        )
+    )
+    moved_release = moved_release_client.get(
+        "/human-review-requests/human-review-1/review-bundle"
+    )
+    assert moved_release.status_code == 409
+    assert moved_release.json()["error"] == "Release ref no longer equals the pinned candidate"
 
 
 def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(

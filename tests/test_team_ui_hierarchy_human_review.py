@@ -163,6 +163,22 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     ) in source
 
 
+def test_human_review_card_offers_a_pinned_source_bundle_download() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    stylesheet = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function renderHumanReviewBundleDownload(request)" in source
+    assert "Download review bundle" in source
+    assert "human-review-requests/${encodeURIComponent(requestId)}/review-bundle" in source
+    assert "dotnet restore" in source
+    assert "npm ci" in source
+    assert ".human-review-bundle-download" in stylesheet
+
+
 def test_delivery_workspace_defaults_to_attention_and_exposes_project_focus() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"

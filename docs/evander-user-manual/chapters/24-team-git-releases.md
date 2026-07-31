@@ -296,6 +296,7 @@ The Admin surface is:
 ```text
 GET  /api/addons/team-addon/human-review-requests?assigned_to=me
 GET  /api/addons/team-addon/human-review-requests/<id>
+GET  /api/addons/team-addon/human-review-requests/<id>/review-bundle
 POST /api/addons/team-addon/human-review-requests/<id>/decisions
 POST /api/addons/team-addon/human-review-requests/<id>/reassign
 POST /api/addons/team-addon/human-review-requests/<id>/resume
@@ -304,6 +305,14 @@ POST /api/addons/team-addon/human-review-requests/<id>/resume
 Use **My Human Reviews** and the release detail to compare the candidate,
 verification, agent decisions, contribution graph, test target, checklist,
 carried findings, and publication state before deciding.
+
+For a remotely hosted control plane, **Download review bundle** downloads a
+source-only ZIP of that same pinned candidate. It contains no Git history or
+credentials; `EVANDER-REVIEW.json` records the request, release, immutable ref,
+commit, tree, test instructions, and release manifest. Unpack it locally and
+run the repository's normal setup, such as `dotnet restore` and `npm ci` where
+applicable. The export fails rather than silently substituting a moved release
+ref.
 
 The authorized release detail also includes **Test this candidate**. It shows
 the canonical repository, immutable internal release ref, exact candidate

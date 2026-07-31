@@ -6546,6 +6546,40 @@ label textarea {
   background: var(--panel-alt);
 }
 
+.human-review-bundle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin: 0.65rem 0;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.human-review-bundle-download {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.2rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.human-review-bundle-download:hover {
+  background: var(--accent-strong);
+}
+
+.human-review-bundle-download:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
 .human-review-request-focused {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(23, 111, 122, 0.24);

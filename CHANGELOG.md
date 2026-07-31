@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-31 - Human Review Source Bundles
+
+- Added a **Download review bundle** action to Team human-review cards. It
+  serves an authorized reviewer a source-only ZIP for the exact pinned release
+  candidate, with an `EVANDER-REVIEW.json` provenance manifest and no Git
+  history or credentials.
+
 ## 2026-07-31 - Agent Release-Review Corrections
 
 - Restored configured-policy review routing for candidate-correction leaves: top-level

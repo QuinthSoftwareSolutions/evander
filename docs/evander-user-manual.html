@@ -14105,6 +14105,7 @@ unblock a human request.</p>
 <p>The Admin surface is:</p>
 <pre class="text"><code>GET  /api/addons/team-addon/human-review-requests?assigned_to=me
 GET  /api/addons/team-addon/human-review-requests/&lt;id&gt;
+GET  /api/addons/team-addon/human-review-requests/&lt;id&gt;/review-bundle
 POST /api/addons/team-addon/human-review-requests/&lt;id&gt;/decisions
 POST /api/addons/team-addon/human-review-requests/&lt;id&gt;/reassign
 POST /api/addons/team-addon/human-review-requests/&lt;id&gt;/resume</code></pre>
@@ -14112,6 +14113,15 @@ POST /api/addons/team-addon/human-review-requests/&lt;id&gt;/resume</code></pre>
 compare the candidate, verification, agent decisions, contribution
 graph, test target, checklist, carried findings, and publication state
 before deciding.</p>
+<p>For a remotely hosted control plane, <strong>Download review
+bundle</strong> downloads a source-only ZIP of that same pinned
+candidate. It contains no Git history or credentials;
+<code>EVANDER-REVIEW.json</code> records the request, release, immutable
+ref, commit, tree, test instructions, and release manifest. Unpack it
+locally and run the repository&#39;s normal setup, such as
+<code>dotnet restore</code> and <code>npm ci</code> where applicable.
+The export fails rather than silently substituting a moved release
+ref.</p>
 <p>The authorized release detail also includes <strong>Test this
 candidate</strong>. It shows the canonical repository, immutable
 internal release ref, exact candidate commit and tree, and a copyable

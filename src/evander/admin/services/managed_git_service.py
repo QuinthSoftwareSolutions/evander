@@ -1183,6 +1183,57 @@ class ManagedGitAdminService:
             "detached": True,
         }
 
+    def export_pinned_source_archive(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str,
+        commit_sha: str,
+        tree_hash: str,
+        archive_path: str | Path,
+    ) -> dict[str, Any]:
+        """Write a source-only ZIP for one verified immutable Git snapshot.
+
+        The caller owns the destination and is responsible for cleaning it up.
+        Resolving the ref before archiving deliberately fails closed if a mutable
+        release ref no longer denotes the recorded candidate.
+        """
+
+        snapshot = self.resolve_snapshot(
+            managed_repo_id,
+            directory_path,
+            source_ref=source_ref,
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+        )
+        record = self._require_scoped_record(
+            managed_repo_id,
+            snapshot["directory_path"],
+        )
+        target = Path(archive_path)
+        if target.is_symlink():
+            raise ValueError("archive_path must not be a symlink")
+        if not target.parent.is_dir():
+            raise ValueError("archive_path parent must be an existing directory")
+
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            self._run_git(
+                [
+                    "git",
+                    "--git-dir",
+                    str(self._bare_path(record)),
+                    "archive",
+                    "--format=zip",
+                    f"--output={target}",
+                    str(snapshot["commit_sha"]),
+                ],
+                env=self._safe_worktree_environment(),
+            )
+        if not target.is_file():
+            raise RuntimeError("Git did not create the requested source archive")
+        return snapshot
+
     def pin_snapshot(
         self,
         managed_repo_id: str,

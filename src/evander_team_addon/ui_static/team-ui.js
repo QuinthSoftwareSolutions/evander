@@ -16584,6 +16584,7 @@ function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
       <div class="meta-line">Assigned reviewers: ${escapeHtml([...(assignment.explicitly_assigned_user_ids || []), ...(assignment.eligible_user_ids || [])].filter((value, index, values_) => values_.indexOf(value) === index).length || "none")}</div>
       <div class="meta-line">Preparation mode ${escapeHtml(humanizeToken(request.requirement_snapshot?.preparation_mode || "manual"))} · ${checklist.length} checklist item${checklist.length === 1 ? "" : "s"}</div>
       ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${escapeHtml(request.requirement_snapshot.test_instructions)}</div>` : ""}
+      ${renderHumanReviewBundleDownload(request)}
       ${renderHumanReviewTarget(target)}
       ${renderHumanChecklistHistory(checklist)}
       ${renderHumanDecisionHistory(decisions)}
@@ -16603,6 +16604,20 @@ function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
         disclosureKey: teamDisclosureKey("human-review", releaseId || request.release_package_id, request.id, "technical"),
       })}
     </article>
+  `;
+}
+
+function renderHumanReviewBundleDownload(request) {
+  const requestId = text(request.id);
+  if (!requestId) {
+    return "";
+  }
+  const href = `${API_BASE}/human-review-requests/${encodeURIComponent(requestId)}/review-bundle`;
+  return `
+    <div class="human-review-bundle">
+      <a class="human-review-bundle-download" href="${escapeAttr(href)}" download>Download review bundle</a>
+      <span class="meta-line">Source ZIP for this pinned candidate. Unpack it, then run the normal setup such as <code>dotnet restore</code> and <code>npm ci</code> where applicable.</span>
+    </div>
   `;
 }
 
