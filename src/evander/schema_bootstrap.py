@@ -1152,6 +1152,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
     },
     "effect:communication:send-message": {
         "success": {"type": "boolean"},
+        "error_message": {"type": ["string", "null"]},
+        "error_class": {"type": ["string", "null"]},
         "provider": {"type": "string"},
         "communication_target_id": {"type": "string"},
         "status": {"type": "string"},

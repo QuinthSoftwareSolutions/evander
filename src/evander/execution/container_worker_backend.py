@@ -22,6 +22,7 @@ from evander.worker.models import (
     WorkerResourceLimits,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskDependencyGitSource,
     WorkerTaskWorktreeCleanupRecord,
     WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRecord,
@@ -289,6 +290,9 @@ class ContainerWorkerVmExecutionBackend:
         worktree_name: str,
         branch: str,
         base_ref: str,
+        expected_base_commit_sha: str | None = None,
+        expected_base_tree_hash: str | None = None,
+        dependency_git_sources: list[dict[str, str]] | None = None,
     ) -> WorkerTaskWorktreeRecord:
         return self.client.prepare_task_worktree(
             session_id,
@@ -297,6 +301,12 @@ class ContainerWorkerVmExecutionBackend:
                 worktree_name=worktree_name,
                 branch=branch,
                 base_ref=base_ref,
+                expected_base_commit_sha=expected_base_commit_sha,
+                expected_base_tree_hash=expected_base_tree_hash,
+                dependency_git_sources=[
+                    WorkerTaskDependencyGitSource.model_validate(source)
+                    for source in dependency_git_sources or []
+                ],
             ),
         )
 
@@ -588,6 +598,11 @@ class ContainerWorkerVmExecutionBackend:
         ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]
+        failure_cause = getattr(record, "failure_cause", None)
+        if failure_cause is not None:
+            metadata["worker_failure_cause"] = getattr(
+                failure_cause, "value", str(failure_cause)
+            )
         if getattr(record, "error", None):
             metadata["worker_error"] = str(record.error)
         metadata["worker_status"] = record.status

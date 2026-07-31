@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
 from ...models import (
+    AgentStatus,
+    AgentTask,
     GitPromotionRecord,
     PersistentAgent,
     Project,
@@ -23,15 +26,25 @@ from ...models import (
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TaskDeliverableContract,
+    TeamTaskKind,
+    TeamTaskState,
+    agent_has_project_assignment,
+    project_lead_agent_id,
 )
 from .common import _append_unique, _required_text, utc_now
-from .blockers import open_release_blocker, resolve_active_blockers_for_source
+from .blockers import (
+    open_or_get_blocker,
+    open_release_blocker,
+    resolve_active_blockers_for_source,
+)
 from .review_handoff import queue_actionable_inbox_item
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .human_reviews import (
     ensure_human_review_request,
     human_review_request_for_release,
 )
+from .release_packages import allowed_release_parent_task_ids
 from .task_assessment import deliverable_source_lineage, require_release_scope
 
 
@@ -161,6 +174,7 @@ def begin_release_gates(
     project = state.projects.get(release.project_id)
     if project is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -171,6 +185,7 @@ def begin_release_gates(
     policy = project.release_policy
     if policy is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -183,6 +198,7 @@ def begin_release_gates(
         return
     if release.candidate_commit_sha not in {None, candidate_commit_sha}:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -213,6 +229,7 @@ def begin_release_gates(
         )
     ):
         _reject_release(
+            state,
             release,
             stage="human_review",
             kind="candidate",
@@ -231,6 +248,7 @@ def begin_release_gates(
     )
     if unchanged_release is not None:
         _reject_release(
+            state,
             release,
             stage="verification",
             kind="candidate",
@@ -249,6 +267,7 @@ def begin_release_gates(
         )
     except ValueError as exc:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -353,12 +372,22 @@ def record_release_verification_result(
         message = error or f"release verification {verification_state}"
         if normalized_failure_kind == "candidate":
             _reject_release(
+                state,
                 release,
                 stage="verification",
                 kind="candidate",
                 source_id=run.id,
                 error=message,
                 result=result,
+                route_to_team=False,
+            )
+            _materialize_candidate_verification_correction(
+                state,
+                release=release,
+                run=run,
+                error=message,
+                result=result,
+                now=now,
             )
         else:
             _block_release_gate(
@@ -375,6 +404,7 @@ def record_release_verification_result(
     release_promotion = _release_promotion(state, release)
     if release_promotion is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -390,6 +420,577 @@ def record_release_verification_result(
     )
 
 
+def _materialize_candidate_verification_correction(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    run: ReleaseVerificationRun,
+    error: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Create candidate-rooted corrective work with complete verifier evidence."""
+
+    project = state.projects.get(release.project_id)
+    if project is None:
+        return
+    failed_command_results = [
+        command_result.model_dump(mode="json", exclude_none=True)
+        for command_result in run.command_results
+        if command_result.state in {"failed", "timed_out"}
+    ]
+    owner_agent_id, assignment_reason = _candidate_verification_correction_owner(
+        state,
+        release=release,
+        run=run,
+        error=error,
+    )
+    if owner_agent_id is None:
+        result["verification_correction_assignment_reason"] = assignment_reason
+        return
+
+    task_id = _candidate_verification_correction_task_id(release.id, run.id)
+    task = state.tasks.get(task_id)
+    description = _candidate_verification_correction_description(
+        release=release,
+        run=run,
+        error=error,
+        assignment_reason=assignment_reason,
+    )
+    if task is None:
+        task = AgentTask(
+            id=task_id,
+            owner_agent_id=owner_agent_id,
+            project_id=release.project_id,
+            priority=0,
+            state=TeamTaskState.PENDING,
+            task_kind=TeamTaskKind.SUPPORT,
+            integration_boundary=False,
+            deliverable_contract=TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+            title=f"Correct verification failure in {release.id}",
+            description=description,
+            created_by_actor="system:release-verification-correction",
+            created_at=now,
+            updated_at=now,
+            state_entered_at=now,
+        )
+        state.tasks[task.id] = task
+        result.setdefault("created_task_ids", []).append(task.id)
+    elif (
+        task.project_id != release.project_id
+        or task.created_by_actor != "system:release-verification-correction"
+    ):
+        raise ValueError(
+            f"reserved release verification correction task id {task_id} is already in use"
+        )
+    elif task.state not in {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }:
+        _require_candidate_correction_deliverable(task, now=now)
+    run.correction_task_id = task.id
+
+    queue_actionable_inbox_item(
+        state,
+        recipient_agent_id=task.owner_agent_id,
+        sender_agent_id=project.lead_agent_id,
+        priority=TeamInboxPriority.HIGH,
+        task_id=task.id,
+        payload={
+            "kind": "release_verification_correction_work",
+            "project_id": project.id,
+            "release_package_id": release.id,
+            "verification_run_id": run.id,
+            "task_id": task.id,
+            "candidate_commit_sha": run.candidate_commit_sha,
+            "candidate_tree_hash": release.candidate_tree_hash,
+            "release_branch": release.release_branch,
+            "assignment_reason": assignment_reason,
+            "summary": (
+                "Correct the failed verification on the exact rejected release candidate."
+            ),
+            "error": error,
+            "failed_command_results": failed_command_results,
+            "next_action": (
+                "Work only in the task worktree rooted at candidate_commit_sha and "
+                "candidate_tree_hash. Do not merge or rebase the current project base "
+                "branch into this correction. Fix the verifier failure and submit the "
+                "changed Git work as the correction deliverable. After that deliverable "
+                "is accepted, use it to "
+                "create a replacement release that supersedes this rejected package. Do "
+                "not retry or resubmit the unchanged candidate. Do not finish this task "
+                "directly; its accepted Git deliverable is required to continue the release "
+                "loop."
+            ),
+        },
+        result=result,
+        now=now,
+    )
+    result["verification_correction_task_id"] = task.id
+    result["verification_correction_task_owner_agent_id"] = task.owner_agent_id
+    result["verification_correction_assignment_reason"] = assignment_reason
+
+
+def _candidate_verification_correction_owner(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    run: ReleaseVerificationRun,
+    error: str,
+) -> tuple[str | None, str]:
+    project = state.projects.get(release.project_id)
+    if project is None:
+        return None, "project_missing"
+
+    failure_text = "\n".join(
+        value
+        for value in [
+            error,
+            *(
+                command_result.log_excerpt or ""
+                for command_result in run.command_results
+                if command_result.state in {"failed", "timed_out"}
+            ),
+        ]
+        if value
+    ).replace("\\", "/").casefold()
+    source_owner_ids: set[str] = set()
+    manifest = release.manifest
+    if manifest is not None and failure_text:
+        for evidence in manifest.deliverables:
+            review_manifest = evidence.review_manifest
+            if review_manifest is None:
+                continue
+            changed_paths = _verification_manifest_path_names(
+                review_manifest.changed_paths
+            )
+            if not any(path.casefold() in failure_text for path in changed_paths):
+                continue
+            deliverable = state.deliverables.get(evidence.deliverable_id)
+            if deliverable is not None:
+                source_owner_ids.add(deliverable.producer_agent_id)
+    if len(source_owner_ids) == 1:
+        source_owner_id = next(iter(source_owner_ids))
+        if _eligible_verification_correction_owner(
+            state,
+            agent_id=source_owner_id,
+            project_id=release.project_id,
+        ):
+            return source_owner_id, "single_failed_path_source_owner"
+
+    if release.owner_agent_id is not None and _eligible_verification_correction_owner(
+        state,
+        agent_id=release.owner_agent_id,
+        project_id=release.project_id,
+    ):
+        return release.owner_agent_id, "release_owner"
+
+    lead_agent_id = project_lead_agent_id(state, project.id) or project.lead_agent_id
+    if _eligible_verification_correction_owner(
+        state,
+        agent_id=lead_agent_id,
+        project_id=project.id,
+        allow_project_lead=True,
+    ):
+        return lead_agent_id, "project_lead_fallback"
+
+    team = state.teams.get(project.team_id)
+    manager_agent_id = team.manager_agent_id if team is not None else None
+    manager = (
+        state.agents.get(manager_agent_id)
+        if manager_agent_id is not None
+        else None
+    )
+    if (
+        manager is not None
+        and manager.status == AgentStatus.ACTIVE
+        and manager.team_id == project.team_id
+    ):
+        return manager.id, "team_manager_fallback"
+    return None, "no_eligible_owner"
+
+
+def _require_candidate_correction_deliverable(
+    task: AgentTask,
+    *,
+    now: datetime,
+) -> None:
+    """Make an active candidate correction resolve through reviewed Git work.
+
+    Both verification and agent-review rejections need an accepted correction
+    deliverable before a successor release may be requested.  Keeping that
+    requirement on the task closes the direct-finish terminal route before a
+    task can strand the rejected release.
+    """
+
+    expected_contract = TaskDeliverableContract(require_git_provenance=True)
+    if (
+        not task.integration_boundary
+        and task.deliverable_contract is not None
+        and task.deliverable_contract.require_git_provenance
+    ):
+        return
+    task.integration_boundary = False
+    task.deliverable_contract = expected_contract
+    task.updated_at = now
+
+
+def _eligible_verification_correction_owner(
+    state: TeamState,
+    *,
+    agent_id: str,
+    project_id: str,
+    allow_project_lead: bool = False,
+) -> bool:
+    agent = state.agents.get(agent_id)
+    project = state.projects.get(project_id)
+    return bool(
+        agent is not None
+        and agent.status == AgentStatus.ACTIVE
+        and project is not None
+        and agent.team_id == project.team_id
+        and (
+            agent_has_project_assignment(state, agent.id, project_id)
+            or (allow_project_lead and project.lead_agent_id == agent.id)
+        )
+    )
+
+
+def _verification_manifest_path_names(rows: list[str]) -> set[str]:
+    paths: set[str] = set()
+    for row in rows:
+        fields = row.split("\t")
+        for value in fields[1:] if len(fields) > 1 else fields:
+            normalized = value.strip().replace("\\", "/").removeprefix("./")
+            if normalized:
+                paths.add(normalized)
+    return paths
+
+
+def _candidate_verification_correction_task_id(
+    release_package_id: str,
+    verification_run_id: str,
+) -> str:
+    token = sha256(
+        f"{release_package_id}:{verification_run_id}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"release-verification-correction-{token}"
+
+
+def _candidate_verification_correction_description(
+    *,
+    release: ReleasePackage,
+    run: ReleaseVerificationRun,
+    error: str,
+    assignment_reason: str,
+) -> str:
+    failed_commands: list[str] = []
+    for command_result in run.command_results:
+        if command_result.state not in {"failed", "timed_out"}:
+            continue
+        details = [
+            f"state={command_result.state}",
+            *(
+                [f"exit_code={command_result.exit_code}"]
+                if command_result.exit_code is not None
+                else []
+            ),
+            *(
+                [f"failure_cause={command_result.failure_cause.value}"]
+                if command_result.failure_cause is not None
+                else []
+            ),
+        ]
+        failed_commands.append(
+            f"- {command_result.name}: {', '.join(details)}"
+            + (
+                f"\n  log excerpt:\n  {command_result.log_excerpt}"
+                if command_result.log_excerpt
+                else ""
+            )
+        )
+    command_evidence = "\n".join(failed_commands) or "- No failed command result was recorded."
+    return (
+        "The release verification pipeline rejected a pinned candidate. Correct the "
+        "failure without moving backward across the release boundary.\n\n"
+        f"Release package: {release.id}\n"
+        f"Verification run: {run.id}\n"
+        f"Release branch: {release.release_branch or '<missing>'}\n"
+        f"Candidate commit: {run.candidate_commit_sha}\n"
+        f"Candidate tree: {release.candidate_tree_hash or '<missing>'}\n"
+        f"Assignment reason: {assignment_reason}\n"
+        f"Failure: {error}\n\n"
+        f"Failed command evidence:\n{command_evidence}\n\n"
+        "The task worktree must be created from the exact candidate commit and tree "
+        "above. Do not merge or rebase the current project base branch into this "
+        "correction. Make only the correction required by the verifier evidence and "
+        "submit the changed Git work as the correction deliverable. After acceptance, "
+        "create a replacement "
+        "release that supersedes the rejected package. Do not retry or resubmit the "
+        "unchanged candidate. Do not finish this task directly; its accepted Git "
+        "deliverable is required to continue the release loop."
+    )
+
+
+def materialize_release_review_rejection_correction(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    review: ReviewRequest,
+    findings: list[str],
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Create the one candidate-rooted task for a rejected agent release review.
+
+    A release-review rejection is an immutable candidate outcome, just like a
+    candidate verification failure.  The task link lives on the release package
+    (rather than on an individual review) so concurrent reviewer rejections
+    converge on one correction boundary and one source snapshot.
+    """
+
+    if review.release_package_id != release.id:
+        raise ValueError(
+            f"release review {review.id} does not belong to release {release.id}"
+        )
+    if review.candidate_commit_sha != release.candidate_commit_sha:
+        raise ValueError(
+            f"release review {review.id} is not pinned to release {release.id} candidate"
+        )
+    project = state.projects.get(release.project_id)
+    if project is None:
+        return
+    owner_agent_id, assignment_reason = _release_review_correction_owner(
+        state,
+        release=release,
+    )
+    if owner_agent_id is None:
+        result["release_review_correction_assignment_reason"] = assignment_reason
+        return
+
+    task_id = _release_review_correction_task_id(release.id)
+    task = state.tasks.get(task_id)
+    rejected_reviews = sorted(
+        (
+            candidate
+            for candidate in state.review_requests.values()
+            if candidate.release_package_id == release.id
+            and candidate.candidate_commit_sha == release.candidate_commit_sha
+            and candidate.state == TeamRecordState.REJECTED
+            and candidate.superseded_by_review_request_id is None
+            and candidate.retired_at is None
+        ),
+        key=lambda candidate: (candidate.decision_at or candidate.created_at, candidate.id),
+    )
+    if not any(candidate.id == review.id for candidate in rejected_reviews):
+        rejected_reviews.append(review)
+    findings_by_review_id = {
+        candidate.id: (
+            list(findings)
+            if candidate.id == review.id
+            else list(candidate.findings)
+        )
+        for candidate in rejected_reviews
+    }
+    rejected_review_ids = [candidate.id for candidate in rejected_reviews]
+    aggregated_findings = [
+        finding
+        for candidate in rejected_reviews
+        for finding in findings_by_review_id[candidate.id]
+    ]
+    description = _release_review_correction_description(
+        release=release,
+        reviews=rejected_reviews,
+        findings_by_review_id=findings_by_review_id,
+        assignment_reason=assignment_reason,
+    )
+    if task is None:
+        task = AgentTask(
+            id=task_id,
+            owner_agent_id=owner_agent_id,
+            project_id=release.project_id,
+            priority=0,
+            state=TeamTaskState.PENDING,
+            task_kind=TeamTaskKind.SUPPORT,
+            integration_boundary=False,
+            deliverable_contract=TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+            title=f"Correct rejected release review in {release.id}",
+            description=description,
+            created_by_actor="system:release-review-correction",
+            created_at=now,
+            updated_at=now,
+            state_entered_at=now,
+        )
+        state.tasks[task.id] = task
+        result.setdefault("created_task_ids", []).append(task.id)
+    elif (
+        task.project_id != release.project_id
+        or task.created_by_actor != "system:release-review-correction"
+    ):
+        raise ValueError(
+            f"reserved release review correction task id {task_id} is already in use"
+        )
+    else:
+        if task.state not in {
+            TeamTaskState.FINISHED,
+            TeamTaskState.ACCEPTED,
+            TeamTaskState.REJECTED,
+            TeamTaskState.CANCELLED,
+        }:
+            _require_candidate_correction_deliverable(task, now=now)
+        task.description = description
+        task.updated_at = now
+
+    release.review_correction_task_id = task.id
+    existing_inbox = next(
+        (
+            item
+            for item in state.inbox.values()
+            if item.task_id == task.id
+            and item.payload.get("kind") == "release_review_rejection_correction_work"
+            and (
+                item.payload.get("review_request_id") == review.id
+                or review.id in item.payload.get("review_request_ids", [])
+            )
+        ),
+        None,
+    )
+    if existing_inbox is None:
+        queue_actionable_inbox_item(
+            state,
+            recipient_agent_id=task.owner_agent_id,
+            sender_agent_id=review.reviewer_agent_id,
+            priority=TeamInboxPriority.HIGH,
+            task_id=task.id,
+            payload={
+                "kind": "release_review_rejection_correction_work",
+                "project_id": project.id,
+                "release_package_id": release.id,
+                "review_request_id": review.id,
+                "review_request_ids": rejected_review_ids,
+                "rejected_reviews": [
+                    {
+                        "review_request_id": candidate.id,
+                        "reviewer_agent_id": candidate.reviewer_agent_id,
+                        "findings": findings_by_review_id[candidate.id],
+                    }
+                    for candidate in rejected_reviews
+                ],
+                "task_id": task.id,
+                "candidate_commit_sha": release.candidate_commit_sha,
+                "candidate_tree_hash": release.candidate_tree_hash,
+                "release_branch": release.release_branch,
+                "assignment_reason": assignment_reason,
+                "summary": "Correct the rejected release review on the exact candidate.",
+                "findings": aggregated_findings,
+                "next_action": (
+                    "Work only in the task worktree rooted at candidate_commit_sha and "
+                    "candidate_tree_hash. Do not merge or rebase the current project base "
+                    "branch into this correction. Fix the release-review finding and submit "
+                    "the changed Git work as the correction deliverable. After that "
+                    "deliverable is accepted, use the accepted "
+                    "correction to create a replacement release that supersedes this "
+                    "rejected package. Do not retry or resubmit the unchanged candidate. "
+                    "Do not finish this task directly; its accepted Git deliverable is "
+                    "required to continue the release loop."
+                ),
+            },
+            result=result,
+            now=now,
+        )
+    result["release_review_correction_task_id"] = task.id
+    result["release_review_correction_task_owner_agent_id"] = task.owner_agent_id
+    result["release_review_correction_assignment_reason"] = assignment_reason
+
+
+def _release_review_correction_owner(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+) -> tuple[str | None, str]:
+    project = state.projects.get(release.project_id)
+    if project is None:
+        return None, "project_missing"
+    if release.owner_agent_id is not None and _eligible_verification_correction_owner(
+        state,
+        agent_id=release.owner_agent_id,
+        project_id=release.project_id,
+    ):
+        return release.owner_agent_id, "release_owner"
+
+    lead_agent_id = project_lead_agent_id(state, project.id) or project.lead_agent_id
+    if _eligible_verification_correction_owner(
+        state,
+        agent_id=lead_agent_id,
+        project_id=project.id,
+        allow_project_lead=True,
+    ):
+        return lead_agent_id, "project_lead_fallback"
+
+    team = state.teams.get(project.team_id)
+    manager_agent_id = team.manager_agent_id if team is not None else None
+    manager = state.agents.get(manager_agent_id) if manager_agent_id is not None else None
+    if (
+        manager is not None
+        and manager.status == AgentStatus.ACTIVE
+        and manager.team_id == project.team_id
+    ):
+        return manager.id, "team_manager_fallback"
+    return None, "no_eligible_owner"
+
+
+def _release_review_correction_task_id(release_package_id: str) -> str:
+    token = sha256(release_package_id.encode("utf-8")).hexdigest()[:24]
+    return f"release-review-correction-{token}"
+
+
+def _release_review_correction_description(
+    *,
+    release: ReleasePackage,
+    reviews: list[ReviewRequest],
+    findings_by_review_id: dict[str, list[str]],
+    assignment_reason: str,
+) -> str:
+    review_evidence = "\n".join(
+        (
+            f"- {review.id} (reviewer {review.reviewer_agent_id}):\n"
+            + (
+                "\n".join(
+                    f"  - {finding}"
+                    for finding in findings_by_review_id[review.id]
+                )
+                or "  - Rejected without a textual finding."
+            )
+        )
+        for review in reviews
+    ) or (
+        "- The release was rejected without a current release-review record."
+    )
+    return (
+        "An agent release review rejected a pinned candidate. Correct the finding without "
+        "moving backward across the release boundary.\n\n"
+        f"Release package: {release.id}\n"
+        f"Release reviews: {', '.join(review.id for review in reviews)}\n"
+        f"Release branch: {release.release_branch or '<missing>'}\n"
+        f"Candidate commit: {release.candidate_commit_sha or '<missing>'}\n"
+        f"Candidate tree: {release.candidate_tree_hash or '<missing>'}\n"
+        f"Assignment reason: {assignment_reason}\n\n"
+        f"Review findings:\n{review_evidence}\n\n"
+        "The task worktree must be created from the exact candidate commit and tree "
+        "above. Do not merge or rebase the current project base branch into this "
+        "correction. Make only the correction required by the review evidence and submit "
+        "the changed Git work as the correction deliverable. After acceptance, create a "
+        "replacement release that supersedes the rejected package. Do not retry or "
+        "resubmit the unchanged candidate."
+    )
+
+
 def advance_release_gates(
     state: TeamState,
     *,
@@ -402,6 +1003,7 @@ def advance_release_gates(
     manifest = release.manifest
     if manifest is None or release.candidate_commit_sha is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -418,6 +1020,7 @@ def advance_release_gates(
     promotion = release_promotion or _release_promotion(state, release)
     if promotion is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -445,6 +1048,7 @@ def create_release_reviews_or_approve(
     candidate = release.candidate_commit_sha
     if project is None or manifest is None or candidate is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -480,6 +1084,7 @@ def create_release_reviews_or_approve(
         )
         if scope_error is not None:
             _reject_release(
+                state,
                 release,
                 stage="configuration",
                 kind="configuration",
@@ -545,6 +1150,7 @@ def approve_release_candidate(
     candidate = release.candidate_commit_sha
     if candidate is None:
         _reject_release(
+            state,
             release,
             stage="configuration",
             kind="configuration",
@@ -631,6 +1237,15 @@ def retry_release_gate(
             "timeout",
         }:
             raise ValueError("only infrastructure-failed or timed-out verification may be retried")
+        if normalized_requested_by.startswith("agent:") and (
+            current.retry_requested_by or ""
+        ).startswith("agent:"):
+            raise ValueError(
+                "an agent-requested verification retry already failed against the "
+                "unchanged candidate; do not retry it again as an agent. Escalate the "
+                "current run and its concrete infrastructure recovery requirement to "
+                "an operator"
+            )
         verification_commands = release.manifest.verification_commands
         if not verification_commands:
             raise ValueError("release manifest has no verification commands")
@@ -774,6 +1389,13 @@ def _candidate_manifest(
         state,
         project_id=release.project_id,
         deliverable_ids=release.deliverable_ids,
+        allowed_parent_task_ids=allowed_release_parent_task_ids(
+            state,
+            project_id=release.project_id,
+            predecessor_release_package_id=(
+                release.supersedes_release_package_id
+            ),
+        ),
     )
     waivers = {waiver.deliverable_id: waiver for waiver in release.verification_waivers}
     deliverable_rows: list[ReleaseCandidateDeliverableEvidence] = []
@@ -1097,17 +1719,33 @@ def _block_release_gate(
     release.error = error
     release.updated_at = utc_now()
     result["error"] = error
+    blocker_details = error
+    if stage == "verification" and kind in {"infrastructure", "timeout"}:
+        current = _current_verification_run(state, release)
+        if current is not None and (current.retry_requested_by or "").startswith("agent:"):
+            blocker_details = (
+                f"{error} An agent-requested retry already failed against this unchanged "
+                "candidate. Do not schedule another agent retry; escalate the run evidence "
+                "and concrete infrastructure recovery requirement to an operator."
+            )
+        else:
+            blocker_details = (
+                f"{error} Retry the unchanged candidate only after concrete evidence that "
+                "the infrastructure failure recovered; cite what changed. If no such "
+                "evidence exists, escalate the blocker instead of retrying."
+            )
     open_release_blocker(
         state,
         release_package_id=release.id,
         summary=f"Release {release.id} gate is blocked",
-        details=error,
+        details=blocker_details,
         result=result,
         now=release.updated_at,
     )
 
 
 def _reject_release(
+    state: TeamState,
     release: ReleasePackage,
     *,
     stage: str,
@@ -1115,6 +1753,7 @@ def _reject_release(
     error: str,
     result: dict[str, Any],
     source_id: str | None = None,
+    route_to_team: bool = True,
 ) -> None:
     release.state = TeamRecordState.REJECTED
     release.gate_failure = ReleaseGateFailure(
@@ -1126,6 +1765,38 @@ def _reject_release(
     release.error = error
     release.updated_at = utc_now()
     result["error"] = error
+    if not route_to_team:
+        return
+    project = state.projects.get(release.project_id)
+    if project is None:
+        result["release_remediation_routing_error"] = "project_missing"
+        return
+    owner_agent_id = release.owner_agent_id or (
+        project_lead_agent_id(state, project.id) or project.lead_agent_id
+    )
+    blocker, _created = open_or_get_blocker(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=release.id,
+        reason_code=f"release_gate_{stage}_{kind}",
+        summary=f"Release {release.id} was rejected by its {stage} gate",
+        details=(
+            f"{error} Inspect the rejected release, its frozen gate evidence, and the "
+            "current project release configuration. Correct the condition through "
+            "supported Team actions and create a replacement release. If the condition "
+            "requires configuration or invariant repair outside the team's authority, "
+            "escalate it to an operator instead of retrying unchanged input."
+        ),
+        priority=TeamInboxPriority.HIGH,
+        reporter_actor="system:release-gate",
+        initial_owner_agent_id=owner_agent_id,
+        team_id=project.team_id,
+        project_id=project.id,
+        result=result,
+        now=release.updated_at,
+    )
+    result["release_remediation_blocker_id"] = blocker.id
+    result["release_remediation_owner_agent_id"] = blocker.owner_agent_id
 
 
 __all__ = [
@@ -1134,6 +1805,7 @@ __all__ = [
     "approve_release_candidate",
     "begin_release_gates",
     "create_release_reviews_or_approve",
+    "materialize_release_review_rejection_correction",
     "current_release_gates_passed",
     "record_release_verification_result",
     "retry_release_gate",

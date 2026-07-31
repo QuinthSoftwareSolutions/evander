@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from ...models import (
     AgentTask,
     Deliverable,
+    DeliverableGitRefs,
+    GitWorkContextState,
     TaskAssessment,
     TaskAssessmentReadiness,
     TaskCompletionKind,
@@ -216,9 +219,15 @@ class TaskAssessmentService:
                 )
             )
 
-            integration_ready = bool(direct_child_ids) and all(
-                assessment.resolution_status == TaskResolutionStatus.RESOLVED
-                for assessment in child_assessments
+            integration_task_ids = _required_contribution_task_ids(
+                task,
+                direct_child_ids=direct_child_ids,
+            )
+            integration_ready = bool(integration_task_ids) and all(
+                contribution_task_id in self._state.tasks
+                and self._assess(contribution_task_id).resolution_status
+                == TaskResolutionStatus.RESOLVED
+                for contribution_task_id in integration_task_ids
             )
 
             if invalid_codes:
@@ -256,6 +265,11 @@ class TaskAssessmentService:
                         contribution_coverage=contribution_coverage,
                     )
                 else:
+                    pending_accepted_rework_ids = (
+                        _pending_accepted_deliverable_rework_ids(
+                            self._deliverables.get(task_id, ())
+                        )
+                    )
                     readiness, reason = _unresolved_readiness(
                         task=task,
                         unresolved_descendant_ids=unresolved_descendant_ids,
@@ -263,6 +277,7 @@ class TaskAssessmentService:
                         local_acceptance_ids=local_acceptance_ids,
                         local_review_ids=local_review_ids,
                         local_blocker_ids=local_blocker_ids,
+                        pending_accepted_rework_ids=pending_accepted_rework_ids,
                     )
                     assessment = TaskAssessment(
                         task_id=task.id,
@@ -362,10 +377,15 @@ def task_payload_with_assessment(
             assessment_payload.get("active_acceptance_ids"),
             visible_deliverable_ids,
         )
+    if (
+        visible_task_ids is not None
+        or visible_deliverable_ids is not None
+    ):
         assessment_payload["contribution_coverage"] = (
             _visible_contribution_coverage(
                 assessment_payload.get("contribution_coverage"),
-                visible_deliverable_ids,
+                visible_task_ids=visible_task_ids,
+                visible_deliverable_ids=visible_deliverable_ids,
             )
         )
     if visible_review_request_ids is not None:
@@ -521,12 +541,18 @@ def _visible_ids(
 
 def _visible_contribution_coverage(
     value: object,
-    visible_deliverable_ids: Collection[str],
+    *,
+    visible_task_ids: Collection[str] | None,
+    visible_deliverable_ids: Collection[str] | None,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     payload = dict(value)
-    id_fields = (
+    task_id_fields = (
+        "required_contribution_task_ids",
+        "missing_contribution_task_ids",
+    )
+    deliverable_id_fields = (
         "required_source_deliverable_ids",
         "provided_source_deliverable_ids",
         "missing_source_deliverable_ids",
@@ -534,20 +560,31 @@ def _visible_contribution_coverage(
         "invalid_source_deliverable_ids",
         "current_deliverable_ids",
     )
-    for field_name in id_fields:
-        payload[field_name] = _visible_ids(
-            payload.get(field_name),
-            visible_deliverable_ids,
-        )
+    if visible_task_ids is not None:
+        for field_name in task_id_fields:
+            payload[field_name] = _visible_ids(
+                payload.get(field_name),
+                visible_task_ids,
+            )
+    if visible_deliverable_ids is not None:
+        for field_name in deliverable_id_fields:
+            payload[field_name] = _visible_ids(
+                payload.get(field_name),
+                visible_deliverable_ids,
+            )
     by_deliverable = payload.get("by_deliverable")
     if isinstance(by_deliverable, Mapping):
         payload["by_deliverable"] = {
             str(deliverable_id): _visible_contribution_coverage(
                 row,
-                visible_deliverable_ids,
+                visible_task_ids=visible_task_ids,
+                visible_deliverable_ids=visible_deliverable_ids,
             )
             for deliverable_id, row in by_deliverable.items()
-            if str(deliverable_id) in visible_deliverable_ids
+            if (
+                visible_deliverable_ids is None
+                or str(deliverable_id) in visible_deliverable_ids
+            )
         }
     else:
         payload["by_deliverable"] = {}
@@ -572,10 +609,14 @@ def contribution_coverage_for_sources(
         for child in state.tasks.values()
         if child.parent_task_id == task.id
     )
+    required_contribution_task_ids = _required_contribution_task_ids(
+        task,
+        direct_child_ids=direct_child_ids,
+    )
     return _coverage_for_source_ids(
         state,
         task=task,
-        direct_child_ids=direct_child_ids,
+        required_contribution_task_ids=required_contribution_task_ids,
         source_deliverable_ids=source_deliverable_ids,
     )
 
@@ -614,11 +655,21 @@ def deliverable_source_lineage(
         graph[deliverable_id] = sources
         owner_task = state.tasks.get(deliverable.task_id)
         direct_child_ids = (
-            {
+            sorted(
                 task.id
                 for task in state.tasks.values()
                 if task.parent_task_id == owner_task.id
-            }
+            )
+            if owner_task is not None
+            else []
+        )
+        allowed_source_task_ids = (
+            set(
+                _required_contribution_task_ids(
+                    owner_task,
+                    direct_child_ids=direct_child_ids,
+                )
+            )
             if owner_task is not None
             else set()
         )
@@ -629,8 +680,10 @@ def deliverable_source_lineage(
                 missing_ids.add(source_id)
                 invalid_codes.add("deliverable_source_missing")
             else:
-                if source.task_id not in direct_child_ids:
-                    invalid_codes.add("deliverable_source_not_direct_child")
+                if source.task_id not in allowed_source_task_ids:
+                    invalid_codes.add(
+                        "deliverable_source_not_required_contribution"
+                    )
                 if source.state != TeamRecordState.ACCEPTED:
                     invalid_codes.add("deliverable_source_not_accepted")
                 if source.superseded_by_deliverable_id is not None:
@@ -765,6 +818,39 @@ def require_task_can_finish(
             task_id,
             boundary="finish",
         )
+    if task.integration_boundary or task.deliverable_contract is not None:
+        boundary_kind = (
+            "integration boundary"
+            if task.integration_boundary
+            else "contracted leaf"
+        )
+        raise TaskAssessmentBoundaryError(
+            code=(
+                "integration_boundary_direct_finish_forbidden"
+                if task.integration_boundary
+                else "deliverable_contract_direct_finish_forbidden"
+            ),
+            message=(
+                f"{boundary_kind} task {task_id} must resolve through an "
+                "accepted deliverable satisfying its deliverable contract"
+            ),
+            correction_context={
+                "task_id": task_id,
+                "deliverable_contract": (
+                    task.deliverable_contract.model_dump(mode="json")
+                    if task.deliverable_contract is not None
+                    else None
+                ),
+                "required_action": (
+                    "submit a deliverable using the review-routing method required "
+                    "by team, role, task, or operator guidance"
+                ),
+                "supported_tools": [
+                    "team_submit_deliverable",
+                    "team_submit_deliverable_for_review",
+                ],
+            },
+        )
     if task.task_kind != TeamTaskKind.SUPPORT:
         raise TaskAssessmentBoundaryError(
             code="outcome_task_direct_finish_forbidden",
@@ -773,6 +859,24 @@ def require_task_can_finish(
                 "deliverable, not direct finish"
             ),
             correction_context={"task_id": task_id},
+        )
+    pending_rework_ids = _pending_accepted_deliverable_rework_ids(
+        deliverable
+        for deliverable in state.deliverables.values()
+        if deliverable.task_id == task.id
+    )
+    if pending_rework_ids:
+        raise TaskAssessmentBoundaryError(
+            code="accepted_deliverable_rework_pending",
+            message=(
+                f"task {task.id} cannot finish until its accepted deliverable "
+                "rework is replaced and freshly reviewed"
+            ),
+            correction_context={
+                "task_id": task.id,
+                "supersedes_deliverable_ids": pending_rework_ids,
+                "recommended_tool": "team_submit_deliverable_for_review",
+            },
         )
     assessment_state = state
     if dependency_task_ids is not None:
@@ -792,6 +896,109 @@ def require_task_can_finish(
         task_id,
         boundary="finish",
     )
+
+
+def require_task_deliverable_contract_provenance(
+    state: TeamState,
+    *,
+    task_id: str,
+    git_refs: DeliverableGitRefs,
+    producer_agent_id: str,
+    deliverable_id: str | None = None,
+    require_submitted_context: bool = True,
+) -> None:
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise TaskAssessmentBoundaryError(
+            code="task_not_found",
+            message=f"task {task_id} does not exist",
+            correction_context={"task_id": task_id},
+        )
+    contract = task.deliverable_contract
+    if contract is None or not contract.require_git_provenance:
+        return
+    reference_values = {
+        "branch_context_id": git_refs.branch_context_id,
+        "agent_branch": git_refs.agent_branch,
+        "commit_sha": git_refs.commit_sha,
+        "submitted_commit_sha": git_refs.submitted_commit_sha,
+    }
+    missing_fields = sorted(
+        field_name
+        for field_name, value in reference_values.items()
+        if value is None
+    )
+    invalid_fields: list[str] = []
+    commit_sha = git_refs.commit_sha
+    submitted_commit_sha = git_refs.submitted_commit_sha
+    if (
+        commit_sha is not None
+        and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit_sha)
+        is None
+    ):
+        invalid_fields.append("commit_sha")
+    if (
+        submitted_commit_sha is not None
+        and re.fullmatch(
+            r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})",
+            submitted_commit_sha,
+        )
+        is None
+    ):
+        invalid_fields.append("submitted_commit_sha")
+    if (
+        commit_sha is not None
+        and submitted_commit_sha is not None
+        and commit_sha.casefold() != submitted_commit_sha.casefold()
+    ):
+        invalid_fields.append("submitted_commit_sha_mismatch")
+    context = state.git_work_contexts.get(git_refs.branch_context_id or "")
+    if context is None:
+        invalid_fields.append("branch_context_not_found")
+    else:
+        if (
+            require_submitted_context
+            and context.state != GitWorkContextState.SUBMITTED
+        ):
+            invalid_fields.append("branch_context_not_submitted")
+        if context.task_id != task.id:
+            invalid_fields.append("branch_context_task_mismatch")
+        if context.agent_id != producer_agent_id:
+            invalid_fields.append("branch_context_agent_mismatch")
+        if context.agent_branch != git_refs.agent_branch:
+            invalid_fields.append("agent_branch_mismatch")
+        if context.commit_sha is None:
+            invalid_fields.append("branch_context_commit_missing")
+        elif (
+            commit_sha is not None
+            and context.commit_sha.casefold() != commit_sha.casefold()
+        ):
+            invalid_fields.append("branch_context_commit_mismatch")
+    if missing_fields or invalid_fields:
+        target = (
+            f"deliverable {deliverable_id}"
+            if deliverable_id is not None
+            else f"deliverable for task {task.id}"
+        )
+        raise TaskAssessmentBoundaryError(
+            code="task_git_deliverable_contract_unsatisfied",
+            message=(
+                f"{target} does not carry authoritative pinned Git provenance "
+                "required by its deliverable contract"
+            ),
+            correction_context={
+                "task_id": task.id,
+                "deliverable_id": deliverable_id,
+                "missing_git_ref_fields": missing_fields,
+                "invalid_git_provenance_reasons": sorted(
+                    set(invalid_fields)
+                ),
+                "required_action": (
+                    "submit from the task's active Git work context with "
+                    "git_refs.commit_sha pinned to the server-resolved branch tip"
+                ),
+            },
+        )
 
 
 def require_deliverable_submission(
@@ -829,7 +1036,10 @@ def require_deliverable_submission(
     if not coverage["complete"]:
         raise TaskAssessmentBoundaryError(
             code="contribution_coverage_incomplete",
-            message=f"deliverable for task {task_id} does not cover its direct children",
+            message=(
+                f"deliverable for task {task_id} does not cover its required "
+                "contributions"
+            ),
             correction_context={"task_id": task_id, "contribution_coverage": coverage},
         )
     return assessment
@@ -846,6 +1056,13 @@ def require_deliverable_acceptance(
             message=f"deliverable {deliverable_id} does not exist",
             correction_context={"deliverable_id": deliverable_id},
         )
+    require_task_deliverable_contract_provenance(
+        state,
+        task_id=deliverable.task_id,
+        git_refs=deliverable.git_refs,
+        producer_agent_id=deliverable.producer_agent_id,
+        deliverable_id=deliverable.id,
+    )
     current_assessment = assess_task(state, deliverable.task_id)
     assessment = require_task_boundary_clear(
         state,
@@ -873,7 +1090,7 @@ def require_deliverable_acceptance(
             code="contribution_coverage_incomplete",
             message=(
                 f"deliverable {deliverable.id} does not cover the accepted "
-                "direct-child contributions"
+                "required contributions"
             ),
             correction_context={
                 "deliverable_id": deliverable.id,
@@ -889,8 +1106,10 @@ def require_release_scope(
     *,
     project_id: str,
     deliverable_ids: Sequence[str],
+    allowed_parent_task_ids: Collection[str] = (),
 ) -> dict[str, Any]:
     normalized_ids = _unique_strings(deliverable_ids)
+    allowed_parent_ids = set(_unique_strings(allowed_parent_task_ids))
     errors: dict[str, list[str]] = {}
     task_assessments: dict[str, TaskAssessment] = {}
     for deliverable_id in normalized_ids:
@@ -905,7 +1124,10 @@ def require_release_scope(
         else:
             if task.project_id != project_id:
                 deliverable_errors.append("deliverable_outside_project")
-            if task.parent_task_id is not None:
+            if (
+                task.parent_task_id is not None
+                and task.parent_task_id not in allowed_parent_ids
+            ):
                 deliverable_errors.append("release_scope_not_top_level")
             assessment = assess_task(state, task.id)
             task_assessments[task.id] = assessment
@@ -1096,6 +1318,28 @@ def _static_task_invalid_reason_codes(
             elif dependency.project_id != task.project_id:
                 invalid[task.id].add("dependency_task_outside_project")
 
+        if task.deliverable_contract is not None:
+            allowed_contribution_task_ids = {
+                *children.get(task.id, ()),
+                *task.dependency_task_ids,
+            }
+            for contribution_task_id in (
+                task.deliverable_contract.required_contribution_task_ids
+            ):
+                contribution_task = state.tasks.get(contribution_task_id)
+                if contribution_task is None:
+                    invalid[task.id].add(
+                        "deliverable_contribution_task_missing"
+                    )
+                elif contribution_task.project_id != task.project_id:
+                    invalid[task.id].add(
+                        "deliverable_contribution_task_outside_project"
+                    )
+                elif contribution_task_id not in allowed_contribution_task_ids:
+                    invalid[task.id].add(
+                        "deliverable_contribution_task_not_child_or_dependency"
+                    )
+
         if task.originating_task_id is not None:
             origin = state.tasks.get(task.originating_task_id)
             if origin is None:
@@ -1210,6 +1454,42 @@ def _local_lifecycle_invalid_reason_codes(
         invalid.add("support_task_accepted_instead_of_finished")
 
     if (
+        task.deliverable_contract is not None
+        and task.state
+        in {
+            TeamTaskState.FINISHED,
+            TeamTaskState.ACCEPTED,
+        }
+    ):
+        accepted_deliverables = [
+            deliverable
+            for deliverable in current_deliverables
+            if deliverable.state == TeamRecordState.ACCEPTED
+        ]
+        boundary_prefix = (
+            "integration_boundary"
+            if task.integration_boundary
+            else "deliverable_contract"
+        )
+        if not accepted_deliverables:
+            invalid.add(f"{boundary_prefix}_missing_accepted_deliverable")
+        if task.integration_boundary and not contribution_coverage.get("complete"):
+            invalid.add(
+                "integration_boundary_contribution_contract_unsatisfied"
+            )
+        for deliverable in accepted_deliverables:
+            try:
+                require_task_deliverable_contract_provenance(
+                    state,
+                    task_id=task.id,
+                    git_refs=deliverable.git_refs,
+                    producer_agent_id=deliverable.producer_agent_id,
+                    deliverable_id=deliverable.id,
+                )
+            except TaskAssessmentBoundaryError:
+                invalid.add(f"{boundary_prefix}_git_provenance_unsatisfied")
+
+    if (
         task.state == TeamTaskState.WAITING_FOR_REVIEW
         and not local_acceptance_ids
         and not local_review_ids
@@ -1308,8 +1588,15 @@ def _task_resolution_reason(
     current_deliverables: Sequence[Deliverable],
 ) -> str | None:
     del state
+    if _pending_accepted_deliverable_rework_ids(current_deliverables):
+        return None
     if task.state == TeamTaskState.CANCELLED:
         return "cancelled_by_authorized_disposition"
+    if task.integration_boundary and task.state in {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+    }:
+        return "integration_deliverable_accepted"
     if (
         task.task_kind == TeamTaskKind.SUPPORT
         and task.state == TeamTaskState.FINISHED
@@ -1340,7 +1627,13 @@ def _unresolved_readiness(
     local_acceptance_ids: Sequence[str],
     local_review_ids: Sequence[str],
     local_blocker_ids: Sequence[str],
+    pending_accepted_rework_ids: Sequence[str],
 ) -> tuple[TaskAssessmentReadiness, str]:
+    if pending_accepted_rework_ids:
+        return (
+            TaskAssessmentReadiness.ACTIONABLE,
+            "accepted_deliverable_requires_replacement",
+        )
     if task.state == TeamTaskState.REJECTED:
         return TaskAssessmentReadiness.BLOCKED, "rejected_requires_recovery"
     if task.state == TeamTaskState.BLOCKED or local_blocker_ids:
@@ -1363,6 +1656,18 @@ def _unresolved_readiness(
             "active_direct_acceptance",
         )
     return TaskAssessmentReadiness.ACTIONABLE, "task_actionable"
+
+
+def _pending_accepted_deliverable_rework_ids(
+    deliverables: Iterable[Deliverable],
+) -> list[str]:
+    return sorted(
+        deliverable.id
+        for deliverable in deliverables
+        if deliverable.state == TeamRecordState.ACCEPTED
+        and deliverable.rework_requested_at is not None
+        and deliverable.superseded_by_deliverable_id is None
+    )
 
 
 def _active_acceptance_ids(
@@ -1398,6 +1703,10 @@ def _task_contribution_coverage(
     task: AgentTask,
     direct_child_ids: Sequence[str],
 ) -> dict[str, Any]:
+    required_contribution_task_ids = _required_contribution_task_ids(
+        task,
+        direct_child_ids=direct_child_ids,
+    )
     current_deliverables = [
         deliverable
         for deliverable in state.deliverables.values()
@@ -1405,7 +1714,7 @@ def _task_contribution_coverage(
         and deliverable.superseded_by_deliverable_id is None
         and deliverable.state in _CURRENT_COMPOSITION_STATES
     ]
-    if not direct_child_ids:
+    if not required_contribution_task_ids:
         invalid_source_ids = sorted(
             {
                 source_id
@@ -1416,6 +1725,8 @@ def _task_contribution_coverage(
         return {
             "task_id": task.id,
             "status": "incomplete" if invalid_source_ids else "not_applicable",
+            "required_contribution_task_ids": [],
+            "missing_contribution_task_ids": [],
             "required_source_deliverable_ids": [],
             "provided_source_deliverable_ids": invalid_source_ids,
             "missing_source_deliverable_ids": [],
@@ -1433,12 +1744,18 @@ def _task_contribution_coverage(
         by_deliverable[deliverable.id] = _coverage_for_source_ids(
             state,
             task=task,
-            direct_child_ids=direct_child_ids,
+            required_contribution_task_ids=required_contribution_task_ids,
             source_deliverable_ids=deliverable.source_deliverable_ids,
         )
-    required_ids = _required_direct_child_source_deliverable_ids(
+    required_ids = _required_source_deliverable_ids(
         state,
-        direct_child_ids=direct_child_ids,
+        task=task,
+        required_contribution_task_ids=required_contribution_task_ids,
+    )
+    missing_contribution_task_ids = _missing_contribution_task_ids(
+        state,
+        task=task,
+        required_contribution_task_ids=required_contribution_task_ids,
     )
     provided_ids = sorted(
         {
@@ -1469,8 +1786,10 @@ def _task_contribution_coverage(
             for source_id in coverage["invalid_source_deliverable_ids"]
         }
     )
-    complete = bool(by_deliverable) and all(
-        coverage["complete"] for coverage in by_deliverable.values()
+    complete = (
+        bool(by_deliverable)
+        and not missing_contribution_task_ids
+        and all(coverage["complete"] for coverage in by_deliverable.values())
     )
     return {
         "task_id": task.id,
@@ -1479,6 +1798,8 @@ def _task_contribution_coverage(
             if complete
             else ("not_submitted" if not by_deliverable else "incomplete")
         ),
+        "required_contribution_task_ids": required_contribution_task_ids,
+        "missing_contribution_task_ids": missing_contribution_task_ids,
         "required_source_deliverable_ids": required_ids,
         "provided_source_deliverable_ids": provided_ids,
         "missing_source_deliverable_ids": missing_ids,
@@ -1494,30 +1815,45 @@ def _coverage_for_source_ids(
     state: TeamState,
     *,
     task: AgentTask,
-    direct_child_ids: Sequence[str],
+    required_contribution_task_ids: Sequence[str],
     source_deliverable_ids: Sequence[str],
 ) -> dict[str, Any]:
     provided_ids = _unique_strings(source_deliverable_ids)
-    required_ids = _required_direct_child_source_deliverable_ids(
+    required_ids = _required_source_deliverable_ids(
         state,
-        direct_child_ids=direct_child_ids,
+        task=task,
+        required_contribution_task_ids=required_contribution_task_ids,
     )
-    direct_child_set = set(direct_child_ids)
+    missing_contribution_task_ids = _missing_contribution_task_ids(
+        state,
+        task=task,
+        required_contribution_task_ids=required_contribution_task_ids,
+    )
+    contribution_task_set = set(required_contribution_task_ids)
     invalid_ids: set[str] = set()
     for source_id in provided_ids:
         source = state.deliverables.get(source_id)
         if (
             source is None
-            or source.task_id not in direct_child_set
+            or source.task_id not in contribution_task_set
             or source.state != TeamRecordState.ACCEPTED
             or source.superseded_by_deliverable_id is not None
         ):
             invalid_ids.add(source_id)
     missing_ids = sorted(set(required_ids) - set(provided_ids))
     unexpected_ids = sorted(set(provided_ids) - set(required_ids))
-    complete = not missing_ids and not unexpected_ids and not invalid_ids
+    complete = (
+        not missing_contribution_task_ids
+        and not missing_ids
+        and not unexpected_ids
+        and not invalid_ids
+    )
     return {
         "task_id": task.id,
+        "required_contribution_task_ids": list(
+            required_contribution_task_ids
+        ),
+        "missing_contribution_task_ids": missing_contribution_task_ids,
         "required_source_deliverable_ids": required_ids,
         "provided_source_deliverable_ids": provided_ids,
         "missing_source_deliverable_ids": missing_ids,
@@ -1527,36 +1863,96 @@ def _coverage_for_source_ids(
     }
 
 
-def _required_direct_child_source_deliverable_ids(
-    state: TeamState,
+def _required_contribution_task_ids(
+    task: AgentTask,
     *,
     direct_child_ids: Sequence[str],
 ) -> list[str]:
-    required: set[str] = set()
-    for child_id in direct_child_ids:
-        child = state.tasks.get(child_id)
-        if child is None or child.state == TeamTaskState.CANCELLED:
-            continue
-        if (
-            child.task_kind == TeamTaskKind.OUTCOME
-            and child.state == TeamTaskState.ACCEPTED
-            and child.completion is not None
-            and child.completion.kind == TaskCompletionKind.EVIDENCED_NOOP
-        ):
-            continue
-        for deliverable in state.deliverables.values():
-            if (
-                deliverable.task_id == child_id
-                and deliverable.state == TeamRecordState.ACCEPTED
-                and deliverable.superseded_by_deliverable_id is None
-                and (
-                    deliverable.completion is None
-                    or deliverable.completion.kind
-                    != TaskCompletionKind.EVIDENCED_NOOP
-                )
-            ):
-                required.add(deliverable.id)
-    return sorted(required)
+    if task.integration_boundary and task.deliverable_contract is not None:
+        return list(
+            task.deliverable_contract.required_contribution_task_ids
+        )
+    return sorted(set(direct_child_ids))
+
+
+def _accepted_contribution_deliverables(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    contribution_task_id: str,
+) -> list[Deliverable]:
+    contribution_task = state.tasks.get(contribution_task_id)
+    if contribution_task is None:
+        return []
+    legacy_direct_child_policy = not task.integration_boundary
+    if (
+        legacy_direct_child_policy
+        and contribution_task.state == TeamTaskState.CANCELLED
+    ):
+        return []
+    if (
+        legacy_direct_child_policy
+        and (
+            contribution_task.task_kind == TeamTaskKind.OUTCOME
+            and contribution_task.state == TeamTaskState.ACCEPTED
+            and contribution_task.completion is not None
+            and contribution_task.completion.kind
+            == TaskCompletionKind.EVIDENCED_NOOP
+        )
+    ):
+        return []
+    return sorted(
+        (
+            deliverable
+            for deliverable in state.deliverables.values()
+            if deliverable.task_id == contribution_task_id
+            and deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.superseded_by_deliverable_id is None
+            and (
+                not legacy_direct_child_policy
+                or deliverable.completion is None
+                or deliverable.completion.kind
+                != TaskCompletionKind.EVIDENCED_NOOP
+            )
+        ),
+        key=lambda deliverable: deliverable.id,
+    )
+
+
+def _required_source_deliverable_ids(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    required_contribution_task_ids: Sequence[str],
+) -> list[str]:
+    return sorted(
+        deliverable.id
+        for contribution_task_id in required_contribution_task_ids
+        for deliverable in _accepted_contribution_deliverables(
+            state,
+            task=task,
+            contribution_task_id=contribution_task_id,
+        )
+    )
+
+
+def _missing_contribution_task_ids(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    required_contribution_task_ids: Sequence[str],
+) -> list[str]:
+    if not task.integration_boundary:
+        return []
+    return sorted(
+        contribution_task_id
+        for contribution_task_id in required_contribution_task_ids
+        if not _accepted_contribution_deliverables(
+            state,
+            task=task,
+            contribution_task_id=contribution_task_id,
+        )
+    )
 
 
 def _empty_contribution_coverage(
@@ -1567,6 +1963,8 @@ def _empty_contribution_coverage(
     return {
         "task_id": task_id,
         "status": "unknown" if has_children else "not_applicable",
+        "required_contribution_task_ids": [],
+        "missing_contribution_task_ids": [],
         "required_source_deliverable_ids": [],
         "provided_source_deliverable_ids": [],
         "missing_source_deliverable_ids": [],
@@ -1681,5 +2079,6 @@ __all__ = [
     "require_release_scope",
     "require_task_boundary_clear",
     "require_task_can_finish",
+    "require_task_deliverable_contract_provenance",
     "require_task_resolved",
 ]

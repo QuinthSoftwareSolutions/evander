@@ -997,7 +997,11 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     monkeypatch,
 ) -> None:
     worker = _build_worker(tmp_path)
-    _register_container_session(worker, session_id="session-container")
+    _register_container_session(
+        worker,
+        session_id="session-container",
+        metadata={"playwright": True},
+    )
     due_at = datetime.now(UTC) - timedelta(minutes=1)
     _schedule_one_time_request(
         worker, request_id="wake-container", session_id="session-container", due_at=due_at
@@ -1018,6 +1022,7 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     spec = backend.started_specs[0]
     assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
     assert spec.session_id == "session-container"
+    assert spec.resource_limits == {"pids_limit": 1024}
     assert "codex exec resume --last" in str(spec.command)
     assert spec.metadata["source"] == "scheduled_once"
     assert spec.metadata["resume_mode"] == "same_context"
@@ -1067,6 +1072,7 @@ def test_scheduled_wake_worker_dispatches_due_claude_container_request(
     spec = backend.started_specs[0]
     assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
     assert spec.session_id == "session-container-claude"
+    assert spec.resource_limits is None
     assert "claude --continue -p" in str(spec.command)
     assert "--model claude-sonnet-4-6" in str(spec.command)
     assert "codex exec" not in str(spec.command)

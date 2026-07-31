@@ -122,6 +122,7 @@ Run `evander-cli --help` and a subcommand's `--help` for the precise option set 
 | Run the trigger loop interactively | `evander-cli trigger-orchestrator` |
 | Register or refresh a managed repository | `evander-cli git-repos register ...` |
 | Inspect managed repositories | `evander-cli git-repos list ...` |
+| Set one managed repository's host commit identity | `evander-cli git-repos set-host-identity ...` |
 | Create an issue VM | `evander-cli create-issue-vm <issue-id> ...` |
 | Clone by managed identity | `evander-cli clone-repo-into-vm <vm-name> --managed-repo-id <id>` |
 | Smoke-test a container worker | `evander-cli execution smoke-container-worker --json` |
@@ -193,14 +194,14 @@ The Team Add-on contributes one navigation area with fifteen current views. Ther
 | View | What it projects |
 |---|---|
 | Workspace | Cross-cutting attention, delivery, team, and work-status summary |
-| Operations | Active leases, dispatches, sessions, and operational exceptions |
-| Delivery | Deliverables and review progress |
+| Operations | Active leases, dispatches, sessions, direct-agent/subtree stand-down controls, and operational exceptions |
+| Delivery | Attention-first, project-focused deliverables with review, release, verification, and publication evidence |
 | Memory | Durable Team memory records and artifact references |
 | Projects | Project definitions, memberships, leads, and goals |
 | Task board | Project tasks arranged by workflow lane |
 | Cases | Structured operational cases and their lifecycle |
 | Teams | Teams, agents, memberships, responsibilities, roles, and models |
-| Chat | Team chat channels and messages |
+| Chat | Built-in and workflow-bridged external Team Chat conversations, messages, and external delivery state |
 | Mail | Sent/received projections over the durable Team inbox |
 | Activity | Redacted dispatch lifecycle and Team tool outcome events |
 | Governance | Governance groups, goals, agenda, oversight, and cost rollups |

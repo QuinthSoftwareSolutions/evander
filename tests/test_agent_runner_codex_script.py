@@ -62,6 +62,57 @@ EOF
     assert "--json" in args
 
 
+def test_codex_runner_streams_bounded_reasoning_and_tool_progress(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "codex",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "features" && "${2:-}" == "list" ]]; then
+  exit 0
+fi
+cat <<'EOF'
+{"type":"session_meta","payload":{"id":"codex-thread-progress"}}
+{"type":"event_msg","payload":{"type":"agent_reasoning","text":"Inspecting the existing patterns before editing."}}
+{"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspecting the existing patterns before editing."}]}}
+{"type":"response_item","payload":{"type":"function_call","name":"team_get_task","call_id":"call-team","arguments":"{\\"task_id\\":\\"sensitive-structured-value\\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-team","output":"large sensitive tool output"}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-exec","arguments":"{\\"cmd\\":\\"rg --files src\\",\\"workdir\\":\\"/home/agent/repo\\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-exec","output":"src/one.py\\nsrc/two.py"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}
+EOF
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    command = (
+        f"source '{ROOT / 'scripts' / 'lib' / 'agent_runner_codex.sh'}'; "
+        "agent_runner_codex_exec --model local-test 'Continue'"
+    )
+
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stdout == (
+        "session id: codex-thread-progress\n"
+        "reasoning: Inspecting the existing patterns before editing.\n"
+        "tool started: team_get_task\n"
+        "tool completed: team_get_task\n"
+        "tool started: exec_command rg --files src cwd=/home/agent/repo\n"
+        "tool completed: exec_command rg --files src cwd=/home/agent/repo\n"
+        "Done.\n"
+    )
+    assert "sensitive-structured-value" not in result.stdout
+    assert "large sensitive tool output" not in result.stdout
+
+
 def test_codex_runner_skips_unknown_optional_feature(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

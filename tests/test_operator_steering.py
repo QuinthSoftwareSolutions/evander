@@ -62,6 +62,36 @@ def test_operator_steering_store_claim_release_and_deliver(tmp_path: Path) -> No
     assert delivered.delivered_at == datetime(2026, 6, 8, 12, 4, tzinfo=UTC)
 
 
+def test_operator_steering_request_claim_has_one_durable_owner(tmp_path: Path) -> None:
+    path = tmp_path / "operator-steering.db"
+    first_store = OperatorSteeringNoteStore(path)
+    second_store = OperatorSteeringNoteStore(path)
+
+    first, first_acquired = first_store.claim_request_once(
+        request_key="team-review-closure:dispatch-1:review-1:withdrawn",
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+    )
+    duplicate, duplicate_acquired = second_store.claim_request_once(
+        request_key="team-review-closure:dispatch-1:review-1:withdrawn",
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+    )
+
+    assert first_acquired is True
+    assert duplicate_acquired is False
+    assert duplicate.owner_token == first.owner_token
+    completed = first_store.finish_request_claim(
+        request_key=first.request_key,
+        owner_token=first.owner_token,
+        succeeded=True,
+        outcome_note_id="note-1",
+    )
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.outcome_note_id == "note-1"
+
+
 def test_operator_steering_store_cancel_only_pending_notes(tmp_path: Path) -> None:
     store = OperatorSteeringNoteStore(tmp_path / "operator-steering.db")
     injecting = store.create_note(

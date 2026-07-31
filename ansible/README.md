@@ -608,9 +608,13 @@ cache is seeded the same way
 `evander_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`.
 The Playwright runtime and browser caches are seeded from `HOST_PLAYWRIGHT_NODE_MODULES` or the repo
 frontend `node_modules`, plus `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; archive
-variables can provide prebuilt tarballs. Playwright-enabled container sessions resolve the seeded
-Chromium executable and export it as `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and
-`CHROMIUM_BIN`. Populate the NuGet fallback cache before relying on fallback restores for
+variables can provide prebuilt tarballs. Before live caches are replaced, the role stages both
+archives and verifies that the seeded Playwright package's `chromium.executablePath()` is executable
+from the staged browser cache. A mismatch fails with the expected path and available Chromium cache
+entries while preserving the prior live pair. Playwright-enabled container sessions resolve that
+seeded Chromium executable and export it as `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and
+`CHROMIUM_BIN`; their jobs receive an explicit `pids_limit` of `1024`, while unrelated jobs retain
+the strict `512` default. Populate the NuGet fallback cache before relying on fallback restores for
 project-specific packages beyond the playbook's restore-support seed; use
 `scripts/prewarm_container_worker_nuget_cache.sh` from the control plane to restore through the
 host NuGet relay and additively update worker caches. Docker `host` networking

@@ -147,6 +147,9 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_pat
     assert resume["modelProvider"] == "openai"
     assert resume["sandbox"] == "danger-full-access"
     assert resume["config"]["mcp_servers"]["evander"]["url"].endswith("/mcp")
+    assert "dynamicTools" not in resume
+    turn_start = next(params for method, params in process.requests if method == "turn/start")
+    assert "dynamicTools" not in turn_start
     assert metadata[-1]["codex_subscription_exit_code"] == 0
     assert all("access" not in str(entry).casefold() for entry in metadata)
 

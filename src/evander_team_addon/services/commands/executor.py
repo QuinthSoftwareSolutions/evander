@@ -38,20 +38,31 @@ from ...models import (
     TeamInboxItemState,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
     _unique_text_list,
 )
 from ..domain.common import (
     _ensure_utc,
     _optional_text,
 )
+from ..domain.dispatch_scope import (
+    _blocker_project_ids,
+    _inbox_project_ids,
+    _review_project_ids,
+)
 from ..domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
 )
+from ..domain.git_work_contexts import GitCandidateCommitResolver
 from ..domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
 )
 from ..domain.task_assessment import TaskAssessmentService
+from ..domain.wake import (
+    _append_newly_ready_task_owner_wake_requested_events,
+    _dependency_status_snapshot,
+)
 from ...sqlite_store import (
     TeamIdempotencyConflictError,
     TeamStateSqliteCommandTransaction,
@@ -67,12 +78,22 @@ from .responses import (
 
 
 class TeamCommandExecutor:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
+    ) -> None:
         self._repository = repository
+        self._git_candidate_commit_resolver = git_candidate_commit_resolver
 
     @property
     def repository(self) -> TeamStateRepository:
         return self._repository
+
+    @property
+    def git_candidate_commit_resolver(self) -> GitCandidateCommitResolver | None:
+        return self._git_candidate_commit_resolver
 
     def _execute_team_command(
         self,
@@ -152,6 +173,11 @@ class TeamCommandExecutor:
                     normalized_payload=normalized_payload,
                     handled_inbox_item_ids=normalized_handled_ids,
                 )
+                self._validate_stand_down_dispatch_completion_authority(
+                    state,
+                    resolved=resolved,
+                    normalized_payload=normalized_payload,
+                )
                 if reject_stale_high_priority_inbox:
                     self._validate_dispatch_freshness(
                         state,
@@ -165,7 +191,14 @@ class TeamCommandExecutor:
                     handled_inbox_item_ids=normalized_handled_ids,
                     )
                 )
+                dependency_statuses_before = _dependency_status_snapshot(state)
                 apply_result = apply_command(state, resolved)
+                _append_newly_ready_task_owner_wake_requested_events(
+                    state,
+                    dependency_statuses_before=dependency_statuses_before,
+                    result=apply_result.response_payload,
+                    now=utc_now(),
+                )
             except TeamCommandValidationError as exc:
                 activity = self._append_command_failure_activity(
                     tx,
@@ -339,21 +372,39 @@ class TeamCommandExecutor:
         )
         if resolved.context.tool_name == "team_decide_deliverable":
             deliverable_id = _optional_text(normalized_payload.get("deliverable_id"))
-            matching_notice_ids = {
-                item.id
-                for item in state.inbox.values()
-                if item.id in dispatch.inbox_item_ids
-                and item.recipient_agent_id == dispatch.agent_id
-                and item.state == TeamInboxItemState.PENDING
-                and item.payload.get("deliverable_id") == deliverable_id
-            }
-            if not matching_notice_ids:
-                raise _dispatch_scope_error(
-                    dispatch,
-                    scope_kind="inbox item",
-                    requested_ids=[deliverable_id or "unknown deliverable notice"],
-                    allowed_ids=dispatch.inbox_item_ids,
+            deliverable = state.deliverables.get(deliverable_id or "")
+            task = (
+                state.tasks.get(deliverable.task_id)
+                if deliverable is not None
+                else None
+            )
+            if (
+                _is_role_bounded_operator_chat_dispatch(dispatch)
+                and task is not None
+            ):
+                _validate_dispatch_project_scope(
+                    state,
+                    dispatch=dispatch,
+                    project_ids={task.project_id},
                 )
+            else:
+                matching_notice_ids = {
+                    item.id
+                    for item in state.inbox.values()
+                    if item.id in dispatch.inbox_item_ids
+                    and item.recipient_agent_id == dispatch.agent_id
+                    and item.state == TeamInboxItemState.PENDING
+                    and item.payload.get("deliverable_id") == deliverable_id
+                }
+                if not matching_notice_ids:
+                    raise _dispatch_scope_error(
+                        dispatch,
+                        scope_kind="inbox item",
+                        requested_ids=[
+                            deliverable_id or "unknown deliverable notice"
+                        ],
+                        allowed_ids=dispatch.inbox_item_ids,
+                    )
         if resolved.context.tool_name == "team_report_blocker":
             _validate_report_blocker_dispatch_scope(
                 state,
@@ -372,6 +423,58 @@ class TeamCommandExecutor:
                 dispatch=dispatch,
                 payload=normalized_payload,
             )
+
+    @staticmethod
+    def _validate_stand_down_dispatch_completion_authority(
+        state: TeamState,
+        *,
+        resolved: _ResolvedTeamCommandContext,
+        normalized_payload: Mapping[str, Any],
+    ) -> None:
+        if resolved.agent is None:
+            return
+        active_stand_downs = _active_stand_downs_for_agent(
+            state,
+            resolved.agent.id,
+        )
+        if not active_stand_downs:
+            return
+        dispatch = state.dispatches.get(resolved.dispatch_id or "")
+        leased_at = dispatch.leased_at if dispatch is not None else None
+        dispatch_predates_stand_downs = (
+            dispatch is not None
+            and leased_at is not None
+            and all(
+                _ensure_utc(leased_at) <= _ensure_utc(stand_down.set_at)
+                for stand_down in active_stand_downs
+            )
+        )
+        task_updates = normalized_payload.get("updates")
+        scoped_support_task_finish = (
+            resolved.context.tool_name == "team_update_task"
+            and isinstance(task_updates, Mapping)
+            and dict(task_updates) == {"state": TeamTaskState.FINISHED.value}
+        )
+        completion_tool_allowed = (
+            resolved.context.tool_name in _STAND_DOWN_DISPATCH_COMPLETION_TOOLS
+            or scoped_support_task_finish
+        )
+        if dispatch_predates_stand_downs and completion_tool_allowed:
+            return
+        raise TeamCommandValidationError(
+            code="agent_stood_down",
+            message=(
+                f"agent {resolved.agent.id} is stood down: "
+                f"{_stand_down_error_detail(active_stand_downs)}"
+            ),
+            correction_context={
+                "agent_id": resolved.agent.id,
+                "active_dispatch_id": resolved.dispatch_id,
+                "stand_down_ids": [item.id for item in active_stand_downs],
+                "dispatch_predates_stand_downs": dispatch_predates_stand_downs,
+                "completion_tool_allowed": completion_tool_allowed,
+            },
+        )
 
     def _validate_dispatch_freshness(
         self,
@@ -404,12 +507,17 @@ class TeamCommandExecutor:
             code="stale_dispatch_context",
             message=(
                 "new high-priority inbox work arrived after this dispatch wake "
-                "snapshot; read it and include its id in handled_inbox_item_ids "
-                "before performing the terminal action"
+                "snapshot and is intentionally outside this dispatch's immutable "
+                "scope; end the current turn without retrying the terminal action. "
+                "Dispatch finalization will request a fresh wake so the new item "
+                "can be handled under a new dispatch"
             ),
             correction_context={
                 "dispatch_id": resolved.dispatch_id,
                 "last_wake_at": _ensure_utc(last_wake_at).isoformat(),
+                "recovery_action": "end_current_turn",
+                "fresh_dispatch_required": True,
+                "current_dispatch_scope_unchanged": True,
                 "newer_high_priority_inbox_items": [
                     {
                         "id": item.id,
@@ -497,7 +605,11 @@ class TeamCommandExecutor:
                 correction_context={"agent_id": agent.id},
             )
         active_stand_downs = _active_stand_downs_for_agent(state, agent.id)
-        if active_stand_downs:
+        if active_stand_downs and (
+            not require_active_dispatch
+            or runtime is None
+            or runtime.active_dispatch_id is None
+        ):
             return resolved, TeamCommandValidationError(
                 code="agent_stood_down",
                 message=f"agent {agent.id} is stood down: {_stand_down_error_detail(active_stand_downs)}",
@@ -859,6 +971,18 @@ _DELIVERABLE_SUBMISSION_TOOLS = frozenset(
 )
 _BLOCKER_SCOPE_TOOLS = frozenset({"team_update_blocker"})
 _REVIEW_SCOPE_TOOLS = frozenset({"team_decide_review"})
+_STAND_DOWN_DISPATCH_COMPLETION_TOOLS = frozenset(
+    {
+        "team_accept_ephemeral_result",
+        "team_decide_deliverable",
+        "team_decide_review",
+        "team_link_deliverable_replacement",
+        "team_reject_ephemeral_result",
+        "team_reply_to_chat",
+        "team_submit_deliverable",
+        "team_submit_deliverable_for_review",
+    }
+)
 _PROJECT_SCOPE_TOOLS = frozenset(
     {
         "team_create_task",
@@ -868,7 +992,7 @@ _PROJECT_SCOPE_TOOLS = frozenset(
         "team_create_case",
         "team_update_case",
         "team_propose_human_finding_resolution",
-        "team_create_human_finding_correction_root",
+        "team_route_human_finding_correction",
         "team_close_post_release_case",
         "team_record_memory",
         "team_archive_memory",
@@ -943,13 +1067,13 @@ def _validate_cancel_task_dispatch_scope(
     dispatch: TeamDispatch,
     payload: Mapping[str, Any],
 ) -> None:
-    """Authorize cancellation from exact owned work or a delivered intervention.
+    """Authorize cancellation from owned work, operator chat, or an intervention.
 
     A parent owner, project lead, or Team manager does not own the target task,
     so the task can never appear in that actor's ordinary ``task_ids``. Their
-    domain authority is usable only when the immutable dispatch actually
-    delivered a task-linked inbox item or blocker. This preserves both the
-    cancellation authority model and source-specific dispatch scope.
+    domain authority is usable when authenticated operator chat froze the
+    target project into its role-bounded scope, or when another dispatch
+    delivered a task-linked inbox item or blocker.
     """
 
     task_ids = _existing_task_ids_from_payload(state, payload)
@@ -964,6 +1088,13 @@ def _validate_cancel_task_dispatch_scope(
             state,
             dispatch=dispatch,
             task_ids={task_id},
+        )
+        return
+    if _is_role_bounded_operator_chat_dispatch(dispatch):
+        _validate_dispatch_project_scope(
+            state,
+            dispatch=dispatch,
+            project_ids={task.project_id},
         )
         return
 
@@ -1131,6 +1262,13 @@ def _validate_request_review_dispatch_scope(
     )
     if deliverable is None or task is None:
         return set()
+    if _is_role_bounded_operator_chat_dispatch(dispatch):
+        _validate_dispatch_project_scope(
+            state,
+            dispatch=dispatch,
+            project_ids={task.project_id},
+        )
+        return {task.project_id}
 
     matching_notice_ids = {
         item.id
@@ -1242,6 +1380,13 @@ def _validate_report_blocker_dispatch_scope(
     )
     if deliverable is None or task is None:
         # Source validation returns the stable missing-resource error.
+        return
+    if _is_role_bounded_operator_chat_dispatch(dispatch):
+        _validate_dispatch_project_scope(
+            state,
+            dispatch=dispatch,
+            project_ids={task.project_id},
+        )
         return
 
     matching_notice_ids = {
@@ -1537,7 +1682,18 @@ def _validate_dispatch_task_scope(
     task_ids: set[str],
     require_actionable: bool = True,
 ) -> None:
-    missing = sorted(task_ids - set(dispatch.task_ids))
+    role_bounded_chat_task_ids = {
+        task_id
+        for task_id in task_ids
+        if (
+            _is_role_bounded_operator_chat_dispatch(dispatch)
+            and (task := state.tasks.get(task_id)) is not None
+            and task.project_id in dispatch.project_ids
+        )
+    }
+    missing = sorted(
+        task_ids - set(dispatch.task_ids) - role_bounded_chat_task_ids
+    )
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1553,6 +1709,12 @@ def _validate_dispatch_task_scope(
                 code="dispatch_scope_stale",
                 message=f"scoped task {task_id} no longer exists",
             )
+        if task_id in role_bounded_chat_task_ids:
+            # Operator chat freezes the actor's role-visible projects rather
+            # than attempting to predict the exact object IDs named in prose.
+            # The command's domain policy validates current ownership,
+            # supervision, role permission, and lifecycle state.
+            continue
         if task.owner_agent_id != dispatch.agent_id:
             raise TeamCommandValidationError(
                 code="dispatch_scope_stale",
@@ -1593,7 +1755,19 @@ def _validate_dispatch_blocker_scope(
     dispatch: TeamDispatch,
     blocker_ids: set[str],
 ) -> None:
-    missing = sorted(blocker_ids - set(dispatch.blocker_ids))
+    role_bounded_chat_blocker_ids = {
+        blocker_id
+        for blocker_id in blocker_ids
+        if (
+            _is_role_bounded_operator_chat_dispatch(dispatch)
+            and (blocker := state.blockers.get(blocker_id)) is not None
+            and bool(project_ids := _blocker_project_ids(state, blocker))
+            and project_ids <= set(dispatch.project_ids)
+        )
+    }
+    missing = sorted(
+        blocker_ids - set(dispatch.blocker_ids) - role_bounded_chat_blocker_ids
+    )
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1603,6 +1777,10 @@ def _validate_dispatch_blocker_scope(
         )
     for blocker_id in sorted(blocker_ids):
         blocker = state.blockers.get(blocker_id)
+        if blocker_id in role_bounded_chat_blocker_ids:
+            # The blocker command enforces the current owner, delegate, and
+            # escalation-line authority after project containment succeeds.
+            continue
         assigned = blocker is not None and (
             (
                 blocker.route == TeamBlockerRoute.DELEGATED
@@ -1614,17 +1792,20 @@ def _validate_dispatch_blocker_scope(
                 and blocker.owner_agent_id == dispatch.agent_id
             )
         )
+        # Assigned blockers whose follow-up is not due are frozen into the
+        # dispatch's exact scope but intentionally left unreserved so an
+        # unrelated completion cannot count as a stalled blocker attempt.
         if (
             blocker is None
             or blocker.state != TeamBlockerState.OPEN
             or not assigned
-            or blocker.active_dispatch_id != dispatch.id
+            or blocker.active_dispatch_id not in {None, dispatch.id}
         ):
             raise TeamCommandValidationError(
                 code="dispatch_scope_stale",
                 message=(
                     f"scoped blocker {blocker_id} is no longer open, assigned, "
-                    f"and reserved by dispatch {dispatch.id}"
+                    f"and available to dispatch {dispatch.id}"
                 ),
                 correction_context={
                     "dispatch_id": dispatch.id,
@@ -1639,7 +1820,21 @@ def _validate_dispatch_review_scope(
     dispatch: TeamDispatch,
     review_request_ids: set[str],
 ) -> None:
-    missing = sorted(review_request_ids - set(dispatch.review_request_ids))
+    role_bounded_chat_review_ids = {
+        review_id
+        for review_id in review_request_ids
+        if (
+            _is_role_bounded_operator_chat_dispatch(dispatch)
+            and (review := state.review_requests.get(review_id)) is not None
+            and bool(project_ids := _review_project_ids(state, review))
+            and project_ids <= set(dispatch.project_ids)
+        )
+    }
+    missing = sorted(
+        review_request_ids
+        - set(dispatch.review_request_ids)
+        - role_bounded_chat_review_ids
+    )
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1649,6 +1844,10 @@ def _validate_dispatch_review_scope(
         )
     for review_id in sorted(review_request_ids):
         review = state.review_requests.get(review_id)
+        if review_id in role_bounded_chat_review_ids:
+            # The review command remains responsible for reviewer identity and
+            # current decision eligibility.
+            continue
         if (
             review is None
             or review.reviewer_agent_id != dispatch.agent_id
@@ -1676,7 +1875,23 @@ def _validate_dispatch_inbox_scope(
     dispatch: TeamDispatch,
     inbox_item_ids: set[str],
 ) -> None:
-    missing = sorted(inbox_item_ids - set(dispatch.inbox_item_ids))
+    role_bounded_chat_inbox_ids = {
+        inbox_id
+        for inbox_id in inbox_item_ids
+        if (
+            _is_role_bounded_operator_chat_dispatch(dispatch)
+            and (item := state.inbox.get(inbox_id)) is not None
+            and item.recipient_agent_id == dispatch.agent_id
+            and item.state == TeamInboxItemState.PENDING
+            and (
+                not (project_ids := _inbox_project_ids(state, item))
+                or project_ids <= set(dispatch.project_ids)
+            )
+        )
+    }
+    missing = sorted(
+        inbox_item_ids - set(dispatch.inbox_item_ids) - role_bounded_chat_inbox_ids
+    )
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1686,6 +1901,8 @@ def _validate_dispatch_inbox_scope(
         )
     for inbox_id in sorted(inbox_item_ids):
         item = state.inbox.get(inbox_id)
+        if inbox_id in role_bounded_chat_inbox_ids:
+            continue
         if (
             item is None
             or item.recipient_agent_id != dispatch.agent_id
@@ -1728,6 +1945,10 @@ def _validate_dispatch_project_scope(
                 "project_ids": missing_current,
             },
         )
+
+
+def _is_role_bounded_operator_chat_dispatch(dispatch: TeamDispatch) -> bool:
+    return dispatch.cause_kind == "team_chat" and bool(dispatch.project_ids)
 
 
 def _validate_dispatch_managed_repo_scope(

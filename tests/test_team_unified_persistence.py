@@ -29,6 +29,7 @@ from evander_team_addon.models import (
     TaskCancellation,
     TaskCompletion,
     TaskCompletionKind,
+    TaskDeliverableContract,
     TeamBlocker,
     TeamBlockerRoute,
     TeamBlockerSourceKind,
@@ -41,14 +42,107 @@ from evander_team_addon.models import (
     TeamTaskState,
     WorktreeCleanupCandidate,
     WorktreeCleanupState,
+    summarize_worktree_cleanup_inventory,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.sqlite_store import SQLITE_SCHEMA_VERSION
+from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.runtime_service import TeamRuntimeService
+from evander_team_addon.sqlite_store import (
+    SQLITE_SCHEMA_VERSION,
+    _PERSISTENCE_GROUPS,
+    _STATE_TABLES,
+)
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 NOW = datetime(2026, 7, 25, 10, 0, tzinfo=UTC)
+
+
+def test_persistence_registry_covers_every_collection_and_table_once() -> None:
+    fields = [field for group, _specs, _writer in _PERSISTENCE_GROUPS for field in group]
+    tables = [
+        table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
+    ]
+
+    assert len(fields) == len(set(fields)) == 37
+    assert len(tables) == len(set(tables))
+    assert set(tables) == set(_STATE_TABLES)
+
+
+def test_noop_updates_and_empty_wake_checks_preserve_revision_and_skip_state_dml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    statements: list[str] = []
+    original_connect = repository.store._connect
+
+    def _traced_connect() -> sqlite3.Connection:
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(repository.store, "_connect", _traced_connect)
+    before = repository.read()
+    statements.clear()
+
+    after = repository.update(lambda state: state)
+    after_chat, claims = TeamChatService(repository).claim_pending_chat_message_dispatches(
+        agent_id="missing-agent"
+    )
+    after_lease, leases = TeamRuntimeService(repository).lease_due_agents(agent_id="missing-agent")
+
+    assert after.revision == before.revision
+    assert after_chat.revision == before.revision
+    assert after_lease.revision == before.revision
+    assert claims == []
+    assert leases == []
+    state_dml = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(("DELETE ", "INSERT ", "UPDATE "))
+        and any(table in statement for table in _STATE_TABLES)
+    ]
+    assert state_dml == []
+
+
+def test_single_record_update_only_rewrites_its_persistence_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    statements: list[str] = []
+    original_connect = repository.store._connect
+
+    def _traced_connect() -> sqlite3.Connection:
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(repository.store, "_connect", _traced_connect)
+
+    def _rename_project(state):
+        state.projects["project"].name = "Renamed project"
+        return state
+
+    before = repository.read()
+    statements.clear()
+    after = repository.update(_rename_project)
+
+    assert after.revision == before.revision + 1
+    state_dml = "\n".join(
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(("DELETE ", "INSERT ", "UPDATE "))
+    )
+    assert "team_projects" in state_dml
+    assert "team_project_goals" in state_dml
+    assert all(
+        table not in state_dml
+        for table in _STATE_TABLES
+        if table not in {"team_projects", "team_project_goals"}
+    )
 
 
 def _seed_team_repository(tmp_path: Path) -> TeamStateRepository:
@@ -76,6 +170,66 @@ def _seed_team_repository(tmp_path: Path) -> TeamStateRepository:
         expected_revision=repository.read().revision,
     )
     return repository
+
+
+def test_repository_round_trips_integration_and_leaf_deliverable_contracts(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="dependency",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=10,
+        title="Implement component",
+        description="Produce the component contribution.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="contracted-leaf",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=15,
+        title="Correct candidate",
+        description="Produce one reviewed Git correction.",
+        created_by_actor="system:release-review-correction",
+        integration_boundary=False,
+        deliverable_contract=TaskDeliverableContract(
+            require_git_provenance=True,
+        ).model_dump(mode="json"),
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=20,
+        title="Integrate candidate",
+        description="Compose and submit the final candidate.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dependency"],
+        integration_boundary=True,
+        deliverable_contract=TaskDeliverableContract(
+            require_git_provenance=True,
+            required_contribution_task_ids=["dependency"],
+        ).model_dump(mode="json"),
+    )
+
+    reloaded = TeamStateRepository(tmp_path).read()
+
+    legacy = reloaded.tasks["dependency"]
+    assert legacy.integration_boundary is False
+    assert legacy.deliverable_contract is None
+    contracted_leaf = reloaded.tasks["contracted-leaf"]
+    assert contracted_leaf.integration_boundary is False
+    assert contracted_leaf.deliverable_contract is not None
+    assert contracted_leaf.deliverable_contract.require_git_provenance is True
+    assert contracted_leaf.deliverable_contract.required_contribution_task_ids == []
+    integration = reloaded.tasks["integration"]
+    assert integration.integration_boundary is True
+    assert integration.deliverable_contract is not None
+    assert integration.deliverable_contract.require_git_provenance is True
+    assert integration.deliverable_contract.required_contribution_task_ids == ["dependency"]
 
 
 def test_repository_round_trips_unified_hierarchy_human_review_records(
@@ -313,6 +467,7 @@ def test_repository_round_trips_unified_hierarchy_human_review_records(
                 "release-one": ReleasePackage(
                     id="release-one",
                     project_id="project",
+                    owner_agent_id="lead",
                     deliverable_ids=["aggregate-deliverable"],
                     release_branch="release/project/one",
                     base_commit_sha="base-one",
@@ -516,6 +671,7 @@ def test_repository_round_trips_unified_hierarchy_human_review_records(
     assert dispatch.project_ids == ["project"]
     assert dispatch.managed_repo_ids == [MANAGED_REPO_ID]
     successor = reloaded.release_packages["release-two"]
+    assert reloaded.release_packages["release-one"].owner_agent_id == "lead"
     assert successor.supersedes_release_package_id == "release-one"
     assert successor.manifest is not None
     assert successor.manifest.predecessor_release_package_id == "release-one"
@@ -996,10 +1152,19 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
             """
         ).fetchone()[0]
 
-    assert {"originating_task_id", "cancellation_json"} <= task_columns
-    assert "completion_json" in deliverable_columns
+    assert {
+        "originating_task_id",
+        "cancellation_json",
+        "integration_boundary",
+        "deliverable_contract_json",
+    } <= task_columns
+    assert {
+        "completion_json",
+        "review_cohort_id",
+        "review_cohort_sealed_at",
+    } <= deliverable_columns
     assert {"reason_code", "reporter_actor"} <= blocker_columns
-    assert "supersedes_release_package_id" in release_columns
+    assert {"owner_agent_id", "supersedes_release_package_id"} <= release_columns
     assert "resolved_by_human_review_request_id" in finding_columns
     assert {
         "team_deliverable_sources",
@@ -1032,3 +1197,69 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
     assert finding_targets == [("deliverable-one",)]
     assert finding_proposals == [("deliverable-two",)]
     assert resolved_by == "request-one"
+
+
+def test_sqlite_migration_bounds_legacy_worktree_cleanup_inventory(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=10,
+        title="Completed task",
+        description="Task retained for cleanup migration evidence.",
+        created_by_agent_id="lead",
+    )
+
+    def _seed_candidate(state):
+        state.worktree_cleanup_candidates["cleanup"] = WorktreeCleanupCandidate(
+            id="cleanup",
+            agent_id="lead",
+            session_id="session-lead",
+            task_id="task",
+            project_id="project",
+            managed_repo_id=MANAGED_REPO_ID,
+            execution_backend="libvirt_vm",
+            worktree_path="/worktrees/task",
+            branch="agents/task",
+            reason="task_resolved",
+        )
+        return state
+
+    repository.update(_seed_candidate)
+    inventory = [f"cache/{index:05d}.bin" for index in range(65_000, -1, -1)]
+    inventory.append("cache/00042.bin")
+    with sqlite3.connect(repository.store.path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM team_worktree_cleanup_candidates WHERE id = 'cleanup'"
+            ).fetchone()[0]
+        )
+        payload["ignored_file_inventory"] = inventory
+        payload.pop("ignored_file_count", None)
+        payload.pop("ignored_file_inventory_sha256", None)
+        payload.pop("ignored_file_inventory_truncated", None)
+        connection.execute(
+            "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = 'cleanup'",
+            (json.dumps(payload),),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '42' WHERE key = 'sqlite_schema_version'"
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '4' WHERE key = 'state_schema_version'"
+        )
+
+    expected_sample, expected_count, expected_digest, expected_truncated = (
+        summarize_worktree_cleanup_inventory(inventory)
+    )
+    migrated = TeamStateRepository(tmp_path).read().worktree_cleanup_candidates["cleanup"]
+
+    assert migrated.ignored_file_inventory == expected_sample
+    assert migrated.ignored_file_count == expected_count == 65_001
+    assert migrated.ignored_file_inventory_sha256 == expected_digest
+    assert migrated.ignored_file_inventory_truncated is expected_truncated is True
+    assert len(migrated.ignored_file_inventory) == 200
+    assert TeamStateRepository(tmp_path).read().worktree_cleanup_candidates["cleanup"] == migrated

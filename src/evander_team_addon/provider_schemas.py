@@ -31,6 +31,7 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     max_no_progress_count: ConfigValue | None = None
     low_priority_wake_after_cycles: ConfigValue | None = None
     respect_wake_interval: ConfigValue | None = None
+    run_global_maintenance: ConfigValue | None = None
     worktree_cleanup_limit: ConfigValue | None = None
     worktree_cleanup_grace_seconds: ConfigValue | None = None
     worktree_cleanup_retry_seconds: ConfigValue | None = None
@@ -73,6 +74,31 @@ class TeamFinalizeAgentDispatchEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamEnqueueOperatorChatMessageEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:enqueue-operator-chat-message"]
+    conversation_id: ConfigValue | None = None
+    agent_id: ConfigValue | None = None
+    operator_user_id: ConfigValue
+    operator_display_name: ConfigValue | None = None
+    body: ConfigValue
+    provider: ConfigValue
+    communication_target_id: ConfigValue
+    source_message_id: ConfigValue
+    source_thread_id: ConfigValue | None = None
+    source_author_id: ConfigValue
+    source_author_name: ConfigValue | None = None
+    allow_team_mutations: ConfigValue | None = None
+    authorized_author_ids: ConfigValue | None = None
+
+
+class TeamRecordExternalChatDeliveryEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:record-external-chat-delivery"]
+    delivery_id: ConfigValue
+    success: ConfigValue
+    provider_message_id: ConfigValue | None = None
+    error: ConfigValue | None = None
+
+
 class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-operator-directive"]
     team_id: ConfigValue
@@ -101,6 +127,22 @@ class TeamCreateReviewRequestEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamCreateReviewCohortEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-review-cohort"]
+    actor_agent_id: ConfigValue
+    deliverable_id: ConfigValue
+    reviews: ConfigValue
+    publish_wake_events: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("reviews")
+    @classmethod
+    def validate_reviews(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:create-review-cohort reviews must be a JSON array")
+
+
 class TeamCreateTaskEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-task"]
     team_id: ConfigValue
@@ -114,6 +156,8 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     state: ConfigValue | None = None
     parent_task_id: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
+    integration_boundary: ConfigValue | None = None
+    deliverable_contract: ConfigValue | None = None
     created_by: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
@@ -325,6 +369,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     target_branch: ConfigValue
     base_branch: ConfigValue | None = None
     base_commit_sha: ConfigValue | None = None
+    required_source_ancestor_commit_sha: ConfigValue | None = None
     expected_source_commits: ConfigValue
     allowed_changed_paths: ConfigValue | None = None
 
@@ -448,6 +493,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "git_work_contexts": {"type": "array"},
         "review_artifact_imports": {"type": "array"},
         "review_artifact_import_errors": {"type": "array"},
+        "preparation_blocker_ids": {"type": "array"},
         "transient_conflicts": {"type": "array"},
         "retry_event_ids": {"type": "array"},
         "retry_scheduled_count": {"type": "integer"},
@@ -489,6 +535,22 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "events": {"type": "array"},
         "errors": {"type": "array"},
     },
+    "effect:team:enqueue-operator-chat-message": {
+        "success": {"type": "boolean"},
+        "queued": {"type": "boolean"},
+        "conversation_id": {"type": "string"},
+        "message_id": {"type": "string"},
+        "dispatch_id": {"type": "string"},
+        "duplicate": {"type": "boolean"},
+    },
+    "effect:team:record-external-chat-delivery": {
+        "success": {"type": "boolean"},
+        "delivery_id": {"type": "string"},
+        "status": {"type": "string"},
+        "attempt_count": {"type": "integer"},
+        "provider_message_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
@@ -513,6 +575,22 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "published_event_ids": {"type": "array"},
         "events": {"type": "array"},
         "review_request": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-review-cohort": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "review_cohort_id": {"type": ["string", "null"]},
+        "review_cohort_sealed_at": {"type": ["string", "null"]},
+        "deliverable_id": {"type": ["string", "null"]},
+        "actor_agent_id": {"type": ["string", "null"]},
+        "created": {"type": "boolean"},
+        "created_review_request_ids": {"type": "array"},
+        "existing_review_request_ids": {"type": "array"},
+        "created_inbox_item_ids": {"type": "array"},
+        "published_event_ids": {"type": "array"},
+        "events": {"type": "array"},
+        "review_requests": {"type": "array"},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-task": {

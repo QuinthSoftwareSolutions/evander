@@ -39,6 +39,7 @@ from .agent_session import (
     container_prompt_command,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     default_agent_model_for_provider,
     effective_config_for_session,
     gateway_url_with_session_context,
@@ -561,12 +562,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
-        mcp_gateway_url = self._mcp_gateway_url(
-            config=effective_config,
-            target=session_id,
+        mcp_gateway_url = gateway_url_with_session_context(
+            container_worker_guest_gateway_url(effective_config),
+            session_id=session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-            base_gateway_url=container_worker_guest_gateway_url(effective_config),
+            mcp_session_token=session_mcp_auth_token(session),
         )
         codex_turn = container_codex_turn_spec(
             prompt=prompt,
@@ -591,10 +592,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                             session,
                             effective_config,
                         ),
+                        resource_limits=container_worker_resource_limits_for_session(session),
                         command=container_prompt_command(
                             prompt=prompt,
                             model=resolved_model,
                             resume_thread_id=effective_resume_thread_id,
+                            session=session,
                             agent_provider=agent_harness,
                             resume_mode=resume_mode,
                             mcp_gateway_url=mcp_gateway_url,

@@ -22,6 +22,12 @@ Agent MCP commands use a runtime identity and dispatch contract. The caller supp
 
 Both paths end in the same validated SQLite state, but they solve different problems:
 
+Routine persistence compares records within explicit table-owning groups and
+writes only changed owners and their ordered child rows. A no-match lease or
+Chat claim, or any other domain no-op, performs no normalized state write and
+does not advance the Team revision. Append-only audit or delivery records keep
+their own transaction and retention semantics.
+
 | Concern | Admin mutation | Team command |
 |---|---|---|
 | Human or automation identity | Admin authentication or workflow context | Ambient MCP session plus resolved Team scope |
@@ -115,9 +121,11 @@ but its domain cascade follows the same all-or-nothing principle. A
 1. stores the immutable decision and deterministic findings;
 2. ends the pinned release attempt without queuing canonical publication;
 3. creates or reuses one correction <code>TeamCase</code>;
-4. creates independent correction or project-lead triage roots;
-5. links each finding to its current correction task; and
-6. creates or reuses the Team inbox and work-due consequences.
+4. creates one coordination-only parent and one exact-text child per finding;
+5. derives the affected candidate work and direct owner when that mapping is
+   deterministic;
+6. links each finding to its child task; and
+7. creates or reuses the Team inbox, immediate wake, and work-due consequences.
 
 The idempotency key covers the complete cascade. A retry or racing identical
 terminal decision reuses the same decision, case, tasks, notices, and wake
@@ -125,11 +133,34 @@ obligations. A failure in any part rolls the transition back; Team never leaves
 a recorded human veto without actionable correction work, or correction work
 without the veto that authorized it.
 
-The system may create those narrowly scoped correction roots because the
-authenticated request and target release already authorize the same-team,
-same-project relationship. It does not grant <code>create_root_task</code> to
-the original agent. Accepted tasks, deliverables, agent reviews, and the
-predecessor candidate remain immutable.
+The affected-deliverable list is optional. A sole reviewed candidate
+deliverable is inferred. With several candidate contributions, the human can
+choose named work in the form; an omitted selection routes directly only when
+all applicable work has one active owner. Otherwise the distinct finding child
+stays with the project lead until
+<code>team_route_human_finding_correction</code> assigns its owner.
+
+The system may create this narrowly scoped graph because the authenticated
+request and target release already authorize the same-team, same-project
+relationship. It does not grant <code>create_root_task</code> to the original
+agent. Accepted tasks, deliverables, agent reviews, and the predecessor
+candidate remain immutable. Correction worktree preparation verifies the
+rejected release ref, commit, and tree, then uses that immutable candidate as
+the base regardless of later movement on the main branch.
+
+After every finding child has exactly one current accepted correction
+deliverable with required review evidence, Team derives the resolution summary
+and evidence from those deliverables and creates one changed successor release
+automatically. The coordination parent produces no deliverable and finishes
+when that successor exists.
+
+No agent is asked to author a fifth, combined deliverable. Successor creation
+queues one platform-owned <code>correction_aggregate</code> promotion: its
+ordered sources are the accepted correction SHAs, its exact base is the
+rejected candidate, and every source must descend from that candidate. The
+resulting aggregate is then integrated once with the current configured base
+branch to produce the candidate that enters release gates. Conflicts are
+recovered at whichever one of those two serial boundaries actually failed.
 
 ## Idempotency
 

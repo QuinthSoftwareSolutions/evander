@@ -1972,6 +1972,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
         "image": "runner-dotnet-playwright:2026-06-05",
         "image_alias": "dotnet-playwright",
     }
+    assert manifest.metadata["playwright"] is True
     agents = service.vm_agent_admin.list_agents(
         directory_path=team_path,
         direct_only=True,
@@ -3625,6 +3626,10 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert result["status"] == "dispatched"
     assert result["execution_id"] == backend.started_specs[0].target_name
     assert backend.started_specs[0].image == "runner:admin-image"
+    assert backend.started_specs[0].codex_turn is not None
+    assert str(backend.started_specs[0].codex_turn.mcp_gateway_url).startswith(
+        "http://192.168.250.1:8000/mcp?session_id=container-session"
+    )
     assert len(records) == 1
     assert records[0].status == "waiting"
     assert records[0].effect_type == "effect:agent:enqueue-prompt"
@@ -10477,6 +10482,59 @@ def test_workflow_graph_activity_report_initializes_fresh_sqlite_backend(
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
     assert {"trigger_events", "effect_executions", "gate_executions"} <= table_names
+
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO trigger_events(
+                event_id, idempotency_key, delivery_state, trigger_id, trigger_type,
+                trace_id, occurred_at, inflight_at, delivered_at, clear_reason, error,
+                payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "event-1",
+                    "idempotency-1",
+                    "delivered",
+                    "trigger-ticket",
+                    "trigger:ticket:created",
+                    "shared-trace",
+                    "2026-05-01T10:00:00Z",
+                    None,
+                    "2026-05-01T10:00:00Z",
+                    None,
+                    None,
+                    "{}",
+                ),
+                (
+                    "event-2",
+                    "idempotency-2",
+                    "delivered",
+                    "trigger-ticket",
+                    "trigger:ticket:created",
+                    "shared-trace",
+                    "2026-05-01T11:00:00Z",
+                    None,
+                    "2026-05-01T11:00:00Z",
+                    None,
+                    None,
+                    "{}",
+                ),
+            ],
+        )
+
+    aggregated_report = service.workflow_reports_admin.read_workflow_graph_activity_report(
+        period_start=datetime(2026, 5, 1, tzinfo=UTC),
+        period_end=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+    aggregated_graph = aggregated_report.graphs[0]
+    assert aggregated_graph.activity_count == 2
+    assert aggregated_graph.trigger_event_count == 2
+    assert aggregated_graph.run_count == 1
+    assert aggregated_graph.status_counts == {"delivered": 2}
+    assert aggregated_graph.first_activity_at == datetime(2026, 5, 1, 10, tzinfo=UTC)
+    assert aggregated_graph.latest_activity_at == datetime(2026, 5, 1, 11, tzinfo=UTC)
 
 
 def test_normalize_workflow_failure_signature_canonicalizes_volatile_identifiers() -> None:

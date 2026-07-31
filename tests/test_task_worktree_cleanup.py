@@ -155,6 +155,7 @@ def test_cleanup_preserves_tracked_work_created_during_final_removal(
         args: list[str],
         *,
         check: bool = True,
+        timeout_seconds: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         nonlocal injected_late_work
         if (
@@ -166,7 +167,7 @@ def test_cleanup_preserves_tracked_work_created_during_final_removal(
             assert "--force" not in args
             (target / "README.md").write_text("late agent work\n", encoding="utf-8")
             injected_late_work = True
-        return original_run(args, check=check)
+        return original_run(args, check=check, timeout_seconds=timeout_seconds)
 
     monkeypatch.setattr(cleanup_module, "_run", _run_with_late_work)
 
@@ -187,6 +188,62 @@ def test_cleanup_preserves_tracked_work_created_during_final_removal(
     assert result.tracked_paths == ["README.md"]
     assert (target / "README.md").read_text(encoding="utf-8") == "late agent work\n"
     assert not (target / "cache" / "generated.bin").exists()
+
+
+def test_ignored_cleanup_batches_paths_and_bounds_each_git_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], bool, float | None]] = []
+
+    def _record_run(
+        args: list[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((args, check, timeout_seconds))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(cleanup_module, "_run", _record_run)
+    monkeypatch.setattr(cleanup_module, "_IGNORED_PATH_CLEAN_BATCH_COUNT", 2)
+
+    error = cleanup_module._remove_proven_ignored_paths(
+        tmp_path,
+        ["cache/a.bin", "cache/b.bin", "cache/c.bin"],
+    )
+
+    assert error is None
+    assert [call[0][-2:] for call in calls] == [
+        ["cache/a.bin", "cache/b.bin"],
+        ["--", "cache/c.bin"],
+    ]
+    assert all(call[1] is False for call in calls)
+    assert all(
+        call[2] == cleanup_module._IGNORED_PATH_CLEAN_TIMEOUT_SECONDS for call in calls
+    )
+
+
+def test_ignored_cleanup_reports_bounded_git_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _time_out(
+        args: list[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(args, timeout_seconds or 0)
+
+    monkeypatch.setattr(cleanup_module, "_run", _time_out)
+
+    error = cleanup_module._remove_proven_ignored_paths(
+        tmp_path,
+        ["cache/generated.bin"],
+    )
+
+    assert error == "timed out after 60 seconds while removing 1 proven ignored path(s)"
 
 
 def test_cleanup_refuses_worktree_with_unexpected_commit(

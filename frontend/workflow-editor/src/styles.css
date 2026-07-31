@@ -5288,6 +5288,35 @@ select {
   background: rgba(243, 237, 228, 0.38);
 }
 
+.agents-page-shell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.agents-global-controls {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(71, 56, 37, 0.12);
+  background: rgba(246, 241, 234, 0.92);
+}
+
+.agents-global-controls-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.agents-global-controls-heading h2,
+.agents-global-controls-heading p {
+  margin: 0;
+}
+
+.agents-shared-auth-panel {
+  box-shadow: none;
+}
+
 .feature-sidebar {
   padding: 1rem;
   border-right: 1px solid rgba(71, 56, 37, 0.12);
@@ -5546,6 +5575,40 @@ select {
   flex: 0 0 auto;
   padding: 0.2rem 0.42rem;
   font-size: 0.68rem;
+}
+
+.agent-list-usage-row,
+.agent-detail-usage {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  color: #6d5c4c;
+  font-size: 0.72rem;
+}
+
+.agent-list-usage-row {
+  justify-content: space-between;
+}
+
+.agent-codex-usage {
+  font-weight: 800;
+}
+
+.agent-codex-usage.mode-chatgpt_subscription {
+  color: #1f6a3f;
+}
+
+.agent-codex-usage.mode-metered_api {
+  color: #8a4d16;
+}
+
+.agent-detail-usage {
+  font-size: 0.82rem;
+}
+
+.agent-detail-usage strong {
+  color: #4c3b28;
 }
 
 .agent-prompt-queue-panel {
@@ -10622,7 +10685,8 @@ button.mobile-record-card:focus-visible,
   .admin-topbar,
   .workflow-topbar,
   .feature-toolbar,
-  .panel-header {
+  .panel-header,
+  .agents-global-controls-heading {
     flex-direction: column;
     align-items: flex-start;
   }
@@ -11222,10 +11286,28 @@ button.mobile-record-card:focus-visible,
 
 :root[data-theme="dark"] .sidebar,
 :root[data-theme="dark"] .feature-sidebar,
+:root[data-theme="dark"] .agents-global-controls,
 :root[data-theme="dark"] .admin-topbar,
 :root[data-theme="dark"] .workflow-topbar {
   border-color: rgba(128, 106, 66, 0.16);
   background: rgba(23, 21, 17, 0.84);
+}
+
+:root[data-theme="dark"] .agent-list-usage-row,
+:root[data-theme="dark"] .agent-detail-usage {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .agent-detail-usage strong {
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .agent-codex-usage.mode-chatgpt_subscription {
+  color: #9bddba;
+}
+
+:root[data-theme="dark"] .agent-codex-usage.mode-metered_api {
+  color: #f0d183;
 }
 
 :root[data-theme="dark"] .agent-list-heading {

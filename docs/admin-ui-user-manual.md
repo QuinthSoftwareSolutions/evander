@@ -452,10 +452,18 @@ Common tasks:
 18. Edit **Host Directory access** with the structured resource/capability selector. Select only
     `list`, `import`, or `delete` where needed. Selecting a capability enables its dedicated MCP
     tool, while the absolute host root remains hidden from the session.
-19. Save settings.
-20. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+19. For a persistent `container_worker_vm` agent that needs a different per-job CPU, memory, or
+    process/thread allowance, add `container_worker_resource_limits` under **Metadata** and enter
+    a nested JSON object such as `{"cpus": 8, "pids_limit": 8192}`. Supported keys are `memory`,
+    `cpus`, and `pids_limit`. Include `pids_limit` when setting another limit for a Playwright
+    session, because a non-empty ordinary-session override replaces its automatic
+    `pids_limit: 1024` allowance. This setting applies to newly dispatched jobs and does not resize
+    a running container. Team release-verifier limits use the separate project
+    `release_policy.resource_limits` editor.
+20. Save settings.
+21. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
-21. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+22. Review recent scheduled wake ledger entries for the selected session, filter by delivery
     status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.

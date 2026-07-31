@@ -4,21 +4,27 @@ from typing import Any
 from uuid import uuid4
 from ...git_naming import (
     canonical_release_branch,
+    correction_aggregate_branch,
     feature_branch,
     release_branch,
     validate_branch_name,
 )
 from ...models import (
     Deliverable,
+    DeliverableReviewManifest,
     GitPromotionRecord,
+    GitPromotionSource,
     PersistentAgent,
     Project,
     ReleasePackage,
     ReleaseScopeValidation,
     ReleaseVerificationWaiver,
     RolePermission,
+    TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
     project_lead_agent_id,
 )
 
@@ -50,6 +56,51 @@ from .task_assessment import (
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = (
+    "human_correction_aggregation_task_id"
+)
+
+
+def allowed_release_parent_task_ids(
+    state: TeamState,
+    *,
+    project_id: str,
+    predecessor_release_package_id: str | None,
+) -> set[str]:
+    """Return validated coordination parents allowed in a successor release."""
+
+    if predecessor_release_package_id is None:
+        return set()
+    predecessor_request_ids = {
+        request.id
+        for request in state.human_review_requests.values()
+        if request.release_package_id == predecessor_release_package_id
+        and request.state == "changes_requested"
+    }
+    allowed: set[str] = set()
+    for case in state.cases.values():
+        if (
+            case.source != "human_release_review"
+            or case.source_ref not in predecessor_request_ids
+            or case.project_id != project_id
+        ):
+            continue
+        parent_task_id = _optional_text(
+            case.metadata.get(_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY)
+        )
+        parent = (
+            state.tasks.get(parent_task_id)
+            if parent_task_id is not None
+            else None
+        )
+        if (
+            parent is not None
+            and parent.case_id == case.id
+            and parent.project_id == project_id
+            and parent.parent_task_id is None
+        ):
+            allowed.add(parent.id)
+    return allowed
 
 
 def _release_waiver_requests(value: object) -> list[dict[str, str]]:
@@ -174,14 +225,16 @@ def _apply_git_release_request(
             f"agent {actor.id} is not permitted to request releases on project {project_id}"
         )
         return None
-    if request.get("verification_waivers") and not (
+    waiver_actor_authorized = (
         _is_project_lead_for(state, actor.id, project_id)
         or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
-    ):
+    )
+    if request.get("verification_waivers") and not waiver_actor_authorized:
         result["errors"].append(
             "verification waivers require the project lead or top-level team manager"
         )
         return None
+    request["waiver_actor_authorized"] = waiver_actor_authorized
     request["waiver_actor_kind"] = "agent"
     request["waiver_actor_id"] = actor.id
     return _build_release_package(
@@ -213,6 +266,41 @@ def _release_request_permitted(
     )
 
 
+def _release_recovery_permitted(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    project: Project,
+    release: ReleasePackage,
+) -> bool:
+    if _release_request_permitted(state, actor=actor, project=project):
+        return True
+    active_task_states = {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_REVIEW,
+    }
+    for blocker in state.blockers.values():
+        if (
+            blocker.state != TeamBlockerState.OPEN
+            or blocker.source_kind != TeamBlockerSourceKind.RELEASE_PACKAGE
+            or blocker.source_id != release.id
+        ):
+            continue
+        for task_id in blocker.affected_task_ids:
+            task = state.tasks.get(task_id)
+            if (
+                task is not None
+                and task.project_id == project.id
+                and task.owner_agent_id == actor.id
+                and task.created_by_actor == "system:git-merge-recovery"
+                and task.state in active_task_states
+            ):
+                return True
+    return False
+
+
 def _failed_release_promotion_for_recovery(
     state: TeamState,
     release: ReleasePackage,
@@ -221,7 +309,11 @@ def _failed_release_promotion_for_recovery(
     promotions = [
         promotion
         for promotion in state.git_promotions.values()
-        if promotion.promotion_kind in {"feature", "release"}
+        if promotion.promotion_kind in {
+            "feature",
+            "correction_aggregate",
+            "release",
+        }
         and promotion.state == "failed"
         and (promotion.id in promotion_ids or promotion.release_package_id == release.id)
     ]
@@ -258,7 +350,12 @@ def _apply_git_release_recovery(
             f"git release recovery references missing project {release.project_id}"
         )
         return None
-    if not _release_request_permitted(state, actor=actor, project=project):
+    if not _release_recovery_permitted(
+        state,
+        actor=actor,
+        project=project,
+        release=release,
+    ):
         result["errors"].append(
             f"agent {actor.id} is not permitted to recover releases on project {project.id}"
         )
@@ -280,7 +377,8 @@ def _apply_git_release_recovery(
     failed_promotion = _failed_release_promotion_for_recovery(state, release)
     if failed_promotion is None:
         result["errors"].append(
-            f"release package {release.id} has no failed feature or release promotion to recover"
+            f"release package {release.id} has no failed correction-aggregate, "
+            "feature, or release promotion to recover"
         )
         return None
     target_branch = failed_promotion.target_branch
@@ -294,9 +392,15 @@ def _apply_git_release_recovery(
             return None
     target_branch = validate_branch_name(target_branch)
     expected_commit_sha = _required_text(request.get("commit_sha"), "commit_sha")
-    allowed_changed_paths, missing_manifest_ids = _release_allowed_changed_paths(
+    _repair_release_review_manifests_from_promotion_evidence(
         state,
-        release,
+        release=release,
+        result=result,
+    )
+    allowed_changed_paths, missing_manifest_ids = (
+        _release_final_allowed_changed_paths(state, release)
+        if failed_promotion.promotion_kind == "release"
+        else _release_allowed_changed_paths(state, release)
     )
     if release.policy_version >= 2 and missing_manifest_ids:
         result["errors"].append(
@@ -321,6 +425,16 @@ def _apply_git_release_recovery(
         "expected_source_commits": {agent_branch: expected_commit_sha},
         "allowed_changed_paths": (allowed_changed_paths if release.policy_version >= 2 else None),
     }
+    pinned_recovery_base = _optional_text(
+        failed_promotion.outputs.get("base_commit_sha")
+    )
+    if pinned_recovery_base is not None:
+        payload["base_commit_sha"] = pinned_recovery_base
+    if (
+        failed_promotion.promotion_kind == "correction_aggregate"
+        and release.base_commit_sha is not None
+    ):
+        payload["required_source_ancestor_commit_sha"] = release.base_commit_sha
     payload.update(_managed_repo_fields(git))
     summary = _optional_text(request.get("summary"))
     if summary is not None:
@@ -406,11 +520,19 @@ def _build_release_package(
             )
     else:
         deliverable_ids = requested_deliverable_ids
+    allowed_parent_task_ids = allowed_release_parent_task_ids(
+        state,
+        project_id=project_id,
+        predecessor_release_package_id=(
+            predecessor.id if predecessor is not None else None
+        ),
+    )
     try:
         release_scope = require_release_scope(
             state,
             project_id=project_id,
             deliverable_ids=deliverable_ids,
+            allowed_parent_task_ids=allowed_parent_task_ids,
         )
     except TaskAssessmentBoundaryError as exc:
         result["errors"].append(exc.message)
@@ -462,6 +584,12 @@ def _build_release_package(
             )
             valid = False
             continue
+        if deliverable.review_manifest is None:
+            _repair_deliverable_review_manifest_from_promotion_evidence(
+                state,
+                deliverable=deliverable,
+                result=result,
+            )
         verification_status = (
             deliverable.verification.status if deliverable.verification is not None else "missing"
         )
@@ -491,6 +619,33 @@ def _build_release_package(
                 result["errors"].append(
                     f"deliverable {deliverable_id} has {verification_status} verification; "
                     "an authorized verification waiver with a reason is required"
+                )
+                result.setdefault("verification_waiver_requirements", []).append(
+                    {
+                        "deliverable_id": deliverable_id,
+                        "verification_status": verification_status,
+                        "caller_authorized": (
+                            request.get("waiver_actor_kind") == "operator"
+                            or bool(request.get("waiver_actor_authorized"))
+                        ),
+                        "authorized_actor_roles": [
+                            "project_lead",
+                            "top_level_team_manager",
+                            "operator",
+                        ],
+                        "required_input": {
+                            "verification_waivers": [
+                                {
+                                    "deliverable_id": deliverable_id,
+                                    "reason": "<concrete evidence-based reason>",
+                                }
+                            ]
+                        },
+                        "effect": (
+                            "Admits incomplete deliverable evidence at package intake; "
+                            "configured release verification and review gates still apply."
+                        ),
+                    }
                 )
                 valid = False
                 continue
@@ -651,7 +806,26 @@ def _build_release_package(
         )
     promotion_ids: list[str] = []
     now = utc_now()
-    if feature_sources_by_task:
+    is_candidate_correction_successor = (
+        predecessor is not None
+        and predecessor.state == TeamRecordState.REJECTED
+        and predecessor.gate_failure is not None
+        and (
+            (
+                predecessor.gate_failure.stage == "human_review"
+                and predecessor.gate_failure.kind == "changes_requested"
+            )
+            or (
+                predecessor.gate_failure.stage == "verification"
+                and predecessor.gate_failure.kind == "candidate"
+            )
+            or (
+                predecessor.gate_failure.stage == "review"
+                and predecessor.gate_failure.kind == "rejected"
+            )
+        )
+    )
+    if feature_sources_by_task and not is_candidate_correction_successor:
         assert git is not None
         for task_id, source_branches in feature_sources_by_task.items():
             feature_promotion_id = f"promotion-{uuid4().hex}"
@@ -669,6 +843,7 @@ def _build_release_package(
     state.release_packages[release_id] = ReleasePackage(
         id=release_id,
         project_id=project.id,
+        owner_agent_id=actor_agent_id,
         summary=_optional_text(request.get("summary")),
         supersedes_release_package_id=(
             predecessor.id if predecessor is not None else None
@@ -699,7 +874,27 @@ def _build_release_package(
     result["created"] = True
     result["duplicate"] = False
     result["release_package_id"] = release_id
-    if feature_sources_by_task:
+    release = state.release_packages[release_id]
+    if is_candidate_correction_successor:
+        assert predecessor is not None
+        assert git is not None
+        aggregate = _create_correction_aggregate_promotion(
+            state,
+            release=release,
+            predecessor=predecessor,
+            correction_deliverable_ids=correction_deliverable_ids,
+            actor_agent_id=actor_agent_id,
+            result=result,
+        )
+        if aggregate is None:
+            state.release_packages.pop(release_id, None)
+            for promotion_id in promotion_ids:
+                state.git_promotions.pop(promotion_id, None)
+            return None
+        promotion_ids = [aggregate.id]
+        release.git_promotion_record_ids = promotion_ids
+        result["git_promotion_event_ids"].append(aggregate.id)
+    elif feature_sources_by_task:
         assert git is not None
         for promotion_id in promotion_ids:
             promotion = state.git_promotions[promotion_id]
@@ -735,6 +930,160 @@ def _build_release_package(
         )
     projects_to_recalc.add(project_id)
     return release_id
+
+
+def _ordered_correction_deliverable_ids(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+) -> list[str]:
+    """Order correction sources by finding and then deliverable identity."""
+
+    request_ids = {
+        request.id
+        for request in state.human_review_requests.values()
+        if request.release_package_id == predecessor.id
+        and request.state == "changes_requested"
+    }
+    correction_set = set(correction_deliverable_ids)
+    finding_keys: dict[str, tuple[str, str]] = {}
+    for finding in state.human_review_findings.values():
+        if finding.source_human_review_request_id not in request_ids:
+            continue
+        for deliverable_id in finding.proposed_by_deliverable_ids:
+            if deliverable_id not in correction_set:
+                continue
+            key = (finding.id, deliverable_id)
+            previous = finding_keys.get(deliverable_id)
+            if previous is None or key < previous:
+                finding_keys[deliverable_id] = key
+    return sorted(
+        correction_set,
+        key=lambda deliverable_id: (
+            finding_keys.get(deliverable_id, ("\uffff", deliverable_id)),
+            deliverable_id,
+        ),
+    )
+
+
+def _create_correction_aggregate_promotion(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+    actor_agent_id: str,
+    result: dict[str, Any],
+) -> GitPromotionRecord | None:
+    """Queue one rejected-candidate-rooted aggregate for all reviewed corrections."""
+
+    project = state.projects.get(release.project_id)
+    git = project.git if project is not None else None
+    rejected_candidate = predecessor.candidate_commit_sha
+    if project is None or git is None or rejected_candidate is None:
+        result["errors"].append(
+            f"successor release {release.id} has no immutable rejected Git candidate"
+        )
+        return None
+    ordered_ids = _ordered_correction_deliverable_ids(
+        state,
+        predecessor=predecessor,
+        correction_deliverable_ids=correction_deliverable_ids,
+    )
+    source_rows: list[tuple[str, str, str]] = []
+    seen_branches: set[str] = set()
+    for deliverable_id in ordered_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            result["errors"].append(
+                f"successor correction deliverable {deliverable_id} is missing"
+            )
+            return None
+        try:
+            branch = _feature_promotion_source_branch_for_release(deliverable)
+        except ValueError as exc:
+            result["errors"].append(
+                f"correction deliverable {deliverable_id} has invalid Git refs: {exc}"
+            )
+            return None
+        reviewed_commit_sha, review_error = _reviewed_commit_for_release(
+            state,
+            deliverable,
+        )
+        if review_error is not None:
+            result["errors"].append(review_error)
+            return None
+        if branch is None:
+            feature = deliverable.git_refs.feature_branch
+            feature_commit = deliverable.git_refs.feature_commit_sha
+            if feature is None or feature_commit != reviewed_commit_sha:
+                result["errors"].append(
+                    f"correction deliverable {deliverable_id} has no reviewed source "
+                    "branch pinned to its accepted commit"
+                )
+                return None
+            branch = validate_branch_name(feature)
+        if branch in seen_branches:
+            result["errors"].append(
+                f"correction source branch {branch} is reused by multiple deliverables"
+            )
+            return None
+        seen_branches.add(branch)
+        source_rows.append((deliverable_id, branch, reviewed_commit_sha))
+    if not source_rows:
+        result["errors"].append(
+            f"successor release {release.id} has no reviewed correction sources"
+        )
+        return None
+
+    promotion_id = f"promotion-{uuid4().hex}"
+    target_branch = correction_aggregate_branch(project.team_id, release.id)
+    promotion = GitPromotionRecord(
+        id=promotion_id,
+        project_id=project.id,
+        release_package_id=release.id,
+        actor_agent_id=actor_agent_id,
+        source_branch=source_rows[0][1],
+        sources=[
+            GitPromotionSource(
+                source_branch=branch,
+                expected_commit_sha=commit_sha,
+            )
+            for _deliverable_id, branch, commit_sha in source_rows
+        ],
+        target_branch=target_branch,
+        promotion_kind="correction_aggregate",
+        outputs={
+            "correction_deliverable_ids": [
+                deliverable_id for deliverable_id, _branch, _sha in source_rows
+            ],
+            "required_source_ancestor_commit_sha": rejected_candidate,
+        },
+    )
+    state.git_promotions[promotion.id] = promotion
+    release.git_promotion_record_ids = _append_unique(
+        release.git_promotion_record_ids,
+        promotion.id,
+    )
+    payload: dict[str, Any] = {
+        "promotion_id": promotion.id,
+        "promotion_kind": "correction_aggregate",
+        "project_id": project.id,
+        "release_package_id": release.id,
+        "managed_repo_id": git.managed_repo_id,
+        "base_branch": git.base_branch,
+        "base_commit_sha": rejected_candidate,
+        "required_source_ancestor_commit_sha": rejected_candidate,
+        "source_branches": [branch for _deliverable_id, branch, _sha in source_rows],
+        "expected_source_commits": {
+            branch: commit_sha for _deliverable_id, branch, commit_sha in source_rows
+        },
+        "target_branch": target_branch,
+    }
+    payload.update(_managed_repo_fields(git))
+    _emit_git_promotion_event(result, promotion_id=promotion.id, payload=payload)
+    return promotion
 
 
 def _successor_release_request_error(
@@ -784,6 +1133,28 @@ def _successor_release_request_error(
             "published release"
         )
     if (
+        predecessor.state == TeamRecordState.REJECTED
+        and predecessor.gate_failure is not None
+        and predecessor.gate_failure.stage == "verification"
+        and predecessor.gate_failure.kind == "candidate"
+    ):
+        return _verification_correction_successor_request_error(
+            state,
+            predecessor=predecessor,
+            correction_deliverable_ids=correction_deliverable_ids,
+        )
+    if (
+        predecessor.state == TeamRecordState.REJECTED
+        and predecessor.gate_failure is not None
+        and predecessor.gate_failure.stage == "review"
+        and predecessor.gate_failure.kind == "rejected"
+    ):
+        return _release_review_correction_successor_request_error(
+            state,
+            predecessor=predecessor,
+            correction_deliverable_ids=correction_deliverable_ids,
+        )
+    if (
         predecessor.state != TeamRecordState.REJECTED
         or predecessor.gate_failure is None
         or predecessor.gate_failure.stage != "human_review"
@@ -828,6 +1199,9 @@ def _successor_release_request_error(
             "one correction case"
         )
     correction_case = correction_cases[0]
+    coordination_task_id = _optional_text(
+        correction_case.metadata.get("human_correction_aggregation_task_id")
+    )
     correction_case_task_ids = sorted(
         set(correction_case.task_ids)
         | {
@@ -837,6 +1211,8 @@ def _successor_release_request_error(
         }
     )
     for task_id in correction_case_task_ids:
+        if task_id == coordination_task_id:
+            continue
         try:
             require_task_resolved(
                 state,
@@ -870,9 +1246,6 @@ def _successor_release_request_error(
             "findings to carry"
         )
     correction_set = set(correction_deliverable_ids)
-    current_correction_task_ids = {
-        finding.correction_task_id for finding in open_findings
-    }
     proposed_correction_deliverable_ids = {
         deliverable_id
         for finding in open_findings
@@ -903,11 +1276,6 @@ def _successor_release_request_error(
             )
     for deliverable_id in correction_deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
         if (
             deliverable is None
             or deliverable.state != TeamRecordState.ACCEPTED
@@ -917,21 +1285,157 @@ def _successor_release_request_error(
                 f"successor correction deliverable {deliverable_id} is not a "
                 "current accepted deliverable"
             )
-        if (
-            deliverable_id not in proposed_correction_deliverable_ids
-            and (
-                task is None
-                or (
-                    task.case_id != correction_case.id
-                    and task.id not in correction_case_task_ids
-                    and task.id not in current_correction_task_ids
-                )
-            )
-        ):
+        if deliverable_id not in proposed_correction_deliverable_ids:
             return (
                 f"successor correction deliverable {deliverable_id} is not "
                 f"authorized by human review case {correction_case.id}"
             )
+    return None
+
+
+def _verification_correction_successor_request_error(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+) -> str | None:
+    if (
+        predecessor.candidate_commit_sha is None
+        or predecessor.candidate_tree_hash is None
+        or predecessor.manifest is None
+        or predecessor.manifest.evidence_status != "complete"
+    ):
+        return f"predecessor release {predecessor.id} has no immutable candidate"
+    gate_failure = predecessor.gate_failure
+    assert gate_failure is not None
+    verification_run = state.release_verification_runs.get(
+        gate_failure.source_id or ""
+    )
+    if (
+        verification_run is None
+        or verification_run.release_package_id != predecessor.id
+        or verification_run.candidate_commit_sha
+        != predecessor.candidate_commit_sha
+        or verification_run.state != "failed"
+        or verification_run.failure_kind != "candidate"
+        or verification_run.correction_task_id is None
+    ):
+        return (
+            f"predecessor release {predecessor.id} has no linked candidate "
+            "verification correction task"
+        )
+    correction_task = state.tasks.get(verification_run.correction_task_id)
+    if correction_task is None:
+        return (
+            f"verification run {verification_run.id} references missing correction "
+            f"task {verification_run.correction_task_id}"
+        )
+    try:
+        require_task_resolved(
+            state,
+            correction_task.id,
+            boundary=(
+                f"successor release for verification run "
+                f"{verification_run.id}"
+            ),
+        )
+    except TaskAssessmentBoundaryError as exc:
+        return exc.message
+    if not correction_deliverable_ids:
+        return "successor release requires an accepted verification correction deliverable"
+    duplicate_ids = sorted(
+        set(correction_deliverable_ids).intersection(predecessor.deliverable_ids)
+    )
+    if duplicate_ids:
+        return (
+            "successor correction deliverables are already in predecessor scope: "
+            + ", ".join(duplicate_ids)
+        )
+    invalid_ids = sorted(
+        deliverable_id
+        for deliverable_id in correction_deliverable_ids
+        if (
+            (deliverable := state.deliverables.get(deliverable_id)) is None
+            or deliverable.task_id != correction_task.id
+        )
+    )
+    if invalid_ids:
+        return (
+            f"verification correction task {correction_task.id} did not produce "
+            "correction deliverables: "
+            + ", ".join(invalid_ids)
+        )
+    return None
+
+
+def _release_review_correction_successor_request_error(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+) -> str | None:
+    if (
+        predecessor.candidate_commit_sha is None
+        or predecessor.candidate_tree_hash is None
+        or predecessor.manifest is None
+        or predecessor.manifest.evidence_status != "complete"
+    ):
+        return f"predecessor release {predecessor.id} has no immutable candidate"
+    gate_failure = predecessor.gate_failure
+    assert gate_failure is not None
+    review = state.review_requests.get(gate_failure.source_id or "")
+    if (
+        review is None
+        or review.release_package_id != predecessor.id
+        or review.candidate_commit_sha != predecessor.candidate_commit_sha
+        or review.state != TeamRecordState.REJECTED
+        or predecessor.review_correction_task_id is None
+    ):
+        return (
+            f"predecessor release {predecessor.id} has no linked rejected "
+            "release-review correction task"
+        )
+    correction_task = state.tasks.get(predecessor.review_correction_task_id)
+    if correction_task is None:
+        return (
+            f"release {predecessor.id} references missing review correction task "
+            f"{predecessor.review_correction_task_id}"
+        )
+    try:
+        require_task_resolved(
+            state,
+            correction_task.id,
+            boundary=(
+                f"successor release for rejected release review "
+                f"{review.id}"
+            ),
+        )
+    except TaskAssessmentBoundaryError as exc:
+        return exc.message
+    if not correction_deliverable_ids:
+        return "successor release requires an accepted review correction deliverable"
+    duplicate_ids = sorted(
+        set(correction_deliverable_ids).intersection(predecessor.deliverable_ids)
+    )
+    if duplicate_ids:
+        return (
+            "successor correction deliverables are already in predecessor scope: "
+            + ", ".join(duplicate_ids)
+        )
+    invalid_ids = sorted(
+        deliverable_id
+        for deliverable_id in correction_deliverable_ids
+        if (
+            (deliverable := state.deliverables.get(deliverable_id)) is None
+            or deliverable.task_id != correction_task.id
+        )
+    )
+    if invalid_ids:
+        return (
+            f"release review correction task {correction_task.id} did not produce "
+            "correction deliverables: "
+            + ", ".join(invalid_ids)
+        )
     return None
 
 
@@ -1072,8 +1576,9 @@ def _duplicate_release_package_error(release: ReleasePackage) -> str:
     parts.append(
         "do not submit git_release_requests for this id again; resolve the existing "
         "release package and follow its next_action_hint. Submit git_release_recoveries "
-        "only when the hint identifies a failed feature or release promotion and the resolved "
-        "commit is pushed to an agents/... ref, or choose a new id only for a "
+        "only when the hint identifies a failed correction-aggregate, feature, or "
+        "release promotion and the resolved commit is pushed to an agents/... ref, "
+        "or choose a new id only for a "
         "separate release"
     )
     return "; ".join(parts)
@@ -1091,6 +1596,13 @@ def _release_feature_branches_from_deliverables(
     state: TeamState,
     release: ReleasePackage,
 ) -> list[str]:
+    aggregate = _correction_aggregate_promotion(state, release)
+    if (
+        aggregate is not None
+        and aggregate.state == "succeeded"
+        and aggregate.commit_sha is not None
+    ):
+        return [aggregate.target_branch]
     feature_branches = list(release.feature_branches)
     for deliverable_id in _release_promotion_deliverable_ids(state, release):
         deliverable = state.deliverables.get(deliverable_id)
@@ -1106,6 +1618,13 @@ def _release_expected_feature_commits(
     state: TeamState,
     release: ReleasePackage,
 ) -> dict[str, str]:
+    aggregate = _correction_aggregate_promotion(state, release)
+    if (
+        aggregate is not None
+        and aggregate.state == "succeeded"
+        and aggregate.commit_sha is not None
+    ):
+        return {aggregate.target_branch: aggregate.commit_sha}
     expected: dict[str, str] = {}
     for deliverable_id in _release_promotion_deliverable_ids(state, release):
         deliverable = state.deliverables.get(deliverable_id)
@@ -1152,6 +1671,192 @@ def _release_allowed_changed_paths(
     return allowed, missing_manifest_ids
 
 
+def _release_final_allowed_changed_paths(
+    state: TeamState,
+    release: ReleasePackage,
+) -> tuple[list[str], list[str]]:
+    """Return the complete reviewed scope for a main-based final consolidation."""
+
+    allowed: list[str] = []
+    missing_manifest_ids: list[str] = []
+    predecessor = state.release_packages.get(
+        release.supersedes_release_package_id or ""
+    )
+    predecessor_evidence = {
+        row.deliverable_id: row
+        for row in (
+            predecessor.manifest.deliverables
+            if predecessor is not None and predecessor.manifest is not None
+            else []
+        )
+    }
+    for deliverable_id in release.deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            continue
+        manifest = deliverable.review_manifest
+        if manifest is None:
+            evidence = predecessor_evidence.get(deliverable_id)
+            manifest = evidence.review_manifest if evidence is not None else None
+        has_git_source = bool(
+            deliverable.git_refs.agent_branch
+            or deliverable.git_refs.review_branch
+            or deliverable.git_refs.feature_branch
+            or (
+                predecessor_evidence.get(deliverable_id) is not None
+                and predecessor_evidence[deliverable_id].feature_branch
+            )
+        )
+        if not has_git_source:
+            continue
+        if manifest is None:
+            missing_manifest_ids.append(deliverable_id)
+            continue
+        for path in manifest.changed_paths:
+            allowed = _append_unique(allowed, path)
+    return allowed, missing_manifest_ids
+
+
+def _review_manifest_branch_aliases(branch: str | None) -> set[str]:
+    value = _optional_text(branch)
+    if value is None:
+        return set()
+    aliases = {value}
+    prefixes = ("refs/heads/", "refs/remotes/", "origin/", "local-evander/")
+    changed = True
+    while changed:
+        changed = False
+        for alias in list(aliases):
+            for prefix in prefixes:
+                if alias.startswith(prefix):
+                    stripped = alias[len(prefix) :]
+                    if stripped and stripped not in aliases:
+                        aliases.add(stripped)
+                        changed = True
+    return aliases
+
+
+def _deliverable_review_source_aliases(deliverable: Deliverable) -> set[str]:
+    refs = deliverable.git_refs
+    aliases: set[str] = set()
+    for branch in (
+        refs.agent_branch,
+        refs.review_branch,
+        refs.feature_branch,
+    ):
+        aliases.update(_review_manifest_branch_aliases(branch))
+    return aliases
+
+
+def _repair_deliverable_review_manifest_from_promotion_evidence(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    result: dict[str, Any],
+) -> bool:
+    """Backfill a missing manifest only from pinned, review-matching Git evidence."""
+
+    if deliverable.review_manifest is not None:
+        return False
+    reviewed_commit_sha, review_error = _reviewed_commit_for_release(
+        state,
+        deliverable,
+    )
+    if review_error is not None:
+        return False
+    task = state.tasks.get(deliverable.task_id)
+    if task is None:
+        return False
+    source_aliases = _deliverable_review_source_aliases(deliverable)
+    candidates: list[tuple[GitPromotionRecord, DeliverableReviewManifest]] = []
+    for promotion in state.git_promotions.values():
+        if (
+            promotion.project_id != task.project_id
+            or promotion.state == "retired"
+            or promotion.promotion_kind
+            not in {"feature", "correction_aggregate", "release"}
+        ):
+            continue
+        if (
+            promotion.deliverable_id != deliverable.id
+            and promotion.task_id != deliverable.task_id
+        ):
+            promotion_source_branches = [
+                promotion.source_branch,
+                *(item.source_branch for item in promotion.sources),
+            ]
+            promotion_sources = {
+                alias
+                for source in promotion_source_branches
+                for alias in _review_manifest_branch_aliases(source)
+            }
+            if not source_aliases.intersection(promotion_sources):
+                continue
+        raw_manifests = promotion.outputs.get("source_manifests")
+        if not isinstance(raw_manifests, dict):
+            continue
+        for source_branch, raw_manifest in raw_manifests.items():
+            if not isinstance(source_branch, str) or not isinstance(raw_manifest, dict):
+                continue
+            try:
+                manifest = DeliverableReviewManifest.model_validate(raw_manifest)
+            except ValueError:
+                continue
+            if manifest.reviewed_commit_sha != reviewed_commit_sha:
+                continue
+            manifest_aliases = _review_manifest_branch_aliases(source_branch)
+            if source_aliases and not source_aliases.intersection(manifest_aliases):
+                continue
+            candidates.append((promotion, manifest))
+    if not candidates:
+        return False
+    unique_manifests = {
+        candidate.model_dump_json(exclude={"generated_at"})
+        for _promotion, candidate in candidates
+    }
+    if len(unique_manifests) != 1:
+        result.setdefault("diagnostics", []).append(
+            {
+                "code": "ambiguous_review_manifest_evidence",
+                "deliverable_id": deliverable.id,
+                "promotion_ids": sorted({promotion.id for promotion, _ in candidates}),
+                "message": (
+                    "Multiple Git promotion results reported different manifests for "
+                    f"accepted deliverable {deliverable.id}; the platform did not choose "
+                    "between them."
+                ),
+            }
+        )
+        return False
+    candidates.sort(key=lambda item: (item[0].updated_at, item[0].created_at, item[0].id))
+    deliverable.review_manifest = candidates[-1][1]
+    result["updated_deliverable_ids"] = _append_unique(
+        result.setdefault("updated_deliverable_ids", []),
+        deliverable.id,
+    )
+    result.setdefault("repaired_review_manifest_ids", []).append(deliverable.id)
+    return True
+
+
+def _repair_release_review_manifests_from_promotion_evidence(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    result: dict[str, Any],
+) -> list[str]:
+    for deliverable_id in _release_promotion_deliverable_ids(state, release):
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None or deliverable.review_manifest is not None:
+            continue
+        _repair_deliverable_review_manifest_from_promotion_evidence(
+            state,
+            deliverable=deliverable,
+            result=result,
+        )
+    _allowed, missing_manifest_ids = _release_allowed_changed_paths(state, release)
+    return missing_manifest_ids
+
+
 def _release_promotion_deliverable_ids(
     state: TeamState,
     release: ReleasePackage,
@@ -1172,6 +1877,9 @@ def _release_feature_prerequisites_ready(
     state: TeamState,
     release: ReleasePackage,
 ) -> bool:
+    aggregate = _correction_aggregate_promotion(state, release)
+    if aggregate is not None:
+        return aggregate.state == "succeeded" and aggregate.commit_sha is not None
     for promotion_id in release.git_promotion_record_ids:
         promotion = state.git_promotions.get(promotion_id)
         if promotion is None or promotion.promotion_kind != "feature":
@@ -1179,6 +1887,23 @@ def _release_feature_prerequisites_ready(
         if promotion.state != "succeeded":
             return False
     return True
+
+
+def _correction_aggregate_promotion(
+    state: TeamState,
+    release: ReleasePackage,
+) -> GitPromotionRecord | None:
+    candidates = [
+        promotion
+        for promotion_id in release.git_promotion_record_ids
+        if (promotion := state.git_promotions.get(promotion_id)) is not None
+        and promotion.promotion_kind == "correction_aggregate"
+        and promotion.state != "retired"
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item.created_at, item.id))
+    return candidates[-1]
 
 
 def _queue_release_promotion_if_ready(
@@ -1229,7 +1954,7 @@ def _queue_release_promotion_if_ready(
             result=result,
         )
         return
-    allowed_changed_paths, missing_manifest_ids = _release_allowed_changed_paths(
+    allowed_changed_paths, missing_manifest_ids = _release_final_allowed_changed_paths(
         state,
         release,
     )
@@ -1261,6 +1986,16 @@ def _queue_release_promotion_if_ready(
         release_package_id=release.id,
         actor_agent_id=actor_agent_id,
         source_branch=feature_branches[0],
+        sources=[
+            GitPromotionSource(
+                source_branch=branch,
+                expected_commit_sha=expected_commit,
+            )
+            for branch, expected_commit in _release_expected_feature_commits(
+                state,
+                release,
+            ).items()
+        ],
         target_branch=target_release_branch,
         promotion_kind="release",
     )
@@ -1281,7 +2016,6 @@ def _queue_release_promotion_if_ready(
         "release_package_id": release.id,
         "managed_repo_id": git.managed_repo_id,
         "base_branch": git.base_branch,
-        "base_commit_sha": release.base_commit_sha,
         "source_branches": list(feature_branches),
         "expected_source_commits": _release_expected_feature_commits(state, release),
         "allowed_changed_paths": allowed_changed_paths,
@@ -1315,10 +2049,13 @@ __all__ = [
     "_failed_release_promotion_for_recovery",
     "_apply_git_release_recovery",
     "_build_release_package",
+    "_correction_aggregate_promotion",
+    "_create_correction_aggregate_promotion",
     "_duplicate_release_package_error",
     "_feature_promotion_source_branch_for_release",
     "_release_feature_branches_from_deliverables",
     "_release_expected_feature_commits",
+    "_release_final_allowed_changed_paths",
     "_release_feature_prerequisites_ready",
     "_queue_release_promotion_if_ready",
     "_release_failure_recipient",

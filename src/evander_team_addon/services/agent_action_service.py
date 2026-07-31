@@ -115,7 +115,11 @@ from .domain.stand_down import (
     _apply_superior_stand_down_revocation,
     _stand_down_error_detail,
 )
-from .domain.task_assessment import require_task_can_finish
+from .domain.task_assessment import (
+    require_deliverable_submission,
+    require_task_can_finish,
+    require_task_deliverable_contract_provenance,
+)
 from .domain.task_supervision import (
     parent_task_for_child,
     queue_parent_resolution_transitions,
@@ -811,6 +815,15 @@ class TeamAgentActionService:
                     )
                     if artifact_space_ref:
                         artifact_refs = _append_unique(artifact_refs, artifact_space_ref)
+                    source_deliverable_ids = _string_list(
+                        deliverable_payload.get("source_deliverable_ids"),
+                        "source_deliverable_ids",
+                    )
+                    require_deliverable_submission(
+                        state_model,
+                        task_id=task.id,
+                        source_deliverable_ids=source_deliverable_ids,
+                    )
                     bind_deliverable_git_refs_to_work_context(
                         state_model,
                         agent_id=agent.id,
@@ -820,6 +833,14 @@ class TeamAgentActionService:
                     )
                     git_refs = _deliverable_git_refs_from_payload(
                         deliverable_payload.get("git_refs")
+                    )
+                    require_task_deliverable_contract_provenance(
+                        state_model,
+                        task_id=task.id,
+                        git_refs=git_refs,
+                        producer_agent_id=agent.id,
+                        deliverable_id=deliverable_id,
+                        require_submitted_context=False,
                     )
                     verification = _deliverable_verification_from_payload(
                         deliverable_payload.get("verification")
@@ -838,6 +859,18 @@ class TeamAgentActionService:
                         producer_agent_id=agent.id,
                         supersedes_deliverable_id=supersedes_deliverable_id,
                     )
+                    if (
+                        superseded_deliverable is not None
+                        and superseded_deliverable.review_cohort_id is not None
+                        and superseded_deliverable.review_cohort_sealed_at
+                        is not None
+                    ):
+                        raise ValueError(
+                            f"replacement for sealed-cohort deliverable "
+                            f"{superseded_deliverable.id} must use "
+                            "team_submit_deliverable_for_review to atomically "
+                            "create a complete fresh review cohort"
+                        )
                     acceptance_recipient_agent_id = task_acceptance_recipient_agent_id(
                         state_model,
                         task=task,
@@ -851,6 +884,7 @@ class TeamAgentActionService:
                         artifact_refs=artifact_refs,
                         git_refs=git_refs,
                         verification=verification,
+                        source_deliverable_ids=source_deliverable_ids,
                         state=TeamRecordState.PENDING,
                         acceptance_recipient_agent_id=acceptance_recipient_agent_id,
                         supersedes_deliverable_id=supersedes_deliverable_id,

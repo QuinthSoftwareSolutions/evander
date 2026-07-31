@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -18,12 +19,14 @@ from pydantic import (
 )
 
 from evander.models import DirectoryPath, utc_now
+from evander.worker.models import WorkerFailureCause, WorkerResourceLimits
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
+WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
     "text/markdown",
@@ -316,6 +319,27 @@ class TeamModel(BaseModel):
         return value
 
 
+def summarize_worktree_cleanup_inventory(
+    value: object,
+) -> tuple[list[str], int, str | None, bool]:
+    """Return bounded, deterministic evidence for a complete ignored-path inventory."""
+    inventory = sorted(set(_text_list(value or [], "ignored_file_inventory")))
+    count = len(inventory)
+    digest = (
+        hashlib.sha256(
+            json.dumps(inventory, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        if inventory
+        else None
+    )
+    return (
+        inventory[:WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT],
+        count,
+        digest,
+        count > WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT,
+    )
+
+
 class EphemeralAgentPolicy(TeamModel):
     max_concurrent: int = Field(default=0, ge=0)
 
@@ -431,9 +455,8 @@ class GovernanceGoal(TeamModel):
             return value
         payload = dict(value)
         if _optional_text(payload.get("name")) is None:
-            payload["name"] = (
-                _optional_text(payload.get("id"))
-                or _optional_text(payload.get("description"))
+            payload["name"] = _optional_text(payload.get("id")) or _optional_text(
+                payload.get("description")
             )
         return payload
 
@@ -724,6 +747,7 @@ class HumanReviewRequirement(TeamModel):
 class ProjectReleasePolicy(TeamModel):
     verification_backend: Literal["container_worker_vm"] = "container_worker_vm"
     container_image: str | None = None
+    resource_limits: WorkerResourceLimits | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirement | None = None
@@ -874,6 +898,12 @@ class AgentRuntime(TeamModel):
     context_rotation_reason: Literal["idle", "manual", "every_wake"] | None = None
     context_rotation_request_note: str | None = None
     last_handoff_summary: str | None = None
+    context_handoff_preparation_pending: bool = False
+    context_handoff_preparation_status: (
+        Literal["pending", "recorded", "failed", "timed_out"] | None
+    ) = None
+    last_agent_handoff_summary: str | None = None
+    last_agent_handoff_at: datetime | None = None
     last_context_rotated_at: datetime | None = None
     last_thread_id: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
@@ -889,6 +919,7 @@ class AgentRuntime(TeamModel):
         "context_rotation_requested_by",
         "context_rotation_request_note",
         "last_handoff_summary",
+        "last_agent_handoff_summary",
         "last_thread_id",
         mode="before",
     )
@@ -1071,6 +1102,16 @@ class TaskOutcomeContract(TeamModel):
         return self
 
 
+class TaskDeliverableContract(TeamModel):
+    require_git_provenance: bool = False
+    required_contribution_task_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("required_contribution_task_ids", mode="before")
+    @classmethod
+    def _required_contribution_task_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "required_contribution_task_ids")
+
+
 class TaskCompletion(TeamModel):
     kind: TaskCompletionKind
     summary: str
@@ -1159,6 +1200,8 @@ class AgentTask(TeamModel):
     state: TeamTaskState = TeamTaskState.PENDING
     task_kind: TeamTaskKind = TeamTaskKind.SUPPORT
     outcome_contract: TaskOutcomeContract | None = None
+    integration_boundary: bool = False
+    deliverable_contract: TaskDeliverableContract | None = None
     completion: TaskCompletion | None = None
     state_entered_at: datetime = Field(default_factory=utc_now)
     title: str
@@ -1231,6 +1274,19 @@ class AgentTask(TeamModel):
             raise ValueError("support task cannot define outcome_contract")
         if self.task_kind == TeamTaskKind.SUPPORT and self.completion is not None:
             raise ValueError("support task cannot define structured completion")
+        if self.integration_boundary and self.deliverable_contract is None:
+            raise ValueError("integration boundary task requires deliverable_contract")
+        if (
+            not self.integration_boundary
+            and self.deliverable_contract is not None
+            and self.deliverable_contract.required_contribution_task_ids
+        ):
+            raise ValueError("leaf deliverable_contract cannot require contribution tasks")
+        if (
+            self.deliverable_contract is not None
+            and self.id in self.deliverable_contract.required_contribution_task_ids
+        ):
+            raise ValueError("task cannot require itself as a deliverable contribution")
         if self.state == TeamTaskState.CANCELLED and self.cancellation is None:
             raise ValueError("cancelled task requires a cancellation disposition")
         if self.state != TeamTaskState.CANCELLED and self.cancellation is not None:
@@ -1426,6 +1482,11 @@ class Deliverable(TeamModel):
     supersession_reason: str | None = None
     superseded_at: datetime | None = None
     superseded_by_actor: str | None = None
+    review_cohort_id: str | None = None
+    review_cohort_sealed_at: datetime | None = None
+    rework_requested_at: datetime | None = None
+    rework_requested_by_agent_id: str | None = None
+    rework_reason: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("id", "task_id", "producer_agent_id", "summary", mode="before")
@@ -1438,6 +1499,9 @@ class Deliverable(TeamModel):
         "superseded_by_deliverable_id",
         "supersession_reason",
         "superseded_by_actor",
+        "review_cohort_id",
+        "rework_requested_by_agent_id",
+        "rework_reason",
         "acceptance_recipient_agent_id",
         mode="before",
     )
@@ -1471,6 +1535,30 @@ class Deliverable(TeamModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_rework_request(self) -> "Deliverable":
+        values = (
+            self.rework_requested_at,
+            self.rework_requested_by_agent_id,
+            self.rework_reason,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError(
+                "deliverable rework request requires rework_requested_at, "
+                "rework_requested_by_agent_id, and rework_reason"
+            )
+        if self.rework_requested_at is not None and self.state != TeamRecordState.ACCEPTED:
+            raise ValueError("only an accepted deliverable can carry a rework request")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_review_cohort(self) -> "Deliverable":
+        if (self.review_cohort_id is None) != (self.review_cohort_sealed_at is None):
+            raise ValueError("review_cohort_id and review_cohort_sealed_at must be set together")
+        return self
+
+    @model_validator(mode="after")
     def _validate_completion(self) -> "Deliverable":
         if self.id in self.source_deliverable_ids:
             raise ValueError("deliverable cannot name itself as a source")
@@ -1484,6 +1572,32 @@ class Deliverable(TeamModel):
         return self
 
 
+class DependencyGitSource(TeamModel):
+    dependency_task_id: str
+    deliverable_id: str
+    branch: str
+    commit_sha: str
+
+    @field_validator(
+        "dependency_task_id",
+        "deliverable_id",
+        "branch",
+        "commit_sha",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _full_commit_sha(cls, value: str) -> str:
+        normalized = value.casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError("commit_sha must be a full Git object ID")
+        return normalized
+
+
 class GitWorkContext(TeamModel):
     id: str
     agent_id: str
@@ -1494,6 +1608,7 @@ class GitWorkContext(TeamModel):
     commit_sha: str | None = None
     dispatch_id: str | None = None
     worktree_path: str | None = None
+    dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
     state: GitWorkContextState = GitWorkContextState.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1594,6 +1709,7 @@ class ReviewRequest(TeamModel):
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
+    review_cohort_id: str | None = None
     supersedes_review_request_id: str | None = None
     superseded_by_review_request_id: str | None = None
     retry_reason: str | None = None
@@ -1619,6 +1735,7 @@ class ReviewRequest(TeamModel):
         "review_profile_id",
         "instructions",
         "reviewed_commit_sha",
+        "review_cohort_id",
         "deliverable_id",
         "release_package_id",
         "candidate_commit_sha",
@@ -1649,6 +1766,8 @@ class ReviewRequest(TeamModel):
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
+        if self.release_package_id is not None and self.review_cohort_id is not None:
+            raise ValueError("release review request cannot carry review_cohort_id")
         if self.supersedes_review_request_id is not None and (
             self.retry_reason is None or self.retry_requested_by is None
         ):
@@ -1969,9 +2088,7 @@ class TeamDispatchReviewRoutingAuthority(TeamModel):
 
     @model_validator(mode="after")
     def _validate_consumption(self) -> "TeamDispatchReviewRoutingAuthority":
-        if (self.consumed_at is None) != (
-            self.consumed_by_review_request_id is None
-        ):
+        if (self.consumed_at is None) != (self.consumed_by_review_request_id is None):
             raise ValueError(
                 "dispatch review routing authority consumption requires both "
                 "consumed_at and consumed_by_review_request_id"
@@ -2034,9 +2151,7 @@ class TeamDispatch(TeamModel):
         if len(authority_keys) != len(set(authority_keys)):
             raise ValueError("dispatch review routing authorities must be unique")
         if self.review_routing_authorities and self.cause_kind != "manager_fallback":
-            raise ValueError(
-                "dispatch review routing authorities require manager_fallback cause"
-            )
+            raise ValueError("dispatch review routing authorities require manager_fallback cause")
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -2075,12 +2190,37 @@ class WorktreeCleanupCandidate(TeamModel):
     last_safety_check: str | None = None
     last_error: str | None = None
     ignored_file_inventory: list[str] = Field(default_factory=list)
+    ignored_file_count: int = Field(default=0, ge=0)
+    ignored_file_inventory_sha256: str | None = None
+    ignored_file_inventory_truncated: bool = False
     ignored_bytes: int = Field(default=0, ge=0)
     worktree_bytes: int = Field(default=0, ge=0)
     reclaimed_bytes: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bounded_ignored_file_evidence(cls, data: object) -> object:
+        if not isinstance(data, Mapping):
+            return data
+        migrated = dict(data)
+        inventory = migrated.get("ignored_file_inventory") or []
+        if not all(
+            field_name in migrated
+            for field_name in (
+                "ignored_file_count",
+                "ignored_file_inventory_sha256",
+                "ignored_file_inventory_truncated",
+            )
+        ):
+            sample, count, digest, truncated = summarize_worktree_cleanup_inventory(inventory)
+            migrated["ignored_file_inventory"] = sample
+            migrated["ignored_file_count"] = count
+            migrated["ignored_file_inventory_sha256"] = digest
+            migrated["ignored_file_inventory_truncated"] = truncated
+        return migrated
 
     @field_validator(
         "id",
@@ -2104,6 +2244,7 @@ class WorktreeCleanupCandidate(TeamModel):
         "retained_commit_sha",
         "last_safety_check",
         "last_error",
+        "ignored_file_inventory_sha256",
         mode="before",
     )
     @classmethod
@@ -2113,7 +2254,10 @@ class WorktreeCleanupCandidate(TeamModel):
     @field_validator("ignored_file_inventory", mode="before")
     @classmethod
     def _ignored_file_inventory(cls, value: object) -> list[str]:
-        return _unique_text_list(value or [], "ignored_file_inventory")
+        inventory = sorted(_unique_text_list(value or [], "ignored_file_inventory"))
+        if len(inventory) > WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT:
+            raise ValueError("ignored_file_inventory exceeds the bounded evidence sample limit")
+        return inventory
 
 
 class TeamDispatchActivityStatus(str, Enum):
@@ -2362,6 +2506,82 @@ class TeamConversationMessage(TeamModel):
         return self
 
 
+class ExternalChatIngressRecord(TeamModel):
+    """Durable external-message provenance and ingress idempotency record."""
+
+    id: str
+    provider: str
+    communication_target_id: str
+    source_message_id: str
+    source_thread_id: str | None = None
+    source_author_id: str
+    source_author_name: str | None = None
+    operator_user_id: str
+    conversation_id: str
+    message_id: str
+    dispatch_id: str
+    allow_team_mutations: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "provider",
+        "communication_target_id",
+        "source_message_id",
+        "source_author_id",
+        "operator_user_id",
+        "conversation_id",
+        "message_id",
+        "dispatch_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("source_thread_id", "source_author_name", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class ExternalChatDeliveryRecord(TeamModel):
+    """A persisted request to return one Team Chat reply through its source target."""
+
+    id: str
+    agent_reply_message_id: str
+    operator_message_id: str
+    provider: str
+    communication_target_id: str
+    source_thread_id: str | None = None
+    status: Literal["pending", "sending", "sent", "failed", "unknown"] = "pending"
+    provider_message_id: str | None = None
+    attempt_count: int = Field(default=0, ge=0)
+    last_error: str | None = None
+    attempted_at: datetime | None = None
+    delivered_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "agent_reply_message_id",
+        "operator_message_id",
+        "provider",
+        "communication_target_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("source_thread_id", "provider_message_id", "last_error", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class TeamChatAttachment(TeamModel):
     id: str
     message_id: str
@@ -2459,7 +2679,7 @@ class TeamChatAttachmentPolicy(TeamModel):
 class AgentStandDown(TeamModel):
     id: str
     agent_id: str
-    scope: Literal["subtree"] = "subtree"
+    scope: Literal["agent", "subtree"] = "subtree"
     reason: str
     source: AgentStandDownSource = AgentStandDownSource.OPERATOR
     set_by: str
@@ -2526,6 +2746,7 @@ class ReleaseVerificationCommandResult(TeamModel):
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
     job_id: str | None = None
     exit_code: int | None = None
+    failure_cause: WorkerFailureCause | None = None
     duration_seconds: float | None = None
     log_excerpt: str | None = None
 
@@ -2552,6 +2773,7 @@ class ReleaseVerificationRun(TeamModel):
     superseded_by_verification_run_id: str | None = None
     retry_reason: str | None = None
     retry_requested_by: str | None = None
+    correction_task_id: str | None = None
     command_results: list[ReleaseVerificationCommandResult] = Field(default_factory=list)
     current_command_index: int = Field(default=0, ge=0)
     error: str | None = None
@@ -2572,6 +2794,7 @@ class ReleaseVerificationRun(TeamModel):
         "superseded_by_verification_run_id",
         "retry_reason",
         "retry_requested_by",
+        "correction_task_id",
         mode="before",
     )
     @classmethod
@@ -2967,6 +3190,7 @@ class ReleaseCandidateManifest(TeamModel):
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
+    owner_agent_id: str | None = None
     summary: str | None = None
     supersedes_release_package_id: str | None = None
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -2979,6 +3203,7 @@ class ReleasePackage(TeamModel):
     candidate_commit_sha: str | None = None
     candidate_tree_hash: str | None = None
     approved_commit_sha: str | None = None
+    review_correction_task_id: str | None = None
     verification_run_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
     manifest: ReleaseCandidateManifest | None = None
@@ -3014,12 +3239,14 @@ class ReleasePackage(TeamModel):
     @field_validator(
         "release_branch",
         "canonical_branch",
+        "owner_agent_id",
         "supersedes_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
         "candidate_commit_sha",
         "candidate_tree_hash",
         "approved_commit_sha",
+        "review_correction_task_id",
         "summary",
         "error",
         mode="before",
@@ -3153,11 +3380,17 @@ class GitPromotionRecord(TeamModel):
     source_branch: str
     sources: list[GitPromotionSource] = Field(default_factory=list)
     target_branch: str
-    promotion_kind: Literal["review", "feature", "release", "canonical_push"]
+    promotion_kind: Literal[
+        "review",
+        "feature",
+        "correction_aggregate",
+        "release",
+        "canonical_push",
+    ]
     task_id: str | None = None
     deliverable_id: str | None = None
     release_package_id: str | None = None
-    state: Literal["pending", "succeeded", "failed"] = "pending"
+    state: Literal["pending", "succeeded", "failed", "retired"] = "pending"
     commit_sha: str | None = None
     outputs: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
@@ -3223,6 +3456,8 @@ class TeamState(TeamModel):
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
+    external_chat_ingress: dict[str, ExternalChatIngressRecord] = Field(default_factory=dict)
+    external_chat_deliveries: dict[str, ExternalChatDeliveryRecord] = Field(default_factory=dict)
     chat_attachments: dict[str, TeamChatAttachment] = Field(default_factory=dict)
     chat_attachment_policies: dict[str, TeamChatAttachmentPolicy] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
@@ -3422,6 +3657,7 @@ class TeamState(TeamModel):
         self._validate_action_records(errors)
         self._validate_memories(errors)
         self._validate_conversations(errors)
+        self._validate_external_chat_bridge(errors)
         self._validate_releases(errors)
         self._validate_human_reviews(errors)
         self._validate_dispatches(errors)
@@ -3463,6 +3699,8 @@ class TeamState(TeamModel):
             "memories",
             "conversations",
             "conversation_messages",
+            "external_chat_ingress",
+            "external_chat_deliveries",
             "chat_attachments",
             "chat_attachment_policies",
             "release_packages",
@@ -4045,6 +4283,14 @@ class TeamState(TeamModel):
                     f"deliverable {deliverable.id} references missing producer "
                     f"{deliverable.producer_agent_id}"
                 )
+            if (
+                deliverable.rework_requested_by_agent_id is not None
+                and deliverable.rework_requested_by_agent_id not in self.agents
+            ):
+                errors.append(
+                    f"deliverable {deliverable.id} references missing rework requester "
+                    f"{deliverable.rework_requested_by_agent_id}"
+                )
             for review_request_id in deliverable.review_request_ids:
                 review = self.review_requests.get(review_request_id)
                 if review is None:
@@ -4109,10 +4355,14 @@ class TeamState(TeamModel):
                     if previous.state not in {
                         TeamRecordState.REJECTED,
                         TeamRecordState.BLOCKED,
-                    }:
+                    } and not (
+                        previous.state == TeamRecordState.ACCEPTED
+                        and previous.rework_requested_at is not None
+                    ):
                         errors.append(
-                            f"deliverable {deliverable.id} supersedes non-rejected/non-blocked "
-                            f"deliverable {previous.id}"
+                            f"deliverable {deliverable.id} supersedes a deliverable "
+                            f"{previous.id} that was neither rejected, blocked, nor "
+                            "explicitly reopened for rework"
                         )
             if deliverable.superseded_by_deliverable_id is not None:
                 replacement = self.deliverables.get(deliverable.superseded_by_deliverable_id)
@@ -4143,10 +4393,13 @@ class TeamState(TeamModel):
                     if deliverable.state not in {
                         TeamRecordState.REJECTED,
                         TeamRecordState.BLOCKED,
-                    }:
+                    } and not (
+                        deliverable.state == TeamRecordState.ACCEPTED
+                        and deliverable.rework_requested_at is not None
+                    ):
                         errors.append(
-                            f"non-rejected/non-blocked deliverable {deliverable.id} "
-                            "cannot be superseded"
+                            f"deliverable {deliverable.id} cannot be superseded without "
+                            "rejection, a block, or an explicit rework request"
                         )
 
     def _validate_outcome_kind_definitions(self, errors: list[str]) -> None:
@@ -4228,12 +4481,57 @@ class TeamState(TeamModel):
                     )
 
     def _validate_reviews(self, errors: list[str]) -> None:
+        current_cohort_reviewers: set[tuple[str, str, str]] = set()
         for review in self.review_requests.values():
             if review.deliverable_id is not None and review.deliverable_id not in self.deliverables:
                 errors.append(
                     f"review request {review.id} references missing deliverable "
                     f"{review.deliverable_id}"
                 )
+            deliverable = (
+                self.deliverables.get(review.deliverable_id)
+                if review.deliverable_id is not None
+                else None
+            )
+            if (
+                review.review_cohort_id is not None
+                and deliverable is not None
+                and review.review_cohort_id != deliverable.review_cohort_id
+            ):
+                errors.append(
+                    f"review request {review.id} cohort "
+                    f"{review.review_cohort_id} does not match deliverable "
+                    f"{deliverable.id} cohort {deliverable.review_cohort_id}"
+                )
+            if (
+                deliverable is not None
+                and deliverable.review_cohort_id is not None
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+                and review.review_cohort_id != deliverable.review_cohort_id
+            ):
+                errors.append(
+                    f"current review request {review.id} must carry deliverable "
+                    f"{deliverable.id} cohort {deliverable.review_cohort_id}"
+                )
+            if (
+                review.deliverable_id is not None
+                and review.review_cohort_id is not None
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+            ):
+                cohort_reviewer_key = (
+                    review.deliverable_id,
+                    review.review_cohort_id,
+                    review.reviewer_agent_id,
+                )
+                if cohort_reviewer_key in current_cohort_reviewers:
+                    errors.append(
+                        f"deliverable {review.deliverable_id} cohort "
+                        f"{review.review_cohort_id} has duplicate current reviewer "
+                        f"{review.reviewer_agent_id}"
+                    )
+                current_cohort_reviewers.add(cohort_reviewer_key)
             if (
                 review.release_package_id is not None
                 and review.release_package_id not in self.release_packages
@@ -4530,6 +4828,51 @@ class TeamState(TeamModel):
                     f"chat attachment {attachment.id} is not linked from message {message.id}"
                 )
 
+    def _validate_external_chat_bridge(self, errors: list[str]) -> None:
+        ingress_keys: set[tuple[str, str, str]] = set()
+        for record in self.external_chat_ingress.values():
+            key = (
+                record.provider,
+                record.communication_target_id,
+                record.source_message_id,
+            )
+            if key in ingress_keys:
+                errors.append(
+                    "external chat ingress has duplicate provider/target/source message "
+                    f"identity {key!r}"
+                )
+            ingress_keys.add(key)
+            message = self.conversation_messages.get(record.message_id)
+            if message is None:
+                errors.append(
+                    f"external chat ingress {record.id} references missing message {record.message_id}"
+                )
+                continue
+            if message.conversation_id != record.conversation_id:
+                errors.append(
+                    f"external chat ingress {record.id} conversation does not match message"
+                )
+            if message.dispatch_id != record.dispatch_id:
+                errors.append(f"external chat ingress {record.id} dispatch does not match message")
+        delivery_keys: set[tuple[str, str]] = set()
+        for record in self.external_chat_deliveries.values():
+            key = (record.agent_reply_message_id, record.communication_target_id)
+            if key in delivery_keys:
+                errors.append(f"external chat delivery has duplicate reply/target identity {key!r}")
+            delivery_keys.add(key)
+            reply = self.conversation_messages.get(record.agent_reply_message_id)
+            if reply is None or reply.sender != "agent":
+                errors.append(
+                    f"external chat delivery {record.id} references missing agent reply "
+                    f"{record.agent_reply_message_id}"
+                )
+            operator_message = self.conversation_messages.get(record.operator_message_id)
+            if operator_message is None or operator_message.sender != "operator":
+                errors.append(
+                    f"external chat delivery {record.id} references missing operator message "
+                    f"{record.operator_message_id}"
+                )
+
     def _validate_releases(self, errors: list[str]) -> None:
         for release in self.release_packages.values():
             project = self.projects.get(release.project_id)
@@ -4538,6 +4881,12 @@ class TeamState(TeamModel):
                     f"release {release.id} references missing project {release.project_id}"
                 )
                 continue
+            if release.owner_agent_id is not None:
+                owner = self.agents.get(release.owner_agent_id)
+                if owner is None or owner.team_id != project.team_id:
+                    errors.append(
+                        f"release {release.id} references invalid owner {release.owner_agent_id}"
+                    )
             if release.supersedes_release_package_id is not None:
                 predecessor = self.release_packages.get(release.supersedes_release_package_id)
                 if predecessor is None:
@@ -4597,6 +4946,13 @@ class TeamState(TeamModel):
                         f"{run.candidate_commit_sha}, not candidate "
                         f"{release.candidate_commit_sha}"
                     )
+                if run.correction_task_id is not None:
+                    correction_task = self.tasks.get(run.correction_task_id)
+                    if correction_task is None or correction_task.project_id != release.project_id:
+                        errors.append(
+                            f"release verification run {run.id} references invalid "
+                            f"correction task {run.correction_task_id}"
+                        )
                 if run.supersedes_verification_run_id is not None:
                     previous = self.release_verification_runs.get(
                         run.supersedes_verification_run_id
@@ -4886,16 +5242,11 @@ class TeamState(TeamModel):
                         f"{deliverable.id} does not belong to task {authority.task_id}"
                     )
                 consumed_review = (
-                    self.review_requests.get(
-                        authority.consumed_by_review_request_id
-                    )
+                    self.review_requests.get(authority.consumed_by_review_request_id)
                     if authority.consumed_by_review_request_id is not None
                     else None
                 )
-                if (
-                    authority.consumed_by_review_request_id is not None
-                    and consumed_review is None
-                ):
+                if authority.consumed_by_review_request_id is not None and consumed_review is None:
                     errors.append(
                         f"dispatch {dispatch.id} review routing authority references "
                         "missing consuming review "
@@ -4903,8 +5254,7 @@ class TeamState(TeamModel):
                     )
                 elif consumed_review is not None and (
                     consumed_review.deliverable_id != authority.deliverable_id
-                    or consumed_review.reviewer_agent_id
-                    != authority.reviewer_agent_id
+                    or consumed_review.reviewer_agent_id != authority.reviewer_agent_id
                     or consumed_review.requested_by_agent_id != dispatch.agent_id
                 ):
                     errors.append(
@@ -5675,7 +6025,10 @@ def _activity_active_stand_down_for_agent(state: TeamState, agent_id: str) -> Ag
         if stand_down.active
         and (
             stand_down.agent_id == agent_id
-            or _activity_agent_reports_under(state, agent_id, stand_down.agent_id)
+            or (
+                stand_down.scope == "subtree"
+                and _activity_agent_reports_under(state, agent_id, stand_down.agent_id)
+            )
         )
     ]
     if not candidates:
@@ -5913,7 +6266,7 @@ def release_package_payload_with_derived(
         )
     next_action_hint = _release_next_action_hint(state, release)
     if next_action_hint is not None:
-        payload["next_action"] = _release_next_action(release)
+        payload["next_action"] = _release_next_action(state, release)
         payload["next_action_hint"] = next_action_hint
     blocked_reason_code = _release_blocked_reason_code(
         release,
@@ -5934,10 +6287,25 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             and gate_failure.stage == "verification"
             and gate_failure.kind in {"infrastructure", "timeout"}
         ):
+            current_run = _current_release_verification_run(state, release)
+            if current_run is not None and (current_run.retry_requested_by or "").startswith(
+                "agent:"
+            ):
+                return (
+                    f"Do not retry verification gate {current_run.id} as an agent: the "
+                    "agent-requested retry already failed against the unchanged candidate "
+                    f"for release {release.id}. Escalate the run evidence and the concrete "
+                    "infrastructure recovery requirement to an operator. "
+                    f"Current blocker: {gate_failure.message}"
+                )
             return (
-                "Use team_retry_release_gate with gate_kind verification and gate_id "
+                "Inspect the failed run and confirm concrete evidence that its "
+                "infrastructure failure recovered. Only then use team_retry_release_gate "
+                "with gate_kind verification and gate_id "
                 f"{gate_failure.source_id or 'from the current verification gate'} against "
-                f"the unchanged candidate for release {release.id}; supply an audited reason. "
+                f"the unchanged candidate for release {release.id}, citing exactly what "
+                "changed. If no recovery evidence exists, update or escalate the blocker "
+                "instead of retrying. "
                 f"Current blocker: {gate_failure.message}"
             )
         if (
@@ -5970,7 +6338,11 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             f"{failed_promotion.id}: {failed_promotion.source_branch} -> "
             f"{failed_promotion.target_branch}."
         )
-        if failed_promotion.promotion_kind in {"feature", "release"}:
+        if failed_promotion.promotion_kind in {
+            "feature",
+            "correction_aggregate",
+            "release",
+        }:
             parts.append(
                 "Assign semantic conflicts to the owning coder, have the resolved "
                 "commit pushed to an agents/... ref, then submit "
@@ -5982,7 +6354,8 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
         else:
             parts.append(
                 f"This blocker is a failed {failed_promotion.promotion_kind} "
-                "promotion, not a recoverable feature or release promotion; do not submit "
+                "promotion, not a recoverable correction, feature, or release promotion; "
+                "do not submit "
                 "git_release_recoveries. Resolve and commit on failed promotion "
                 f"target branch {failed_promotion.target_branch}, or escalate "
                 "for operator/orchestrator retry."
@@ -5992,6 +6365,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     if release.error and "merge conflict" in release.error.casefold():
         if failed_promotion is not None and failed_promotion.promotion_kind in {
             "feature",
+            "correction_aggregate",
             "release",
         }:
             parts.append(
@@ -6002,7 +6376,8 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
         else:
             parts.append(
                 "Resolve the merge conflict on the failed promotion target branch; "
-                "git_release_recoveries only applies to failed feature or release promotions."
+                "git_release_recoveries only applies to failed correction-aggregate, "
+                "feature, or release promotions."
             )
     if failed_promotion is None:
         parts.append(
@@ -6012,7 +6387,21 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     return " ".join(parts)
 
 
-def _release_next_action(release: ReleasePackage) -> str:
+def _current_release_verification_run(
+    state: TeamState,
+    release: ReleasePackage,
+) -> ReleaseVerificationRun | None:
+    current = [
+        state.release_verification_runs[run_id]
+        for run_id in release.verification_run_ids
+        if run_id in state.release_verification_runs
+        and state.release_verification_runs[run_id].superseded_by_verification_run_id is None
+    ]
+    current.sort(key=lambda run: (run.attempt_number, run.created_at, run.id), reverse=True)
+    return current[0] if current else None
+
+
+def _release_next_action(state: TeamState, release: ReleasePackage) -> str:
     failure = release.gate_failure
     if failure is not None:
         if (
@@ -6020,6 +6409,11 @@ def _release_next_action(release: ReleasePackage) -> str:
             and failure.stage == "verification"
             and failure.kind in {"infrastructure", "timeout"}
         ):
+            current_run = _current_release_verification_run(state, release)
+            if current_run is not None and (current_run.retry_requested_by or "").startswith(
+                "agent:"
+            ):
+                return "escalate_release_verification_recovery"
             return "retry_release_verification"
         if (
             release.state == TeamRecordState.BLOCKED
@@ -6143,7 +6537,11 @@ def _effective_stand_down_payloads(
         state.stand_downs.values(),
         key=lambda item: (item.set_at, item.id),
     ):
-        if not stand_down.active or stand_down.agent_id not in root_set:
+        if (
+            not stand_down.active
+            or stand_down.agent_id not in root_set
+            or (stand_down.scope == "agent" and stand_down.agent_id != agent_id)
+        ):
             continue
         row = stand_down.model_dump(mode="json")
         row["inherited"] = stand_down.agent_id != agent_id
@@ -6308,6 +6706,18 @@ def _runtime_agent_payload(
             runtime.context_rotation_requested_at if runtime is not None else None
         ),
         "last_handoff_summary": (runtime.last_handoff_summary if runtime is not None else None),
+        "context_handoff_preparation_pending": (
+            runtime.context_handoff_preparation_pending if runtime is not None else False
+        ),
+        "context_handoff_preparation_status": (
+            runtime.context_handoff_preparation_status if runtime is not None else None
+        ),
+        "last_agent_handoff_summary": (
+            runtime.last_agent_handoff_summary if runtime is not None else None
+        ),
+        "last_agent_handoff_at": _json_datetime(
+            runtime.last_agent_handoff_at if runtime is not None else None
+        ),
         "last_context_rotated_at": _json_datetime(
             runtime.last_context_rotated_at if runtime is not None else None
         ),
@@ -7141,8 +7551,7 @@ def _runtime_attention_metadata(
         reconciliation_context = [
             context
             for context in terminal_context
-            if context["kind"]
-            in {"task", "deliverable", "release_package", "dispatch", "session"}
+            if context["kind"] in {"task", "deliverable", "release_package", "dispatch", "session"}
         ]
     else:
         reconciliation_context = [
@@ -7222,9 +7631,7 @@ def _runtime_attention_links(
 ) -> dict[str, list[str]]:
     scope_team_ids = _runtime_attention_source_team_ids(state, row)
     extracted = _runtime_attention_payload_links(row)
-    links: dict[str, set[str]] = {
-        key: set(values) for key, values in extracted.items()
-    }
+    links: dict[str, set[str]] = {key: set(values) for key, values in extracted.items()}
 
     def add(key: str, *values: object) -> None:
         for value in values:

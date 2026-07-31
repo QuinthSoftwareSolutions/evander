@@ -28,6 +28,7 @@ import {
   submitAgentCreateOperation,
   type AgentCreateSubmitMeta,
 } from "./agentCreateShared";
+import { mergeAgentDetailWithSummary } from "./agentRecordMerge";
 import type {
   AgentActionResponse,
   AgentBackend,
@@ -36,6 +37,7 @@ import type {
   AgentCreateEmailMailboxOption,
   AgentCreateHostDirectoryOption,
   AgentCreateRequest,
+  AgentExecutionHistoryResponse,
   AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
@@ -189,6 +191,24 @@ type AgentLogViewState = {
   updatedAt: string | null;
 };
 
+type AgentExecutionHistoryState = {
+  items: AgentExecutionRecord[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  nextCursor: string | null;
+  error: string | null;
+};
+
+const EMPTY_AGENT_EXECUTION_HISTORY: AgentExecutionHistoryState = {
+  items: [],
+  loading: false,
+  loadingMore: false,
+  hasMore: false,
+  nextCursor: null,
+  error: null,
+};
+
 function emptyLogState(text = "Loading..."): AgentLogViewState {
   return {
     text,
@@ -336,6 +356,44 @@ async function loadAgentList(
 ): Promise<AgentListResponse> {
   return fetchJson<AgentListResponse>(
     `/api/admin/agents?${buildAgentListQuery(directoryPath, directOnly, backend, options)}`,
+  );
+}
+
+async function loadAgentDetail(
+  agent: AgentRecord,
+  options: { live?: boolean } = {},
+): Promise<AgentRecord> {
+  const query = new URLSearchParams({
+    backend: agent.backend,
+    directory_path: agent.directory_path,
+    omit_vm_state: String(!options.live),
+    reconcile_containers: String(Boolean(options.live && agent.backend === "container_worker_vm")),
+  });
+  return fetchJson<AgentRecord>(
+    `/api/admin/agents/${encodeURIComponent(agent.agent_id)}?${query.toString()}`,
+  );
+}
+
+async function loadAgentExecutionHistory(
+  agent: AgentRecord,
+  options: { cursor?: string } = {},
+): Promise<AgentExecutionHistoryResponse> {
+  if (agent.backend !== "container_worker_vm") {
+    return {
+      agent_id: agent.agent_id,
+      items: [],
+      limit: 0,
+      has_more: false,
+      next_cursor: null,
+    };
+  }
+  const query = new URLSearchParams({
+    directory_path: agent.directory_path,
+    limit: "50",
+  });
+  if (options.cursor) query.set("cursor", options.cursor);
+  return fetchJson<AgentExecutionHistoryResponse>(
+    `/api/admin/agents/${encodeURIComponent(agent.agent_id)}/executions?${query.toString()}`,
   );
 }
 
@@ -493,19 +551,6 @@ function hostStringListMap(
     );
   }
   return result;
-}
-
-function hostExecutionList(
-  host: Record<string, unknown> | null | undefined,
-  key: string,
-): AgentExecutionRecord[] {
-  const value = host?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is AgentExecutionRecord => {
-    if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
-    const candidate = item as Record<string, unknown>;
-    return typeof candidate.execution_id === "string" && typeof candidate.worker_job_id === "string";
-  });
 }
 
 function hostRecord(
@@ -793,6 +838,15 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
       rawPolicy.codex_auth_mode === "chatgpt_subscription"
         ? rawPolicy.codex_auth_mode
         : null,
+    effective_codex_auth_mode:
+      rawPolicy.effective_codex_auth_mode === "chatgpt_subscription"
+        ? "chatgpt_subscription"
+        : "metered_api",
+    codex_auth_mode_source:
+      rawPolicy.codex_auth_mode_source === "session_override" ||
+      rawPolicy.codex_auth_mode_source === "provider_route"
+        ? rawPolicy.codex_auth_mode_source
+        : "directory_default",
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
@@ -818,8 +872,45 @@ function promptThreadIdForAgent(agent: AgentRecord | null): string {
 }
 
 function agentUsesCodex(agent: AgentRecord): boolean {
-  const provider = sessionPolicyForAgent(agent)?.metadata.agent_provider;
+  const summaryUsage = hostRecord(agent.host, "codex_usage");
+  const provider = hostString(summaryUsage, "agent_provider")
+    ?? sessionPolicyForAgent(agent)?.metadata.agent_provider;
   return typeof provider !== "string" || !["claude", "anthropic"].includes(provider.trim().toLowerCase());
+}
+
+type AgentCodexUsage = {
+  mode: "metered_api" | "chatgpt_subscription";
+  label: "Metered API" | "ChatGPT subscription";
+  sourceLabel: "Agent override" | "Directory default" | "Required by provider route";
+};
+
+function codexUsageForAgent(agent: AgentRecord | null): AgentCodexUsage | null {
+  if (
+    !agent ||
+    agent.backend !== "container_worker_vm" ||
+    !agentUsesCodex(agent)
+  ) {
+    return null;
+  }
+  const summaryUsage = hostRecord(agent.host, "codex_usage");
+  const policy = sessionPolicyForAgent(agent);
+  const summaryMode = hostString(summaryUsage, "effective_codex_auth_mode");
+  const mode = summaryMode === "metered_api" || summaryMode === "chatgpt_subscription"
+    ? summaryMode
+    : policy?.effective_codex_auth_mode;
+  if (!mode) return null;
+  const source = hostString(summaryUsage, "codex_auth_mode_source")
+    ?? policy?.codex_auth_mode_source;
+  const sourceLabel = source === "session_override"
+    ? "Agent override"
+    : source === "provider_route"
+      ? "Required by provider route"
+      : "Directory default";
+  return {
+    mode,
+    label: mode === "chatgpt_subscription" ? "ChatGPT subscription" : "Metered API",
+    sourceLabel,
+  };
 }
 
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
@@ -963,6 +1054,11 @@ export function AgentsPage() {
   const [hashSelection, setHashSelection] = useState<AgentHashSelection>(() => agentSelectionFromHash());
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [selectedAgentDetail, setSelectedAgentDetail] = useState<AgentRecord | null>(null);
+  const [agentExecutionHistory, setAgentExecutionHistory] = useState<AgentExecutionHistoryState>(
+    EMPTY_AGENT_EXECUTION_HISTORY,
+  );
+  const [agentDetailReloadNonce, setAgentDetailReloadNonce] = useState(0);
   const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
   const [logSearchInput, setLogSearchInput] = useState("");
   const [logView, setLogView] = useState<AgentLogView>("executions");
@@ -1011,6 +1107,7 @@ export function AgentsPage() {
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
   const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
+  const liveAgentDetailRefreshKeyRef = useRef<string | null>(null);
   const operatorSteeringLoadSeqRef = useRef(0);
   const operatorSteeringDraftTargetRef = useRef<string | null>(null);
   const refreshAuthSessionRef = useRef(refreshAuthSession);
@@ -1113,7 +1210,7 @@ export function AgentsPage() {
     } satisfies Record<AgentBackend, AgentRecord[]>;
   }, [filteredItems]);
 
-  const selectedAgent = useMemo(
+  const selectedListAgent = useMemo(
     () => {
       const explicitSelection = selectedKey
         ? filteredItems.find((item) => agentKey(item) === selectedKey) ?? null
@@ -1131,11 +1228,80 @@ export function AgentsPage() {
     },
     [filteredItems, hashSelection, selectedKey],
   );
-  const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
+  const selectedAgentKey = selectedListAgent ? agentKey(selectedListAgent) : null;
+  const selectedAgent = useMemo(() => {
+    if (selectedAgentDetail && selectedAgentKey === agentKey(selectedAgentDetail)) {
+      return selectedListAgent
+        ? mergeAgentDetailWithSummary(selectedAgentDetail, selectedListAgent)
+        : selectedAgentDetail;
+    }
+    return selectedListAgent;
+  }, [selectedAgentDetail, selectedAgentKey, selectedListAgent]);
   const selectedAgentPolicy = selectedAgent ? sessionPolicyForAgent(selectedAgent) : null;
+  const selectedAgentCodexUsage = codexUsageForAgent(selectedAgent);
   const selectedAgentApprovalNotificationTargetOptions = selectedAgentPolicy?.approval_notification_target_options ?? [];
   const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
   const operatorSteeringSessionId = selectedAgent?.session_id?.trim() ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+    const agent = selectedListAgent;
+    const loadLiveState = liveAgentDetailRefreshKeyRef.current === selectedAgentKey;
+    if (loadLiveState) liveAgentDetailRefreshKeyRef.current = null;
+    setSelectedAgentDetail(null);
+    if (!agent) {
+      setAgentExecutionHistory(EMPTY_AGENT_EXECUTION_HISTORY);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void loadAgentDetail(agent, { live: loadLiveState })
+      .then((detail) => {
+        if (!cancelled) setSelectedAgentDetail(detail);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setAgentExecutionHistory((current) => ({
+            ...current,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }));
+        }
+      });
+
+    if (agent.backend !== "container_worker_vm") {
+      setAgentExecutionHistory(EMPTY_AGENT_EXECUTION_HISTORY);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setAgentExecutionHistory({ ...EMPTY_AGENT_EXECUTION_HISTORY, loading: true });
+    void loadAgentExecutionHistory(agent)
+      .then((payload) => {
+        if (!cancelled) {
+          setAgentExecutionHistory({
+            items: payload.items,
+            loading: false,
+            loadingMore: false,
+            hasMore: payload.has_more,
+            nextCursor: payload.next_cursor,
+            error: null,
+          });
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setAgentExecutionHistory({
+            ...EMPTY_AGENT_EXECUTION_HISTORY,
+            error: reason instanceof Error ? reason.message : String(reason),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentDetailReloadNonce, selectedAgentKey]);
 
   const refreshOperatorSteering = useCallback(async () => {
     const loadSeq = operatorSteeringLoadSeqRef.current + 1;
@@ -1211,7 +1377,7 @@ export function AgentsPage() {
   }, [backendFilter, selectedDirectoryPath]);
 
   const refreshSummaryAgents = useCallback(async () => {
-    await refreshAgents({ summaryOnly: true, dashboardCache: true, omitVmState: false });
+    await refreshAgents({ summaryOnly: true, dashboardCache: true, omitVmState: true });
   }, [refreshAgents]);
 
   const refreshSummaryCache = useCallback(async () => {
@@ -1224,13 +1390,15 @@ export function AgentsPage() {
 
   const refreshLiveAgents = useCallback(async () => {
     const payload = await refreshAgents({
-      summaryOnly: false,
+      summaryOnly: true,
       reconcileContainers: true,
       omitVmState: false,
     });
     await refreshSummaryCache();
+    liveAgentDetailRefreshKeyRef.current = selectedAgentKey;
+    setAgentDetailReloadNonce((current) => current + 1);
     return payload;
-  }, [refreshAgents, refreshSummaryCache]);
+  }, [refreshAgents, refreshSummaryCache, selectedAgentKey]);
 
   const applyCreateOperations = useCallback(async (
     operations: AgentCreateOperation[],
@@ -1931,6 +2099,38 @@ export function AgentsPage() {
     }
   }
 
+  async function loadMoreAgentExecutions() {
+    if (
+      !selectedAgent ||
+      selectedAgent.backend !== "container_worker_vm" ||
+      !agentExecutionHistory.hasMore ||
+      !agentExecutionHistory.nextCursor ||
+      agentExecutionHistory.loadingMore
+    ) {
+      return;
+    }
+    setAgentExecutionHistory((current) => ({ ...current, loadingMore: true, error: null }));
+    try {
+      const payload = await loadAgentExecutionHistory(selectedAgent, {
+        cursor: agentExecutionHistory.nextCursor,
+      });
+      setAgentExecutionHistory((current) => ({
+        items: [...current.items, ...payload.items],
+        loading: false,
+        loadingMore: false,
+        hasMore: payload.has_more,
+        nextCursor: payload.next_cursor,
+        error: null,
+      }));
+    } catch (reason: unknown) {
+      setAgentExecutionHistory((current) => ({
+        ...current,
+        loadingMore: false,
+        error: reason instanceof Error ? reason.message : String(reason),
+      }));
+    }
+  }
+
   const guestAgent = hostRecord(selectedAgent?.host, "agent");
   const agentState = hostString(guestAgent, "state") ?? "unknown";
   const agentPid = hostNumber(guestAgent, "pid");
@@ -1938,7 +2138,7 @@ export function AgentsPage() {
   const selectedRuntimeImage = agentRuntimeImage(selectedAgent);
   const selectedMetadata = metadataForAgent(selectedAgent);
   const selectedLabels = labelsForAgent(selectedAgent);
-  const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
+  const selectedExecutions = agentExecutionHistory.items;
   const selectedPromptQueue = promptQueueForAgent(selectedAgent);
   const selectedExecutionDisplay = selectedAgent ? agentExecutionDisplay(selectedAgent) : null;
   const selectedTargetStateText = selectedAgent ? agentTargetStateText(selectedAgent) : null;
@@ -2076,7 +2276,30 @@ export function AgentsPage() {
   }
 
   return (
-    <div className="feature-page agents-page">
+    <div className="agents-page-shell">
+      <section className="agents-global-controls" aria-label="Shared worker account">
+        <div className="agents-global-controls-heading">
+          <div>
+            <div className="eyebrow">Page-wide worker configuration</div>
+            <h2>Shared worker account</h2>
+          </div>
+          <p className="muted-text">Applies across container agents in this directory.</p>
+        </div>
+        <CodexAuthPanel
+          directoryPath={selectedDirectoryPath}
+          privilegedUnlocked={privilegedUnlocked}
+          selectedAgentUsage={
+            selectedAgent && selectedAgentCodexUsage
+              ? {
+                  agentLabel: selectedAgent.target_name || selectedAgent.agent_id,
+                  mode: selectedAgentCodexUsage.mode,
+                }
+              : null
+          }
+        />
+      </section>
+
+      <div className="feature-page agents-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
@@ -2134,6 +2357,7 @@ export function AgentsPage() {
                   const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
                   const queueSummary = promptQueueForAgent(item);
                   const executionDisplay = agentExecutionDisplay(item);
+                  const codexUsage = codexUsageForAgent(item);
                   const targetStateText = agentTargetStateText(item);
                   const identifier = item.target_name || item.agent_id;
                   const hoverSummary = [
@@ -2142,6 +2366,7 @@ export function AgentsPage() {
                     `Directory: ${item.directory_path}`,
                     targetStateText,
                     runtimeImageSummary,
+                    codexUsage ? `Codex usage: ${codexUsage.label} (${codexUsage.sourceLabel})` : null,
                     queueSummary.record_count > 0 || queueSummary.read_error
                       ? `Prompt queue: ${promptQueueSummaryText(queueSummary)}`
                       : null,
@@ -2173,6 +2398,14 @@ export function AgentsPage() {
                             {executionDisplay.label}
                           </span>
                         </div>
+                        {codexUsage ? (
+                          <div className="agent-list-usage-row">
+                            <span className={`agent-codex-usage mode-${codexUsage.mode}`}>
+                              {codexUsage.label}
+                            </span>
+                            <span>{codexUsage.sourceLabel}</span>
+                          </div>
+                        ) : null}
                       </button>
                     </Tooltip>
                   );
@@ -2193,6 +2426,12 @@ export function AgentsPage() {
                 ? `${backendLabel(selectedAgent.backend)} / ${selectedAgent.directory_path}`
                 : "Choose an agent from the left to inspect details and logs."}
             </p>
+            {selectedAgentCodexUsage ? (
+              <div className="agent-detail-usage">
+                <strong>Codex usage: {selectedAgentCodexUsage.label}</strong>
+                <span>{selectedAgentCodexUsage.sourceLabel}</span>
+              </div>
+            ) : null}
           </div>
           {selectedAgent ? (
             <div className="feature-toolbar-actions icon-actions">
@@ -2360,11 +2599,6 @@ export function AgentsPage() {
 
         {status ? <div className="callout success-callout">{status}</div> : null}
         {error ? <div className="callout error-callout">{error}</div> : null}
-
-        <CodexAuthPanel
-          directoryPath={selectedDirectoryPath}
-          privilegedUnlocked={privilegedUnlocked}
-        />
 
         {showCreateForm ? (
           <AgentCreateDialog
@@ -2910,6 +3144,14 @@ export function AgentsPage() {
                     <dt>Directory</dt>
                     <dd>{selectedAgent.directory_path}</dd>
                   </div>
+                  {selectedAgentCodexUsage ? (
+                    <div>
+                      <dt>Codex usage</dt>
+                      <dd>
+                        {selectedAgentCodexUsage.label} ({selectedAgentCodexUsage.sourceLabel})
+                      </dd>
+                    </div>
+                  ) : null}
                   <div>
                     <dt>Prompt queue</dt>
                     <dd>{promptQueueSummaryText(selectedPromptQueue)}</dd>
@@ -3104,9 +3346,14 @@ export function AgentsPage() {
                 <summary className="panel-header compact-disclosure-summary">
                   <h3>Executions</h3>
                   <span className="panel-meta">
-                    {selectedExecutions.length} run{selectedExecutions.length === 1 ? "" : "s"}
+                    {agentExecutionHistory.loading
+                      ? "Loading..."
+                      : `${selectedExecutions.length} loaded${agentExecutionHistory.hasMore ? "+" : ""}`}
                   </span>
                 </summary>
+                {agentExecutionHistory.error ? (
+                  <div className="callout error-callout">{agentExecutionHistory.error}</div>
+                ) : null}
                 {selectedExecutions.length > 0 ? (
                   <div className="agent-execution-list">
                     {selectedExecutions.map((execution) => {
@@ -3148,8 +3395,24 @@ export function AgentsPage() {
                     })}
                   </div>
                 ) : (
-                  <div className="empty-state compact-empty-state">No executions have run for this session.</div>
+                  <div className="empty-state compact-empty-state">
+                    {agentExecutionHistory.loading
+                      ? "Loading execution history..."
+                      : "No executions have run for this session."}
+                  </div>
                 )}
+                {agentExecutionHistory.hasMore ? (
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="admin-action-button compact"
+                      onClick={() => void loadMoreAgentExecutions()}
+                      disabled={agentExecutionHistory.loadingMore}
+                    >
+                      {agentExecutionHistory.loadingMore ? "Loading..." : "Load more executions"}
+                    </button>
+                  </div>
+                ) : null}
               </details>
             ) : null}
 
@@ -3302,6 +3565,7 @@ export function AgentsPage() {
           <div className="empty-state">Select an agent to inspect details and logs.</div>
         )}
       </section>
+      </div>
     </div>
   );
 }

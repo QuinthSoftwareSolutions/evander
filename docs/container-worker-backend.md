@@ -234,6 +234,11 @@ The worker playbook creates the cache directories under `evander_worker_toolchai
 and wires them into the daemon with repeated `--readonly-mount` flags. It also seeds the .NET,
 Node, and Playwright caches from the Ansible control machine and verifies them inside
 `evander-runner:latest`.
+Before replacing the live Playwright mounts, the playbook unpacks the proposed package and browser
+archives into an isolated staging cache and resolves `chromium.executablePath()` with downloads
+disabled. A missing or mismatched build fails provisioning while the existing live cache remains
+intact; the error reports both the expected executable and the Chromium build directories that were
+actually seeded.
 By default dotnet reads `HOST_DOTNET_ROOT` or `/usr/lib/dotnet`; set
 `evander_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. The worker
 role also installs `dotnet-ef` into a separate shared tools cache and verifies
@@ -309,6 +314,13 @@ the internally resolved clone source and branch, `resource_limits`, `persistence
 sanitized caller context. Public agent workflows provide `managed_repo_id`; the adapter resolves
 the private clone source before building this lower-level worker request.
 
+When a job has a process/thread limit, the worker watches that job's own Linux cgroup
+`pids.events` counter while the container is alive. A positive kernel `max` event is persisted
+before container cleanup and returned as the structured failure cause
+`pids_limit_exhausted`; Docker's `OOMKilled` state is returned as
+`memory_limit_exhausted`. Unsupported cgroup layouts fail safely by omitting the cause, and
+callers must not infer resource exhaustion from command output text.
+
 ## Security Boundaries
 
 The worker is treated as an untrusted execution surface. The host sends only explicit job fields:
@@ -380,6 +392,15 @@ metadata. When Codex rejects an access token, the job asks the broker for one se
 and receives only the new in-memory snapshot. Auth and refresh responses are redacted from worker
 logs. This integration uses Codex app-server's experimental external-auth API and should be
 revalidated when upgrading Codex.
+
+Subscription containers retain the session's normal `CODEX_HOME` thread and skill directories,
+but the worker overlays its metered relay `config.toml` and legacy `/home/agent/.codex/config.toml`
+with worker-owned read-only subscription configuration. The overlay forces ChatGPT authentication,
+keeps the image-managed update policy, and contains no custom provider or API-key reference. This
+prevents the app-server model catalog from polling the metered relay and prevents the legacy copy
+from being interpreted as project-local provider configuration. Repository-owned `.codex` settings
+remain visible. The runner image also installs the system `bubblewrap` package so Codex does not
+need to warn and fall back to its bundled helper.
 
 Set the worker's runner image and restricted proxy settings in inventory. The URL must use an
 address that runner containers can reach; do not use loopback unless the containers share that
@@ -598,7 +619,66 @@ settings disable commit-message attribution trailers. If `dotnet=true` or `playw
 profile points at the read-only worker cache mounts and keeps writable per-session cache paths
 under `/home/agent`.
 With `playwright=true`, the profile resolves the seeded Playwright Chromium binary and exports it as
-`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and `CHROMIUM_BIN`.
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and `CHROMIUM_BIN`. If that package-selected
+executable is absent, profile loading fails with a reprovisioning error rather than letting the
+agent hard-code a different cached browser. The session manifest also records the Playwright
+capability, and all container jobs for that session receive an explicit `pids_limit` of `1024`.
+Non-Playwright sessions continue to inherit the strict worker default of `512`.
+
+An operator can override the limits for later jobs of one persistent container-worker session
+without changing worker-wide configuration. In Admin Web, unlock privileged operations, open
+**Sessions**, select the session, and add or update the
+`container_worker_resource_limits` key in **Metadata** with this JSON object value:
+
+```json
+{
+  "memory": "8g",
+  "cpus": 8,
+  "pids_limit": 8192
+}
+```
+
+The metadata editor treats the nested value as a JSON object snippet. Supported fields are
+`memory` (a non-empty Docker-compatible memory string), `cpus` (a positive number), and
+`pids_limit` (a positive integer); unknown fields and non-positive numeric values are rejected.
+Saving the session changes newly dispatched jobs only and does not resize a running container.
+The control plane validates this host-owned session setting and sends the result to the worker as
+the first-class `resource_limits` job field; the worker does not interpret arbitrary request
+metadata.
+
+For an ordinary session, a non-empty `container_worker_resource_limits` object is the complete
+per-job override. Therefore a Playwright session whose object contains only `cpus` no longer gets
+the Playwright-specific `1024` value and falls back to the strict worker PID default of `512`;
+include `pids_limit` when changing another limit. Team release-verification sessions instead merge
+their `8` CPU and `2048` PID defaults with any explicit session fields. Their project-wide
+operator control is the separate Team project `release_policy.resource_limits` setting.
+
+Repository-local Playwright packages keep resolving normally; the worker does not replace or
+shadow them. Because Playwright's ordinary `chromium.launch()` does not consume
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, Playwright-enabled agent prompts include the offline launch
+contract and the session writes a dependency-neutral helper at
+`$EVANDER_PLAYWRIGHT_LAUNCH_HELPER`:
+
+```js
+import { chromium } from "playwright";
+
+const { launchSeededChromium } = await import(
+  process.env.EVANDER_PLAYWRIGHT_LAUNCH_HELPER,
+);
+const browser = await launchSeededChromium(chromium, { headless: true });
+```
+
+The helper accepts the repository's own `chromium` export and adds the seeded executable path to
+its launch options. The equivalent direct form is
+`chromium.launch({ executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH })`. Do not hard-code
+a `chromium-<revision>` cache directory: package revisions can differ while the worker intentionally
+remains offline.
+
+After changing either `HOST_PLAYWRIGHT_NODE_MODULES` / the runtime archive or
+`HOST_PLAYWRIGHT_BROWSERS` / the browser archive, rerun the worker playbook so it can validate and
+promote the pair together. Existing sessions created before the Playwright capability marker was
+introduced must be recreated or reprovisioned with `playwright=true` before their jobs receive the
+UI-test PID budget.
 
 SQL Server for container workers is a controlled provisioning capability, not an automatic
 `effect:agent:create` bootstrap. Requests that set `mssql=true` or `mssql_init_root` still fail
@@ -746,6 +826,11 @@ configured allowed Git source prefix. Repository-specific managed Git SSH aliase
 only for their corresponding managed repository beneath that prefix.
 
 Task-worktree cleanup requires the deterministic target path, branch, and full expected commit.
+Task-worktree preparation may also carry ordered `dependency_git_sources`. The worker fetches
+each named managed branch, requires its tip to equal the accepted full commit ID, merges those
+commits before task work begins, and records compact immutable provenance in worktree-local Git
+configuration. Reuse requires the same provenance; conflicts roll the clean checkout back to its
+pre-composition base and return an error instead of exposing partial dependency state.
 The worker serializes preparation and cleanup for the session repository, rejects tracked changes,
 non-ignored untracked files, unexpected branches, commits, paths, or registrations, then repeats
 the safety inspection immediately before removal. Ignored files are inventoried with reclaimed

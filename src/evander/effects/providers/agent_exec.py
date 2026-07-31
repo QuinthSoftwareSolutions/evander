@@ -10,6 +10,7 @@ from evander.events.provider_models import AgentExecEffectDefinition
 from .agent_session import (
     container_backend,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     container_shell_preamble,
     effective_config_for_session,
     normalize_optional_string,
@@ -89,6 +90,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
                     session_id=session_id,
                     directory_path=getattr(session, "directory_path", directory_path),
                     image=container_worker_image_for_session(session, config),
+                    resource_limits=container_worker_resource_limits_for_session(session),
                     command=command,
                     metadata={
                         "effect_type": "effect:agent:exec",
@@ -121,6 +123,11 @@ class AgentExecEffectProvider(VmExecEffectProvider):
         exit_code = self._exit_code_from_status(status=status, success=success)
         status_metadata = getattr(status, "metadata", {})
         failure_kind = None
+        failure_cause = None
+        if isinstance(status_metadata, Mapping):
+            failure_cause = normalize_optional_string(
+                status_metadata.get("worker_failure_cause")
+            )
         if not success:
             failure_kind = (
                 "command"
@@ -145,6 +152,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
             "message": message,
             "exit_code": exit_code,
             "failure_kind": failure_kind,
+            "failure_cause": failure_cause,
             "stdout": stdout,
             "stderr": stderr,
             "vm_name": None,

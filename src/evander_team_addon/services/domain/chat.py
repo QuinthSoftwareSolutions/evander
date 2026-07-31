@@ -32,6 +32,7 @@ from .common import (
 
 
 CHAT_MESSAGE_QUEUED_EVENT_TYPE = "team.chat.message_queued"
+EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE = "team.chat.external_reply_requested"
 
 
 def _operator_chat_participant_payloads(
@@ -426,6 +427,7 @@ def _chat_dispatch_finalization_error(
 
 __all__ = [
     "CHAT_MESSAGE_QUEUED_EVENT_TYPE",
+    "EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE",
     "_operator_chat_participant_payloads",
     "_chat_preview",
     "_publish_admin_chat_notification",

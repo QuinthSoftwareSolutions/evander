@@ -213,6 +213,71 @@
     mode: "0640"
   when: evander_worker_playwright_toolchain_enabled | bool
 
+- name: Install worker Playwright seed verifier
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/verify_seeded_playwright_runtime.mjs"
+    dest: "{{ evander_worker_root }}/images/verify_seeded_playwright_runtime.mjs"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0644"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Reset worker Playwright preflight staging cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight"
+    state: absent
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Create worker Playwright preflight staging directories
+  ansible.builtin.file:
+    path: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight/{{ item }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  loop:
+    - playwright-runtime/node_modules
+    - ms-playwright
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright runtime into preflight staging cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_playwright_runtime_remote_archive_path }}"
+    dest: >-
+      {{ evander_worker_toolchain_cache_root
+      }}/.playwright-preflight/playwright-runtime/node_modules
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright browsers into preflight staging cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_playwright_browsers_remote_archive_path }}"
+    dest: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight/ms-playwright"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Verify staged Playwright package and browser cache are compatible
+  ansible.builtin.command:
+    argv:
+      - "{{ evander_worker_node_cache_path }}/bin/node"
+      - "{{ evander_worker_root }}/images/verify_seeded_playwright_runtime.mjs"
+      - >-
+        {{ evander_worker_toolchain_cache_root
+        }}/.playwright-preflight/playwright-runtime/node_modules
+      - "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight/ms-playwright"
+  changed_when: false
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Remove worker Playwright preflight staging cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight"
+    state: absent
+  when: evander_worker_playwright_toolchain_enabled | bool
+
 - name: Reset worker Playwright runtime cache
   ansible.builtin.file:
     path: "{{ evander_worker_playwright_runtime_cache_path }}"

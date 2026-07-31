@@ -1,5 +1,854 @@
 # Changelog
 
+## 2026-07-31 - Review Follow-up Fixes
+
+- Kept selected Agent detail views live by merging each fresh polled summary over
+  the richer loaded detail, including status, capabilities, execution counts,
+  and prompt-queue aggregates.
+- Preserved compact Agents-page Codex usage badges by retaining only the
+  effective authentication mode, its source, and the agent provider in summary
+  payloads; Dashboard-only inventory remains policy-free.
+- Reserved `EVANDER-REVIEW.json` in human-review source bundles so candidate
+  archives cannot supply a conflicting manifest entry or normalized alias.
+- Updated the Team wake-node catalog contract for the global-maintenance field.
+
+## 2026-07-31 - Admin Inventory And Dashboard Read Performance
+
+- Allowed downloads from add-on iframes in the Admin Web shell, with browser
+  coverage for downloading a review bundle from the Team add-on.
+- Made summary Agents inventory reads use per-session execution aggregates and
+  omit policy metadata and execution histories. The selected agent now loads
+  its detail separately, with cursor-paginated container execution history.
+- Restored selected container-agent logs by deriving their availability from
+  the persisted execution summary, rather than the omitted history payload.
+- Switched normal Agents-page polling to cached, state-omitting summaries;
+  explicit refreshes still perform live reconciliation and VM-state reads.
+- Kept the Dashboard's 24-hour workflow-activity semantics while aggregating
+  SQLite activity by graph, node, source, and status before building the
+  response instead of materializing every raw orchestration record.
+
+## 2026-07-31 - Team Wake Latency And Bounded Cleanup Evidence
+
+- Replaced routine full Team-state rewrites with record-level SQLite deltas;
+  no-op eligibility and Chat claim checks now preserve the state revision and
+  issue no normalized state writes.
+- Kept global correction, human-review assignment, and task-worktree cleanup
+  maintenance on scheduled wakes while targeted Chat and requested-agent wakes
+  proceed directly to eligibility and dispatch.
+- Bounded persisted ignored-file cleanup evidence to a deterministic 200-path
+  sample plus the exact file count, full-list SHA-256, byte totals, and a
+  truncation marker, including automatic migration of existing candidates.
+
+## 2026-07-31 - Fresh Team Task Bases
+
+- Made first-time libvirt Team task worktrees fetch their configured managed-Git
+  base before pinning it, matching the container-worker backend. New independent
+  tasks now start from the current canonical base while reused worktrees retain
+  their original immutable pin.
+
+## 2026-07-31 - Human Review Source Bundles
+
+- Added a **Download review bundle** action to Team human-review cards. It
+  serves an authorized reviewer a source-only ZIP for the exact pinned release
+  candidate, with an `EVANDER-REVIEW.json` provenance manifest and no Git
+  history or credentials.
+
+## 2026-07-31 - Agent Release-Review Corrections
+
+- Restored configured-policy review routing for candidate-correction leaves: top-level
+  agents can submit normally without inventing a superior, while contracted leaf tasks
+  still require an accepted Git deliverable before a replacement release can begin;
+  generated correction instructions leave routing decisions to team-specific guidance.
+- Kept true integration boundaries outside leaf-review automation, allowed workflow
+  policy to attach fresh reviews to rejected-deliverable replacements, and retained
+  explicit manual review submission for deliberately manual teams.
+- Corrected the accepted-task manager-fallback regression to assert suppression of
+  non-actionable wakes and to evaluate eligibility after its test state is created.
+- Made rejected agent release reviews create one high-priority, candidate-rooted
+  correction task for the recorded release owner, with an immediate durable
+  wake and project-lead or team-manager fallback when needed.
+- Persisted the package-to-correction-task link, aggregated concurrent reviewer
+  findings into that task, and issued a fresh durable wake for each new rejection.
+- Extended rejected-candidate worktree validation to agent release-review
+  corrections so implementation starts from the reviewed candidate snapshot.
+- Required candidate corrections to resolve through an accepted Git deliverable,
+  extended successor-release validation and aggregation to rejected agent reviews,
+  and made preparation recovery cover every candidate-rooted correction route.
+- Routed source-provenance mismatches through the standard terminal recovery
+  inbox, and scoped candidate-correction branches and worktree identities to
+  the pinned rejected candidate.
+- Persisted verification infrastructure and timeout wakes, retained high-priority
+  Team visibility when human-review recovery routes to an Admin owner, and routed
+  configuration or invariant gate rejections through a durable Team blocker.
+
+## 2026-07-31 - Team Correction Worktree Recovery
+
+- Made persistent container-worker clones fetch newly created Team release
+  branches before preparing correction worktrees, while verifying the exact
+  pinned candidate commit and tree before creating the task branch.
+- Released the scheduled wake interval when dispatch preparation fails before
+  inference, and versioned preparation generations so tasks blocked by the
+  repaired worktree contract receive one immediate bounded retry.
+
+## 2026-07-31 - Team Task Board Briefs
+
+- Made each Team Task Board card and hierarchy node expose its task brief; long
+  instructions stay compact until the operator opens **Show full task brief**.
+
+## 2026-07-31 - Release Verification Failure Evidence
+
+- Surfaced the failed verification command, exit code or worker failure cause,
+  and a concise decisive error directly in failed release progress.
+- Added readable, expandable command-log excerpts to release detail and
+  Delivery Pipeline gate evidence so operators can diagnose exact failures
+  without searching other views.
+
+## 2026-07-30 - Candidate-Rooted Verification Corrections
+
+- Made candidate verification failures create one high-priority correction task
+  automatically, with the failed command results, release branch, candidate
+  commit and tree, and assignment rationale recorded in the task and inbox.
+- Routed the task to the unique producer whose reviewed paths appear in the
+  verifier evidence, then to the recorded release owner, project lead, or team
+  manager when provenance is ambiguous or unavailable.
+- Linked verification runs durably to their correction tasks and made worker
+  worktree preparation verify and start from the exact rejected candidate
+  snapshot, without composing dependencies onto current `main`.
+- Added explicit release ownership to new release packages and persisted it
+  through the SQLite schema.
+
+## 2026-07-30 - Subscription Team Tool Attachment
+
+- Added the session-scoped Evander MCP server to the worker-owned ChatGPT
+  subscription config before Codex app-server startup. Subscription turns now
+  receive Team action tools instead of relying on a late thread-resume override
+  that does not initialize the MCP connection.
+- Preserved the baseline session gateway for container prompts without a
+  temporary run-scoped approval lease, while retaining lease-qualified gateway
+  URLs when a workflow grants additional tools for one run.
+- Kept the session credential out of app-server process arguments and logs by
+  retaining the generated config as a worker-owned, read-only mount.
+
+## 2026-07-30 - Empty Manager Fallback Suppression
+
+- Stopped periodic manager-fallback dispatches when a team appears open only
+  because non-superseded pending deliverables remain attached to terminal
+  tasks, with no nonterminal work, pending review or inbox, failed action, or
+  review-routing gap that the manager can advance.
+- Preserved manager fallback wakes for genuinely actionable team oversight and
+  review-routing work.
+
+## 2026-07-30 - UI Release Recovery Resumption
+
+- Replaced the misleading generic blocker-resolution action for routed release
+  blockers with a lifecycle-aware **Resume release recovery** control.
+- Made that control queue a task-linked operator directive and immediate wake
+  for the existing merge-recovery owner. The release recovery effect remains
+  responsible for resolving the blocker and finishing the recovery task.
+- Suppressed duplicate UI recovery wakes while an earlier recovery directive
+  remains pending.
+
+## 2026-07-30 - Workflow Generator Model Compatibility
+
+- Stopped sending the unsupported `temperature` parameter from workflow-generation
+  Responses API requests, allowing models that reject sampling controls to generate
+  draft workflows.
+
+## 2026-07-30 - Agent Subscription Scope Clarity
+
+- Moved the shared worker ChatGPT subscription account out of the selected-agent
+  detail region and labeled its page-wide scope explicitly.
+- Added each container Codex agent's effective Metered API or ChatGPT
+  subscription mode, including whether it comes from an agent override,
+  directory default, or provider-route constraint, to the agent list and detail
+  view.
+- Warned when the shared worker account is signed in while the selected agent
+  remains on metered API usage.
+
+## 2026-07-30 - Automatic Release Merge Recovery Work
+
+- Materialized one idempotent package-level task when an active feature,
+  correction-aggregate, or release promotion boundary reports merge conflicts,
+  preserving promotion IDs, branches, conflict details, and supported recovery
+  instructions.
+- Routed unambiguous conflict work directly to its active source coder with an
+  immediate durable wake when runnable, while mixed or unavailable ownership
+  falls back to the project lead or team manager. Active stand-downs retain the
+  work without waking until revocation.
+- Granted the active recovery-task owner narrow authority to submit the
+  resolved agents ref through the existing release recovery command.
+- Linked the recovery task to the existing release blocker and preserved the
+  blocked package and promotion audit trail without retrying or resolving Git
+  conflicts automatically.
+
+## 2026-07-30 - Package-Level Human Correction Successors
+
+- Replaced per-finding feature promotions for rejected human-review successors
+  with one deterministic correction aggregate rooted at the immutable rejected
+  candidate, while retaining every finding, deliverable, review, and manifest
+  as separate evidence.
+- Added pinned-source ancestor enforcement and rejected-candidate-derived
+  manifests before one final integration with current `main`; release gates now
+  evaluate that final candidate.
+- Added idempotent reconciliation for candidate-less legacy successors:
+  per-leaf failures remain as retired audit records, obsolete recovery
+  tasks/blockers are safely closed, and one aggregate promotion is queued
+  without trusting legacy main-based manifests.
+- Kept correction-aggregation and aggregate-to-main conflicts as distinct
+  serial recovery boundaries, each reusing its failed promotion's pinned base.
+
+## 2026-07-30 - Durable Review Manifests on Promotion Failure
+
+- Persisted the pinned source manifest produced by Managed Git even when a
+  feature promotion ends in a merge conflict, preventing the conflict from
+  making its own reviewed evidence unavailable to recovery.
+- Added a revision-guarded repair service for legacy blocked packages whose
+  failed promotions contain one unambiguous manifest matching the deliverable's
+  accepted immutable review; retired and superseded reviews remain excluded.
+- Kept release recovery promotion-specific. Human-correction successors expose
+  one active aggregate or release boundary; generic multi-feature packages
+  retain one-at-a-time recovery only where those feature boundaries genuinely
+  remain independent.
+
+## 2026-07-30 - Team UI Record Ordering
+
+- Sorted Delivery releases and related release/review history newest-first by
+  their available publication, update, or creation timestamps instead of
+  opaque record IDs.
+- Audited Team UI collection ordering and aligned named record lists, member
+  lists, hierarchy roots, and selectors with their displayed labels; inbox
+  items now retain the workspace's priority-first order.
+
+## 2026-07-30 - Team Correction Guidance Alignment
+
+- Updated versioned Team-agent guidance for generated human-review correction
+  graphs: finding children now explicitly require one accepted, reviewed
+  deliverable rather than direct support-task completion, while the
+  coordination parent, derived finding resolution, and changed successor
+  release remain system-managed.
+- Aligned the Team Add-on reference and release manual with that automatic
+  correction flow and added documentation and prompt regression coverage.
+
+## 2026-07-30 - Session Container Resource-limit Documentation
+
+- Documented how operators configure per-session container CPU, memory, and
+  process/thread limits through Admin Web session metadata, including accepted
+  fields, new-job timing, Playwright precedence, worker defaults, and the
+  separate Team release-verifier policy.
+
+## 2026-07-30 - Quiet Subscription App-Server Startup
+
+- Isolated ChatGPT-subscription app-server configuration from the metered relay while preserving
+  the session's durable Codex threads and skills, eliminating project-local provider warnings and
+  API-key model-catalog refresh failures without injecting credentials or changing billing mode.
+- Added the system Bubblewrap package to the managed runner image so Codex no longer warns before
+  falling back to its bundled sandbox helper.
+
+## 2026-07-30 - Automatic Human Review Correction Graphs
+
+- Replaced lead-authored correction reconstruction with one deterministic
+  coordination parent and one immutable-text child task per human finding.
+  Single-candidate and single-owner findings route directly; only genuinely
+  ambiguous findings require an explicit owner route.
+- Made affected deliverables optional in the human review form. The platform
+  derives a sole candidate automatically and presents named candidate work
+  choices instead of opaque deliverable-ID text fields when a choice exists.
+- Pinned correction worktrees to the rejected release commit and tree, with
+  authoritative managed-Git verification and idempotent preparation recovery.
+- Rejected retained libvirt correction worktrees whose current head no longer
+  descends from the pinned rejected candidate.
+- Added automatic resolution evidence derivation and changed-successor release
+  packaging after all correction children have accepted, reviewed work.
+- Preserved cancelled and other terminal correction coordination parents when
+  reconciliation creates or observes the successor release.
+
+## 2026-07-30 - Local Container Worker Subscription Login
+
+- Made same-host container-worker setup units start the managed Codex
+  authentication app-server from the configured runner image. Device login no
+  longer falls back to a missing `codex` executable on the worker host.
+- Exported that image through the service environment too, so an operator
+  drop-in that replaces only `ExecStart` retains the managed auth container.
+
+## 2026-07-29 - Explicit Review Closure Steering
+
+- Interrupted and resumed a matching leased container-worker review dispatch
+  when an authorized withdrawal or retirement makes that review obsolete, with
+  a bounded instruction to stop its testing while preserving unrelated
+  dispatch scope.
+- Added atomic single-winner, one-shot steering for container and legacy
+  executions, preventing concurrent closure replays from interrupting the same
+  dispatch twice while keeping durable review closure authoritative when
+  post-commit execution steering is unavailable or fails.
+- Kept human-supplied closure reasons in the audit record instead of forwarding
+  them into the privileged reviewer steering prompt; the prompt now contains
+  only a fixed, bounded closure instruction.
+
+## 2026-07-29 - Immediate Human-review Correction Wakes
+
+- Published durable correction wake events immediately from human-review
+  changes-requested and post-release issue API responses, while retaining the
+  transactional outbox for recovery. Idempotent request replays reuse the
+  original event identity instead of waiting for the quarter-hour Team cron or
+  creating duplicate wake events.
+
+## 2026-07-29 - Structured Human-review Findings
+
+- Replaced the changes-requested free-text convention with a flat repeatable
+  findings editor. Reviewers now explicitly add or remove findings and enter
+  each description, optional target deliverable IDs, and optional evidence
+  references independently.
+- Preserved every finding row and its unnormalized in-progress field values,
+  focus, and text selection across background refreshes. Submission rejects
+  blank or metadata-only rows, retains commas in finding prose, and includes
+  structured findings only for changes-requested decisions.
+
+## 2026-07-29 - Team UI Draft-safe Background Refresh
+
+- Preserved unsaved, request-scoped human-review decisions across Team state
+  stream, cost, release-detail, and partial view renders, including text,
+  checklist and carried-finding confirmations, open fields, focus, and caret.
+- Extended the same dirty-form boundary to scoped project/release forms and
+  unsubmitted case/task searches, protected drafts during in-flight saves, and
+  retained unsent Team Chat text independently per conversation. Successful
+  submissions still clear only the completed draft.
+
+## 2026-07-29 - Feature-branch Documentation Alignment
+
+- Updated the Team Add-on, managed-Git, configuration, operations, and canonical
+  manual sources to match the branch's current delivery, review, context,
+  stand-down, cleanup, chat, and release-recovery contracts.
+- Refreshed the Team Delivery manual screenshot for the attention-first,
+  project-focused workspace and brought its deterministic browser fixture up to
+  date with the current Admin Sessions API.
+
+## 2026-07-29 - Persistent Team UI Disclosures
+
+- Preserved every dynamic Team Add-on disclosure across state-stream, cost, and
+  view re-renders, including operations, planning, projects, task board,
+  release and human-review details, delivery pipeline, timeline, and mail.
+  Operator-opened panels now retain their own stable record key instead of
+  inheriting the browser's replaced DOM state.
+- Scoped shared-renderer disclosure keys by Team view and project-owned goal
+  keys by project, preventing hidden copies and repeated local goal IDs from
+  overwriting one another during background renders.
+
+## 2026-07-29 - Team Lifecycle Review Repairs
+
+- Continued manual and idle context rotation in a fresh context when a bounded
+  handoff run completes without recording its advisory summary, preventing
+  repeated handoff-preparation dispatches.
+- Preserved self-observed child-resolution transitions as handled parent
+  history without scheduling a redundant wake.
+- Included prepared Team Chat attachment IDs and metadata in external-reply
+  events and rendered explicit attachment references into the outbound body,
+  so attachment-only replies remain deliverable and files are not silently
+  omitted from bridged text.
+
+## 2026-07-29 - Supported Human-review Candidate Checkout
+
+- Added an authorization-filtered **Test this candidate** panel to Team release
+  detail with the canonical repository identity, managed repository ID,
+  immutable release ref, exact candidate commit/tree, and a copyable supported
+  host command.
+- Added `evander-cli team checkout-release-candidate`, which resolves private
+  managed-Git paths internally, revalidates the pinned ref, commit, and tree,
+  and creates a fresh detached checkout without retaining an internal path.
+  Existing targets and paths inside the Evander runtime are refused. The
+  generated command carries the absolute runtime root and assembles only the
+  narrow managed-Git service, so it works outside the Evander checkout without
+  loading unrelated provider credentials.
+
+## 2026-07-29 - Immediate Team Outbox Drain After Standalone Dispatch
+
+- Reused the Team outbox publisher after lifecycle-hook finalization of
+  standalone agent prompt dispatches, so Git promotion and other durable intents
+  created during those runs no longer wait up to 15 minutes for the Team cron.
+
+## 2026-07-29 - Deterministic Team Correction Git Sources
+
+- Clarified the Team task-creation and release-failure contracts so correction
+  lineage (`originating_task_id`) is never mistaken for Git inheritance.
+  Project leads must name accepted Git predecessors in `dependency_task_ids`,
+  which makes the runtime verify and compose their exact commits before work
+  starts; failed-candidate notices now require the candidate SHA and prohibit
+  silently delegating correction work from a base-branch-only checkout. The
+  assignee must verify that the prepared worktree has the candidate's exact
+  tree before editing rather than selecting or merging a source ad hoc.
+
+## 2026-07-29 - Accurate Operator Escalation Receipts
+
+- Marked operator and governance escalation receipts explicitly as pending and
+  told Team agents to report them as queued, not delivered, until downstream
+  delivery evidence exists. Tool discovery and runtime descriptions now make
+  the same asynchronous boundary explicit.
+
+## 2026-07-28 - Focused Review and Delivery Pipeline
+
+- Changed Review & Delivery to open on attention-requiring work, added a
+  project focus selector, and collapsed project groups until an operator opens
+  or selects one, while retaining status filters and an explicit all-records
+  view for complete history.
+- Added an evidence-backed deliverable pipeline from submitted implementation
+  evidence through deliverable acceptance, release inclusion, automated
+  verification, release-agent review, human review, and publication. The
+  drill-down names the current stage and active blocker and can load the exact
+  permission-filtered release gate attempts on demand.
+
+## 2026-07-28 - Bounded Agent Context Self-handoffs
+
+- Added a 120-second, best-effort same-context handoff preparation for manual
+  and idle Team context rotations. Agents can record one server-capped advisory
+  summary before the fresh context starts; failure or timeout never blocks the
+  reset. Every-wake agents retain only the existing deterministic checkpoint.
+
+## 2026-07-28 - Bounded Agent Release-verification Retry
+
+- Preserved one project-lead retry for transient release-verifier failures, but
+  prevented agents from repeatedly retrying an unchanged candidate after an
+  agent-requested verification attempt also fails. Operator recovery remains
+  available, while blocker, prompt, MCP, and UI guidance now requires concrete
+  recovery evidence and directs agents to escalate when none exists.
+
+## 2026-07-28 - Project-lead Wake on Candidate Verification Failure
+
+- Turned a release candidate verification rejection into actionable project-lead
+  inbox work with a transactional wake intent, directing the lead to inspect
+  the frozen evidence and delegate changed reviewed work without waking the
+  original coder directly.
+- Included the failed command result and its bounded log context directly in
+  that project-lead notice, and changed long verifier excerpts from tail-only
+  capture to balanced beginning-and-end capture so an early compiler/test
+  diagnostic is not hidden by later suite output.
+
+## 2026-07-28 - Retryable Release-verifier Resource Exhaustion
+
+- Gave Team release-verification container jobs a bounded 8-CPU quota and a
+  2,048 process/thread budget, preventing large MSBuild solution runs from
+  multiplying nodes across every host CPU while accommodating their observed
+  parallel test-host thread count above the strict worker profile's default
+  512-PID ceiling.
+- Added validated per-project `release_policy.resource_limits` configuration
+  for worker memory, CPUs, and process/thread limits. Explicit values override
+  the bounded verifier defaults and are applied to each new verification
+  session, including infrastructure retries.
+- Added a worker-owned, structured `pids_limit_exhausted` failure cause based
+  on the job cgroup's kernel `pids.events` counter and propagated it through
+  container execution into release-verification evidence. Verification no
+  longer guesses infrastructure failure from ambiguous command OOM text;
+  Docker's causal OOM-kill signal is likewise exposed as
+  `memory_limit_exhausted`.
+
+## 2026-07-28 - Non-blocking Worker Worktree Cleanup
+
+- Moved container-worker task-worktree cleanup off the async request loop, so
+  slow ignored-file deletion cannot starve unrelated session and file
+  preparation requests.
+- Moved the worker's remaining synchronous session, Git, file, Docker, MSSQL,
+  telemetry, authentication, job, log, and artifact operations off the async
+  request loop as well, keeping health and unrelated requests responsive while
+  a slow lifecycle operation completes.
+- Batched the final inspection's proven ignored paths into bounded Git cleanup
+  commands and applied a subprocess timeout, avoiding one full Git scan per
+  ignored file while preserving the no-force, exact-path cleanup contract.
+
+## 2026-07-28 - Immediate Team Wake on Operator Stand-up
+
+- Made operator stand-down revocation atomically enqueue targeted
+  `team.agent.wake_requested` intents for affected agents that become eligible
+  for work, so an explicit stand-up no longer waits for the next 15-minute Team
+  cron tick. Agents still covered by another hold remain suppressed.
+- Suppressed handoff, rejection, and resolution parent-task notices when the
+  command's effective sender is also the parent owner, avoiding inference runs
+  whose only action is to acknowledge a transition the agent just caused.
+  Actionable integration-ready and blocker notices remain wakeable.
+- Made direct deliverable acceptance requests normal-priority actionable work
+  and enqueue the same targeted wake intent used by formal review requests, so
+  an idle superior no longer waits for the periodic Team scheduler.
+- Fixed final deliverable-review acceptance so parent resolution and
+  integration-ready notices retain their wake-request events and wake an idle
+  parent owner without waiting for scheduled polling.
+- Returned accepted root-task boundaries to the project lead with an actionable
+  release-ready notice and wake, so the release package and required human
+  review cannot stall merely because the resolved task has no parent.
+- Added structured verification-waiver correction context to rejected release
+  requests, including whether the current caller is authorized, the exact
+  input shape, and the fact that candidate verification and review gates still
+  apply.
+- Refreshed the Team runtime workflow pack to retain Git promotion manifests,
+  base commits, changed-path validation, and tree evidence through the
+  recorder effects, preventing a successfully reviewed candidate from being
+  blocked later by evidence dropped at the workflow boundary.
+- Fixed feature-promotion result recording to attach that immutable reviewed
+  source manifest when a promotion is already linked directly to its accepted
+  deliverable, preventing valid releases from being blocked as though their
+  reviewed manifest were missing.
+
+## 2026-07-28 - Team Stand-down Completion and State Upgrades
+
+- Allowed a support-task dispatch leased before a stand-down to record its
+  exact scoped `finished` transition while continuing to reject task edits,
+  new work, and dispatches created after the hold.
+- Upgraded persisted Team state metadata to the current state schema during
+  SQLite initialization and legacy JSON import instead of retaining an older
+  advertised schema version after the new fields are available.
+
+## 2026-07-28 - Hierarchy-aware Team Review Wakes
+
+- Required assigned deliverable reviewers to fetch and read the complete task
+  specification before deciding. Leaf reviews compare directly against that
+  task, while composite and integration reviews recursively inspect declared
+  contribution tasks, their current accepted source deliverables, and actual
+  integrated behavior rather than relying on source-ID coverage alone.
+
+## 2026-07-28 - Workflow-created Team Review Cohorts
+
+- Added an atomic Team workflow effect that creates and seals the complete
+  reviewer set for an existing immutable deliverable in one state transaction.
+  Exact workflow retries are idempotent, while mismatched membership and
+  pre-existing independent reviews fail closed.
+- Moved the deliverable task into `waiting_for_review` when the cohort is
+  sealed, preventing its owner from being dispatched against a candidate under
+  review, and recalculated completed projects when accepted work is reopened.
+- Preserved accepted and rejected cohort lifecycle state on exact workflow
+  retries instead of reopening immutable terminal reviews with no remaining
+  decision capable of advancing the task.
+- Exposed the cohort effect and its outputs in the workflow catalog so
+  integration-boundary deliverables can request one coordinated code-and-test
+  acceptance pass without reviewing every intermediate contribution.
+
+## 2026-07-28 - Lifecycle-aware Team Wake Contexts
+
+- Made first, manually rotated, `every_wake`, and explicitly new-context Team
+  wakes receive a compact complete working set, while successful same-session
+  retained wakes receive current-dispatch deltas. The choice is based on durable
+  context lifecycle and resume behavior, never agent display names or provider
+  naming.
+- Added `team_get_current_dispatch_context` to hydrate the caller's immutable
+  dispatch scope, scoped runtime attention to that dispatch, preserved exact
+  task integration contracts and ephemeral artifact import paths, and removed
+  duplicate repository/worktree representations.
+- Kept Team Chat current messages exact and singular, bounded historical
+  transcript bodies, and applied reset/`every_wake` semantics to chat. Only a
+  successful mutation-enabled chat seeds ordinary Team context; reply-only chat
+  leaves a pending ordinary reset intact. Mutation-enabled chat retains its
+  role-visible project and managed-repository scope so the operator can select
+  exact work at tool-call time without pre-claiming current task or review IDs.
+- Reduced context-rotation handoffs to bounded irreducible continuity, retaining
+  the manual operator note and pending ephemeral acceptances without repeating
+  identity, task, inbox, review, deliverable, or action history.
+
+## 2026-07-28 - Sealed Team Review Cohorts
+
+- Made atomic multi-review deliverable submission create one persisted, sealed
+  review cohort for the immutable candidate. Late members and duplicate reviewer
+  slots are rejected, while a blocked member's authorized retry remains in the
+  original cohort.
+- Kept reviewer decisions independent but held implementer rework until every
+  active cohort member has accepted or rejected. Rejections and carried findings
+  are then consolidated into one replacement-deliverable cycle; blocked members
+  remain durable unresolved blockers without preventing other reviewers from
+  recording their decisions.
+- Prevented the final cohort member from being silently withdrawn, validated
+  review-profile outcome requirements before external artifact publication, and
+  added persistence and cross-record cohort invariants.
+- Required every replacement of a sealed-cohort candidate to wait for all
+  current slots and atomically preserve the cohort's profile multiplicity and
+  unprofiled reviewers; plain, legacy, and Admin replacement paths now fail
+  closed instead of bypassing fresh review.
+
+## 2026-07-28 - Explicit Team Integration Deliverable Contracts
+
+- Added an explicit integration-boundary designation for Team tasks, independent
+  of task titles and hierarchy depth, with a persisted deliverable contract that
+  can require authoritative pinned Git provenance and explicitly name direct
+  child or dependency contribution tasks.
+- Prevented integration boundaries from using direct finish or artifact-only
+  escape paths. Submission, acceptance, and derived resolution now require a
+  current accepted deliverable satisfying the Git and contribution contract,
+  including exact accepted `source_deliverable_ids`.
+- Exposed the contract through Team MCP and Admin API task creation/update
+  surfaces while defaulting existing support and outcome tasks to the prior
+  lifecycle and contribution behavior.
+- Closed legacy action, Admin deliverable, ephemeral-result, and synthesized
+  feature-deliverable bypasses; acceptance now verifies the persisted submitted
+  Git context and exact context commit. The task editor exposes the integration
+  designation, Git requirement, and explicit contribution IDs.
+
+## 2026-07-28 - Cause-specific Team Preparation Retry Suppression
+
+- Converted repeated task repository/dependency preparation failures into one
+  durable blocker per stable cause and task generation. Unchanged work no
+  longer receives another inference attempt, while explicit blocker recovery
+  and meaningful task, dependency, project-Git, or candidate changes permit a
+  fresh preparation generation.
+- Failed review artifact and repository preparation before model inference,
+  recorded the exact review as a system-blocked immutable attempt, and required
+  the existing authorized review-retry/replacement lifecycle before it can run
+  again. Recovery-owner blocker wakes no longer repeat the unavailable
+  repository setup merely to inspect or resolve the incident.
+- Kept due, delegated, and future-follow-up preparation blockers from
+  reintroducing their failed task/repository setup into recovery or unrelated
+  dispatches. Task-generation fingerprints now use an explicit semantic
+  allowlist, excluding priority, timestamps, creator/case bookkeeping, and
+  denormalized indexes so only relevant task, dependency, Git, or candidate
+  changes unlock another setup attempt.
+
+## 2026-07-27 - Retained Team Worktree Rework Recovery
+
+- Allowed a reopened task to reuse its clean retained worktree when the
+  authoritative prior Team base still matches, every exact accepted dependency
+  commit is already an ancestor of its unchanged branch tip, and remote
+  dependency refs still resolve to those commits. The worker records the missing
+  legacy provenance without resetting the branch or overwriting dirty work.
+- Kept mismatched bases, missing dependency ancestry, and dirty retained
+  worktrees fail-closed, and prevented an open dependency-preparation blocker
+  from repeatedly leasing the same task for another identical setup attempt.
+  Failed preparation dispatches remain terminal with their exact error.
+
+## 2026-07-27 - Direct-agent Team Stand-downs
+
+- Added an explicit `agent` stand-down scope across operator UI/API and manager
+  MCP/action surfaces so a manager can be held without implicitly holding their
+  subordinates. The existing `subtree` scope remains the default for stored
+  records and callers that omit the field.
+- Applied the selected scope consistently to activity state, chat and command
+  authorization, wake eligibility, wake cancellation, and revocation recovery.
+  The UI makes the direct-agent hold its default “Stand down” action, exposes
+  the broader “Stand down subtree” separately, and requires an additional
+  breadth-specific confirmation before a subtree hold can proceed to its reason.
+
+## 2026-07-27 - Accepted Team Deliverable Rework Recovery
+
+- Added an audited `team_reopen_task_for_rework` transition for task owners,
+  project leads, and same-team managers when an accepted deliverable later proves
+  invalid. The original acceptance and reviews remain immutable while the task,
+  ancestors, release scope, and project resolution return to unresolved work.
+- Wakes the original owner once with the exact predecessor lineage and requires a
+  same-task replacement through fresh formal reviews before the task can resolve
+  again. Direct finish, unrelated submissions, direct acceptance, cross-project
+  recovery, and foreign-agent recovery remain blocked.
+
+## 2026-07-27 - Playwright Worker Preflight and UI Test Capacity
+
+- Staged and verified each seeded Playwright package/browser-cache pair before
+  replacing the worker's live read-only caches. Provisioning now reports the
+  package's expected Chromium executable and available cached builds when they
+  differ, while agent bootstrap fails actionably instead of silently omitting
+  `PLAYWRIGHT_MCP_EXECUTABLE_PATH`.
+- Recorded Playwright capability on container sessions and gave only those
+  agents an explicit `pids_limit: 1024` job budget for full-stack UI testing.
+  The strict worker default remains unchanged for unrelated jobs.
+- Added capability-aware prompt guidance and a dependency-neutral launch helper
+  so repository-local Playwright imports can launch the seeded offline Chromium
+  through `PLAYWRIGHT_MCP_EXECUTABLE_PATH` without replacing project packages or
+  hard-coding cache revisions.
+
+## 2026-07-27 - Stand-down-safe Team Dispatch Completion
+
+- Kept operator and manager-subtree stand-downs authoritative for new wakes,
+  leases, task starts, and unrelated mutations while allowing an already-leased
+  immutable dispatch to record its assigned terminal result. Reviewers can now
+  accept, reject, or block their exact pre-hold review instead of stranding it
+  when a stand-down is applied during execution.
+
+## 2026-07-27 - Assigned Blocker Dispatch Scope
+
+- Separated blocker follow-up scheduling from immutable dispatch authorization.
+  Every exact open blocker currently owned by or delegated to the waking agent
+  is now retained in that dispatch's scope even when its next follow-up is not
+  yet due, while only due or explicitly requested blockers are reserved for
+  progress enforcement.
+- Kept blocker commands bounded by the frozen blocker IDs and the current
+  owner/delegate assignment. Team-manager status does not admit another agent's
+  blocker, and a blocker reserved by a different dispatch remains stale.
+
+## 2026-07-27 - Git-backed Deliverable Provenance Enforcement
+
+- Prevented an agent with an active task Git work context from bypassing immutable
+  provenance by retrying an advanced branch submission as artifact-only. The
+  server now resolves the current dispatch's task branch and binds its exact tip
+  automatically when it differs from the pinned base, while unchanged worktrees
+  and tasks without Git contexts can still produce legitimate artifact-only
+  deliverables.
+- Failed closed with actionable correction details when the active context is
+  ambiguous or its branch/base cannot be verified. Existing provenance-less
+  accepted work remains retained for explicit replacement and review instead of
+  being silently rewritten or weakening cleanup's exact-tip safety check.
+
+## 2026-07-27 - Team Dependency Git Inheritance
+
+- Composed server-verified accepted Git deliverables from direct dependency
+  tasks into a successor's task worktree before leasing it, and retained the
+  ordered dependency task, deliverable, branch, and commit provenance with the
+  dispatch-bound Git context.
+- Failed preparation closed on missing, ambiguous, unaccepted, moved, or
+  conflicting dependency Git state and routed one high-priority blocker without
+  leasing or waking the successor. Reused pristine worktrees can be composed
+  safely, while existing authored work without matching provenance is preserved
+  for explicit correction instead of being silently rewritten.
+
+## 2026-07-27 - Staged Team Worktree Cleanup
+
+- Made omitted cleanup mode perform one audited dry run and then remove the
+  worktree on a later eligible pass after repeating every safety check, while
+  preserving explicit dry-run-only and immediate-cleanup operator settings.
+
+## 2026-07-27 - Live Codebot Execution Progress
+
+- Streamed bounded Codex reasoning summaries and tool start/completion status into
+  container-worker execution logs, and reconstructed the same progress from the
+  session transcript when raw container output is sparse. Arbitrary structured
+  tool arguments and tool output remain excluded from the operator log.
+
+## 2026-07-27 - Communication-to-Team Chat Bridge
+
+- Added generic communication ingress for persistent Team Chat: an authorized
+  provider message now records durable provenance and idempotency state, queues
+  the normal `team-chat:<message-id>` dispatch, and retains the existing Team
+  transcript, lease, tools, and busy-agent ordering.
+- `team_reply_to_chat` now emits a transactional external-reply request only
+  for externally originated messages. Delivery outcome is retained beside the
+  persisted Team reply, so a communication-send failure cannot erase or
+  duplicate the internal answer.
+- Published external ingress wake events immediately after their transactional
+  outbox write, rejected bridge targets that cannot send the corresponding
+  top-level or threaded reply, and exposed eligible targets in the workflow
+  editor.
+- Routed communication send exceptions through an explicit workflow error
+  branch so the external delivery record always captures a failed attempt.
+
+## 2026-07-27 - Authoritative Team Git Review Retries
+
+- Failed closed when retrying a blocked Git review unless its immutable pinned
+  candidate still matches the server-resolved task branch, requiring a
+  replacement deliverable instead of reissuing a review for invalid provenance.
+
+## 2026-07-27 - Stale Team Dispatch Recovery
+
+- Replaced contradictory stale-terminal-action guidance with an explicit end-turn
+  recovery contract: immutable dispatch scope remains unchanged, dispatch
+  finalization requests a fresh wake, and only the replacement dispatch can
+  include high-priority inbox work that arrived after the original snapshot.
+
+## 2026-07-27 - Server-authoritative Team Git Deliverable Commits
+
+- Resolved each submitted Team task branch through its directory-authorized
+  managed bare repository and rejected agent-supplied commit SHAs that do not
+  match that authoritative branch tip, including when the Git work context did
+  not already record a commit.
+- Gateway-hosted Team MCP tools now lazily obtain that managed-Git authority
+  from the supported admin runtime instead of assuming the gateway runtime
+  directly exposes the admin domain.
+
+## 2026-07-27 - Assigned Blocker Recovery Task Scope
+
+- Included a blocked source or affected task in an assigned blocker's immutable
+  dispatch scope only when the recipient still owns that active task and can
+  see its project, allowing corrective task commands to reach their lifecycle
+  policy without granting access to foreign related tasks.
+
+## 2026-07-27 - Team Worktree Cleanup Retry Backoff
+
+- Preserved each cleanup candidate's durable retry schedule and failure evidence
+  while maintenance refreshes its expected Git commit, preventing cron and
+  agent-completion reconciliation from retrying a failed cleanup before
+  `eligible_at`.
+
+## 2026-07-27 - Immediate Team Wake Propagation
+
+- Team review retries now publish the actionable reviewer-inbox wake intent that
+  they already produced, and command transitions immediately request a
+  deduplicated wake for owners whose dependency-gated tasks just became ready.
+  The existing runtime eligibility, stand-down, lease, wake-budget, and
+  no-progress gates remain authoritative for actual dispatch.
+
+## 2026-07-27 - Inbox-referenced Team Blocker Scope
+
+- Included exact durable blocker IDs named by actionable questions in the recipient's immutable
+  dispatch scope only when that agent currently owns or holds delegation for the open blocker,
+  allowing the requested blocker action without granting access to arbitrary referenced blockers.
+
+## 2026-07-27 - Independent Parallel Review Decisions
+
+- Persisted each assigned reviewer's decision independently when another parallel review, blocker,
+  dependency, or descendant keeps aggregate deliverable and task acceptance blocked; aggregate
+  promotion remains gated until every acceptance boundary is clear.
+
+## 2026-07-27 - Pinned Team Git Deliverable Provenance
+
+- Rejected unknown agent-supplied Git reference fields with an explicit `commit_sha` correction,
+  required every Git-backed deliverable and formal review to pin the submitted commit, and
+  preserved that submitted SHA through persistence. Reused legacy task worktrees now recover their
+  base only from consistent prior Team provenance and fail safely instead of mistaking the task's
+  current implementation commit for its base.
+
+## 2026-07-27 - Portable Container-worker Task Worktrees
+
+- Made each task checkout's Git pointer relative so it works through both its host storage path and
+  `/home/agent` container mount, safely normalized the host registration back-pointer on reuse,
+  and retained checkout contents with an actionable error when the corresponding Git
+  administrative record is genuinely missing or invalid.
+
+## 2026-07-27 - Tool-completed Codex Chat Turns
+
+- Treated an empty final Codex message as successful only when the same completed turn recorded a
+  successful `team_reply_to_chat` result, while retaining failures for ordinary tool calls,
+  unsuccessful replies, incomplete turns, explicit failures, and context-limit exits.
+
+## 2026-07-27 - Live Team Dispatch Lease Renewal
+
+- Renewed the durable Team dispatch and agent-runtime lease together, in bounded
+  increments near expiry, only while the exact tracked worker execution remains
+  demonstrably active; terminal, missing, or unreachable jobs still fall through
+  to existing completion or stale-dispatch recovery without permitting a
+  replacement dispatch to overlap a healthy long-running turn.
+
+## 2026-07-27 - Fresh Container-worker Task Bases
+
+- Refreshed and pinned the managed remote base before creating a new container-worker task branch,
+  recorded that exact base separately from the task's current HEAD, and kept existing task
+  branches and worktrees immobile when their persistent session checkout is reused.
+
+## 2026-07-27 - Team Planning Detail Persistence
+
+- Preserved open Planning project, task, hierarchy, full-brief, worktree, and technical-detail
+  disclosures across background cost and state refresh renders, so operators can keep reading a
+  task body while live data updates.
+
+## 2026-07-27 - Team Chat Reader Scroll Preservation
+
+- Preserved an operator's reading position through Team state-stream and automatic chat-refresh
+  updates, while keeping intentional thread changes, sends, and already-bottom views anchored to
+  the newest message.
+
+## 2026-07-27 - Repository-scoped Managed Git Commit Identity
+
+- Added a privileged managed-repository operation and CLI command that update the author and
+  committer identity used for subsequent host-created consolidation commits without changing
+  directory defaults, other repositories, agent checkout identities, or existing commits.
+
+## 2026-07-27 - Managed Git Refresh Authentication and Diagnostics
+
+- Rewrote PAT-backed Azure DevOps SSH refresh sources to their canonical HTTPS URLs at Git
+  invocation time, allowing the systemd refresh broker to use its configured non-interactive PAT
+  without persisting credentials or changing registered repository identity.
+- Fell back to the general Azure DevOps PAT when the preferred PR PAT environment variable is
+  configured but unpopulated, covering both supported managed Git authentication configurations.
+- Preserved fail-closed stale-ref behavior while returning and logging stable, sanitized refresh
+  failure codes and operator-readable categories instead of reducing every upstream failure to a
+  generic `RuntimeError`.
+
+## 2026-07-27 - Team Task Cancellation and Operator Chat Authority
+
+- Added a dedicated audited task-cancellation dialog with a required reason, optional same-project
+  successor, visible disabled actions that explain lifecycle blockers on hover, and no generic
+  edit-state shortcut into accepted or cancelled.
+- Gave mutation-enabled authenticated operator chat dispatches the recipient's frozen,
+  role-visible project and managed-repository scope so natural-language requests can select exact
+  targets at tool-call time while existing domain authority checks remain decisive; kept
+  reply-only chat and autonomous dispatches narrowly scoped.
+
 ## 2026-07-27 - Team Human Review Checklist Editing
 
 - Replaced pipe-delimited human release acceptance-checklist text with structured, reorderable

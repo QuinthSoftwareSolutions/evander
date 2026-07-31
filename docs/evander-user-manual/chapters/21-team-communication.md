@@ -1,6 +1,6 @@
 # 21. Chat, Agent Mail, Voice, and Escalation
 
-> **At a glance.** Team offers several ways to communicate because a person chatting with an agent is not the same as one agent assigning work to another. Chat serves signed-in users, Agent Mail carries agent-to-agent messages, voice supports a live spoken conversation, and escalation raises an issue beyond the ordinary reporting path. Choosing the right channel preserves who is speaking, what response is expected, and whether the message should wake anyone.
+> **At a glance.** Team offers several ways to communicate because a person chatting with an agent is not the same as one agent assigning work to another. Chat serves durable operator identities from built-in signed-in UI or a fixed authenticated external bridge, Agent Mail carries agent-to-agent messages, voice supports a live spoken conversation, and escalation raises an issue beyond the ordinary reporting path. Choosing the right channel preserves who is speaking, what response is expected, and whether the message should wake anyone.
 
 ## Choose the path by who is speaking
 
@@ -13,13 +13,24 @@
 | Top-level manager → governance manager | Governance agenda escalation |
 | Human operator ↔ persistent agent by audio | Browser voice call |
 
-The paths are not interchangeable. A Chat transcript is not an agent inbox. A communication target does not grant inbound access to the manager's session. A voice call is not an Agent Mail exchange. The channels may share some wake machinery, but not identity, authorization, storage, or delivery semantics. The distinction protects both user expectations and authorization.
+The paths are not interchangeable. A Chat transcript is not an agent inbox. A
+communication target by itself does not grant inbound access to the manager's
+session; the bridge needs explicit fixed identity and author authority. A voice
+call is not an Agent Mail exchange. The channels may share some wake machinery,
+but not identity, authorization, storage, or delivery semantics. The
+distinction protects both user expectations and authorization.
 
 For Northstar, an operator who wants to discuss a task with Imani uses Chat. Imani reports routine progress upward to Priya through Agent Mail. A durable instruction to the Team goes to Mira as an operator directive. Mira escalates beyond the Team only when ordinary reporting cannot resolve the issue. The speaker, intended recipient, and desired durability choose the channel.
 
 ## Operator Chat
 
-A Team conversation contains exactly one signed-in operator user and one persistent agent. That operator/agent pair has one durable conversation. Messages record sender, status, content, timestamps, error information, and dispatch metadata.
+A Team conversation contains exactly one durable Team operator identity and
+one persistent agent. Built-in Chat binds that identity to the signed-in
+operator. The external bridge maps an authenticated source message to its
+fixed <code>operator_user_id</code> and records
+<code>external_origin</code>; it does not treat message text as identity. That
+operator/agent pair has one durable conversation. Messages record sender,
+status, content, timestamps, error information, and dispatch metadata.
 
 Operators normally see their own conversations. A user with <code>team_chats.read_all</code> may inspect another operator's history, but the UI marks that mode read-only and blocks sending. The permission does not broaden Agent Mail visibility.
 
@@ -28,6 +39,11 @@ Chat messages may contain text, attachments, or both. Use the attachment control
 The **Files** dialog controls Team Chat's directory-scoped attachment policy. Its root defaults allow operator-to-agent and agent-to-operator files, at most five files per message and 10 MiB per file, limited to common text, JSON, PDF, and raster-image types. Agent sends require exact approval by default. Child directories inherit the closest configured values. This policy belongs entirely to the Team Add-on: Microsoft Teams and the core communication connectors may use different file rules, and their settings neither grant nor deny built-in Chat attachments.
 
 The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer but cannot change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
+
+Live state-stream and automatic Chat refreshes preserve an operator's reading
+position. If the reader is already at the bottom, changes conversations, or
+sends a message, the view intentionally follows the newest message; otherwise
+new data does not jump the transcript away from the passage being read.
 
 > <span class="sidebar-kicker">Deeper detail</span> **How a Chat message is dispatched**
 >
@@ -48,6 +64,54 @@ The reply may take time because sending a Chat message records work for the agen
 ![Team Chat conversation between a synthetic operator and Imani](../../assets/evander-user-manual/screenshots/team-chat.png)
 
 <p class="figure-caption">Figure 21.1 — Human Chat is visually and operationally separate from Agent Mail and ordinary Team work. Sanitized Northstar fixture.</p>
+
+## External communication into Team Chat
+
+A workflow can bridge an authenticated Discord or Microsoft Teams message into
+the same durable operator Chat lifecycle:
+
+<code>trigger:communication:new-message → effect:team:enqueue-operator-chat-message</code>
+
+Configure exactly one fixed <code>conversation_id</code> or
+<code>agent_id</code>, a fixed <code>operator_user_id</code>, and a declared
+<code>communication_target_id</code>. Never derive the Team conversation,
+agent, or operator identity from message text. The target provider must match
+the incoming provider and the target must grant <code>read</code>. A preserved
+Microsoft Teams channel thread additionally requires <code>reply</code>;
+top-level Teams replies and every Discord reply require <code>write</code>.
+Discord thread IDs are discarded so the response is a top-level channel
+message.
+
+Ingress is durable and idempotent on provider, communication target, and source
+message ID. An exact replay returns the original conversation, message, and
+<code>team-chat:&lt;message-id&gt;</code> dispatch. The effect queues the normal
+<code>team.chat.message_queued</code> event, so transcript, lease, busy-session,
+tool-grant, and reply behavior remain the built-in Chat behavior.
+
+The bridge defaults to <code>allow_team_mutations=false</code>. Enabling Team
+mutations requires a non-empty fixed <code>authorized_author_ids</code> list,
+and the authenticated source author must match it. A Discord trigger should
+also filter allowed authors and exclude the Evander bot, but the effect-side
+author allowlist remains the mutation authority.
+
+When the agent replies, Team commits the internal sent message first, creates a
+pending <code>ExternalChatDeliveryRecord</code>, and transactionally emits
+<code>team.chat.external_reply_requested</code>. The packaged runtime sends
+through the generic communication effect and records external delivery as
+<code>sent</code> or <code>failed</code>; the durable state model also
+distinguishes <code>pending</code>, <code>sending</code>, and
+<code>unknown</code>. The Team reply remains visible if external delivery
+fails, so inspect the persisted delivery ID and state before deciding whether
+any retry is safe.
+
+For a reply with Team Chat attachments, the outbound event retains the exact
+internal text as <code>team_chat_body</code> and carries both
+<code>attachment_ids</code> and attachment metadata. Its external
+<code>body</code> appends textual references containing each filename, MIME
+type, and byte count; an attachment-only reply therefore still has a
+deliverable non-empty body. This contract represents the Team files in text
+for the generic communication effect. It does not claim or require
+provider-native file upload.
 
 ## Agent Mail
 
@@ -135,7 +199,10 @@ The manager can send a durable escalation to the Team's configured operator dest
 >
 > The Team service does not call a Discord or Teams sender directly. The workflow document owns routing and delivery evidence.
 
-The target is outbound-only. It does not let external users address or wake Mira's real session. Inbound Discord or Teams access must be configured on the core session with the appropriate readable communication target and tool policy.
+The Team's <code>operator_communication_target_id</code> is outbound-only. It
+does not by itself let external users address or wake Mira's real session.
+Inbound access requires a separate, explicitly authorized core-session route
+or the fixed-identity communication-to-Team-Chat workflow described above.
 
 ### Governance escalation
 
@@ -151,11 +218,13 @@ Start by identifying the channel. A queued Chat message, pending Agent Mail item
 |---|---|
 | Chat message remains queued | Inspect agent active status, stand-down, cost cap, active lease, busy core session, event publication, and Chat-claim workflow. |
 | Chat dispatch finishes without a reply | Finalizer should mark the message failed; inspect command activity and prompt/session logs. |
+| External message is ingested but no Team Chat message appears | Trace the communication trigger, fixed bridge configuration, source target capabilities, and durable ingress idempotency record. |
+| Team reply is visible but missing externally | Inspect its <code>ExternalChatDeliveryRecord</code>, external-reply event, workflow effect execution, target capability, and recorded provider error before retrying. |
 | Agent cannot mail a peer | Lateral routing is intentionally forbidden; use reporting or work-routing mechanisms. |
 | No-reply normal mail woke the recipient | Correct behavior: priority is non-low. |
 | Low/no-reply mail is unseen | It waits for another eligible wake; inspect pending Mail and eventual handling. |
 | Escalation is recorded but not delivered | Follow the outbox row, internal event, workflow run, communication target, and provider result. |
-| External operator cannot message the manager | Outbound target was mistaken for inbound session authorization. |
+| External operator cannot message the manager through the escalation target | The outbound target was mistaken for inbound authorization. Configure a separate fixed-identity Team Chat bridge or authorized core-session route. |
 | Voice has incomplete knowledge | The projection is bounded; inspect or retry the durable origin-agent query path. |
 | Voice record is absent from Team SQLite | Correct storage boundary; inspect the core voice-session store and optional Chat projection. |
 
@@ -173,6 +242,9 @@ For Chat:
 2. Follow <code>team.chat.message_queued</code> from its published internal event into the runtime workflow. When a queued event originated in a Team command or finalizer, include its outbox row in that trace.
 3. Inspect lease/busy/cost/stand-down guards.
 4. Match the Chat dispatch to <code>team_reply_to_chat</code> activity and finalization.
+5. For externally originated Chat, correlate the ingress record and source
+   message ID; then follow <code>team.chat.external_reply_requested</code> to
+   the persisted external delivery record and success/failure recorder.
 
 For Agent Mail:
 
@@ -196,10 +268,10 @@ For voice:
 
 ## Source trail
 
-- <code>src/evander_team_addon/services/chat_service.py</code> and <code>services/domain/chat.py</code> — conversation ownership, queued messages, claim guards, and reply finalization.
+- <code>src/evander_team_addon/services/chat_service.py</code> and <code>services/domain/chat.py</code> — conversation ownership, external ingress idempotency, queued messages, claim guards, delivery state, and reply finalization.
 - <code>src/evander_team_addon/services/commands/agent_message_commands.py</code>, <code>chat_commands.py</code>, and <code>operator_escalation_commands.py</code> — directional Mail, Chat replies, and escalation commands.
 - <code>src/evander_team_addon/api.py</code> — Chat streams/messages, inbox views, operator directives, and browser voice routes.
-- <code>src/evander_team_addon/providers.py</code> and <code>workflow_packs.py</code> — Chat wake prompts, escalation routing, governance wakes, and voice reconciliation integration.
-- <code>src/evander_team_addon/models.py</code> — conversations, messages, inbox, communication targets, voice profiles, and governance agenda.
+- <code>src/evander_team_addon/providers.py</code> and <code>workflow_packs.py</code> — external Chat bridge and delivery recording, Chat wake prompts, escalation routing, governance wakes, and voice reconciliation integration.
+- <code>src/evander_team_addon/models.py</code> — conversations, messages, external ingress/delivery, inbox, communication targets, voice profiles, and governance agenda.
 - <code>docs/addons.md</code> — Chat/Mail distinction, voice boundary, communication direction, and escalation.
 - <code>tests/test_team_addon_runtime.py</code>, <code>tests/test_team_addon_mcp.py</code>, and <code>tests/test_team_addon_api.py</code> — operator isolation, reply-only dispatch, direction, wake, and escalation behavior.

@@ -33,6 +33,7 @@ from ..models import (
     GovernanceAgendaItemType,
     GovernanceGoal,
     GovernanceGroup,
+    DependencyGitSource,
     GitWorkContext,
     OutcomeKindDefinition,
     PersistentAgent,
@@ -66,6 +67,7 @@ from ..models import (
     TeamState,
     TaskCancellation,
     TaskCompletion,
+    TaskDeliverableContract,
     TaskOutcomeContract,
     TeamTaskKind,
     TeamTaskState,
@@ -91,6 +93,7 @@ from .domain.case_task import (
     _link_task_to_case,
     _sync_case_task_link,
     _task_graph_edit_error,
+    _task_deliverable_contract_scope_error,
     _unlink_task_from_case,
     _validate_generic_case_source,
     _validate_protected_case_update,
@@ -152,12 +155,12 @@ from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
     close_post_release_feedback_case,
-    create_human_finding_correction_root,
     reassign_human_review,
     record_human_finding_resolution_proposal,
     record_human_review_decision,
     record_human_review_preparation_result,
     report_post_release_feedback,
+    route_human_finding_correction,
     resume_human_review,
 )
 from .domain.release_packages import _build_release_package
@@ -181,6 +184,9 @@ from .domain.task_assessment import (
 )
 from .domain.task_supervision import queue_parent_resolution_transitions
 from .domain.work_due import _mark_agent_work_due
+from .domain.preparation_failures import (
+    create_rejected_candidate_correction_preparation_recovery_inbox,
+)
 from .commands.blocker_commands import _prepare_blocker_source_for_resolution
 from .commands.outbox import _team_event_outbox_records
 
@@ -671,6 +677,11 @@ class TeamAdminService:
                 reference_ids=normalized_refs,
                 metadata={"operator_actor_id": normalized_actor_id},
             )
+            create_rejected_candidate_correction_preparation_recovery_inbox(
+                state,
+                blocker=blocker,
+                result=result,
+            )
             result.update(
                 {
                     "success": True,
@@ -680,7 +691,13 @@ class TeamAdminService:
             )
             return state
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
         result["revision"] = state.revision
         result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
         return state, result
@@ -1511,6 +1528,8 @@ class TeamAdminService:
         commit_sha: str | None = None,
         dispatch_id: str | None = None,
         worktree_path: str | None = None,
+        dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
+        | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str]:
         normalized_context_id = _optional_text(context_id)
@@ -1524,6 +1543,12 @@ class TeamAdminService:
         normalized_commit_sha = _optional_text(commit_sha)
         normalized_dispatch_id = _optional_text(dispatch_id)
         normalized_worktree_path = _optional_text(worktree_path)
+        normalized_dependency_git_sources = [
+            source
+            if isinstance(source, DependencyGitSource)
+            else DependencyGitSource.model_validate(source)
+            for source in dependency_git_sources or []
+        ]
         created_context_id: str | None = None
 
         def _mutate(state: TeamState) -> TeamState:
@@ -1559,6 +1584,7 @@ class TeamAdminService:
                 task_id=task.id,
                 dispatch_id=normalized_dispatch_id,
                 worktree_path=normalized_worktree_path,
+                dependency_git_sources=normalized_dependency_git_sources,
                 base_branch=normalized_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,
@@ -2302,6 +2328,9 @@ class TeamAdminService:
         task_kind: TeamTaskKind | str | None = None,
         outcome_contract: Mapping[str, Any] | None = None,
         set_outcome_contract: bool = False,
+        integration_boundary: bool | None = None,
+        deliverable_contract: Mapping[str, Any] | None = None,
+        set_deliverable_contract: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
         state_model, _effective_task_id, _created = self.create_or_reprioritize_task_with_result(
@@ -2323,6 +2352,9 @@ class TeamAdminService:
             task_kind=task_kind,
             outcome_contract=outcome_contract,
             set_outcome_contract=set_outcome_contract,
+            integration_boundary=integration_boundary,
+            deliverable_contract=deliverable_contract,
+            set_deliverable_contract=set_deliverable_contract,
             expected_revision=expected_revision,
         )
         return state_model
@@ -2348,6 +2380,9 @@ class TeamAdminService:
         task_kind: TeamTaskKind | str | None = None,
         outcome_contract: Mapping[str, Any] | None = None,
         set_outcome_contract: bool = False,
+        integration_boundary: bool | None = None,
+        deliverable_contract: Mapping[str, Any] | None = None,
+        set_deliverable_contract: bool = False,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str, bool]:
         normalized_task_id = _optional_text(task_id)
@@ -2369,6 +2404,11 @@ class TeamAdminService:
             if outcome_contract is not None
             else None
         )
+        normalized_deliverable_contract = (
+            TaskDeliverableContract.model_validate(deliverable_contract)
+            if deliverable_contract is not None
+            else None
+        )
         effective_requested_kind = normalized_task_kind or TeamTaskKind.SUPPORT
         if state in {TeamTaskState.ACCEPTED, TeamTaskState.CANCELLED}:
             raise ValueError(
@@ -2382,6 +2422,11 @@ class TeamAdminService:
             raise ValueError(
                 "outcome tasks must resolve through an accepted deliverable, "
                 "not direct finish"
+            )
+        if state == TeamTaskState.FINISHED and integration_boundary:
+            raise ValueError(
+                "integration boundary tasks must resolve through an accepted "
+                "deliverable, not direct finish"
             )
         effective_task_id: str | None = None
         created = False
@@ -2423,6 +2468,36 @@ class TeamAdminService:
                     if normalized_dependency_task_ids is not None
                     else list(task.dependency_task_ids)
                 )
+                deliverable_policy_request = (
+                    integration_boundary is not None
+                    or set_deliverable_contract
+                    or deliverable_contract is not None
+                )
+                proposed_integration_boundary = (
+                    integration_boundary
+                    if integration_boundary is not None
+                    else task.integration_boundary
+                )
+                if integration_boundary is False and not (
+                    set_deliverable_contract or deliverable_contract is not None
+                ):
+                    proposed_deliverable_contract = None
+                else:
+                    proposed_deliverable_contract = (
+                        normalized_deliverable_contract
+                        if set_deliverable_contract
+                        or deliverable_contract is not None
+                        else task.deliverable_contract
+                    )
+                deliverable_policy_edit = (
+                    deliverable_policy_request
+                    and (
+                        proposed_integration_boundary
+                        != task.integration_boundary
+                        or proposed_deliverable_contract
+                        != task.deliverable_contract
+                    )
+                )
                 graph_error = _task_graph_edit_error(
                     state_model,
                     task_id=task.id,
@@ -2432,6 +2507,27 @@ class TeamAdminService:
                 )
                 if graph_error is not None:
                     raise ValueError(graph_error)
+                if deliverable_policy_edit:
+                    if task.state not in _NON_TERMINAL_TASK_STATES:
+                        raise ValueError(
+                            f"terminal task {task.id} cannot change its "
+                            "integration deliverable contract"
+                        )
+                    if task.deliverable_ids:
+                        raise ValueError(
+                            f"task {task.id} cannot change its integration "
+                            "deliverable contract after a deliverable was submitted"
+                        )
+                    contract_error = _task_deliverable_contract_scope_error(
+                        state_model,
+                        task_id=task.id,
+                        project_id=task.project_id,
+                        dependency_task_ids=proposed_dependency_task_ids,
+                        integration_boundary=proposed_integration_boundary,
+                        deliverable_contract=proposed_deliverable_contract,
+                    )
+                    if contract_error is not None:
+                        raise ValueError(contract_error)
                 effective_task_id = task.id
                 created = False
                 task.priority = priority
@@ -2455,6 +2551,9 @@ class TeamAdminService:
                     task.task_kind = normalized_task_kind
                 if set_outcome_contract or outcome_contract is not None:
                     task.outcome_contract = effective_outcome_contract
+                if deliverable_policy_edit:
+                    task.integration_boundary = proposed_integration_boundary
+                    task.deliverable_contract = proposed_deliverable_contract
                 task.updated_at = now
                 if task.state in _NON_TERMINAL_TASK_STATES:
                     _mark_agent_work_due(
@@ -2509,6 +2608,17 @@ class TeamAdminService:
             )
             if graph_error is not None:
                 raise ValueError(graph_error)
+            effective_integration_boundary = bool(integration_boundary)
+            contract_error = _task_deliverable_contract_scope_error(
+                state_model,
+                task_id=effective_task_id,
+                project_id=normalized_project_id,
+                dependency_task_ids=normalized_dependency_task_ids or [],
+                integration_boundary=effective_integration_boundary,
+                deliverable_contract=normalized_deliverable_contract,
+            )
+            if contract_error is not None:
+                raise ValueError(contract_error)
             state_model.tasks[effective_task_id] = AgentTask(
                 id=effective_task_id,
                 owner_agent_id=normalized_owner_agent_id,
@@ -2526,6 +2636,8 @@ class TeamAdminService:
                 dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
                 outcome_contract=effective_outcome_contract,
+                integration_boundary=effective_integration_boundary,
+                deliverable_contract=normalized_deliverable_contract,
                 created_at=now,
                 updated_at=now,
             )
@@ -2589,6 +2701,9 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
         dependency_task_ids: list[str] | None = None,
+        integration_boundary: bool | None = None,
+        deliverable_contract: Mapping[str, Any] | None = None,
+        set_deliverable_contract: bool = False,
         operator_repair_reason: str | None = None,
         operator_repair_actor: str | None = None,
         operator_repair_reference_ids: Sequence[str] | None = None,
@@ -2600,6 +2715,11 @@ class TeamAdminService:
         normalized_dependency_task_ids = (
             _unique_text_list(dependency_task_ids, "dependency_task_ids")
             if dependency_task_ids is not None
+            else None
+        )
+        normalized_deliverable_contract = (
+            TaskDeliverableContract.model_validate(deliverable_contract)
+            if deliverable_contract is not None
             else None
         )
         normalized_repair_reason = _optional_text(operator_repair_reason)
@@ -2656,6 +2776,60 @@ class TeamAdminService:
                 )
                 if graph_error is not None:
                     raise ValueError(graph_error)
+            deliverable_policy_edit = (
+                integration_boundary is not None
+                or set_deliverable_contract
+                or deliverable_contract is not None
+            )
+            if deliverable_policy_edit:
+                proposed_integration_boundary = (
+                    integration_boundary
+                    if integration_boundary is not None
+                    else task.integration_boundary
+                )
+                if integration_boundary is False and not (
+                    set_deliverable_contract or deliverable_contract is not None
+                ):
+                    proposed_deliverable_contract = None
+                else:
+                    proposed_deliverable_contract = (
+                        normalized_deliverable_contract
+                        if set_deliverable_contract
+                        or deliverable_contract is not None
+                        else task.deliverable_contract
+                    )
+                deliverable_policy_edit = (
+                    proposed_integration_boundary
+                    != task.integration_boundary
+                    or proposed_deliverable_contract
+                    != task.deliverable_contract
+                )
+            if deliverable_policy_edit:
+                if task.state not in _NON_TERMINAL_TASK_STATES:
+                    raise ValueError(
+                        f"terminal task {task.id} cannot change its integration "
+                        "deliverable contract"
+                    )
+                if task.deliverable_ids:
+                    raise ValueError(
+                        f"task {task.id} cannot change its integration deliverable "
+                        "contract after a deliverable was submitted"
+                    )
+                proposed_dependency_task_ids = (
+                    normalized_dependency_task_ids
+                    if normalized_dependency_task_ids is not None
+                    else list(task.dependency_task_ids)
+                )
+                contract_error = _task_deliverable_contract_scope_error(
+                    state_model,
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    dependency_task_ids=proposed_dependency_task_ids,
+                    integration_boundary=proposed_integration_boundary,
+                    deliverable_contract=proposed_deliverable_contract,
+                )
+                if contract_error is not None:
+                    raise ValueError(contract_error)
             if state == TeamTaskState.FINISHED:
                 try:
                     require_task_can_finish(
@@ -2701,6 +2875,9 @@ class TeamAdminService:
                 task.parent_task_id = normalized_parent_task_id
             if normalized_dependency_task_ids is not None:
                 task.dependency_task_ids = normalized_dependency_task_ids
+            if deliverable_policy_edit:
+                task.integration_boundary = proposed_integration_boundary
+                task.deliverable_contract = proposed_deliverable_contract
             task.updated_at = now
             if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
                 project = _require_present(state_model.projects, task.project_id, "project")
@@ -3081,7 +3258,7 @@ class TeamAdminService:
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
-            if enforce_task_assessment:
+            if enforce_task_assessment or task.integration_boundary:
                 try:
                     require_deliverable_submission(
                         state_model,
@@ -3090,6 +3267,17 @@ class TeamAdminService:
                     )
                 except TaskAssessmentBoundaryError as exc:
                     raise ValueError(exc.message) from None
+            if (
+                task.integration_boundary
+                and task.deliverable_contract is not None
+                and task.deliverable_contract.require_git_provenance
+            ):
+                raise ValueError(
+                    f"integration boundary task {task.id} requires authoritative "
+                    "Git provenance; the Admin deliverable endpoint cannot bind "
+                    "server-verified git_refs, so submit with "
+                    "team_submit_deliverable_for_review"
+                )
             snapshotted_outcomes = snapshot_deliverable_outcomes(
                 state_model,
                 project_id=task.project_id,
@@ -3101,6 +3289,17 @@ class TeamAdminService:
                 producer_agent_id=normalized_producer_agent_id,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
             )
+            if (
+                superseded_deliverable is not None
+                and superseded_deliverable.review_cohort_id is not None
+                and superseded_deliverable.review_cohort_sealed_at is not None
+            ):
+                raise ValueError(
+                    f"replacement for sealed-cohort deliverable "
+                    f"{superseded_deliverable.id} must use "
+                    "team_submit_deliverable_for_review to atomically create a "
+                    "complete fresh review cohort"
+                )
             _validate_deliverable_outcomes_against_task_contract(
                 task,
                 snapshotted_outcomes,
@@ -4392,58 +4591,51 @@ class TeamAdminService:
             expected_state_revision=expected_state_revision,
         )
 
-    def create_human_finding_correction_root_with_result(
+    def route_human_finding_correction_with_result(
         self,
         *,
         finding_id: str,
         owner_agent_id: str,
-        title: str,
-        description: str,
-        created_by_user_id: str,
+        routed_by_user_id: str,
         request_id: str,
         expected_state_revision: int,
-        task_id: str | None = None,
-        originating_task_id: str | None = None,
+        target_deliverable_ids: Sequence[str] | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_finding_id = _required_text(finding_id, "finding_id")
         normalized_owner_id = _required_text(owner_agent_id, "owner_agent_id")
-        normalized_title = _required_text(title, "title")
-        normalized_description = _required_text(description, "description")
         normalized_actor = _required_text(
-            created_by_user_id,
-            "created_by_user_id",
+            routed_by_user_id,
+            "routed_by_user_id",
         )
-        normalized_task_id = _optional_text(task_id)
-        normalized_origin_id = _optional_text(originating_task_id)
+        normalized_target_ids = (
+            _unique_text_list(
+                target_deliverable_ids,
+                "target_deliverable_ids",
+            )
+            if target_deliverable_ids is not None
+            else None
+        )
 
         def _apply(state: TeamState, result: dict[str, Any]) -> None:
-            correction_task = create_human_finding_correction_root(
+            correction_task = route_human_finding_correction(
                 state,
                 finding_id=normalized_finding_id,
                 owner_agent_id=normalized_owner_id,
-                title=normalized_title,
-                description=normalized_description,
-                request_id=request_id,
                 result=result,
-                task_id=normalized_task_id,
-                originating_task_id=normalized_origin_id,
-                created_by_actor=normalized_actor,
+                target_deliverable_ids=normalized_target_ids,
             )
             result["human_review_finding_id"] = normalized_finding_id
             result["correction_task_id"] = correction_task.id
 
         return self._run_idempotent_human_command(
-            operation="team.human_finding.create_correction_root",
+            operation="team.human_finding.route_correction",
             caller_user_id=normalized_actor,
             scope_kind="human_review_finding",
             scope_id=normalized_finding_id,
             request_id=request_id,
             normalized_payload={
                 "owner_agent_id": normalized_owner_id,
-                "title": normalized_title,
-                "description": normalized_description,
-                "task_id": normalized_task_id,
-                "originating_task_id": normalized_origin_id,
+                "target_deliverable_ids": normalized_target_ids,
                 "expected_state_revision": expected_state_revision,
             },
             apply_command=_apply,

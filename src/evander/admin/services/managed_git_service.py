@@ -149,6 +149,15 @@ def _normalize_branch(value: str, *, field_name: str) -> str:
     return branch
 
 
+def _normalize_commit_identity_value(value: str, *, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    if any(character in normalized for character in ("\0", "\r", "\n", "<", ">")):
+        raise ValueError(f"{field_name} contains characters Git does not permit in an identity")
+    return normalized
+
+
 def _safe_checkout_name(value: object, *, fallback: str) -> str:
     candidate = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
     candidate = candidate[:-4] if candidate.casefold().endswith(".git") else candidate
@@ -750,6 +759,62 @@ class ManagedGitAdminService:
         )
         return self._public_record(record)
 
+    def resolve_branch_commit(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+    ) -> str | None:
+        """Resolve a directory-authorized branch through the managed bare repository."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_branch = _normalize_branch(branch, field_name="branch")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            return self._resolve_ref(
+                bare_path,
+                f"refs/heads/{normalized_branch}",
+            )
+
+    def set_host_commit_identity(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        name: str,
+        email: str,
+    ) -> dict[str, Any]:
+        identity = {
+            "name": _normalize_commit_identity_value(
+                name,
+                field_name="name",
+            ),
+            "email": _normalize_commit_identity_value(
+                email,
+                field_name="email",
+            ),
+        }
+        self._require_scoped_record(managed_repo_id, directory_path)
+        with self._repo_lock(managed_repo_id, exclusive=True):
+            self._require_scoped_record(managed_repo_id, directory_path)
+            now = _utc_now()
+
+            def update(payload: dict[str, Any]) -> dict[str, Any]:
+                current = payload["repositories"].get(managed_repo_id)
+                if not isinstance(current, dict):
+                    raise ManagedGitNotFoundError(
+                        f"Unknown managed repository: {managed_repo_id}"
+                    )
+                current["host_commit_identity"] = dict(identity)
+                current["updated_at"] = now
+                return dict(current)
+
+            updated = self._update_registry(update)
+        return self._public_record(updated)
+
     def refresh_repository(self, managed_repo_id: str) -> dict[str, Any]:
         return self._refresh_repository_with_override(managed_repo_id, None)
 
@@ -916,8 +981,9 @@ class ManagedGitAdminService:
         *,
         source_ref: str | None = None,
         commit_sha: str | None = None,
+        tree_hash: str | None = None,
     ) -> dict[str, Any]:
-        """Resolve and verify the immutable commit used by a read-only consumer."""
+        """Resolve and verify an immutable commit/tree used by a consumer."""
 
         directory = self._normalize_directory_path(directory_path)
         record = self._require_scoped_record(managed_repo_id, directory)
@@ -934,6 +1000,11 @@ class ManagedGitAdminService:
             _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
         )
         expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
+        expected_tree = (
+            _normalize_object_id(tree_hash, field_name="tree_hash")
+            if tree_hash
+            else None
+        )
         with self._repo_lock(managed_repo_id, exclusive=False):
             resolved = self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
             if resolved is None:
@@ -951,12 +1022,217 @@ class ManagedGitAdminService:
                     },
                 )
             self._require_commit(bare_path, resolved)
-        return {
+            resolved_tree = self._git_output(
+                [
+                    "git",
+                    "--git-dir",
+                    str(bare_path),
+                    "rev-parse",
+                    f"{resolved}^{{tree}}",
+                ]
+            ).strip().lower()
+            if expected_tree is not None and resolved_tree != expected_tree:
+                raise ManagedGitConflictError(
+                    f"Source commit {resolved} has tree {resolved_tree}, "
+                    f"not the pinned tree {expected_tree}",
+                    details={
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_ref,
+                        "commit_sha": resolved,
+                        "expected_tree_hash": expected_tree,
+                        "current_tree_hash": resolved_tree,
+                    },
+                )
+        result = {
             "managed_repo_id": managed_repo_id,
             "directory_path": directory,
             "source_ref": normalized_ref,
             "commit_sha": resolved,
         }
+        if expected_tree is not None:
+            result["tree_hash"] = resolved_tree
+        return result
+
+    def materialize_candidate_checkout(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str,
+        commit_sha: str,
+        tree_hash: str,
+        target_dir: str | Path,
+        purpose: str = "operator-release-review",
+    ) -> dict[str, Any]:
+        """Create a fresh detached checkout without exposing managed repository paths."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        normalized_ref = _normalize_ref(source_ref, field_name="source_ref")
+        expected_commit = _normalize_object_id(commit_sha, field_name="commit_sha")
+        expected_tree = _normalize_object_id(tree_hash, field_name="tree_hash")
+        target = Path(target_dir).expanduser().resolve(strict=False)
+        if target == Path(target.anchor) or target.is_relative_to(self.runtime_dir):
+            raise ValueError(
+                "target_dir must be a new operator-owned path outside the Evander runtime directory"
+            )
+        if target.exists() or target.is_symlink():
+            raise ManagedGitConflictError(
+                "target_dir already exists; candidate checkout never overwrites an existing path"
+            )
+        parent = target.parent
+        if not parent.exists() or not parent.is_dir():
+            raise ValueError("target_dir parent must already exist and be a directory")
+
+        try:
+            target.mkdir(mode=0o700)
+        except FileExistsError:
+            raise ManagedGitConflictError(
+                "target_dir already exists; candidate checkout never overwrites an existing path"
+            ) from None
+
+        try:
+            with self.temporary_worktree(
+                managed_repo_id,
+                source_ref=normalized_ref,
+                commit_sha=expected_commit,
+                purpose=purpose,
+            ) as source_worktree:
+                safe_env = self._safe_worktree_environment()
+                actual_tree = self._git_output(
+                    [
+                        "git",
+                        "-C",
+                        str(source_worktree),
+                        "rev-parse",
+                        f"{expected_commit}^{{tree}}",
+                    ]
+                ).strip().lower()
+                if actual_tree != expected_tree:
+                    raise ManagedGitConflictError(
+                        f"Candidate tree is {actual_tree}, not the pinned tree {expected_tree}"
+                    )
+                self._run_git(
+                    ["git", "init", "--quiet", str(target)],
+                    env=safe_env,
+                )
+                self._run_git(
+                    [
+                        "git",
+                        "-C",
+                        str(target),
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--no-write-fetch-head",
+                        "--no-recurse-submodules",
+                        str(source_worktree),
+                        "HEAD",
+                    ],
+                    env=safe_env,
+                )
+                self._run_git(
+                    [
+                        "git",
+                        "-C",
+                        str(target),
+                        "checkout",
+                        "--quiet",
+                        "--detach",
+                        expected_commit,
+                        "--",
+                    ],
+                    env=safe_env,
+                )
+                canonical_url = str(record.get("canonical_repository_url") or "").strip()
+                if canonical_url:
+                    self._run_git(
+                        [
+                            "git",
+                            "-C",
+                            str(target),
+                            "remote",
+                            "add",
+                            "origin",
+                            canonical_url,
+                        ],
+                        env=safe_env,
+                    )
+                checked_out_commit = self._git_output(
+                    ["git", "-C", str(target), "rev-parse", "HEAD"]
+                ).strip().lower()
+                checked_out_tree = self._git_output(
+                    ["git", "-C", str(target), "rev-parse", "HEAD^{tree}"]
+                ).strip().lower()
+                if checked_out_commit != expected_commit or checked_out_tree != expected_tree:
+                    raise ManagedGitConflictError(
+                        "Materialized checkout does not match the pinned candidate"
+                    )
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "canonical_repository_identity": record.get("canonical_repository_identity"),
+            "source_ref": normalized_ref,
+            "commit_sha": expected_commit,
+            "tree_hash": expected_tree,
+            "target_dir": str(target),
+            "detached": True,
+        }
+
+    def export_pinned_source_archive(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str,
+        commit_sha: str,
+        tree_hash: str,
+        archive_path: str | Path,
+    ) -> dict[str, Any]:
+        """Write a source-only ZIP for one verified immutable Git snapshot.
+
+        The caller owns the destination and is responsible for cleaning it up.
+        Resolving the ref before archiving deliberately fails closed if a mutable
+        release ref no longer denotes the recorded candidate.
+        """
+
+        snapshot = self.resolve_snapshot(
+            managed_repo_id,
+            directory_path,
+            source_ref=source_ref,
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+        )
+        record = self._require_scoped_record(
+            managed_repo_id,
+            snapshot["directory_path"],
+        )
+        target = Path(archive_path)
+        if target.is_symlink():
+            raise ValueError("archive_path must not be a symlink")
+        if not target.parent.is_dir():
+            raise ValueError("archive_path parent must be an existing directory")
+
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            self._run_git(
+                [
+                    "git",
+                    "--git-dir",
+                    str(self._bare_path(record)),
+                    "archive",
+                    "--format=zip",
+                    f"--output={target}",
+                    str(snapshot["commit_sha"]),
+                ],
+                env=self._safe_worktree_environment(),
+            )
+        if not target.is_file():
+            raise RuntimeError("Git did not create the requested source archive")
+        return snapshot
 
     def pin_snapshot(
         self,
@@ -2318,6 +2594,7 @@ class ManagedGitAdminService:
         directory_path: str,
         base_branch: str | None = None,
         base_commit_sha: str | None = None,
+        required_source_ancestor_commit_sha: str | None = None,
         expected_source_commits: Mapping[str, str] | None = None,
         allowed_changed_paths: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -2352,6 +2629,14 @@ class ManagedGitAdminService:
                 field_name="base_commit_sha",
             )
             if base_commit_sha
+            else None
+        )
+        normalized_required_source_ancestor = (
+            _normalize_object_id(
+                required_source_ancestor_commit_sha,
+                field_name="required_source_ancestor_commit_sha",
+            )
+            if required_source_ancestor_commit_sha
             else None
         )
         allowed_paths = (
@@ -2424,6 +2709,42 @@ class ManagedGitAdminService:
                 }
             for commit in expected.values():
                 self._require_commit(bare_path, commit)
+            if normalized_required_source_ancestor is not None:
+                self._require_commit(bare_path, normalized_required_source_ancestor)
+                non_descendant_sources = [
+                    branch
+                    for branch in normalized_sources
+                    if not self._is_ancestor(
+                        bare_path,
+                        normalized_required_source_ancestor,
+                        expected[branch],
+                    )
+                ]
+                if non_descendant_sources:
+                    return {
+                        "success": False,
+                        "managed_repo_id": managed_repo_id,
+                        "target_branch": target,
+                        "merged_branches": [],
+                        "commit_sha": None,
+                        "conflict_branch": None,
+                        "output": None,
+                        "error": (
+                            "One or more correction sources do not descend from "
+                            "the required rejected candidate"
+                        ),
+                        "error_code": "scope_mismatch",
+                        "unexpected_commit_shas": sorted(
+                            expected[branch] for branch in non_descendant_sources
+                        ),
+                        "non_descendant_source_branches": non_descendant_sources,
+                        "required_source_ancestor_commit_sha": (
+                            normalized_required_source_ancestor
+                        ),
+                        "base_commit_sha": base_commit,
+                        "source_manifests": {},
+                        "tree_hash": None,
+                    }
 
             base_operation_ref = f"{operation_root}/base"
             pin_commands = []
@@ -6371,12 +6692,22 @@ class ManagedGitAdminService:
             env["EVANDER_GIT_USERNAME"] = username
         if password:
             env["EVANDER_GIT_PASSWORD"] = password
+        git_config = {
+            "credential.helper": "",
+            "core.askPass": str(self.project_dir / "scripts" / "managed_git_askpass.sh"),
+        }
+        refresh_source = str(record.get("refresh_source") or "").strip()
+        canonical_url = str(record.get("canonical_repository_url") or "").strip()
+        if (
+            str(record.get("provider") or "").casefold() == "azure_devops"
+            and password
+            and urlsplit(refresh_source).scheme.casefold() == "ssh"
+            and urlsplit(canonical_url).scheme.casefold() == "https"
+        ):
+            git_config[f"url.{canonical_url}.insteadOf"] = refresh_source
         return self._with_git_config_environment(
             env,
-            {
-                "credential.helper": "",
-                "core.askPass": str(self.project_dir / "scripts" / "managed_git_askpass.sh"),
-            },
+            git_config,
         )
 
     def _resolved_config_for_record(self, record: Mapping[str, Any]) -> Any:
@@ -6400,12 +6731,19 @@ class ManagedGitAdminService:
             password = os.environ.get(token_env) or os.environ.get("GH_TOKEN")
             username = "x-access-token"
         elif provider == "azure_devops":
-            token_env = str(
-                getattr(resolved_config, "azure_devops_pr_pat_env", "")
-                or getattr(resolved_config, "azure_devops_pat_env", "")
-                or "AZURE_DEVOPS_PR_PAT"
-            )
-            password = os.environ.get(token_env)
+            token_envs = [
+                str(getattr(resolved_config, field_name, "") or "").strip()
+                for field_name in (
+                    "azure_devops_pr_pat_env",
+                    "azure_devops_pat_env",
+                )
+            ]
+            if not any(token_envs):
+                token_envs.append("AZURE_DEVOPS_PR_PAT")
+            for token_env in token_envs:
+                if token_env and (token := os.environ.get(token_env)):
+                    password = token
+                    break
             username = "evander"
         return username, password
 

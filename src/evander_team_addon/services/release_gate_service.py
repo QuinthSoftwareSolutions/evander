@@ -12,6 +12,7 @@ from .domain.human_reviews import (
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
+from .domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 
 
 class TeamReleaseGateService:
@@ -76,11 +77,14 @@ class TeamReleaseGateService:
                 [
                     event
                     for event in result["events"]
-                    if event.get("event_type")
-                    in {
-                        HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
-                        HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
-                    }
+                    if (
+                        event.get("event_type")
+                        in {
+                            AGENT_WAKE_REQUESTED_EVENT_TYPE,
+                            HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
+                            HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                        }
+                    )
                 ]
             ),
         )

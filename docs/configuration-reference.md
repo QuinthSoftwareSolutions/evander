@@ -29,6 +29,22 @@ use a 120-second request timeout and fail rather than serving cached refs when r
 complete. Simultaneous reads for one managed repository share a single upstream refresh. Socket
 clients are authorized from their host peer UID against every effective directory-scoped
 `issue_setup.git_user`; upstream Git credentials remain in the broker's host service environment.
+For Azure DevOps, the directory-scoped `azure_devops_pr_pat_env` defaults to
+`AZURE_DEVOPS_PR_PAT` and `azure_devops_pat_env` defaults to `AZURE_DEVOPS_PAT`.
+Managed Git tries the first populated PR PAT variable and then the populated
+general PAT variable. When a PAT is selected for an Azure DevOps SSH refresh
+source, only the Git child process receives an in-memory
+`url.<canonical-https-url>.insteadOf=<ssh-source>` override; no registry entry,
+repository identity, or persistent Git configuration is changed.
+
+Broker errors contain a sanitized message, stable `error_code`, and exception
+category. Supported codes are `broker_busy`,
+`upstream_host_key_verification_failed`, `upstream_host_resolution_failed`,
+`upstream_authentication_failed`, `upstream_connection_failed`,
+`upstream_tls_verification_failed`, `local_ref_update_failed`,
+`upstream_ref_policy_rejected`, and the fallback
+`upstream_refresh_failed`. Raw Git output is not returned to the restricted SSH
+client.
 
 ## `config/gateway.env.example`
 
@@ -193,6 +209,52 @@ team runtime loop is still opt-in; write the current-schema payload from
 `evander_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
+
+The `effect:team:wake-due-agents` node also reconciles durable task-worktree
+cleanup candidates when global maintenance is enabled. Its maintenance fields
+are:
+
+| Field | Default | Meaning |
+|---|---:|---|
+| `run_global_maintenance` | `true` | Run global correction, human-review assignment, and worktree-cleanup reconciliation before leasing. The bundled immediate Chat and requested-agent nodes set this to `false`; the scheduled node leaves it enabled. |
+| `worktree_cleanup_limit` | `10` | Maximum candidates reconciled in one wake cycle. |
+| `worktree_cleanup_grace_seconds` | `300` | Delay after a checkout becomes cleanup-eligible before its first safety pass. |
+| `worktree_cleanup_retry_seconds` | `300` | Delay before a dry-run-safe, deferred, or recovery-required candidate becomes eligible again. |
+| `worktree_cleanup_recovery_seconds` | `900` | Age after which an interrupted processing claim can be recovered. |
+| `worktree_cleanup_dry_run` | omitted | `true` is audit-only; `false` permits an immediate physical attempt on the first eligible pass; omitted stages a dry run and attempts removal on a later eligible pass after the retry interval. |
+
+Omission is intentionally different from explicitly setting `true`. All three
+modes retain the same state, reference, repository, branch, commit, and
+dirty-file safety checks.
+
+### Communication-to-Team Chat bridge
+
+Use `effect:team:enqueue-operator-chat-message` after a
+`trigger:communication:new-message` to deliver an external human message through
+the normal persistent Team Chat lifecycle. Configure either a fixed
+`conversation_id` or an `agent_id`, plus a fixed `operator_user_id`; do not bind
+any of those values from message content. The configured communication target
+must allow `read` and its provider must match the trigger payload.
+
+The provider/source-target/message-ID tuple is durable ingress idempotency.
+Set `allow_team_mutations=false` unless the workflow also contains a fixed
+`authorized_author_ids` allowlist and the incoming authenticated
+`source_author_id` matches it. For a Discord channel, also set the trigger's
+`author_ids` filter and exclude the Evander bot; the effect-side allowlist stays
+the authority check.
+
+The bundled Team runtime pack consumes
+`team.chat.external_reply_requested` after `team_reply_to_chat`, sends the
+persisted reply through `effect:communication:send-message`, and records the
+delivery result. The Team reply remains visible even if external send fails.
+The event keeps the original Team text in `team_chat_body`, carries
+`attachment_ids` plus sanitized attachment metadata, and renders filename,
+MIME type, and byte-count references into the external `body`. That textual
+reference keeps attachment-only replies deliverable; it is not a
+provider-native file upload, and the generic communication effect does not
+upload Team attachment bytes.
+Discord sends are top-level channel posts; do not configure a thread ID for a
+Discord target.
 
 For the bundled Skatteverket Add-on, enabling `skatteverket-addon` exposes the
 Skatteverket Admin Web tab and MCP tools, and makes `query:skatteverket:*` and
@@ -368,6 +430,7 @@ provider loader:
 | Event name | Meaning |
 |---|---|
 | `team.chat.message_queued` | Operator chat message queued for a Team agent |
+| `team.chat.external_reply_requested` | Persisted Team reply for an externally originated chat message is ready for delivery |
 | `team.agent.wake_requested` | Explicit Team agent wake requested |
 | `team.ephemeral.requested` | Persistent Team agent requested ephemeral execution work |
 | `team.ephemeral.completed` | Ephemeral Team assignment completed |
@@ -676,6 +739,39 @@ that should use only the worker's shared read-only Git key.
 runtime deep-merges that patch into the created session manifest after built-in
 create metadata such as labels, model, execution backend, and worker URL are
 assembled.
+
+For a `container_worker_vm` session, the optional
+`metadata.container_worker_resource_limits` object controls the Docker limits
+sent with each newly dispatched job for that session. It accepts only
+`memory` (a non-empty Docker-compatible memory string), `cpus` (a positive
+number), and `pids_limit` (a positive integer):
+
+```json
+{
+  "container_worker_resource_limits": {
+    "memory": "8g",
+    "cpus": 8,
+    "pids_limit": 8192
+  }
+}
+```
+
+Operators can edit the same value in Admin Web under **Sessions**: unlock
+privileged operations, select the session, add or update
+`container_worker_resource_limits` in **Metadata**, enter the nested object as
+a JSON snippet, and save. The change affects later jobs; it does not resize a
+container that is already running.
+
+For an ordinary session, a non-empty `container_worker_resource_limits` object
+is the complete per-job override. Include `pids_limit` explicitly when setting
+another field for a Playwright session: without an explicit object, Playwright
+sessions receive `pids_limit: 1024`, while other sessions inherit the strict
+worker default of `512`; an object containing only `cpus` does not retain the
+Playwright-specific `1024` value. Team release-verification sessions are
+different: their `8` CPU and `2048` PID defaults are merged with explicit
+session fields. The Team project's `release_policy.resource_limits` editor is
+the normal project-wide control for those disposable verifiers and is separate
+from an ordinary persistent agent's session metadata.
 
 `effect:agent:create.codex_auth_mode` accepts `metered_api` or
 `chatgpt_subscription` for container-worker sessions. Omitting it on an
@@ -1304,7 +1400,8 @@ Configuration stores environment-variable names, never secret values:
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `github_token_env` | directory provider config | Managed Git refresh/publication; defaults to `GITHUB_TOKEN`, with `GH_TOKEN` accepted by the host integration. |
-| `azure_devops_pr_pat_env` / `azure_devops_pat_env` | directory provider config | Managed Git Azure DevOps refresh/publication; defaults to `AZURE_DEVOPS_PR_PAT`. |
+| `azure_devops_pr_pat_env` | directory provider config | Preferred Azure DevOps PAT environment-variable name for PR operations and Managed Git refresh/publication; defaults to `AZURE_DEVOPS_PR_PAT`. Managed Git uses it only when the named variable is populated. |
+| `azure_devops_pat_env` | directory provider config | General Azure DevOps PAT environment-variable name; defaults to `AZURE_DEVOPS_PAT`. Managed Git uses it as the fallback when the preferred PR PAT variable is unpopulated. |
 | `managed_git_commit_name` | directory provider config | Host-authored merge/consolidation commits; falls back to the configured Git committer identity and then the control-plane default. |
 | `managed_git_commit_email` | directory provider config | Host-authored merge/consolidation commits; follows the same fallback order. |
 | `managed_git_operation_timeout_seconds` | effective host/directory config | Per-process timeout for managed Git fetch, push, worktree, checkout, and merge commands; defaults to five minutes. |

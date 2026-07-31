@@ -10,18 +10,24 @@ from ..repository import (
     TeamStateRepository,
 )
 from ..models import (
+    AgentContextClearingPolicy,
     AgentRuntime,
     AgentStatus,
+    ExternalChatDeliveryRecord,
+    ExternalChatIngressRecord,
     PersistentAgent,
     TeamDispatch,
     TeamDispatchStatus,
     TeamConversation,
     TeamConversationMessage,
     TeamChatAttachment,
+    TeamOutboxRecord,
     TeamState,
     agent_has_project_assignment,
 )
+from .domain.agent_access import _visible_project_ids_for_agent
 from .domain.chat import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     _chat_preview,
     _touch_conversation,
 )
@@ -33,6 +39,7 @@ from .domain.common import (
     _require_present,
     _required_text,
 )
+from .domain.context_rotation import _mark_context_rotation_pending
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
@@ -67,6 +74,65 @@ def _require_agent_chat_dispatch_eligibility(
 
 def _attachment_preview(count: int) -> str:
     return f"Sent {count} attachment{'s' if count != 1 else ''}"
+
+
+def _operator_chat_dispatch_scope(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    message: TeamConversationMessage,
+) -> dict[str, list[str]]:
+    mutation_allowed = True
+    for key in (
+        "allow_team_mutations",
+        "allow_team_mutation",
+        "mutation_allowed",
+        "team_mutation_allowed",
+    ):
+        if key in message.metadata:
+            mutation_allowed = bool(message.metadata[key])
+            break
+    if not mutation_allowed:
+        return {"project_ids": [], "managed_repo_ids": []}
+    project_ids = sorted(
+        project_id
+        for project_id in _visible_project_ids_for_agent(state, agent)
+        if project_id in state.projects
+    )
+    managed_repo_ids = sorted(
+        {
+            project.git.managed_repo_id
+            for project_id in project_ids
+            if (project := state.projects.get(project_id)) is not None
+            and project.git is not None
+        }
+    )
+    return {
+        "project_ids": project_ids,
+        "managed_repo_ids": managed_repo_ids,
+    }
+
+
+def _prepare_chat_context_rotation(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+    now: datetime,
+) -> None:
+    if (
+        runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+        and not runtime.context_rotation_pending
+    ):
+        _mark_context_rotation_pending(
+            state,
+            agent=agent,
+            runtime=runtime,
+            reason="every_wake",
+            requested_by=None,
+            requested_at=now,
+            request_note=None,
+        )
 
 
 class TeamChatService:
@@ -149,6 +215,267 @@ class TeamChatService:
         if conversation_id is None:  # pragma: no cover - defensive guard
             raise RuntimeError("conversation was not resolved")
         return state, state.conversations[conversation_id], created
+
+    def enqueue_external_operator_chat_message(
+        self,
+        *,
+        conversation_id: str | None,
+        agent_id: str | None,
+        operator_user_id: str,
+        operator_display_name: str | None,
+        body: str,
+        provider: str,
+        communication_target_id: str,
+        source_message_id: str,
+        source_thread_id: str | None,
+        source_author_id: str,
+        source_author_name: str | None,
+        allow_team_mutations: bool = False,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Atomically persist and queue one externally-originated Team Chat message."""
+
+        normalized_conversation_id = _optional_text(conversation_id)
+        normalized_agent_id = _optional_text(agent_id)
+        if (normalized_conversation_id is None) == (normalized_agent_id is None):
+            raise ValueError("exactly one of conversation_id and agent_id is required")
+        normalized_operator_user_id = _normalize_operator_user_id(operator_user_id)
+        normalized_body = _required_text(body, "body")
+        normalized_provider = _required_text(provider, "provider").lower()
+        normalized_target_id = _required_text(
+            communication_target_id,
+            "communication_target_id",
+        ).lower()
+        normalized_source_message_id = _required_text(source_message_id, "source_message_id")
+        normalized_source_author_id = _required_text(source_author_id, "source_author_id")
+        normalized_operator_display_name = _optional_text(operator_display_name)
+        normalized_source_thread_id = (
+            None if normalized_provider == "discord" else _optional_text(source_thread_id)
+        )
+        normalized_source_author_name = _optional_text(source_author_name)
+
+        def _existing_result(state: TeamState) -> dict[str, Any] | None:
+            for record in state.external_chat_ingress.values():
+                if (
+                    record.provider == normalized_provider
+                    and record.communication_target_id == normalized_target_id
+                    and record.source_message_id == normalized_source_message_id
+                ):
+                    return {
+                        "success": True,
+                        "queued": True,
+                        "conversation_id": record.conversation_id,
+                        "message_id": record.message_id,
+                        "dispatch_id": record.dispatch_id,
+                        "duplicate": True,
+                    }
+            return None
+
+        existing = _existing_result(self._repository.read())
+        if existing is not None:
+            return self._repository.read(), existing
+
+        result: dict[str, Any] = {}
+        outbox_records: list[TeamOutboxRecord] = []
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal result, outbox_records
+            existing_inside = _existing_result(state)
+            if existing_inside is not None:
+                result = existing_inside
+                return state
+            now = utc_now()
+            resolved_conversation_id = normalized_conversation_id
+            if resolved_conversation_id is None:
+                agent = _require_present(state.agents, normalized_agent_id, "agent")
+                _require_agent_chat_dispatch_eligibility(state, agent)
+                for candidate in state.conversations.values():
+                    if (
+                        candidate.agent_id == agent.id
+                        and candidate.operator_user_id == normalized_operator_user_id
+                    ):
+                        resolved_conversation_id = candidate.id
+                        break
+                if resolved_conversation_id is None:
+                    resolved_conversation_id = _generated_id(
+                        prefix="conversation",
+                        labels=[agent.id, normalized_operator_user_id],
+                        existing_ids=state.conversations,
+                    )
+                    state.conversations[resolved_conversation_id] = TeamConversation(
+                        id=resolved_conversation_id,
+                        agent_id=agent.id,
+                        operator_user_id=normalized_operator_user_id,
+                        operator_display_name=normalized_operator_display_name,
+                        created_by="external-chat-bridge",
+                        last_message_preview="",
+                        created_at=now,
+                        updated_at=now,
+                        last_interaction_at=now,
+                    )
+            conversation = _require_present(
+                state.conversations,
+                resolved_conversation_id,
+                "conversation",
+            )
+            if conversation.operator_user_id != normalized_operator_user_id:
+                raise ValueError(
+                    f"conversation {conversation.id} does not belong to configured operator "
+                    f"{normalized_operator_user_id}"
+                )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            _require_agent_chat_dispatch_eligibility(state, agent)
+            message_id = f"chatmsg-{uuid4().hex}"
+            dispatch_id = f"team-chat:{message_id}"
+            origin = {
+                "provider": normalized_provider,
+                "communication_target_id": normalized_target_id,
+                "source_message_id": normalized_source_message_id,
+                "source_thread_id": normalized_source_thread_id,
+                "source_author_id": normalized_source_author_id,
+                "source_author_name": normalized_source_author_name,
+            }
+            metadata: dict[str, Any] = {
+                "sender_kind": "human_operator",
+                "operator_user_id": conversation.operator_user_id,
+                "operator_display_name": conversation.operator_display_name,
+                "created_by": "external-chat-bridge",
+                "external_origin": origin,
+                "queued_at": now.isoformat(),
+                "queued_reason": "queued by external communication bridge",
+            }
+            if not allow_team_mutations:
+                metadata["allow_team_mutations"] = False
+            state.conversation_messages[message_id] = TeamConversationMessage(
+                id=message_id,
+                conversation_id=conversation.id,
+                sender="operator",
+                message_type="text",
+                body=normalized_body,
+                status="queued",
+                dispatch_id=dispatch_id,
+                metadata=metadata,
+                created_at=now,
+                updated_at=now,
+            )
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=f"Queued: {_chat_preview(normalized_body)}",
+            )
+            ingress_id = f"external-chat-ingress-{uuid4().hex}"
+            state.external_chat_ingress[ingress_id] = ExternalChatIngressRecord(
+                id=ingress_id,
+                provider=normalized_provider,
+                communication_target_id=normalized_target_id,
+                source_message_id=normalized_source_message_id,
+                source_thread_id=normalized_source_thread_id,
+                source_author_id=normalized_source_author_id,
+                source_author_name=normalized_source_author_name,
+                operator_user_id=normalized_operator_user_id,
+                conversation_id=conversation.id,
+                message_id=message_id,
+                dispatch_id=dispatch_id,
+                allow_team_mutations=allow_team_mutations,
+                created_at=now,
+                updated_at=now,
+            )
+            outbox_records = [
+                TeamOutboxRecord(
+                    id=f"outbox-{uuid4().hex}",
+                    intent_type=CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+                    aggregate_type="team_chat_message",
+                    aggregate_id=message_id,
+                    idempotency_key=(
+                        f"team-addon:{CHAT_MESSAGE_QUEUED_EVENT_TYPE}:"
+                        f"{normalized_provider}:{normalized_target_id}:{normalized_source_message_id}"
+                    ),
+                    payload={
+                        "event_type": CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+                        "correlation_key": dispatch_id,
+                        "payload": {
+                            "team_id": agent.team_id,
+                            "agent_id": agent.id,
+                            "session_id": agent.session_id,
+                            "conversation_id": conversation.id,
+                            "message_id": message_id,
+                            "dispatch_id": dispatch_id,
+                        },
+                    },
+                    created_at=now,
+                    updated_at=now,
+                )
+            ]
+            result = {
+                "success": True,
+                "queued": True,
+                "conversation_id": conversation.id,
+                "message_id": message_id,
+                "dispatch_id": dispatch_id,
+                "duplicate": False,
+            }
+            return state
+
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: outbox_records,
+        )
+        if not result:  # pragma: no cover - defensive guard
+            raise RuntimeError("external chat message was not resolved")
+        return state, result
+
+    def record_external_chat_delivery(
+        self,
+        *,
+        delivery_id: str,
+        success: bool,
+        provider_message_id: str | None = None,
+        error: str | None = None,
+    ) -> tuple[TeamState, ExternalChatDeliveryRecord]:
+        normalized_delivery_id = _required_text(delivery_id, "delivery_id")
+        normalized_provider_message_id = _optional_text(provider_message_id)
+        normalized_error = _optional_text(error)
+        resolved_delivery_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_delivery_id
+            record = _require_present(
+                state.external_chat_deliveries,
+                normalized_delivery_id,
+                "external chat delivery",
+            )
+            if record.status == "sent":
+                resolved_delivery_id = record.id
+                return state
+            now = utc_now()
+            record.status = "sent" if success else "failed"
+            record.provider_message_id = normalized_provider_message_id
+            record.last_error = None if success else (normalized_error or "external send failed")
+            record.attempt_count += 1
+            record.attempted_at = now
+            record.delivered_at = now if success else None
+            record.updated_at = now
+            reply = state.conversation_messages.get(record.agent_reply_message_id)
+            if reply is not None:
+                metadata = dict(reply.metadata)
+                metadata["external_delivery"] = {
+                    "delivery_id": record.id,
+                    "provider": record.provider,
+                    "communication_target_id": record.communication_target_id,
+                    "state": record.status,
+                    "provider_message_id": record.provider_message_id,
+                    "attempt_count": record.attempt_count,
+                    "last_error": record.last_error,
+                    "updated_at": now.isoformat(),
+                }
+                reply.metadata = metadata
+                reply.updated_at = now
+            resolved_delivery_id = record.id
+            return state
+
+        state = self._repository.update(_mutate)
+        if resolved_delivery_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("external chat delivery was not recorded")
+        return state, state.external_chat_deliveries[resolved_delivery_id]
 
     def record_operator_chat_message(
         self,
@@ -265,17 +592,29 @@ class TeamChatService:
                     f"{runtime.active_dispatch_id}"
                 )
             now = utc_now()
+            _prepare_chat_context_rotation(
+                state,
+                agent=agent,
+                runtime=runtime,
+                now=now,
+            )
             lease_expires_at = now + timedelta(
                 seconds=max(1, int(lease_seconds))
             )
             existing_dispatch = state.dispatches.get(normalized_dispatch_id)
             if existing_dispatch is None:
+                chat_scope = _operator_chat_dispatch_scope(
+                    state,
+                    agent=agent,
+                    message=message,
+                )
                 state.dispatches[normalized_dispatch_id] = TeamDispatch(
                     id=normalized_dispatch_id,
                     agent_id=agent.id,
                     session_id=agent.session_id,
                     cause_kind="team_chat",
                     cause_id=message.id,
+                    **chat_scope,
                     status=TeamDispatchStatus.LEASED,
                     created_at=now,
                     prepared_at=now,
@@ -426,18 +765,30 @@ class TeamChatService:
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
                     continue
+                _prepare_chat_context_rotation(
+                    state,
+                    agent=agent,
+                    runtime=runtime,
+                    now=effective_now,
+                )
                 dispatch_id = message.dispatch_id or f"team-chat:{message.id}"
                 lease_expires_at = effective_now + timedelta(
                     seconds=max(1, int(lease_seconds))
                 )
                 existing_dispatch = state.dispatches.get(dispatch_id)
                 if existing_dispatch is None:
+                    chat_scope = _operator_chat_dispatch_scope(
+                        state,
+                        agent=agent,
+                        message=message,
+                    )
                     state.dispatches[dispatch_id] = TeamDispatch(
                         id=dispatch_id,
                         agent_id=agent.id,
                         session_id=agent.session_id,
                         cause_kind="team_chat",
                         cause_id=message.id,
+                        **chat_scope,
                         status=TeamDispatchStatus.LEASED,
                         created_at=effective_now,
                         prepared_at=effective_now,
@@ -536,6 +887,25 @@ class TeamChatService:
         if resolved_message_id is None:  # pragma: no cover - defensive guard
             raise RuntimeError("conversation message dispatch failure was not recorded")
         return state, state.conversation_messages[resolved_message_id]
+
+    def mark_chat_message_ordinary_context_seeded(
+        self,
+        *,
+        message_id: str,
+    ) -> TeamState:
+        normalized_message_id = _required_text(message_id, "message_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            message.metadata["ordinary_context_seeded"] = True
+            message.updated_at = utc_now()
+            return state
+
+        return self._repository.update(_mutate)
 
     def record_conversation_voice_call(
         self,

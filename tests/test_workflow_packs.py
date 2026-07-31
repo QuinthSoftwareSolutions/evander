@@ -467,6 +467,79 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     assert ephemeral_create["type"] == "effect:agent:create"
     assert ephemeral_create["config"]["allowed_tools"] == ["team_report_ephemeral_result"]
     assert ("team-cron", "team-publish-outbox-events") in edges
+    correction_gate = nodes["team-git-promotion-correction-aggregate"]
+    assert correction_gate["config"]["when"]["all"][0]["equals"] == (
+        "correction_aggregate"
+    )
+    assert (
+        "team-git-promotion-requested",
+        "team-git-promotion-correction-aggregate",
+    ) in edges
+    assert (
+        "team-git-promotion-correction-aggregate",
+        "team-consolidate-correction-branches",
+    ) in edges
+    assert (
+        "team-consolidate-correction-branches",
+        "team-record-correction-aggregate-promotion",
+    ) in edges
+    team_graph = next(
+        graph for graph in pack.graphs if graph.id == "team-runtime"
+    )
+    assert "team-git-promotion-correction-aggregate" in team_graph.node_ids
+    assert "team-consolidate-correction-branches" in team_graph.node_ids
+    assert (
+        "team-record-correction-aggregate-promotion"
+        in team_graph.node_ids
+    )
+    assert nodes["team-consolidate-correction-branches"]["config"][
+        "required_source_ancestor_commit_sha"
+    ] == (
+        "${{team-git-promotion-requested.payload."
+        "required_source_ancestor_commit_sha ?? null}}"
+    )
+    recovery_config = nodes["team-promote-release-recovery-branch"]["config"]
+    assert recovery_config["base_commit_sha"] == (
+        "${{team-git-release-recovery-requested.payload.base_commit_sha ?? null}}"
+    )
+    assert recovery_config["required_source_ancestor_commit_sha"] == (
+        "${{team-git-release-recovery-requested.payload."
+        "required_source_ancestor_commit_sha ?? null}}"
+    )
+
+
+def test_checked_in_team_runtime_pack_preserves_git_promotion_evidence() -> None:
+    project_dir = Path(__file__).resolve().parents[1]
+    pack = json.loads(
+        (
+            project_dir
+            / "config"
+            / "workflow-packs"
+            / "team-runtime.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    nodes = {
+        node["id"]: node
+        for item in pack["ir"]["nodes"]
+        for node in [item.get("node", item)]
+    }
+    required_result_outputs = {
+        "base_commit_sha",
+        "source_manifests",
+        "tree_hash",
+        "unexpected_commit_shas",
+        "unexpected_paths",
+    }
+
+    for node_id in (
+        "team-record-feature-promotion",
+        "team-record-correction-aggregate-promotion",
+        "team-record-release-promotion",
+        "team-record-release-recovery-promotion",
+    ):
+        assert required_result_outputs.issubset(
+            nodes[node_id]["config"]["result_outputs"]
+        )
 
 
 def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:

@@ -243,6 +243,14 @@ class _FailingWithOutputsFactory:
         return _FailingWithOutputsProvider({})
 
 
+class _GenericErrorRoutingFactory:
+    def build(self, effect, **kwargs):
+        del kwargs
+        if effect.id == "effect-1":
+            return _FailingProvider({})
+        return _Provider({"success": True})
+
+
 class _PromptErrorRoutingFactory:
     def __init__(self, outputs_by_effect_id: dict[str, dict[str, object]]) -> None:
         self.outputs_by_effect_id = outputs_by_effect_id
@@ -3182,6 +3190,84 @@ def test_effect_orchestrator_records_provider_failure_outputs(tmp_path: Path) ->
         "status_code": 502,
         "body_text": "bad gateway",
     }
+
+
+def test_effect_orchestrator_routes_generic_provider_failure_to_error_branch(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Send",
+                    "type": "effect:communication:send-message",
+                    "communication_target_id": "ops-chat",
+                    "message": "hello",
+                },
+                {
+                    "id": "effect-error",
+                    "display_name": "Record failure",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-1",
+                    "metadata": {"handled": True},
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-error", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _GenericErrorRoutingFactory()
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-provider-error-route-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in execution_payload.values()}
+    failed_send = by_effect["effect-1"]
+    recorder = by_effect["effect-error"]
+
+    assert failed_send["status"] == "error_routed"
+    assert failed_send["completion_event_branch_port"] == "error"
+    assert failed_send["error"] == "provider boom"
+    assert failed_send["outputs"] == {
+        "success": False,
+        "error_message": "provider boom",
+        "error_class": "RuntimeError",
+    }
+    assert recorder["status"] == "succeeded"
 
 
 def test_effect_orchestrator_marks_completion_publish_failure_pending(
@@ -6135,7 +6221,12 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert backend.started_specs[0].session_id == "session-1"
     assert backend.started_specs[0].metadata["dispatch_id"] == "caller-dispatch-2"
     assert backend.started_specs[0].image == "runner:queue-image"
+    assert backend.started_specs[0].codex_turn is not None
+    assert str(backend.started_specs[0].codex_turn.mcp_gateway_url).startswith(
+        "http://192.168.250.1:8000/mcp?session_id=session-1"
+    )
     assert "check teams" in str(backend.started_specs[0].command)
+    assert "mcp_servers.evander.url" in str(backend.started_specs[0].command)
     assert "thread-existing" in str(backend.started_specs[0].command)
     waiting_records = list(execution_store.read_all().values())
     assert len(waiting_records) == 1

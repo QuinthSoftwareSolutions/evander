@@ -201,6 +201,16 @@ def _project_dir_for_config_option(config: Path) -> Path:
     return config.expanduser().resolve().parent
 
 
+def _build_managed_git_admin_for_cli(config: Path):
+    from evander.admin.services.managed_git_service import ManagedGitAdminService
+
+    return ManagedGitAdminService(
+        config=_load_runtime_config_from_option(config),
+        runtime=None,
+        project_dir=_project_dir_for_config_option(config),
+    )
+
+
 def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
     return load_runtime_gateway_config(
@@ -212,6 +222,74 @@ def _load_host_config_from_option(config: Path):
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
     return load_host_bootstrap_config(
         runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
+    )
+
+
+@team_app.command(
+    "checkout-release-candidate",
+    short_help="Materialize an exact Team release candidate for human testing.",
+)
+def team_checkout_release_candidate(
+    release_package_id: str,
+    target_dir: Annotated[
+        Path,
+        typer.Option(
+            "--target",
+            help="New local directory to create for the detached candidate checkout.",
+        ),
+    ],
+    expected_commit_sha: Annotated[
+        str,
+        typer.Option(
+            "--expected-commit-sha",
+            help="Pinned candidate SHA shown by Review & Delivery; rejects changed metadata.",
+        ),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    from evander_team_addon.repository import TeamStateRepository
+
+    runtime_dir, _legacy_config_path = _bootstrap_inputs(config)
+    state = TeamStateRepository(runtime_dir).read()
+    release = state.release_packages.get(str(release_package_id).strip())
+    if release is None:
+        raise typer.BadParameter(f"Unknown Team release package: {release_package_id}")
+    project = state.projects.get(release.project_id)
+    if project is None or project.git is None:
+        raise typer.BadParameter(
+            f"Release project {release.project_id} has no managed Git repository"
+        )
+    candidate_sha = str(release.candidate_commit_sha or "").strip().lower()
+    candidate_tree = str(release.candidate_tree_hash or "").strip().lower()
+    release_branch = str(release.release_branch or "").strip()
+    if not candidate_sha or not candidate_tree or not release_branch:
+        raise typer.BadParameter(
+            "Release does not have a complete pinned candidate SHA, tree, and release ref"
+        )
+    if str(expected_commit_sha or "").strip().lower() != candidate_sha:
+        raise typer.BadParameter(
+            "Expected candidate SHA does not match the pinned release candidate"
+        )
+    source_ref = (
+        release_branch if release_branch.startswith("refs/") else f"refs/heads/{release_branch}"
+    )
+    managed_git = _build_managed_git_admin_for_cli(config)
+    result = _managed_git_call(
+        managed_git.materialize_candidate_checkout,
+        project.git.managed_repo_id,
+        project.git.directory_path,
+        source_ref=source_ref,
+        commit_sha=candidate_sha,
+        tree_hash=candidate_tree,
+        target_dir=target_dir,
+        purpose=f"operator-release-review:{release.id}",
+    )
+    assert isinstance(result, dict)
+    _echo_managed_git_json(
+        {
+            **result,
+            "release_package_id": release.id,
+        }
     )
 
 
@@ -1946,6 +2024,46 @@ def git_repos_refresh(
 ) -> None:
     managed_git = build_admin_runtime(config).managed_git_admin
     result = _managed_git_call(managed_git.refresh_repository, managed_repo_id)
+    _echo_managed_git_json(result)
+
+
+@git_repos_app.command(
+    "set-host-identity",
+    short_help="Set the author and committer identity for host-created commits.",
+)
+def git_repos_set_host_identity(
+    managed_repo_id: str,
+    directory_path: Annotated[
+        str,
+        typer.Option(
+            "--directory-path",
+            help="Directory scope from which the managed repository is visible.",
+        ),
+    ],
+    name: Annotated[
+        str,
+        typer.Option(
+            "--name",
+            help="Git author and committer name for host-created commits.",
+        ),
+    ],
+    email: Annotated[
+        str,
+        typer.Option(
+            "--email",
+            help="Git author and committer email for host-created commits.",
+        ),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(
+        managed_git.set_host_commit_identity,
+        managed_repo_id,
+        directory_path=directory_path,
+        name=name,
+        email=email,
+    )
     _echo_managed_git_json(result)
 
 

@@ -52,13 +52,67 @@ evander-cli git-repos show mr_0123456789abcdef0123 --directory-path root/acme/te
 evander-cli git-repos refresh mr_0123456789abcdef0123
 ```
 
+Set the author and committer identity for host-created consolidation commits on one managed
+repository without changing directory defaults or other repositories:
+
+```bash
+evander-cli git-repos set-host-identity mr_0123456789abcdef0123 \
+  --directory-path root/acme \
+  --name "Release Automation" \
+  --email "release-automation@example.com"
+```
+
+The operation acquires the repository's exclusive operation lock, updates only that registry
+record, and affects subsequent host-created commits. It does not rewrite existing commits or
+change agent checkout identities.
+
+## Materialize a Team release candidate for human testing
+
+An authorized human reviewer can copy the supported command from
+**Teams → Delivery → release detail → Test this candidate**. Its shape is:
+
+```bash
+evander-cli team checkout-release-candidate <release-package-id> \
+  --target ./release-candidate-review \
+  --expected-commit-sha <candidate-sha> \
+  --runtime-dir /absolute/path/to/evander/runtime
+```
+
+The command reads the durable Team release package, resolves its project and
+managed repository internally, and verifies that the immutable release ref
+still equals the recorded candidate commit and tree. It then creates a new
+detached checkout at `--target`. The target's parent must exist, while the
+target itself must not: existing paths are refused even when empty. Paths
+inside Evander's runtime directory are also refused.
+
+This is the supported operator alternative to discovering
+`runtime/managed-git/*.git` paths. Those private paths are deliberately absent
+from the UI and command. The absolute runtime root is included so the copied
+command remains valid when run from another repository or working directory;
+it is configuration identity, not a private repository path. The resulting checkout has only the sanitized
+canonical repository URL as `origin`; it retains no private managed-repository
+or temporary-worktree path.
+
+When the Admin Web is remote, an authorized reviewer can instead use
+**Download review bundle** on the human-review request. The ZIP is a
+source-only export of the verified candidate and includes
+`EVANDER-REVIEW.json` with the pinned ref, commit, tree, and release-review
+provenance. It is not a Git checkout: unpack it and run the repository's usual
+dependency setup locally, such as `dotnet restore` or `npm ci` where relevant.
+
 The explicit refresh command is an operator diagnostic and recovery surface. Normal managed Git
 reads do not require it: restricted SSH keys provisioned by Evander require the host-owned
 `evander-managed-git-refresh.service` to refresh the exact authorized repository before
 `git-upload-pack` or `git-upload-archive` serves refs. This covers clone, fetch, pull,
 `ls-remote`, and archive reads. If the broker or upstream is unavailable, the Git read fails with
 a stale-ref refusal instead of succeeding from an old mirror. The SSH wrapper never receives
-provider credentials and cannot request a different repository.
+provider credentials and cannot request a different repository. Broker failures expose a
+sanitized message, stable `error_code`, and exception category without returning raw Git output.
+The codes are `broker_busy`, `upstream_host_key_verification_failed`,
+`upstream_host_resolution_failed`, `upstream_authentication_failed`,
+`upstream_connection_failed`, `upstream_tls_verification_failed`,
+`local_ref_update_failed`, `upstream_ref_policy_rejected`, and the fallback
+`upstream_refresh_failed`.
 
 The equivalent privileged Admin API is:
 
@@ -66,6 +120,7 @@ The equivalent privileged Admin API is:
 - `POST /api/admin/git-repositories`
 - `GET /api/admin/git-repositories/{managed_repo_id}`
 - `POST /api/admin/git-repositories/{managed_repo_id}/refresh`
+- `PUT /api/admin/git-repositories/{managed_repo_id}/host-commit-identity`
 - `DELETE /api/admin/git-repositories/{managed_repo_id}`
 - `POST /api/admin/git-repositories/maintenance`
 - `POST /api/admin/git-repositories/migrate`
@@ -76,7 +131,8 @@ The equivalent privileged Admin API is:
 
 Mutations require directory-scoped `admin.owner` permission and unlocked privileged operations.
 Registration JSON contains `directory_path`, `repo_source`, optional `default_branch`, and optional
-`refresh`. Maintenance accepts optional `managed_repo_id`. Migration accepts
+`refresh`. Host-identity JSON contains required `name` and `email`. Maintenance accepts optional
+`managed_repo_id`. Migration accepts
 `{"stage":"dry-run"}`, `{"stage":"apply"}`, or
 `{"stage":"finalize","migration_id":"<id>"}`; stages cannot be combined.
 
@@ -230,26 +286,44 @@ payloads map task, project, managed repository, worktree, branch, and context;
 the base repository checkout is control-only.
 
 When a task resolves or is reassigned away from the checkout owner, Team creates
-a durable `WorktreeCleanupCandidate`. The reconciler starts in dry-run mode by
-default and refuses removal while a preparing/leased dispatch or active Git
+a durable `WorktreeCleanupCandidate`. The workflow field
+`worktree_cleanup_dry_run` deliberately has three modes:
+
+- `true` performs safety audits only and never attempts physical removal;
+- `false` permits an eligible candidate's first reconciliation pass to attempt
+  physical removal immediately; and
+- omitted performs a dry run first, records `dry_run_safe`, and schedules the
+  physical attempt for a later pass after `worktree_cleanup_retry_seconds`.
+
+Every mode refuses removal while a preparing/leased dispatch or active Git
 context references the checkout, while retained commit evidence is incomplete,
 or when repository/path/branch/`HEAD`/dirty-file checks disagree. Preparation
-and cleanup share a session/repository coordinator lock; the execution backend
-then repeats physical Git inspection under its repository lock immediately
+and cleanup share a session/repository coordinator lock; a physical attempt
+repeats Git inspection under the execution backend's repository lock immediately
 before `git worktree remove` and pruning.
 
 Ignored caches may be reclaimed only after tracked and non-ignored untracked
 source checks pass. A refusal remains `recovery_required` with the exact task,
-repository, path, branch, failed check, timestamp, inventory, and byte counts.
-Successful physical removal is audited before obsolete unreferenced context
-metadata is pruned. Do not use managed-Git operation maintenance or a recursive
-delete as a substitute for this task-checkout recovery path.
+repository, path, branch, failed check, timestamp, byte counts, exact ignored
+file count, full-inventory SHA-256, and a deterministic sample of at most 200
+paths. Successful physical removal is audited before obsolete unreferenced
+context metadata is pruned. Do not use managed-Git operation maintenance or a
+recursive delete as a substitute for this task-checkout recovery path.
 
 ## Credentials
 
 Upstream authentication uses Evander's fixed host-owned askpass path and credential environment.
-Tokens must not appear in repository URLs, Git config, command arguments, manifests, registry
-records, logs, or workflow outputs. Interactive credential prompts are disabled.
+For Azure DevOps, `azure_devops_pr_pat_env` defaults to `AZURE_DEVOPS_PR_PAT` and
+`azure_devops_pat_env` defaults to `AZURE_DEVOPS_PAT`. Managed Git tries the first
+populated PR PAT variable, then the populated general PAT variable. If it selects
+a PAT for a registered Azure DevOps SSH refresh source, the Git child process
+receives an in-memory `url.<canonical-https-url>.insteadOf=<ssh-source>` override.
+The stored refresh source, canonical repository identity, registry, and operator
+checkout are not rewritten.
+
+Tokens must not appear in repository URLs, persistent Git config, command
+arguments, manifests, registry records, logs, or workflow outputs. Interactive
+credential prompts are disabled.
 
 Configure provider token environment names through directory provider configuration and expose the
 actual secret only to the control-plane/effect-worker process. GitHub publication may use the host

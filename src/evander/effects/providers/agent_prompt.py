@@ -48,6 +48,7 @@ from .agent_session import (
     container_thread_id_from_logs,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     default_agent_model_for_provider,
     default_agent_provider_for_config,
     effective_config_for_session,
@@ -370,12 +371,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
-        mcp_gateway_url = self._mcp_gateway_url(
-            config=effective_config,
-            target=session_id,
+        mcp_gateway_url = gateway_url_with_session_context(
+            container_worker_guest_gateway_url(effective_config),
+            session_id=session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-            base_gateway_url=container_worker_guest_gateway_url(effective_config),
+            mcp_session_token=session_mcp_auth_token(session),
         )
         codex_turn = container_codex_turn_spec(
             prompt=prompt,
@@ -392,6 +393,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=resolved_model,
             resume_thread_id=effective_resume_thread_id,
+            session=session,
             agent_provider=agent_harness,
             mcp_gateway_url=mcp_gateway_url,
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
@@ -405,6 +407,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                         session_id=session_id,
                         directory_path=session.directory_path if session is not None else "root",
                         image=container_worker_image_for_session(session, effective_config),
+                        resource_limits=container_worker_resource_limits_for_session(session),
                         command=command,
                         codex_turn=codex_turn,
                         metadata={
@@ -1331,10 +1334,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
                         session_id=session_id,
                         directory_path=directory_path,
                         image=container_worker_image_for_session(session, config),
+                        resource_limits=container_worker_resource_limits_for_session(session),
                         command=cls._container_prompt_command(
                             prompt=retry_prompt,
                             model=model,
                             resume_thread_id=None,
+                            session=session,
                             agent_provider=agent_harness,
                             resume_mode="new_context",
                             mcp_gateway_url=retry_mcp_gateway_url,
@@ -1491,8 +1496,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
         session: Any | None = None,
     ) -> str | None:
         lease_id = cls._record_text_value(record, "mcp_tool_approval_lease_id")
-        if not lease_id:
-            return None
         workflow_run_id = (
             cls._record_text_value(record, "workflow_run_id")
             or str(getattr(record, "trace_id", "") or "").strip()
@@ -1910,6 +1913,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str,
         resume_thread_id: str | None,
+        session: object | None = None,
         agent_provider: str | None = None,
         resume_mode: str | None = None,
         mcp_gateway_url: str | None = None,
@@ -1919,6 +1923,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=model,
             resume_thread_id=resume_thread_id,
+            session=session,
             agent_provider=agent_provider,
             resume_mode=resume_mode,
             mcp_gateway_url=mcp_gateway_url,

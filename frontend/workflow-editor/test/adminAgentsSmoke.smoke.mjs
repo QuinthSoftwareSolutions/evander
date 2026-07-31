@@ -64,6 +64,11 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
           last_status: "running",
           execution_count: 1,
           active_execution_count: 1,
+          codex_usage: {
+            effective_codex_auth_mode: "chatgpt_subscription",
+            codex_auth_mode_source: "session_override",
+            agent_provider: "codex",
+          },
         },
         capabilities: {
           start: false,
@@ -367,6 +372,37 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       return;
     }
 
+    if (pathname.startsWith("/api/admin/agents/") && pathname.endsWith("/executions")) {
+      await route.fulfill(jsonResponse({
+        agent_id: pathname.split("/")[4],
+        items: [],
+        limit: 50,
+        has_more: false,
+        next_cursor: null,
+      }));
+      return;
+    }
+
+    if (pathname.startsWith("/api/admin/agents/")) {
+      const agentId = pathname.split("/")[4];
+      const agent = agentsResponse.items.find((item) => item.agent_id === agentId);
+      assert.ok(agent, `expected detail request for a known agent: ${agentId}`);
+      await route.fulfill(jsonResponse({
+        ...agent,
+        host: {
+          ...agent.host,
+          metadata: {},
+          session_policy: {
+            session_id: agent.session_id,
+            metadata: {},
+            labels: agent.host.labels ?? {},
+            approval_notification_target_options: [],
+          },
+        },
+      }));
+      return;
+    }
+
     if (pathname === "/api/admin/agents") {
       const requestIndex = agentListRequests.length;
       agentListRequests.push(`${pathname}${url.search}`);
@@ -377,14 +413,15 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       if (requestIndex === 0) {
         assert.equal(url.searchParams.get("summary_only"), "true");
         assert.equal(url.searchParams.get("reconcile_containers"), "false");
-        assert.equal(url.searchParams.get("omit_vm_state"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
         assert.equal(url.searchParams.get("_dashboard"), "1");
       } else if (
         manualRefreshRequested &&
         manualRefreshRequest == null &&
-        url.searchParams.get("summary_only") === "false"
+        url.searchParams.get("summary_only") === "true" &&
+        url.searchParams.get("reconcile_containers") === "true"
       ) {
-        assert.equal(url.searchParams.get("summary_only"), "false");
+        assert.equal(url.searchParams.get("summary_only"), "true");
         assert.equal(url.searchParams.get("reconcile_containers"), "true");
         assert.equal(url.searchParams.get("omit_vm_state"), "false");
         assert.equal(url.searchParams.get("_dashboard"), null);
@@ -403,7 +440,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       } else {
         assert.equal(url.searchParams.get("summary_only"), "true");
         assert.equal(url.searchParams.get("reconcile_containers"), "false");
-        assert.equal(url.searchParams.get("omit_vm_state"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
         assert.equal(url.searchParams.get("_dashboard"), "1");
         assert.equal(url.searchParams.get("_dashboard_refresh"), null);
       }
@@ -496,6 +533,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).locator(".status-pill").innerText(),
     /^running$/i,
   );
+  assert.match(
+    await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
+    /ChatGPT subscription[\s\S]*Agent override/,
+  );
   assert.doesNotMatch(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
     /Worker: 1 active, latest Running/,
@@ -538,7 +579,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     if (!request.url().includes("/api/admin/agents?")) return false;
     const url = new URL(request.url());
     return (
-      url.searchParams.get("summary_only") === "false" &&
+      url.searchParams.get("summary_only") === "true" &&
       url.searchParams.get("reconcile_containers") === "true" &&
       url.searchParams.get("omit_vm_state") === "false" &&
       url.searchParams.get("_dashboard") === null
@@ -571,10 +612,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.ok(agentListRequests.length >= 1);
   assert.match(agentListRequests[0], /summary_only=true/);
   assert.match(agentListRequests[0], /reconcile_containers=false/);
-  assert.match(agentListRequests[0], /omit_vm_state=false/);
+  assert.match(agentListRequests[0], /omit_vm_state=true/);
   assert.match(agentListRequests[0], /_dashboard=1/);
   assert.ok(manualRefreshRequest);
-  assert.match(manualRefreshRequest, /summary_only=false/);
+  assert.match(manualRefreshRequest, /summary_only=true/);
   assert.match(manualRefreshRequest, /reconcile_containers=true/);
   assert.match(manualRefreshRequest, /omit_vm_state=false/);
   assert.equal(new URL(`http://localhost${manualRefreshRequest}`).searchParams.get("_dashboard"), null);

@@ -39,6 +39,7 @@ DEFAULT_CONTAINER_WORKER_URL = (
     f"http://{DEFAULT_CONTAINER_WORKER_HOST}:{DEFAULT_CONTAINER_WORKER_PORT}"
 )
 DEFAULT_CONTAINER_WORKER_TOKEN_ENV = "EVANDER_WORKER_TOKEN"
+DEFAULT_CONTAINER_WORKER_RUNNER_IMAGE = "evander-runner:latest"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
 LOCAL_CONTAINER_WORKER_SERVICE = "evander-worker-daemon.service"
 LOCAL_CONTAINER_WORKER_ROOT = Path("/var/lib/agent-worker")
@@ -1156,6 +1157,12 @@ class SetupManager:
         git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
         allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
         allowed_git_write_source_prefix = f"ssh://{git_ssh_alias}-write{git_root}/"
+        codex_auth_image = str(
+            state.provider_config.get(
+                "container_worker_default_image", DEFAULT_CONTAINER_WORKER_RUNNER_IMAGE
+            )
+            or DEFAULT_CONTAINER_WORKER_RUNNER_IMAGE
+        ).strip()
         worker_host, worker_port = _local_container_worker_bind(state)
         readonly_mount_args = " ".join(
             f"--readonly-mount {host_path}:{container_path}"
@@ -1175,6 +1182,7 @@ class SetupManager:
                 "SupplementaryGroups=docker",
                 f"WorkingDirectory={self.project_dir}",
                 f"EnvironmentFile=-{self.secret_file_path(state)}",
+                f"Environment=EVANDER_WORKER_CODEX_AUTH_IMAGE={codex_auth_image}",
                 (
                     f"ExecStart={self.project_dir}/.venv/bin/evander-worker-daemon "
                     f"--host {worker_host} "
@@ -1186,6 +1194,7 @@ class SetupManager:
                     f"--allowed-git-source-prefix {allowed_git_source_prefix} "
                     f"--allowed-git-source-prefix {allowed_git_write_source_prefix} "
                     f"--git-ssh-source-dir {git_ssh_source_dir} "
+                    f"--codex-auth-image {codex_auth_image} "
                     f"{readonly_mount_args}"
                 ),
                 "Restart=on-failure",
@@ -1216,11 +1225,13 @@ class SetupManager:
                 state.execution.get("container_worker_token_env")
                 or DEFAULT_CONTAINER_WORKER_TOKEN_ENV,
             )
-            payload.setdefault("container_worker_default_image", "evander-runner:latest")
+            payload.setdefault(
+                "container_worker_default_image", DEFAULT_CONTAINER_WORKER_RUNNER_IMAGE
+            )
             payload.setdefault(
                 "container_worker_images",
                 {
-                    "default": "evander-runner:latest",
+                    "default": DEFAULT_CONTAINER_WORKER_RUNNER_IMAGE,
                     "claude": "evander-runner-claude:latest",
                 },
             )

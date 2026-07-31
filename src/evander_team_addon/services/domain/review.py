@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import (
     UTC,
     datetime,
@@ -50,6 +50,10 @@ from .deliverables import (
     _accept_deliverable_and_maybe_task,
     _active_deliverable_acceptance_blocker_ids,
     _deliverable_verification_payload,
+)
+from .git_work_contexts import (
+    GitCandidateCommitResolver,
+    require_authoritative_git_review_retry_candidate,
 )
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
@@ -235,6 +239,17 @@ def _apply_review_request(
         return None
     task = state.tasks.get(deliverable.task_id)
     project_id = task.project_id if task is not None else None
+    if (
+        deliverable.state == TeamRecordState.ACCEPTED
+        and deliverable.rework_requested_at is not None
+        and deliverable.superseded_by_deliverable_id is None
+    ):
+        result["errors"].append(
+            f"accepted deliverable {deliverable.id} was explicitly reopened for "
+            "same-task replacement; submit a new deliverable with "
+            f"supersedes_deliverable_id={deliverable.id} and fresh reviews"
+        )
+        return None
     permitted = (
         actor.id == deliverable.producer_agent_id
         or _supervises(state, actor.id, deliverable.producer_agent_id)
@@ -276,6 +291,20 @@ def _apply_review_request(
         deliverable.git_refs.submitted_commit_sha or deliverable.git_refs.commit_sha
     )
     reviewed_commit_sha = deliverable.git_refs.reviewed_commit_sha or submitted_commit_sha
+    if reviewed_commit_sha is None and any(
+        (
+            deliverable.git_refs.branch_context_id,
+            deliverable.git_refs.agent_branch,
+            deliverable.git_refs.review_branch,
+            deliverable.git_refs.feature_branch,
+            deliverable.git_refs.release_branch,
+        )
+    ):
+        result["errors"].append(
+            f"Git-backed deliverable {deliverable_id} does not have a pinned "
+            "submitted commit; record git_refs.commit_sha before requesting review"
+        )
+        return None
     existing_review = _active_review_request_for_reviewer(
         state,
         deliverable_id=deliverable_id,
@@ -283,6 +312,16 @@ def _apply_review_request(
     )
     now = utc_now()
     if existing_review is not None:
+        if (
+            deliverable.review_cohort_id is not None
+            and existing_review.review_cohort_id != deliverable.review_cohort_id
+        ):
+            result["errors"].append(
+                f"deliverable {deliverable.id} has sealed review cohort "
+                f"{deliverable.review_cohort_id}, but reviewer {reviewer.id} has "
+                f"an active review outside that cohort"
+            )
+            return None
         _reopen_accepted_deliverable_for_pending_review(
             deliverable=deliverable,
             task=task,
@@ -291,6 +330,34 @@ def _apply_review_request(
         )
         result.setdefault("existing_review_request_ids", []).append(existing_review.id)
         return existing_review.id
+    requested_cohort_id = _optional_text(request.get("review_cohort_id"))
+    if deliverable.review_cohort_id is not None:
+        if requested_cohort_id != deliverable.review_cohort_id:
+            qualifier = (
+                "sealed "
+                if deliverable.review_cohort_sealed_at is not None
+                else ""
+            )
+            result["errors"].append(
+                f"deliverable {deliverable.id} belongs to {qualifier}review cohort "
+                f"{deliverable.review_cohort_id}; new review requests must be "
+                "created atomically with that cohort or replace a blocked cohort member"
+            )
+            return None
+    elif requested_cohort_id is not None:
+        result["errors"].append(
+            f"review request cannot assign cohort {requested_cohort_id} because "
+            f"deliverable {deliverable.id} has no review cohort"
+        )
+        return None
+    if deliverable.review_cohort_sealed_at is not None:
+        result["errors"].append(
+            f"deliverable {deliverable.id} review cohort "
+            f"{deliverable.review_cohort_id} is sealed; add every required reviewer "
+            "in the original atomic submission or explicitly retry/replace an "
+            "existing cohort member"
+        )
+        return None
     review_id = _optional_text(request.get("id"))
     if review_id is None:
         review_id = _generated_id(
@@ -315,6 +382,7 @@ def _apply_review_request(
         ),
         instructions=instructions,
         reviewed_commit_sha=reviewed_commit_sha,
+        review_cohort_id=requested_cohort_id,
         created_at=now,
     )
     state.review_requests[review.id] = review
@@ -376,6 +444,137 @@ def _apply_review_request(
     return review.id
 
 
+def create_sealed_review_cohort(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    deliverable_id: str,
+    reviews: Sequence[Mapping[str, Any]],
+    result: dict[str, Any],
+    projects_to_recalc: set[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Attach every requested reviewer to one immutable deliverable atomically.
+
+    The caller must abort its state transaction when this function raises. A
+    repeated request with the same reviewer/profile membership is idempotent.
+    """
+
+    normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
+    deliverable = _require_present(
+        state.deliverables,
+        normalized_deliverable_id,
+        "deliverable",
+    )
+    task = state.tasks.get(deliverable.task_id)
+    project_id = task.project_id if task is not None else None
+    permitted = (
+        actor.id == deliverable.producer_agent_id
+        or _supervises(state, actor.id, deliverable.producer_agent_id)
+        or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
+        or _is_team_manager(state, actor)
+    )
+    if not permitted:
+        raise ValueError(
+            f"agent {actor.id} is not permitted to request review of "
+            f"deliverable {deliverable.id}"
+        )
+    normalized_reviews = [dict(review) for review in reviews]
+    if not normalized_reviews:
+        raise ValueError("reviews must contain at least one review request")
+
+    requested_members: dict[str, str | None] = {}
+    for index, review in enumerate(normalized_reviews):
+        reviewer_id = _required_text(
+            review.get("reviewer_agent_id"),
+            f"reviews[{index}].reviewer_agent_id",
+        )
+        if reviewer_id in requested_members:
+            raise ValueError(
+                "a sealed review cohort requires one review slot per reviewer; "
+                f"duplicate reviewer: {reviewer_id}"
+            )
+        requested_members[reviewer_id] = _optional_text(
+            review.get("review_profile_id")
+        )
+
+    current_reviews = _current_deliverable_reviews(state, deliverable)
+    if _has_sealed_review_cohort(deliverable):
+        current_members = {
+            review.reviewer_agent_id: review.review_profile_id
+            for review in current_reviews
+        }
+        profiles_match = all(
+            requested_profile is None
+            or current_members.get(reviewer_id) == requested_profile
+            for reviewer_id, requested_profile in requested_members.items()
+        )
+        if set(current_members) != set(requested_members) or not profiles_match:
+            raise ValueError(
+                f"deliverable {deliverable.id} already has sealed review cohort "
+                f"{deliverable.review_cohort_id} with different membership"
+            )
+        existing_ids = sorted(review.id for review in current_reviews)
+        result.setdefault("existing_review_request_ids", []).extend(existing_ids)
+        if any(
+            review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+            for review in current_reviews
+        ):
+            _align_task_with_sealed_review_cohort(
+                deliverable=deliverable,
+                task=task,
+                now=utc_now(),
+                projects_to_recalc=projects_to_recalc,
+            )
+        return deliverable.review_cohort_id or "", [], existing_ids
+
+    if deliverable.review_cohort_id is not None:
+        raise ValueError(
+            f"deliverable {deliverable.id} has an unsealed review cohort "
+            f"{deliverable.review_cohort_id}; recover that cohort before retrying"
+        )
+    if current_reviews:
+        raise ValueError(
+            f"deliverable {deliverable.id} already has independent review requests; "
+            "a sealed cohort must be created before any individual review request"
+        )
+
+    cohort_id = f"review-cohort-{deliverable.id}"
+    deliverable.review_cohort_id = cohort_id
+    created_ids: list[str] = []
+    for index, review in enumerate(normalized_reviews):
+        request_payload = {
+            **review,
+            "deliverable_id": deliverable.id,
+            "review_cohort_id": cohort_id,
+        }
+        if "review_request_id" in request_payload:
+            request_payload["id"] = request_payload.pop("review_request_id")
+        created_id = _apply_review_request(
+            state,
+            actor=actor,
+            request=request_payload,
+            result=result,
+            projects_to_recalc=projects_to_recalc,
+        )
+        if created_id is None:
+            raise ValueError(
+                "; ".join(str(error) for error in result.get("errors") or [])
+                or f"reviews[{index}] could not be created"
+            )
+        if _review_request_was_created(result, created_id):
+            created_ids.append(created_id)
+
+    now = utc_now()
+    deliverable.review_cohort_sealed_at = now
+    _align_task_with_sealed_review_cohort(
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        projects_to_recalc=projects_to_recalc,
+    )
+    return cohort_id, created_ids, []
+
+
 def retry_blocked_review(
     state: TeamState,
     *,
@@ -384,6 +583,7 @@ def retry_blocked_review(
     reason: str,
     reviewer_agent_id: str | None,
     result: dict[str, Any],
+    candidate_commit_resolver: GitCandidateCommitResolver | None = None,
 ) -> ReviewRequest:
     """Replace the current blocked review attempt without rewriting its decision."""
 
@@ -414,6 +614,21 @@ def retry_blocked_review(
     reviewer = _require_present(state.agents, requested_reviewer_id, "reviewer")
     if reviewer.team_id != actor.team_id:
         raise ValueError(f"reviewer {reviewer.id} is not in team {actor.team_id}")
+    conflicting_review = next(
+        (
+            review
+            for review in _current_deliverable_reviews(state, deliverable)
+            if review.id != current.id
+            and review.reviewer_agent_id == reviewer.id
+        ),
+        None,
+    )
+    if conflicting_review is not None:
+        raise ValueError(
+            f"reviewer {reviewer.id} already owns current review "
+            f"{conflicting_review.id} for deliverable {deliverable.id}; a retry "
+            "cannot collapse two review cohort slots onto one reviewer"
+        )
     profile, profile_error = _review_profile_for_request(
         state,
         profile_id=current.review_profile_id,
@@ -424,6 +639,32 @@ def retry_blocked_review(
     )
     if profile_error is not None:
         raise ValueError(profile_error)
+    require_authoritative_git_review_retry_candidate(
+        state,
+        deliverable=deliverable,
+        reviewed_commit_sha=current.reviewed_commit_sha,
+        candidate_commit_resolver=candidate_commit_resolver,
+    )
+    retry_reviewed_commit_sha = current.reviewed_commit_sha
+    if retry_reviewed_commit_sha is None and any(
+        (
+            deliverable.git_refs.branch_context_id,
+            deliverable.git_refs.agent_branch,
+            deliverable.git_refs.review_branch,
+            deliverable.git_refs.feature_branch,
+            deliverable.git_refs.release_branch,
+        )
+    ):
+        retry_reviewed_commit_sha = (
+            deliverable.git_refs.reviewed_commit_sha
+            or deliverable.git_refs.submitted_commit_sha
+            or deliverable.git_refs.commit_sha
+        )
+        if retry_reviewed_commit_sha is None:
+            raise ValueError(
+                f"Git-backed deliverable {deliverable.id} does not have a pinned "
+                "submitted commit; record git_refs.commit_sha before retrying review"
+            )
     now = utc_now()
     retry = ReviewRequest(
         id=_generated_id(
@@ -460,7 +701,8 @@ def retry_blocked_review(
         instructions=(
             f"Retry blocked review {current.id}. Reason: {normalized_reason}"
         ),
-        reviewed_commit_sha=current.reviewed_commit_sha,
+        reviewed_commit_sha=retry_reviewed_commit_sha,
+        review_cohort_id=current.review_cohort_id,
         supersedes_review_request_id=current.id,
         retry_reason=normalized_reason,
         retry_requested_by=f"agent:{actor.id}",
@@ -469,9 +711,6 @@ def retry_blocked_review(
     current.superseded_by_review_request_id = retry.id
     state.review_requests[retry.id] = retry
     deliverable.review_request_ids = _append_unique(deliverable.review_request_ids, retry.id)
-    deliverable.state = TeamRecordState.PENDING
-    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
-    task.updated_at = now
     resolve_active_blockers_for_source(
         state,
         source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
@@ -483,6 +722,20 @@ def retry_blocked_review(
         result=result,
         now=now,
     )
+    if _has_sealed_review_cohort(deliverable):
+        _recalculate_sealed_review_cohort(
+            state,
+            closed_review=retry,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=actor.id,
+            result=result,
+            now=now,
+        )
+    else:
+        deliverable.state = TeamRecordState.PENDING
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        task.updated_at = now
     payload: dict[str, Any] = {
         "kind": "review_retry_request",
         "review_request_id": retry.id,
@@ -647,6 +900,17 @@ def _close_review_attempt(
 ) -> None:
     normalized_reason = _required_text(reason, "reason")
     normalized_actor = _required_text(retired_by, "retired_by")
+    if _has_sealed_review_cohort(deliverable):
+        current_cohort_reviews = _current_deliverable_reviews(state, deliverable)
+        if (
+            len(current_cohort_reviews) == 1
+            and current_cohort_reviews[0].id == review.id
+        ):
+            raise ValueError(
+                f"review {review.id} is the final active member of sealed cohort "
+                f"{deliverable.review_cohort_id}; replace/retry that cohort slot "
+                "or supersede the deliverable with a new reviewed candidate"
+            )
     now = utc_now()
     review.retired_at = now
     review.retired_by = normalized_actor
@@ -712,7 +976,198 @@ def _current_deliverable_reviews(
         if review_id in state.review_requests
         and state.review_requests[review_id].superseded_by_review_request_id is None
         and state.review_requests[review_id].retired_at is None
+        and (
+            deliverable.review_cohort_id is None
+            or state.review_requests[review_id].review_cohort_id
+            == deliverable.review_cohort_id
+        )
     ]
+
+
+def _has_sealed_review_cohort(deliverable: Deliverable) -> bool:
+    return (
+        deliverable.review_cohort_id is not None
+        and deliverable.review_cohort_sealed_at is not None
+    )
+
+
+def _recalculate_sealed_review_cohort(
+    state: TeamState,
+    *,
+    closed_review: ReviewRequest,
+    deliverable: Deliverable,
+    task: AgentTask,
+    sender_agent_id: str,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """Advance one immutable deliverable only after its sealed cohort resolves."""
+
+    current_reviews = _current_deliverable_reviews(state, deliverable)
+    if any(review.state == TeamRecordState.BLOCKED for review in current_reviews):
+        if closed_review.state == TeamRecordState.BLOCKED:
+            reviewer = _require_present(
+                state.agents,
+                closed_review.reviewer_agent_id,
+                "reviewer",
+            )
+            open_or_get_blocker(
+                state,
+                source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                source_id=closed_review.id,
+                summary=f"Review {closed_review.id} is blocked",
+                details=(
+                    ("; ".join(closed_review.findings) or "Reviewer cannot complete the review.")
+                    + " Retry this valid cohort member after recovery; a project "
+                    "lead or team manager may retire it only if the attempt is erroneous."
+                ),
+                reporter_agent_id=reviewer.id,
+                team_id=reviewer.team_id,
+                project_id=task.project_id,
+                task_id=task.id,
+                result=result,
+                now=now,
+            )
+        deliverable.state = TeamRecordState.BLOCKED
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        task.updated_at = now
+        return
+    if any(review.state == TeamRecordState.PENDING for review in current_reviews):
+        deliverable.state = TeamRecordState.PENDING
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        task.updated_at = now
+        return
+
+    rejected_reviews = [
+        review
+        for review in current_reviews
+        if review.state == TeamRecordState.REJECTED
+    ]
+    cohort_review_ids = {
+        review_id
+        for review_id in deliverable.review_request_ids
+        if (review := state.review_requests.get(review_id)) is not None
+        and review.review_cohort_id == deliverable.review_cohort_id
+    }
+    open_findings = [
+        finding.model_dump(mode="json")
+        for finding in deliverable.carried_findings
+        if finding.state == "open"
+        and finding.source_review_request_id in cohort_review_ids
+    ]
+    if rejected_reviews or open_findings:
+        deliverable.state = TeamRecordState.REJECTED
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+        task.updated_at = now
+        rejected_review_ids = sorted(
+            {review.id for review in rejected_reviews}
+            | {
+                finding["source_review_request_id"]
+                for finding in open_findings
+            }
+        )
+        rejection_source_review_id = rejected_review_ids[0]
+        rejection_source_review = state.review_requests.get(
+            rejection_source_review_id
+        )
+        rejection_sender_agent_id = (
+            rejection_source_review.reviewer_agent_id
+            if rejection_source_review is not None
+            else sender_agent_id
+        )
+        findings = [finding["text"] for finding in open_findings]
+        existing_rework = next(
+            (
+                item
+                for item in state.inbox.values()
+                if item.state == TeamInboxItemState.PENDING
+                and item.recipient_agent_id == task.owner_agent_id
+                and item.task_id == task.id
+                and item.payload.get("kind") == "review_rejected"
+                and item.payload.get("review_cohort_id")
+                == deliverable.review_cohort_id
+            ),
+            None,
+        )
+        if existing_rework is None:
+            queue_actionable_inbox_item(
+                state,
+                recipient_agent_id=task.owner_agent_id,
+                sender_agent_id=rejection_sender_agent_id,
+                task_id=task.id,
+                priority=TeamInboxPriority.NORMAL,
+                payload={
+                    "kind": "review_rejected",
+                    "review_request_id": rejection_source_review_id,
+                    "review_request_ids": rejected_review_ids,
+                    "review_cohort_id": deliverable.review_cohort_id,
+                    "deliverable_id": deliverable.id,
+                    "supersedes_deliverable_id": deliverable.id,
+                    "task_id": task.id,
+                    "summary": (
+                        "The sealed review cohort requested changes; revise once "
+                        "against the complete cohort findings and resubmit."
+                    ),
+                    "findings": findings,
+                    "open_findings": open_findings,
+                    "next_action": (
+                        "Submit one replacement deliverable with "
+                        f"supersedes_deliverable_id set to {deliverable.id}; "
+                        "its open cohort findings carry forward."
+                    ),
+                    "artifact_refs": list(deliverable.artifact_refs),
+                },
+                result=result,
+                now=now,
+            )
+            queue_parent_task_transition(
+                state,
+                child_task_id=task.id,
+                transition="rejection",
+                sender_agent_id=rejection_sender_agent_id,
+                result=result,
+                now=now,
+                references={
+                    "deliverable_id": deliverable.id,
+                    "review_request_id": rejection_source_review_id,
+                    "review_cohort_id": deliverable.review_cohort_id,
+                },
+            )
+        return
+
+    if current_reviews and all(
+        review.state == TeamRecordState.ACCEPTED for review in current_reviews
+    ):
+        if any(finding.state == "open" for finding in deliverable.carried_findings):
+            deliverable.state = TeamRecordState.PENDING
+            _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        else:
+            try:
+                require_deliverable_acceptance(state, deliverable.id)
+            except TaskAssessmentBoundaryError as exc:
+                if result is not None:
+                    result["deliverable_acceptance_deferred"] = {
+                        "code": exc.code,
+                        **exc.correction_context,
+                    }
+            else:
+                _accept_deliverable_and_maybe_task(
+                    state,
+                    deliverable=deliverable,
+                    task=task,
+                    now=now,
+                    result=result,
+                    accepted_by_agent_id=sender_agent_id,
+                )
+        task.updated_at = now
+        return
+
+    # Every cohort member was explicitly retired without a replacement. Preserve
+    # that audit trail, but do not invent an approval.
+    deliverable.state = TeamRecordState.PENDING
+    deliverable.acceptance_recipient_agent_id = None
+    _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+    task.updated_at = now
 
 
 def _recalculate_deliverable_after_review_closure(
@@ -725,6 +1180,17 @@ def _recalculate_deliverable_after_review_closure(
     result: dict[str, Any] | None,
     now: datetime,
 ) -> None:
+    if _has_sealed_review_cohort(deliverable):
+        _recalculate_sealed_review_cohort(
+            state,
+            closed_review=closed_review,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        )
+        return
     current_reviews = _current_deliverable_reviews(state, deliverable)
     active_acceptance_blocker_ids = _active_deliverable_acceptance_blocker_ids(
         state,
@@ -753,6 +1219,8 @@ def _recalculate_deliverable_after_review_closure(
                 deliverable=deliverable,
                 task=task,
                 now=now,
+                result=result,
+                accepted_by_agent_id=sender_agent_id,
             )
     elif current_reviews:
         deliverable.state = TeamRecordState.PENDING
@@ -784,6 +1252,8 @@ def _recalculate_deliverable_after_review_closure(
                 deliverable=deliverable,
                 task=task,
                 now=now,
+                result=result,
+                accepted_by_agent_id=sender_agent_id,
             )
     elif active_acceptance_blocker_ids:
         deliverable.state = TeamRecordState.PENDING
@@ -975,6 +1445,36 @@ def _reopen_accepted_deliverable_for_pending_review(
     return reopened
 
 
+def _align_task_with_sealed_review_cohort(
+    *,
+    deliverable: Deliverable,
+    task: AgentTask | None,
+    now: datetime,
+    projects_to_recalc: set[str] | None = None,
+) -> None:
+    changed = _reopen_accepted_deliverable_for_pending_review(
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        projects_to_recalc=projects_to_recalc,
+    )
+    if task is not None and task.state in {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+    }:
+        changed = (
+            _set_task_state(
+                task,
+                TeamTaskState.WAITING_FOR_REVIEW,
+                now=now,
+            )
+            or changed
+        )
+        task.updated_at = now
+    if changed and task is not None and projects_to_recalc is not None:
+        projects_to_recalc.add(task.project_id)
+
+
 def _active_review_request_for_reviewer(
     state: TeamState,
     *,
@@ -1114,20 +1614,6 @@ def _apply_review_decision(
     if decision_error is not None:
         result["errors"].append(decision_error)
         return None
-    if (
-        decision_state == TeamRecordState.ACCEPTED
-        and review.release_package_id is None
-        and review.deliverable_id is not None
-    ):
-        try:
-            require_deliverable_acceptance(state, review.deliverable_id)
-        except TaskAssessmentBoundaryError as exc:
-            result["errors"].append(exc.message)
-            result["task_assessment_error"] = {
-                "code": exc.code,
-                **exc.correction_context,
-            }
-            return None
     if criterion_results is not None:
         review.criteria = criterion_results
     review.block_kind = block_kind
@@ -1338,6 +1824,18 @@ def _review_owns_finding(
     review: ReviewRequest,
     finding: ReviewFindingRecord,
 ) -> bool:
+    current: ReviewRequest | None = review
+    seen: set[str] = set()
+    while current is not None and current.id not in seen:
+        seen.add(current.id)
+        if current.id == finding.source_review_request_id:
+            return True
+        predecessor_id = current.supersedes_review_request_id
+        current = (
+            state.review_requests.get(predecessor_id)
+            if predecessor_id is not None
+            else None
+        )
     if finding.owner_review_profile_id is not None:
         return review.review_profile_id == finding.owner_review_profile_id
     reviewer = state.agents.get(review.reviewer_agent_id)
@@ -1441,12 +1939,6 @@ def _cascade_review_decision(
     the ``review_decisions`` agent action and the Admin API decision endpoint.
     """
 
-    if (
-        decision_state == TeamRecordState.ACCEPTED
-        and review.release_package_id is None
-        and review.deliverable_id is not None
-    ):
-        require_deliverable_acceptance(state, review.deliverable_id)
     review.state = decision_state
     review.findings = findings
     review.decision_at = utc_now()
@@ -1463,6 +1955,18 @@ def _cascade_review_decision(
     deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
     task = _require_present(state.tasks, deliverable.task_id, "task")
     now = utc_now()
+    if _has_sealed_review_cohort(deliverable):
+        _recalculate_sealed_review_cohort(
+            state,
+            closed_review=review,
+            deliverable=deliverable,
+            task=task,
+            sender_agent_id=review.reviewer_agent_id,
+            result=result,
+            now=now,
+        )
+        projects_to_recalc.add(task.project_id)
+        return
     if decision_state == TeamRecordState.ACCEPTED:
         current_reviews = [
             state.review_requests[review_id]
@@ -1478,12 +1982,26 @@ def _cascade_review_decision(
             finding.state == "resolved" for finding in deliverable.carried_findings
         )
         if all_accepted and no_open_findings:
-            _accept_deliverable_and_maybe_task(
-                state,
-                deliverable=deliverable,
-                task=task,
-                now=now,
-            )
+            try:
+                require_deliverable_acceptance(state, deliverable.id)
+            except TaskAssessmentBoundaryError as exc:
+                # A reviewer's decision is independent evidence. Persist it even
+                # when another boundary keeps the aggregate deliverable and task
+                # from advancing.
+                if result is not None:
+                    result["deliverable_acceptance_deferred"] = {
+                        "code": exc.code,
+                        **exc.correction_context,
+                    }
+            else:
+                _accept_deliverable_and_maybe_task(
+                    state,
+                    deliverable=deliverable,
+                    task=task,
+                    now=now,
+                    result=result,
+                    accepted_by_agent_id=review.reviewer_agent_id,
+                )
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
@@ -1596,6 +2114,16 @@ def _cascade_release_review_decision(
             message=release.error,
         )
         release.updated_at = utc_now()
+        from .release_gates import materialize_release_review_rejection_correction
+
+        materialize_release_review_rejection_correction(
+            state,
+            release=release,
+            review=review,
+            findings=findings,
+            result=result if result is not None else {"events": []},
+            now=release.updated_at,
+        )
         projects_to_recalc.add(release.project_id)
         return
     if decision_state == TeamRecordState.BLOCKED:

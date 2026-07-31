@@ -42,7 +42,20 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
   assert.match(script, /data-stand-down-agent-id/);
+  assert.match(script, /data-stand-down-scope="agent"/);
+  assert.match(script, /data-stand-down-scope="subtree"/);
+  assert.match(script, /data-stand-down-scope="agent">Stand down</);
+  assert.match(script, />Stand down subtree</);
+  assert.match(script, /and every subordinate in that agent's subtree/);
   assert.match(script, /data-stand-down-revoke-agent-id/);
+  assert.match(script, /data-resume-release-recovery-blocker-id/);
+  assert.match(script, /Resume release recovery/);
+  assert.match(script, /admin_ui_release_recovery/);
+  assert.match(script, /resumeReleaseRecovery/);
+  assert.match(markup, /id="task-cancellation-modal"/);
+  assert.match(script, /data-task-cancel-id/);
+  assert.match(script, /\/cancel/);
+  assert.match(stylesheet, /\.task-cancellation-action/);
   assert.match(script, /data-open-session-id/);
   assert.match(script, /admin-navigate-to-session/);
   assert.match(script, /stand-down/);
@@ -118,6 +131,21 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /ensureStateStream/);
   assert.match(script, /\/state\/stream/);
   assert.match(script, /applyStateSnapshot/);
+  assert.match(script, /openTeamDisclosures/);
+  assert.match(script, /rememberOpenTeamDisclosures/);
+  assert.match(mailScript, /captureDisclosures\?\.\(\)/);
+  assert.match(mailScript, /mail-reader-envelope" \$\{disclosureAttributes/);
+  const dynamicDisclosureTags = [...script.matchAll(/<details\b[^>]*>/g)].map(
+    ([tag]) => tag,
+  );
+  assert.ok(dynamicDisclosureTags.length > 0, "expected dynamic disclosure markup");
+  for (const tag of dynamicDisclosureTags) {
+    assert.match(
+      tag,
+      /(teamDisclosureAttributes|planningDisclosureAttributes)/,
+      `dynamic disclosure is not tracked: ${tag}`,
+    );
+  }
   assert.match(script, /teamViewCacheGeneration \+= 1/);
   assert.match(script, /loadedTeamViews\.clear\(\)/);
   assert.match(script, /loadView\(activeTeamView, \{ force: true, preserveForms: true \}\)/);
@@ -2179,7 +2207,24 @@ async function createTeamAddonServer(
       }
     }
   };
-  return { port: address.port, requests, state, timelineRequests, costResponses, chatRequests, emitChatSnapshots };
+  const emitStateSnapshot = (payload) => {
+    const serialized = JSON.stringify(payload);
+    for (const stream of openStateStreams) {
+      stream.response.write(`event: snapshot\ndata: ${serialized}\n\n`);
+    }
+    return openStateStreams.size;
+  };
+  return {
+    port: address.port,
+    requests,
+    state,
+    timelineRequests,
+    costResponses,
+    chatRequests,
+    emitChatSnapshots,
+    emitStateSnapshot,
+    stateStreamCount: () => openStateStreams.size,
+  };
 }
 
 function materializationDuplicateError(state, payload, template) {
@@ -2628,6 +2673,38 @@ function applyMutation(state, pathname, payload) {
       created_at: "2026-06-09T00:00:00Z",
       updated_at: "2026-06-09T00:00:00Z",
     };
+    return;
+  }
+  const taskCancellationMatch = pathname.match(
+    /^\/api\/addons\/team-addon\/tasks\/([^/]+)\/cancel$/,
+  );
+  if (taskCancellationMatch) {
+    const taskId = decodeURIComponent(taskCancellationMatch[1]);
+    const task = state.tasks[taskId];
+    if (task) {
+      task.state = "cancelled";
+      task.state_entered_at = "2026-07-27T12:00:00Z";
+      task.updated_at = "2026-07-27T12:00:00Z";
+      task.cancellation = {
+        reason_code: payload.reason_code,
+        reason: payload.reason,
+        successor_task_id: payload.successor_task_id || null,
+        actor_kind: "operator",
+        actor_id: "operator:admin",
+        cancelled_at: "2026-07-27T12:00:00Z",
+      };
+      task.readiness = "resolved";
+      task.resolution_status = "resolved";
+      task.assessment = {
+        ...(task.assessment || {}),
+        readiness: "resolved",
+        resolution_status: "resolved",
+        resolution_reason: "The task was explicitly cancelled.",
+        unresolved_descendant_ids: [],
+        active_acceptance_ids: [],
+        active_review_request_ids: [],
+      };
+    }
     return;
   }
   const taskUpdateMatch = pathname.match(/^\/api\/addons\/team-addon\/tasks\/(.+)$/);
@@ -3113,6 +3190,32 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     project_id: "project",
     deliverable_ids: ["deliverable-rejected"],
     state: "rejected",
+    policy_version: 2,
+    candidate_commit_sha: "rejected-candidate-sha",
+    manifest: {
+      candidate_commit_sha: "rejected-candidate-sha",
+      verification_commands: [{ name: "solution tests" }],
+    },
+    verification_runs: [
+      {
+        id: "verification-rejected-1",
+        state: "failed",
+        attempt_number: 1,
+        failure_kind: "infrastructure",
+        command_results: [
+          {
+            name: "solution tests",
+            state: "failed",
+            exit_code: 17,
+            failure_cause: "pids_limit_exhausted",
+            log_excerpt: [
+              "Starting solution tests",
+              "runner: error: process limit exhausted",
+            ].join("\n"),
+          },
+        ],
+      },
+    ],
     published_at: "2026-06-12T00:30:00Z",
     updated_at: "2026-06-12T00:30:00Z",
     created_at: "2026-06-12T00:00:00Z",
@@ -3171,6 +3274,19 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     await releasesSection.locator(".release-list .record-item").first().getAttribute("data-release-id"),
     "release-rejected",
   );
+  const rejectedReleaseCard = releasesSection.locator(
+    '[data-release-id="release-rejected"]',
+  );
+  await rejectedReleaseCard.locator("summary.compact-record-summary").click();
+  const failedVerificationStage = rejectedReleaseCard
+    .locator(".release-progress > .release-progress-stage")
+    .filter({ hasText: "Automated verification" });
+  await failedVerificationStage
+    .getByText(
+      "Failed command: solution tests · exit code 17 · failure cause: Pids Limit Exhausted · Error: runner: error: process limit exhausted",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
 
   const releaseCard = releasesSection.locator('[data-release-id="release-12"]');
   await releaseCard.locator("summary.compact-record-summary").click();
@@ -3179,6 +3295,14 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     .getByRole("button", { name: "Close release detail" })
     .waitFor({ state: "visible" });
   await releaseCard.locator(".release-review-detail").waitFor({ state: "visible" });
+
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const deliveryReleases = page.locator("#team-delivery-page [data-releases-view]");
+  await deliveryReleases.locator(".release-list .record-item").first().waitFor({ state: "visible" });
+  assert.equal(
+    await deliveryReleases.locator(".release-list .record-item").first().getAttribute("data-release-id"),
+    "release-rejected",
+  );
 });
 
 test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
@@ -3263,14 +3387,27 @@ test("team add-on delivery records lead with human subjects and progressive tech
         },
       },
       verification_runs: [
-        {
-          id: "verification-rich-failed",
-          state: "failed",
-          candidate_commit_sha: "abc123rich",
-          superseded_by_verification_run_id: "verification-rich-1",
-        },
-        {
-          id: "verification-rich-1",
+      {
+        id: "verification-rich-failed",
+        state: "failed",
+        attempt_number: 1,
+        failure_kind: "candidate",
+        candidate_commit_sha: "abc123rich",
+        superseded_by_verification_run_id: "verification-rich-1",
+        command_results: [
+          {
+            name: "focused-smoke",
+            state: "failed",
+            exit_code: 2,
+            log_excerpt: [
+              "> npm run focused-smoke",
+              "src/operator.ts(42,17): error TS2339: Property 'gate' does not exist.",
+            ].join("\n"),
+          },
+        ],
+      },
+      {
+        id: "verification-rich-1",
           state: "passed",
           candidate_commit_sha: "abc123rich",
           supersedes_verification_run_id: "verification-rich-failed",
@@ -3374,7 +3511,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
   for (const stage of [
     "Candidate prepared",
     "Automated verification",
-    "Agent review",
+    "Release agent review",
     "Human review",
     "Publication",
   ]) {
@@ -3428,6 +3565,39 @@ test("team add-on delivery records lead with human subjects and progressive tech
     state: "visible",
   });
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), releaseId);
+
+  await releaseCard.getByRole("button", { name: "Open release detail" }).click();
+  const releaseDetail = releaseCard.locator(".release-review-detail");
+  await releaseDetail.waitFor({ state: "visible" });
+  const failedCommand = releaseDetail.locator(
+    ".release-verification-command-failed",
+  );
+  await failedCommand
+    .getByText("Failed command: focused-smoke", { exact: true })
+    .waitFor({ state: "visible" });
+  await failedCommand.getByText("Exit code: 2", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await failedCommand
+    .getByText(
+      "Decisive error: src/operator.ts(42,17): error TS2339: Property 'gate' does not exist.",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  const failedCommandLog = failedCommand.locator(
+    "details.release-verification-log",
+  );
+  assert.equal(await failedCommandLog.locator("pre").isVisible(), false);
+  await failedCommandLog
+    .getByText("Show captured command log", { exact: true })
+    .click();
+  assert.equal(
+    await failedCommandLog.locator("pre").innerText(),
+    [
+      "> npm run focused-smoke",
+      "src/operator.ts(42,17): error TS2339: Property 'gate' does not exist.",
+    ].join("\n"),
+  );
 });
 
 test("team add-on Cases defaults to active work and pages durable case history", async (t) => {
@@ -4464,6 +4634,44 @@ test("team add-on review profiles and task descendants prioritize display names"
     state: "visible",
   });
 
+  const projectsProfileDisclosure = profileCard.locator(
+    ":scope > details.review-profile-card-details",
+  );
+  const projectsProfileKey = await projectsProfileDisclosure.getAttribute(
+    "data-team-disclosure-key",
+  );
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const deliveryProfileCard = page.locator(
+    "#team-delivery-page .review-profile-card",
+    { hasText: "Bookkeeping preparation review" },
+  );
+  await deliveryProfileCard.waitFor({ state: "visible" });
+  const deliveryProfileDisclosure = deliveryProfileCard.locator(
+    ":scope > details.review-profile-card-details",
+  );
+  assert.notEqual(
+    await deliveryProfileDisclosure.getAttribute("data-team-disclosure-key"),
+    projectsProfileKey,
+    "shared review-profile renderers should use view-scoped disclosure keys",
+  );
+  assert.equal(
+    await deliveryProfileDisclosure.getAttribute("open"),
+    null,
+    "opening a Projects review profile should not open its Delivery copy",
+  );
+  await openProjects(page);
+  const restoredProjectsProfile = page.locator(
+    "#team-projects-page .review-profile-card",
+    { hasText: "Bookkeeping preparation review" },
+  );
+  assert.notEqual(
+    await restoredProjectsProfile
+      .locator(":scope > details.review-profile-card-details")
+      .getAttribute("open"),
+    null,
+    "the Projects review profile should retain its own open state",
+  );
+
   await page.getByRole("tab", { name: "Task board" }).click();
   await page.locator("#task-board-team-select").selectOption("team");
   await page.locator("#task-board-project-select").selectOption("project");
@@ -4567,6 +4775,98 @@ test("team add-on project controls follow privilege changes and partial rerender
   assert.equal(await createProjectButton.isDisabled(), true);
   assert.equal(await projectsPage.getByRole("button", { name: "Add outcome kind" }).isDisabled(), true);
   assert.equal(await projectsPage.getByRole("button", { name: "Add review profile" }).isDisabled(), true);
+});
+
+test("team add-on state refresh preserves scoped no-id form and unsubmitted search drafts", async (t) => {
+  const initialState = seededGitState();
+  initialState.cases ||= {};
+  initialState.cases["case-draft-preservation"] = {
+    id: "case-draft-preservation",
+    team_id: "team-alpha",
+    project_id: "alpha-project",
+    title: "Draft preservation case",
+    description: "Keeps the case search form rendered.",
+    status: "open",
+    priority: "normal",
+    tags: [],
+    task_ids: [],
+    created_at: "2026-06-09T00:00:00Z",
+    updated_at: "2026-06-09T00:00:00Z",
+  };
+  const {
+    port,
+    state,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(
+    t,
+    port,
+    {},
+    "/addons/team-addon/?privileged_unlocked=true",
+  );
+
+  await waitForRevision(page, 4);
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before testing form drafts",
+  );
+  await openProjects(page);
+  const alphaOutcomeForm = page.locator(
+    '#team-projects-page form[data-form-id="create-outcome-kind-form"][data-form-draft-scope="alpha-project"]',
+  );
+  await alphaOutcomeForm.locator('[name="kind"]').fill("release_readiness");
+  await alphaOutcomeForm.locator('[name="name"]').fill("Release readiness");
+  await alphaOutcomeForm
+    .locator('[name="description"]')
+    .fill("Confirm release readiness before handoff.");
+  await alphaOutcomeForm.locator('[name="team_wide"]').check();
+
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the project draft refresh to reach the Team client",
+  );
+  await waitForRevision(page, state.revision);
+  assert.equal(
+    await alphaOutcomeForm.locator('[name="description"]').inputValue(),
+    "Confirm release readiness before handoff.",
+  );
+  assert.equal(await alphaOutcomeForm.locator('[name="team_wide"]').isChecked(), true);
+
+  await page.locator('[data-project-focus-id="beta-project"]').click();
+  const betaOutcomeForm = page.locator(
+    '#team-projects-page form[data-form-id="create-outcome-kind-form"][data-form-draft-scope="beta-project"]',
+  );
+  assert.equal(
+    await betaOutcomeForm.locator('[name="description"]').inputValue(),
+    "",
+    "a project-scoped draft must not leak into a different project",
+  );
+
+  await page.getByRole("tab", { name: "Cases" }).click();
+  const caseQuery = page.locator(
+    '#team-cases-page form[data-form-id="case-history-search-form"] [name="query"]',
+  );
+  await caseQuery.fill("unsent case query");
+  state.revision += 1;
+  emitStateSnapshot({ response_scope: "revision", revision: state.revision });
+  await waitForRevision(page, state.revision);
+  assert.equal(await caseQuery.inputValue(), "unsent case query");
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  const taskQuery = page.locator(
+    '#team-task-board-page form[data-form-id="task-board-search-form"] [name="task_board_query"]',
+  );
+  await taskQuery.fill("unsent task query");
+  state.revision += 1;
+  emitStateSnapshot({ response_scope: "revision", revision: state.revision });
+  await waitForRevision(page, state.revision);
+  assert.equal(await taskQuery.inputValue(), "unsent task query");
 });
 
 test("team add-on admin context overrides the browser color scheme", async (t) => {
@@ -6997,6 +7297,55 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
   );
 });
 
+test("team add-on Chat preserves a reader position across a state-stream refresh", async (t) => {
+  const { port, state, chatRequests, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const messageList = page.locator(".chat-message-list");
+  await messageList.getByText("Message 119").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before forcing a refresh",
+  );
+
+  const before = await messageList.evaluate((element) => {
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = Math.max(128, Math.floor(maxTop / 2));
+    element.dispatchEvent(new Event("scroll"));
+    return { maxTop, scrollTop: element.scrollTop };
+  });
+  assert.ok(before.maxTop > before.scrollTop, "expected a non-bottom reader position");
+
+  const requestsBeforeRefresh = chatRequests.length;
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the test state revision to reach the Team client",
+  );
+  await waitForCondition(
+    () => chatRequests.length > requestsBeforeRefresh,
+    "expected the state-stream revision to refresh the active Chat view",
+  );
+  await waitForRevision(page, state.revision);
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+
+  const after = await messageList.evaluate((element) => ({
+    maxTop: Math.max(0, element.scrollHeight - element.clientHeight),
+    scrollTop: element.scrollTop,
+  }));
+  assert.ok(
+    Math.abs(after.scrollTop - before.scrollTop) <= 4,
+    `expected state refresh to preserve reading position, got ${after.scrollTop}, expected ${before.scrollTop}`,
+  );
+  assert.ok(after.maxTop - after.scrollTop > 96, "expected reader to remain away from the newest message");
+});
+
 test("team add-on Chat send keeps the selected message list anchored during send refreshes", async (t) => {
   let releaseMessageResponse = null;
   let messageRequestStarted = null;
@@ -7403,6 +7752,84 @@ test("team add-on Chat refresh preserves a conversation selected while the list 
     await page.locator(".chat-thread-title").getByText("Ada").count(),
     0,
     "expected delayed conversation-list response not to restore the stale selection",
+  );
+});
+
+test("team add-on Chat preserves unsent composer drafts per conversation and clears a sent draft", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+  });
+  const page = await openBrowserPage(t, port, {
+    viewport: { width: 1280, height: 720 },
+  });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({
+    state: "visible",
+  });
+  const composer = page.locator('.chat-composer textarea[name="body"]');
+  await composer.fill("Alpha conversation draft");
+  await composer.evaluate((field) => field.setSelectionRange(6, 18));
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+    .click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({
+    state: "visible",
+  });
+  await composer.fill("Beta conversation draft");
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-alpha-lead"]')
+    .click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({
+    state: "visible",
+  });
+  assert.equal(await composer.inputValue(), "Alpha conversation draft");
+  assert.deepEqual(
+    await composer.evaluate((field) => ({
+      selectionStart: field.selectionStart,
+      selectionEnd: field.selectionEnd,
+    })),
+    { selectionStart: 6, selectionEnd: 18 },
+  );
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+    .click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({
+    state: "visible",
+  });
+  assert.equal(await composer.inputValue(), "Beta conversation draft");
+  await page.locator(".chat-composer button[type='submit']").click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST"
+          && request.pathname
+            === "/api/addons/team-addon/conversations/conversation-beta-lead/messages"
+          && request.payload?.body === "Beta conversation draft",
+      ),
+    "expected the beta chat draft to be sent",
+  );
+  await page.waitForFunction(() => {
+    const field = document.querySelector('.chat-composer textarea[name="body"]');
+    return field instanceof HTMLTextAreaElement && field.value === "";
+  });
+
+  await page
+    .locator('[data-chat-conversation-id="conversation-alpha-lead"]')
+    .click();
+  assert.equal(await composer.inputValue(), "Alpha conversation draft");
+  await page
+    .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+    .click();
+  assert.equal(
+    await composer.inputValue(),
+    "",
+    "a successfully sent draft must not return after switching conversations",
   );
 });
 
@@ -8893,8 +9320,59 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
 });
 
 test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
+  const initialState = seededGitState();
+  const acceptedRelease = initialState.release_packages["release-accepted"];
+  acceptedRelease.detail = {
+    ...acceptedRelease,
+    policy_version: 2,
+    candidate_commit_sha: "ccc333",
+    manifest: {
+      candidate_commit_sha: "ccc333",
+      deliverables: [{ deliverable_id: "deliverable-accepted" }],
+      verification_commands: [{ name: "targeted-dotnet" }],
+      review_requirements: [{ reviewer_role_id: "alpha-project__project-lead" }],
+      human_review_requirement: { reviewer_group_ids: ["release-approvers"] },
+    },
+    verification_runs: [
+      {
+        id: "verification-accepted-1",
+        state: "failed",
+        attempt_number: 1,
+        failure_kind: "timeout",
+        superseded_by_verification_run_id: "verification-accepted-2",
+        command_results: [
+          {
+            name: "targeted-dotnet",
+            state: "timed_out",
+            exit_code: 124,
+            log_excerpt: [
+              "Starting targeted tests",
+              "error: test host timed out waiting for worker response",
+            ].join("\n"),
+          },
+        ],
+      },
+      {
+        id: "verification-accepted-2",
+        state: "passed",
+        attempt_number: 2,
+        supersedes_verification_run_id: "verification-accepted-1",
+      },
+    ],
+    release_reviews: [
+      {
+        id: "release-review-accepted",
+        reviewer_agent_id: "alpha-manager",
+        state: "accepted",
+      },
+    ],
+    human_review: {
+      state: "approved",
+      requests: [{ id: "human-review-accepted", state: "approved" }],
+    },
+  };
   const { port, requests, state, timelineRequests } = await createTeamAddonServer(t, {
-    initialState: seededGitState(),
+    initialState,
   });
   const page = await openBrowserPage(t, port);
 
@@ -8939,13 +9417,48 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await workspace.getByRole("heading", { name: "Beta Team", exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Alpha Project", exact: true }).waitFor({
+  const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
+  const projectFocus = deliveryPage.locator("[data-delivery-project-filter]");
+  assert.equal(await deliveryFilter("attention").getAttribute("aria-pressed"), "true");
+  assert.equal(await deliveryFilter("all").getAttribute("aria-pressed"), "false");
+  assert.equal(await projectFocus.inputValue(), "");
+  assert.equal(
+    await projectFocus.locator('option[value=""]').textContent(),
+    "All projects (collapsed)",
+  );
+  await workspace.getByText("4 matching deliverables", { exact: true }).waitFor({
     state: "visible",
   });
-  await workspace.getByRole("heading", { name: "Beta Project", exact: true }).waitFor({
+  const collapsedProjects = workspace.locator("details.delivery-project");
+  assert.equal(await collapsedProjects.count(), 2);
+  assert.deepEqual(
+    await collapsedProjects.evaluateAll((projects) =>
+      projects.map((project) => project.open),
+    ),
+    [false, false],
+  );
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 4);
+  assert.equal(
+    await deliveryPage.locator(
+      '.delivery-row[data-deliverable-id="deliverable-accepted"]',
+    ).count(),
+    0,
+  );
+
+  await projectFocus.selectOption("alpha-project");
+  await workspace.getByText("2 matching deliverables", { exact: true }).waitFor({
     state: "visible",
   });
-  assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
+  assert.equal(await workspace.locator("details.delivery-project").count(), 1);
+  assert.equal(
+    await workspace.locator("details.delivery-project").evaluate((project) => project.open),
+    true,
+  );
+  await workspace.getByText("Alpha Project", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await workspace.getByText("Beta Project", { exact: true }).count(), 0);
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 2);
 
   const pendingRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]');
   await openDeliveryRow(pendingRow);
@@ -8980,6 +9493,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
     state: "visible",
   });
 
+  await deliveryFilter("accepted").click();
   const acceptedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
   await openDeliveryRow(acceptedRow);
   const relatedRelease = acceptedRow.locator('[data-release-id="release-accepted"]');
@@ -9013,11 +9527,82 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
   await acceptedRow.getByText("Findings: Looks good.").waitFor({ state: "visible" });
 
+  const deliveryPipeline = acceptedRow.locator(
+    'section[aria-label="Deliverable delivery pipeline"]',
+  );
+  await deliveryPipeline.getByText("Delivery pipeline", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await deliveryPipeline.getByRole("heading", { name: "Current: Publication" }).waitFor({
+    state: "visible",
+  });
+  await deliveryPipeline
+    .getByRole("button", { name: "Load exact gate evidence" })
+    .click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "GET" &&
+          request.pathname ===
+            "/api/addons/team-addon/release-packages/release-accepted",
+      ),
+    "expected release gate evidence request",
+  );
+  await openDeliveryRow(acceptedRow);
+  await deliveryPipeline
+    .getByText("Showing exact release gate evidence available to this operator.", {
+      exact: true,
+    })
+    .waitFor({ state: "visible" });
+  const gateEvidence = deliveryPipeline.locator(
+    "details.delivery-pipeline-evidence",
+  );
+  await gateEvidence.getByText("Gate attempts and decisions", { exact: true }).click();
+  await gateEvidence
+    .getByText("Automated verification attempt 1", { exact: true })
+    .waitFor({ state: "visible" });
+  await gateEvidence
+    .getByText("Automated verification attempt 2", { exact: true })
+    .waitFor({ state: "visible" });
+  await gateEvidence.getByText("Failure type: Timeout", { exact: true }).waitFor({
+    state: "visible",
+  });
+  const failedGateCommand = gateEvidence.locator(
+    ".release-verification-command-failed",
+  );
+  await failedGateCommand
+    .getByText("Failed command: targeted-dotnet", { exact: true })
+    .waitFor({ state: "visible" });
+  await failedGateCommand.getByText("Exit code: 124", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await failedGateCommand
+    .getByText(
+      "Decisive error: error: test host timed out waiting for worker response",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  const failedGateLog = failedGateCommand.locator(
+    "details.release-verification-log",
+  );
+  await failedGateLog.getByText("Show captured command log", { exact: true }).click();
+  assert.equal(
+    await failedGateLog.locator("pre").innerText(),
+    [
+      "Starting targeted tests",
+      "error: test host timed out waiting for worker response",
+    ].join("\n"),
+  );
+
+  await projectFocus.selectOption("beta-project");
+  await deliveryFilter("rejected").click();
   const rejectedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]');
   await openDeliveryRow(rejectedRow);
   await rejectedRow.locator(".state-pill.rejected").first().waitFor({ state: "visible" });
   await rejectedRow.getByText("Findings: Needs more work.").waitFor({ state: "visible" });
 
+  await deliveryFilter("blocked").click();
   const blockedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]');
   await openDeliveryRow(blockedRow);
   await blockedRow.locator(".state-pill.blocked").first().waitFor({ state: "visible" });
@@ -9035,9 +9620,9 @@ test("team add-on UI renders git refs and releases and submits a review decision
     0,
   );
 
-  const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
-
   await deliveryFilter("pending").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 0);
+  await projectFocus.selectOption("alpha-project");
   assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
   await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]').waitFor({
     state: "visible",
@@ -9071,6 +9656,8 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
 
   await deliveryFilter("rejected").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 0);
+  await projectFocus.selectOption("beta-project");
   assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
   await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]').waitFor({
     state: "visible",
@@ -9083,7 +9670,8 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
 
   await deliveryFilter("all").click();
-  assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
+  await projectFocus.selectOption("alpha-project");
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 3);
   await openDeliveryRow(waitingRow);
 
   const workspaceDecisionForm = deliveryPage.locator(
@@ -9537,6 +10125,12 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const waiting = initialState.tasks["task-waiting"];
   const accepted = initialState.tasks["task-accepted"];
   Object.assign(planned, {
+    description: [
+      "The task board must retain this complete task brief.",
+      "It includes the ownership context, acceptance criteria, and handoff notes.",
+      "Operators should be able to read every line without leaving the board.",
+      "This final line ensures the brief uses the expandable board presentation.",
+    ].join("\n"),
     readiness: "waiting_on_children",
     resolution_status: "unresolved",
     integration_ready: false,
@@ -9730,6 +10324,14 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const plannedNode = boardPanel.locator(
     '.task-board-hierarchy-branch[data-task-board-task-id="task-planned"]',
   );
+  const hierarchyBrief = plannedNode.locator(".task-board-task-brief");
+  await hierarchyBrief.locator("summary").click();
+  const hierarchyBriefContent = hierarchyBrief.locator(".task-board-task-brief-content");
+  await hierarchyBriefContent.waitFor({ state: "visible" });
+  assert.match(
+    await hierarchyBriefContent.textContent(),
+    /Operators should be able to read every line without leaving the board\./,
+  );
   await plannedNode.getByRole("button", { name: "Plan alpha delivery", exact: true }).click();
   assert.equal(
     await plannedNode
@@ -9798,6 +10400,13 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     '.task-board-card[data-task-board-task-id="task-planned"]',
   );
   assert.equal(await plannedCard.evaluate((element) => element.classList.contains("task-board-task-selected")), true);
+  const cardBrief = plannedCard.locator(".task-board-task-brief");
+  const cardBriefContent = cardBrief.locator(".task-board-task-brief-content");
+  await cardBriefContent.waitFor({ state: "visible" });
+  assert.match(
+    await cardBriefContent.textContent(),
+    /This final line ensures the brief uses the expandable board presentation\./,
+  );
   assert.equal(await pendingCard.evaluate((element) => element.classList.contains("task-board-task-direct-child")), true);
 });
 
@@ -10169,6 +10778,30 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
       evidence_refs: ["artifact-space:preview-manifest"],
       expires_at: "2026-06-10T16:00:00Z",
     },
+    target_deliverable_options: [
+      {
+        deliverable_id: "deliverable-accepted",
+        task_id: "task-accepted",
+        task_title: "Ship accepted delivery",
+        producer: {
+          agent_id: "alpha-lead",
+          display_name: "Alpha Lead",
+        },
+        summary: "Accepted delivery.",
+        is_top_level: true,
+      },
+      {
+        deliverable_id: "deliverable-child-a",
+        task_id: "task-child-a",
+        task_title: "Implement child contribution A",
+        producer: {
+          agent_id: "alpha-lead",
+          display_name: "Alpha Lead",
+        },
+        summary: "Child contribution A.",
+        is_top_level: false,
+      },
+    ],
     decisions: [
       {
         id: "human-decision-prior-block",
@@ -10217,6 +10850,16 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     canonical_branch: "releases/alpha/human",
     published_commit_sha: null,
     published_at: null,
+    candidate_checkout: {
+      canonical_repository_identity: "azure-devops:example/app/ExampleIndustryAPP",
+      repository_display_name: "ExampleIndustryAPP",
+      managed_repo_id: "mr_0123456789abcdef0123",
+      release_ref: "refs/heads/team/alpha/releases/human",
+      candidate_commit_sha: "candidate111",
+      candidate_tree_hash: "tree222",
+      checkout_command:
+        "evander-cli team checkout-release-candidate release-human --target ./release-candidate-release-human --expected-commit-sha candidate111 --runtime-dir /srv/evander/runtime",
+    },
     manifest: {
       candidate_commit_sha: "candidate111",
       candidate_tree_hash: "tree222",
@@ -10330,7 +10973,13 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     },
   };
 
-  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const {
+    port,
+    requests,
+    state,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(
     t,
     port,
@@ -10375,6 +11024,21 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByText("Pinned candidate prepared", { exact: true }).waitFor({
     state: "visible",
   });
+  const candidateCheckout = detail.locator(".release-candidate-checkout");
+  await candidateCheckout.getByRole("heading", { name: "Test this candidate" }).waitFor({
+    state: "visible",
+  });
+  await candidateCheckout.getByText("ExampleIndustryAPP", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await candidateCheckout
+    .getByText("refs/heads/team/alpha/releases/human", { exact: true })
+    .waitFor({ state: "visible" });
+  await candidateCheckout
+    .getByRole("button", {
+      name: /Copy command: evander-cli team checkout-release-candidate release-human/,
+    })
+    .waitFor({ state: "visible" });
   await detail.getByText("Alpha Project", { exact: true }).waitFor({
     state: "visible",
   });
@@ -10472,9 +11136,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByText(/human-finding-preview-copy open - The preview footer must show/).waitFor({
     state: "visible",
   });
-  await detail.getByText(/Correction task task-human-preview-copy - targets deliverable-accepted/).waitFor({
-    state: "visible",
-  });
+  await detail
+    .getByText(
+      /Correction task task-human-preview-copy · affected work: Ship accepted delivery · by Alpha Lead · included deliverable/,
+    )
+    .waitFor({ state: "visible" });
   await detail
     .getByText("Resolution proposal: Render the pinned candidate SHA in the footer.")
     .waitFor({ state: "visible" });
@@ -10503,16 +11169,317 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   }
 
   const decisionForm = detail.locator("[data-human-review-decision-form]");
+  const findingEditor = decisionForm.locator("[data-human-review-findings-editor]");
+  const findingRows = findingEditor.locator("[data-human-review-finding-row]");
+  assert.equal(
+    await findingRows.count(),
+    0,
+    "the flat findings editor should begin empty until the reviewer explicitly adds one",
+  );
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_target_deliverable_ids"]')
+      .count(),
+    0,
+    "reviewers should never need to enter opaque deliverable IDs",
+  );
+  await findingRows
+    .nth(0)
+    .getByText(
+      "Ship accepted delivery · by Alpha Lead · included deliverable",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  await findingRows
+    .nth(0)
+    .getByText(
+      "Implement child contribution A · by Alpha Lead · contribution",
+      { exact: true },
+    )
+    .waitFor({ state: "visible" });
+  const allTargetOptions = humanRequest.target_deliverable_options;
+  state.human_review_requests[humanRequest.id].target_deliverable_options = [
+    allTargetOptions[0],
+  ];
+  state.release_packages["release-human"].detail.human_review.requests[0]
+    .target_deliverable_options = [allTargetOptions[0]];
+  state.revision += 1;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForRevision(page, state.revision);
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  assert.equal(
+    await findingRows.nth(0).locator('[role="group"][aria-label="Affected work"]').count(),
+    0,
+    "a sole candidate deliverable should be inferred rather than shown as a selector",
+  );
+  await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
+  state.human_review_requests[humanRequest.id].target_deliverable_options =
+    allTargetOptions;
+  state.release_packages["release-human"].detail.human_review.requests[0]
+    .target_deliverable_options = allTargetOptions;
+  state.revision += 1;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForRevision(page, state.revision);
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(0)
+    .locator('[role="group"][aria-label="Affected work"]')
+    .waitFor({ state: "visible" });
+  await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
+  assert.equal(await findingRows.count(), 0);
+  const decisionEndpoint =
+    "**/api/addons/team-addon/human-review-requests/human-review-release-human/decisions";
+  let findingsDecisionPayload = null;
+  await page.route(decisionEndpoint, async (route) => {
+    findingsDecisionPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        revision: state.revision,
+        result: {},
+        human_review_request: humanRequest,
+      }),
+    });
+  });
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:metadata-only");
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  assert.equal(
+    findingsDecisionPayload,
+    null,
+    "a metadata-only finding must not be submitted",
+  );
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_text"]')
+      .evaluate((field) => field.validationMessage),
+    "Describe the finding before attaching targets or evidence.",
+  );
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("[P1] Keep this finding intact, including its explanatory comma.");
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_text"]')
+      .evaluate((field) => field.validationMessage),
+    "",
+    "editing a finding should clear its stale validation error",
+  );
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:finding-one");
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  assert.equal(
+    findingsDecisionPayload,
+    null,
+    "an explicitly added empty finding must not be silently discarded",
+  );
+  assert.equal(
+    await findingRows
+      .nth(1)
+      .locator('textarea[name="human_finding_text"]')
+      .evaluate((field) => field.validationMessage),
+    "Describe this finding or remove the empty row.",
+  );
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("[P2] Keep a second finding intact, too.");
+  await findingRows
+    .nth(1)
+    .locator(
+      'input[name="human_finding_target_deliverable_ids"][value="deliverable-child-a"]',
+    )
+    .check();
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:finding-two");
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  await waitForCondition(
+    () => findingsDecisionPayload !== null,
+    "expected an intercepted changes-requested decision",
+  );
+  assert.deepEqual(
+    findingsDecisionPayload.findings,
+    [
+      {
+        text: "[P1] Keep this finding intact, including its explanatory comma.",
+        target_deliverable_ids: [],
+        evidence_refs: ["artifact-space:finding-one"],
+      },
+      {
+        text: "[P2] Keep a second finding intact, too.",
+        target_deliverable_ids: ["deliverable-child-a"],
+        evidence_refs: ["artifact-space:finding-two"],
+      },
+    ],
+    "each explicit finding row should retain its own prose, targets, and evidence",
+  );
+  await page.getByText("Human review changes requested recorded.").waitFor({
+    state: "visible",
+  });
+  await page.unroute(decisionEndpoint);
+  await decisionForm.waitFor({ state: "visible" });
   await decisionForm.locator('[data-human-checklist-id="smoke-release"]').check();
   await decisionForm
     .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
     .check();
-  await decisionForm.locator('textarea[name="summary"]').fill("Smoke test passed against the pinned preview.");
+  await decisionForm
+    .locator('textarea[name="summary"]')
+    .fill("Smoke test passed against the pinned preview.");
   await decisionForm
     .locator('textarea[name="evidence_refs"]')
     .fill("artifact-space:human-smoke-evidence");
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("Pinned preview footer does not show the release identifier.");
+  await findingRows
+    .nth(0)
+    .locator(
+      'input[name="human_finding_target_deliverable_ids"][value="deliverable-accepted"]',
+    )
+    .check();
+  await findingRows
+    .nth(0)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:footer-screenshot");
+  await findingEditor.getByRole("button", { name: "Add finding" }).click();
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_text"]')
+    .fill("Secondary finding survives refresh.");
+  await findingRows
+    .nth(1)
+    .locator(
+      'input[name="human_finding_target_deliverable_ids"][value="deliverable-child-a"]',
+    )
+    .check();
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_evidence_refs"]')
+    .fill("artifact-space:secondary-evidence,\nartifact-space:follow-up");
+  await findingRows
+    .nth(1)
+    .locator('textarea[name="human_finding_text"]')
+    .evaluate((field) => {
+    field.focus();
+      field.setSelectionRange(10, 17);
+    });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before refreshing the human-review draft",
+  );
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the human-review draft refresh to reach the Team client",
+  );
+  await waitForRevision(page, state.revision);
+
+  assert.equal(
+    await decisionForm.locator('textarea[name="summary"]').inputValue(),
+    "Smoke test passed against the pinned preview.",
+  );
+  assert.equal(
+    await decisionForm.locator('textarea[name="evidence_refs"]').inputValue(),
+    "artifact-space:human-smoke-evidence",
+  );
+  assert.equal(
+    await findingRows.nth(0).locator('textarea[name="human_finding_text"]').inputValue(),
+    "Pinned preview footer does not show the release identifier.",
+  );
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator(
+        'input[name="human_finding_target_deliverable_ids"][value="deliverable-accepted"]',
+      )
+      .isChecked(),
+    true,
+  );
+  assert.equal(
+    await findingRows
+      .nth(0)
+      .locator('textarea[name="human_finding_evidence_refs"]')
+      .inputValue(),
+    "artifact-space:footer-screenshot",
+  );
+  assert.equal(await findingRows.count(), 2);
+  assert.equal(
+    await findingRows.nth(1).locator('textarea[name="human_finding_text"]').inputValue(),
+    "Secondary finding survives refresh.",
+  );
+  assert.equal(
+    await findingRows
+      .nth(1)
+      .locator(
+        'input[name="human_finding_target_deliverable_ids"][value="deliverable-child-a"]',
+      )
+      .isChecked(),
+    true,
+  );
+  assert.equal(
+    await findingRows
+      .nth(1)
+      .locator('textarea[name="human_finding_evidence_refs"]')
+      .inputValue(),
+    "artifact-space:secondary-evidence,\nartifact-space:follow-up",
+    "draft refresh should not normalize unfinished list punctuation",
+  );
+  assert.equal(
+    await decisionForm.locator('[data-human-checklist-id="smoke-release"]').isChecked(),
+    true,
+  );
+  assert.equal(
+    await decisionForm
+      .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
+      .isChecked(),
+    true,
+  );
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const field = document.activeElement;
+      return {
+        name: field?.getAttribute?.("name") || "",
+        value: field?.value || "",
+        selectionStart:
+          field instanceof HTMLTextAreaElement ? field.selectionStart : null,
+        selectionEnd:
+          field instanceof HTMLTextAreaElement ? field.selectionEnd : null,
+      };
+    }),
+    {
+      name: "human_finding_text",
+      value: "Secondary finding survives refresh.",
+      selectionStart: 10,
+      selectionEnd: 17,
+    },
+  );
+
+  await findingRows.nth(1).getByRole("button", { name: "Remove finding 2" }).click();
+  await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
+  assert.equal(await findingRows.count(), 0);
   await decisionForm.getByRole("button", { name: "Approve" }).click();
   await page.getByText("Human review approved recorded.").waitFor({ state: "visible" });
+  assert.equal(
+    await detail.locator("[data-human-review-decision-form]").count(),
+    0,
+    "successful submission should remove rather than restore the completed decision draft",
+  );
 
   const decisionRequest = requests.find(
     (request) =>
@@ -10536,6 +11503,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   assert.deepEqual(decisionRequest.payload.evidence_refs, [
     "artifact-space:human-smoke-evidence",
   ]);
+  assert.equal(
+    "findings" in decisionRequest.payload,
+    false,
+    "non-changes decisions should not send structured findings",
+  );
   assert.equal("reviewer_user_id" in decisionRequest.payload, false);
   assert.equal("reviewer_display_name" in decisionRequest.payload, false);
   assert.equal(initialState.human_review_requests[humanRequest.id].state, "approved");
@@ -10544,7 +11516,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     `http://127.0.0.1:${port}/addons/team-addon/?privileged_unlocked=true&view=my-human-reviews&human_review_request_id=missing-review`,
     { waitUntil: "domcontentloaded" },
   );
-  await waitForRevision(page, 5);
+  await waitForRevision(page, state.revision);
   await page
     .getByText(
       "Human review missing-review is not assigned or visible; showing your assigned reviews instead.",
@@ -10866,10 +11838,234 @@ test("team add-on project editor keeps human release policy in bounded controls"
   );
 });
 
+test("team add-on task cancellation is explicit audited and lifecycle-aware", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  const taskBase = {
+    owner_agent_id: "alpha-lead",
+    project_id: "alpha-project",
+    created_by_agent_id: "alpha-manager",
+    dependency_task_ids: [],
+    deliverable_ids: [],
+    created_at: "2026-07-27T08:00:00Z",
+    updated_at: "2026-07-27T08:00:00Z",
+  };
+  initialState.tasks["task-cancellable"] = {
+    ...taskBase,
+    id: "task-cancellable",
+    priority: 1,
+    state: "in_progress",
+    title: "Retire the incorporated retry action",
+    description: "The accepted parent deliverable already contains the corrected contribution.",
+    deliverable_ids: ["deliverable-existing"],
+    assessment: {
+      readiness: "actionable",
+      resolution_status: "unresolved",
+      unresolved_descendant_ids: [],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+  initialState.tasks["task-successor"] = {
+    ...taskBase,
+    id: "task-successor",
+    priority: 2,
+    state: "accepted",
+    title: "Accepted parent integration",
+    description: "The canonical accepted integration.",
+    parent_task_id: "task-with-child",
+    assessment: {
+      readiness: "resolved",
+      resolution_status: "resolved",
+      unresolved_descendant_ids: [],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+  initialState.tasks["task-with-child"] = {
+    ...taskBase,
+    id: "task-with-child",
+    priority: 3,
+    state: "blocked",
+    title: "Parent with active child",
+    description: "This task cannot be cancelled until its child is resolved.",
+    child_task_ids: ["task-active-child", "task-successor"],
+    assessment: {
+      readiness: "waiting",
+      resolution_status: "unresolved",
+      direct_child_ids: ["task-active-child", "task-successor"],
+      unresolved_descendant_ids: ["task-active-child"],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+  initialState.tasks["task-active-child"] = {
+    ...taskBase,
+    id: "task-active-child",
+    priority: 4,
+    state: "pending",
+    title: "Active child contribution",
+    description: "Finish or cancel this child first.",
+    parent_task_id: "task-with-child",
+    assessment: {
+      readiness: "actionable",
+      resolution_status: "unresolved",
+      unresolved_descendant_ids: [],
+      active_acceptance_ids: [],
+      active_review_request_ids: [],
+    },
+  };
+
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Planning" }).click();
+  const alphaProjectCard = page.locator(
+    "#team-planning-page .planning-project-card",
+    { hasText: "Alpha Project" },
+  );
+  await alphaProjectCard.locator(":scope > details > summary").click();
+
+  const cancellableTask = page.locator(
+    '#team-planning-page [data-planning-task-id="task-cancellable"]',
+  );
+  await cancellableTask.locator(":scope > .planning-task-details > summary").click();
+  const cancellableBody = cancellableTask.locator(".planning-task-body");
+  await cancellableBody.getByRole("button", { name: "Edit" }).click();
+  const editState = page.locator('#edit-record-form select[name="state"]');
+  await editState.waitFor({ state: "visible" });
+  assert.equal(await editState.locator('option[value="accepted"]').count(), 0);
+  assert.equal(await editState.locator('option[value="cancelled"]').count(), 0);
+  let editForm = page.locator("#edit-record-form");
+  await editForm
+    .locator('[name="title"]')
+    .fill("Retire the incorporated retry action safely");
+  await editForm.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  const ordinaryEditRequest = requests.filter(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable",
+  ).at(-1);
+  assert.ok(ordinaryEditRequest, "expected ordinary task edit");
+  assert.equal("integration_boundary" in ordinaryEditRequest.payload, false);
+  assert.equal("deliverable_contract" in ordinaryEditRequest.payload, false);
+
+  await cancellableBody.getByRole("button", { name: "Edit" }).click();
+  editForm = page.locator("#edit-record-form");
+  await editForm.locator('[name="integration_boundary"]').check();
+  await editForm.locator('[name="require_git_provenance"]').check();
+  await editForm
+    .locator('[name="required_contribution_task_ids"]')
+    .fill("task-successor");
+  await editForm.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  const integrationEditRequest = requests.filter(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable",
+  ).at(-1);
+  assert.ok(integrationEditRequest, "expected integration-boundary task edit");
+  assert.equal(integrationEditRequest.payload.integration_boundary, true);
+  assert.deepEqual(integrationEditRequest.payload.deliverable_contract, {
+    require_git_provenance: true,
+    required_contribution_task_ids: ["task-successor"],
+  });
+
+  const cancelButton = cancellableBody.getByRole("button", {
+    name: "Cancel task",
+  });
+  assert.equal(await cancelButton.isEnabled(), true);
+  assert.match(await cancelButton.getAttribute("title"), /audited reason/);
+  await cancelButton.click();
+
+  const cancellationForm = page.locator("#task-cancellation-form");
+  await cancellationForm.waitFor({ state: "visible" });
+  await page
+    .locator("#task-cancellation-subject")
+    .getByText(/Retire the incorporated retry action/)
+    .waitFor({ state: "visible" });
+  await cancellationForm.locator('[name="reason_code"]').selectOption("superseded");
+  await cancellationForm
+    .locator('[name="reason"]')
+    .fill("Its contribution was incorporated and corrected in the accepted parent deliverable.");
+  await cancellationForm
+    .locator('[name="successor_task_id"]')
+    .selectOption("task-successor");
+  await cancellationForm.getByRole("button", { name: "Cancel task" }).click();
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
+
+  const cancellationRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable/cancel",
+  );
+  assert.ok(cancellationRequest, "expected the dedicated cancellation request");
+  assert.deepEqual(
+    {
+      reason_code: cancellationRequest.payload.reason_code,
+      reason: cancellationRequest.payload.reason,
+      successor_task_id: cancellationRequest.payload.successor_task_id,
+    },
+    {
+      reason_code: "superseded",
+      reason:
+        "Its contribution was incorporated and corrected in the accepted parent deliverable.",
+      successor_task_id: "task-successor",
+    },
+  );
+  assert.equal(await page.locator("#task-cancellation-modal").isHidden(), true);
+  const projectDetails = alphaProjectCard.locator(":scope > details");
+  if (!(await projectDetails.evaluate((details) => details.open))) {
+    await projectDetails.locator(":scope > summary").click();
+  }
+
+  const blockedParent = page.locator(
+    '#team-planning-page [data-planning-task-id="task-with-child"]',
+  );
+  await blockedParent.locator(":scope > .planning-task-details > summary").click();
+  const blockedCancel = blockedParent
+    .locator(".planning-task-body")
+    .getByRole("button", { name: "Cancel task" });
+  assert.equal(await blockedCancel.isDisabled(), true);
+  assert.match(await blockedCancel.getAttribute("title"), /descendant task/);
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  await page
+    .locator("#team-task-board-page")
+    .getByRole("button", { name: "Show completed" })
+    .click();
+  const terminalCancel = page
+    .locator('.task-board-card[data-task-board-task-id="task-successor"]')
+    .getByRole("button", { name: "Cancel task" });
+  await terminalCancel.waitFor({ state: "visible" });
+  assert.equal(await terminalCancel.isDisabled(), true);
+  assert.match(await terminalCancel.getAttribute("title"), /already Accepted/);
+});
+
 test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", async (t) => {
+  let releaseCosts = () => {};
+  const costsGate = new Promise((resolve) => {
+    releaseCosts = resolve;
+  });
+  t.after(() => {
+    releaseCosts();
+  });
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.projects["alpha-project"].goals = [
+    { id: "shared-goal", description: "Coordinate alpha launch", state: "active" },
+  ];
+  initialState.projects["beta-project"].goals = [
+    { id: "shared-goal", description: "Coordinate beta launch", state: "active" },
+  ];
 
   initialState.tasks["task-starship-root"] = {
     id: "task-starship-root",
@@ -11061,7 +12257,10 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     decision_at: "2026-07-26T14:00:00Z",
   };
 
-  const { port } = await createTeamAddonServer(t, { initialState });
+  const { port, costResponses, emitStateSnapshot, state } = await createTeamAddonServer(t, {
+    costsBeforeResponse: costsGate,
+    initialState,
+  });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -11071,6 +12270,19 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     { hasText: "Alpha Project" },
   );
   await alphaProjectCard.locator(":scope > details > summary").click();
+  const alphaGoalDisclosure = alphaProjectCard
+    .locator(".goal-list .compact-record-card", { hasText: "Coordinate alpha launch" })
+    .locator(":scope > details");
+  await alphaGoalDisclosure.locator(":scope > summary").click();
+  const betaGoalDisclosure = page
+    .locator("#team-planning-page .planning-project-card", { hasText: "Beta Project" })
+    .locator(".goal-list .compact-record-card", { hasText: "Coordinate beta launch" })
+    .locator(":scope > details");
+  assert.notEqual(
+    await alphaGoalDisclosure.getAttribute("data-team-disclosure-key"),
+    await betaGoalDisclosure.getAttribute("data-team-disclosure-key"),
+    "project-local goal IDs should be scoped by their owning project",
+  );
 
   const rootTask = page.locator(
     '#team-planning-page [data-planning-task-id="task-starship-root"]',
@@ -11185,6 +12397,38 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     0,
   );
 
+  releaseCosts();
+  await waitForCondition(
+    () => costResponses.length >= 1,
+    "expected the delayed costs response to complete",
+  );
+  assert.notEqual(
+    await alphaProjectCard.locator(":scope > details").getAttribute("open"),
+    null,
+    "the planning project should remain expanded after a background render",
+  );
+  assert.notEqual(
+    await rootTask.locator(":scope > .planning-task-details").getAttribute("open"),
+    null,
+    "the planning task should remain expanded after a background render",
+  );
+  assert.notEqual(
+    await briefDetails.getAttribute("open"),
+    null,
+    "the full task brief should remain expanded after a background render",
+  );
+  assert.notEqual(
+    await alphaGoalDisclosure.getAttribute("open"),
+    null,
+    "the opened alpha goal should remain expanded after a background render",
+  );
+  assert.equal(
+    await betaGoalDisclosure.getAttribute("open"),
+    null,
+    "the closed beta goal with the same local ID should remain closed",
+  );
+  await briefDetails.locator(".planning-task-brief-content").waitFor({ state: "visible" });
+
   for (const identifier of [
     "task-starship-root",
     "task-starship-missing",
@@ -11228,12 +12472,43 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     });
   }
 
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected an active state stream",
+  );
+  await waitForRevision(page, state.revision);
+  assert.notEqual(
+    await alphaProjectCard.locator(":scope > details").getAttribute("open"),
+    null,
+    "the planning project should remain expanded after a state-stream refresh",
+  );
+  assert.notEqual(
+    await rootTask.locator(":scope > .planning-task-details").getAttribute("open"),
+    null,
+    "the planning task should remain expanded after a state-stream refresh",
+  );
+  assert.notEqual(
+    await briefDetails.getAttribute("open"),
+    null,
+    "the full task brief should remain expanded after a state-stream refresh",
+  );
+  assert.notEqual(
+    await technicalIdentifiers.getAttribute("open"),
+    null,
+    "the task technical details should remain expanded after a state-stream refresh",
+  );
+
   await page.locator("#planning-status-cancelled").check();
   const refreshedAlphaProjectCard = page.locator(
     "#team-planning-page .planning-project-card",
     { hasText: "Alpha Project" },
   );
-  await refreshedAlphaProjectCard.locator(":scope > details > summary").click();
+  assert.notEqual(
+    await refreshedAlphaProjectCard.locator(":scope > details").getAttribute("open"),
+    null,
+    "the planning project should stay expanded when filters re-render the task list",
+  );
   const cancelledTask = page.locator(
     '#team-planning-page [data-planning-task-id="task-starship-cancelled"]',
   );

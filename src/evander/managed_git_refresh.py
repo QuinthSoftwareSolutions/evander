@@ -34,6 +34,85 @@ def _json_line(payload: dict[str, Any]) -> bytes:
     return (json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
 
 
+def _sanitized_refresh_failure(exc: BaseException) -> tuple[str, str]:
+    """Classify a refresh failure without returning raw Git output or credentials."""
+
+    messages: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current).casefold())
+        current = current.__cause__ or current.__context__
+    detail = "\n".join(messages)
+
+    if "host key verification failed" in detail:
+        return (
+            "upstream_host_key_verification_failed",
+            "Managed repository upstream SSH host-key verification failed.",
+        )
+    if "could not resolve hostname" in detail or "could not resolve host" in detail:
+        return (
+            "upstream_host_resolution_failed",
+            "Managed repository upstream host could not be resolved.",
+        )
+    if any(
+        marker in detail
+        for marker in (
+            "authentication failed",
+            "permission denied",
+            "publickey",
+            "returned error: 401",
+            "returned error: 403",
+            "terminal prompts disabled",
+        )
+    ):
+        return (
+            "upstream_authentication_failed",
+            "Managed repository upstream authentication failed.",
+        )
+    if any(
+        marker in detail
+        for marker in (
+            "connection timed out",
+            "operation timed out",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+        )
+    ):
+        return (
+            "upstream_connection_failed",
+            "Managed repository upstream connection failed.",
+        )
+    if any(
+        marker in detail
+        for marker in (
+            "ssl certificate problem",
+            "tls certificate",
+            "certificate verify failed",
+        )
+    ):
+        return (
+            "upstream_tls_verification_failed",
+            "Managed repository upstream TLS verification failed.",
+        )
+    if "cannot lock ref" in detail or "reference transaction failed" in detail:
+        return (
+            "local_ref_update_failed",
+            "Managed repository local ref update was temporarily blocked.",
+        )
+    if "evander-reserved branch namespaces" in detail:
+        return (
+            "upstream_ref_policy_rejected",
+            "Managed repository upstream refs conflict with reserved Evander namespaces.",
+        )
+    return (
+        "upstream_refresh_failed",
+        "Managed repository upstream refresh failed.",
+    )
+
+
 def _peer_credentials(connection: socket.socket) -> tuple[int, int, int] | None:
     if not hasattr(socket, "SO_PEERCRED"):
         return None
@@ -137,14 +216,18 @@ class _RefreshRequestHandler(socketserver.StreamRequestHandler):
             response = {"ok": True, **result}
         except Exception as exc:
             category = type(exc).__name__
+            error_code, error_message = _sanitized_refresh_failure(exc)
             LOGGER.warning(
-                "Managed Git refresh failed repo=%s category=%s",
+                "Managed Git refresh failed repo=%s category=%s code=%s detail=%s",
                 managed_repo_id or "unknown",
                 category,
+                error_code,
+                error_message,
             )
             response = {
                 "ok": False,
-                "error": "Managed repository upstream refresh failed.",
+                "error": error_message,
+                "error_code": error_code,
                 "error_category": category,
             }
         self.wfile.write(_json_line(response))
@@ -178,6 +261,7 @@ class _RefreshServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                         {
                             "ok": False,
                             "error": "Managed Git refresh broker is busy.",
+                            "error_code": "broker_busy",
                             "error_category": "BrokerBusy",
                         }
                     )
@@ -266,8 +350,9 @@ def request_refresh(
         raise RuntimeError("refresh broker returned an invalid response")
     if not response.get("ok"):
         error = str(response.get("error") or "Managed repository upstream refresh failed.")
+        error_code = str(response.get("error_code") or "upstream_refresh_failed")
         category = str(response.get("error_category") or "unknown")
-        raise RuntimeError(f"{error} category={category}")
+        raise RuntimeError(f"{error} code={error_code} category={category}")
     return response
 
 

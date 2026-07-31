@@ -2147,6 +2147,19 @@ class WorkflowConfigAdminService:
                     continue
                 if _communication_target_shape(target) == "teams_user":
                     continue
+            elif purpose == "team-chat-bridge":
+                if provider not in {"teams", "discord", "email"}:
+                    continue
+                if "read" not in capabilities:
+                    continue
+                if provider == "discord" and "write" not in capabilities:
+                    continue
+                if provider in {"teams", "email"} and not capabilities.intersection(
+                    {"write", "reply"}
+                ):
+                    continue
+                if _communication_target_shape(target) == "teams_user":
+                    continue
             elif purpose == "agent-session":
                 if provider not in {"teams", "discord", "email"}:
                     continue
@@ -2189,6 +2202,11 @@ class WorkflowConfigAdminService:
         self, directory_path: str | None
     ) -> list[WorkflowEditorFieldOption]:
         return self._communication_target_options(directory_path, purpose="read-message")
+
+    def _team_chat_bridge_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="team-chat-bridge")
 
     def _agent_communication_target_options(
         self, directory_path: str | None
@@ -2235,6 +2253,7 @@ class WorkflowConfigAdminService:
             directory_path
         )
         communication_read_target_options = self._communication_read_target_options(directory_path)
+        team_chat_bridge_target_options = self._team_chat_bridge_target_options(directory_path)
         agent_communication_target_options = self._agent_communication_target_options(
             directory_path
         )
@@ -2334,6 +2353,13 @@ class WorkflowConfigAdminService:
             nodes.append(node)
         for entry in provider_catalog.workflow_editor_catalog_entries:
             node = entry.model_copy(deep=True)
+            if node.type == "effect:team:enqueue-operator-chat-message":
+                node.fields = [
+                    field.model_copy(update={"options": team_chat_bridge_target_options})
+                    if field.key == "communication_target_id"
+                    else field
+                    for field in node.fields
+                ]
             if node.type in seen_node_types:
                 raise ValueError(
                     f"Provider workflow editor catalog entry duplicates core node type: {node.type}"

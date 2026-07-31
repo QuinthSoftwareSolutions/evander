@@ -220,6 +220,14 @@ export type AgentExecutionRecord = {
   metadata: Record<string, unknown>;
 };
 
+export type AgentExecutionHistoryResponse = {
+  agent_id: string;
+  items: AgentExecutionRecord[];
+  limit: number;
+  has_more: boolean;
+  next_cursor: string | null;
+};
+
 export type AgentCreateRequest = {
   backend: AgentBackend;
   session_id?: string | null;
@@ -427,6 +435,8 @@ export type AgentSessionPolicy = {
   labels: Record<string, string>;
   web_search_enabled: boolean;
   codex_auth_mode: "metered_api" | "chatgpt_subscription" | null;
+  effective_codex_auth_mode: "metered_api" | "chatgpt_subscription";
+  codex_auth_mode_source: "session_override" | "directory_default" | "provider_route";
 };
 
 export type AgentListResponse = {

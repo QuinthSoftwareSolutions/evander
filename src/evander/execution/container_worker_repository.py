@@ -37,6 +37,16 @@ class ContainerWorkerExecutionRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ContainerWorkerSessionExecutionSummary(BaseModel):
+    """The inexpensive inventory fields for one container-worker session."""
+
+    session_id: str
+    execution_count: int = 0
+    active_execution_count: int = 0
+    active_running_count: int = 0
+    latest_execution: ContainerWorkerExecutionRecord | None = None
+
+
 class ContainerWorkerExecutionRepository:
     def __init__(self, path: Path) -> None:
         original_path = Path(path)
@@ -145,6 +155,55 @@ class ContainerWorkerExecutionRepository:
             ORDER BY created_at ASC, execution_id ASC
             """,
             (normalized,),
+        )
+
+    def get_session_summary(self, session_id: str) -> ContainerWorkerSessionExecutionSummary:
+        normalized = self._normalize_key(session_id)
+        if normalized is None:
+            return ContainerWorkerSessionExecutionSummary(session_id="")
+        summaries = self._list_session_summaries("WHERE session_id = ?", (normalized,))
+        return (
+            summaries[0]
+            if summaries
+            else ContainerWorkerSessionExecutionSummary(session_id=normalized)
+        )
+
+    def list_session_summaries(
+        self, directory_path: str | None = None
+    ) -> list[ContainerWorkerSessionExecutionSummary]:
+        if directory_path is None:
+            return self._list_session_summaries("", ())
+        normalized = self._normalize_key(directory_path)
+        if normalized is None:
+            return []
+        return self._list_session_summaries("WHERE directory_path = ?", (normalized,))
+
+    def list_page_by_session(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        before_created_at: str | None = None,
+        before_execution_id: str | None = None,
+    ) -> list[ContainerWorkerExecutionRecord]:
+        normalized = self._normalize_key(session_id)
+        if normalized is None:
+            return []
+        normalized_limit = max(1, int(limit))
+        where_clause = "WHERE session_id = ?"
+        parameters: tuple[Any, ...] = (normalized,)
+        if before_created_at is not None and before_execution_id is not None:
+            where_clause += " AND (created_at < ? OR (created_at = ? AND execution_id < ?))"
+            parameters += (before_created_at, before_created_at, before_execution_id)
+        return self._list_records(
+            f"""
+            SELECT payload_json
+            FROM container_worker_executions
+            {where_clause}
+            ORDER BY created_at DESC, execution_id DESC
+            LIMIT ?
+            """,
+            (*parameters, normalized_limit),
         )
 
     def list_active_by_session(
@@ -333,6 +392,58 @@ class ContainerWorkerExecutionRepository:
         with self._connect() as connection:
             rows = connection.execute(sql, parameters).fetchall()
         return [record for row in rows if (record := self._record_from_row(row)) is not None]
+
+    def _list_session_summaries(
+        self, where_clause: str, parameters: tuple[Any, ...]
+    ) -> list[ContainerWorkerSessionExecutionSummary]:
+        self._ensure_ready()
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                WITH scoped AS (
+                    SELECT
+                        session_id,
+                        last_status,
+                        created_at,
+                        execution_id,
+                        payload_json,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY session_id
+                            ORDER BY created_at DESC, execution_id DESC
+                        ) AS sequence_number,
+                        COUNT(*) OVER (PARTITION BY session_id) AS execution_count,
+                        SUM(
+                            CASE WHEN last_status IN ('created', 'starting', 'running')
+                            THEN 1 ELSE 0 END
+                        ) OVER (PARTITION BY session_id) AS active_execution_count,
+                        SUM(CASE WHEN last_status = 'running' THEN 1 ELSE 0 END)
+                            OVER (PARTITION BY session_id) AS active_running_count
+                    FROM container_worker_executions
+                    {where_clause}
+                )
+                SELECT session_id, execution_count, active_execution_count,
+                       active_running_count, payload_json
+                FROM scoped
+                WHERE sequence_number = 1
+                ORDER BY session_id ASC
+                """,
+                parameters,
+            ).fetchall()
+        summaries: list[ContainerWorkerSessionExecutionSummary] = []
+        for row in rows:
+            latest = self._record_from_row(row)
+            if latest is None:
+                continue
+            summaries.append(
+                ContainerWorkerSessionExecutionSummary(
+                    session_id=str(row["session_id"]),
+                    execution_count=int(row["execution_count"] or 0),
+                    active_execution_count=int(row["active_execution_count"] or 0),
+                    active_running_count=int(row["active_running_count"] or 0),
+                    latest_execution=latest,
+                )
+            )
+        return summaries
 
     def _first_by_exact_column(
         self, column: str, value: str

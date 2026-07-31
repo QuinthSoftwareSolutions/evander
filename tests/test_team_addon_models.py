@@ -258,6 +258,47 @@ def test_release_policy_rejects_duplicate_reviewer_profile_pairs() -> None:
         ProjectReleasePolicy(review_requirements=[requirement, requirement])
 
 
+def test_release_policy_resource_limits_are_typed_and_optional() -> None:
+    default_policy = ProjectReleasePolicy(allow_ungated=True)
+    configured_policy = ProjectReleasePolicy.model_validate(
+        {
+            "allow_ungated": True,
+            "resource_limits": {
+                "memory": " 6g ",
+                "cpus": 4,
+                "pids_limit": 1536,
+            },
+        }
+    )
+
+    assert default_policy.resource_limits is None
+    assert configured_policy.model_dump(mode="json")["resource_limits"] == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
+
+
+@pytest.mark.parametrize(
+    "resource_limits",
+    [
+        {"cpus": 0},
+        {"cpus": -1},
+        {"pids_limit": 0},
+        {"pids_limit": -1},
+        {"unexpected": 1},
+    ],
+)
+def test_release_policy_rejects_invalid_resource_limits(
+    resource_limits: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ProjectReleasePolicy(
+            allow_ungated=True,
+            resource_limits=resource_limits,
+        )
+
+
 def _state_with_runtime_operations() -> TeamState:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     state = _valid_state()

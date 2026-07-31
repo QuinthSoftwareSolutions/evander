@@ -32,6 +32,7 @@ from .agent_session import (
     container_shell_preamble,
     container_backend,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     effective_config_for_session,
     normalize_optional_string,
     require_container_session_id,
@@ -520,6 +521,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     session_id=session_id,
                     directory_path=directory_path,
                     image=container_worker_image_for_session(session, config),
+                    resource_limits=container_worker_resource_limits_for_session(session),
                     command=command,
                     metadata={
                         "effect_type": "effect:agent:clone-repo:git-write-cleanup",
@@ -598,6 +600,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     session_id=session_id,
                     directory_path=directory_path,
                     image=container_worker_image_for_session(session, config),
+                    resource_limits=container_worker_resource_limits_for_session(session),
                     command=command,
                     metadata={"effect_type": "effect:agent:clone-repo:git-config"},
                 )

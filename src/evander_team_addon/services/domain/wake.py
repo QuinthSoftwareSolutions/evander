@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import (
     UTC,
     datetime,
@@ -34,6 +35,7 @@ from .common import (
     _priority_sort_value,
 )
 from .deliverables import _active_task_deliverables
+from .preparation_failures import inbox_has_current_preparation_blocker
 from .stand_down import _active_stand_downs_for_agent
 
 
@@ -187,7 +189,9 @@ def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInbox
     items = [
         item
         for item in state.inbox.values()
-        if item.recipient_agent_id == agent_id and item.state == TeamInboxItemState.PENDING
+        if item.recipient_agent_id == agent_id
+        and item.state == TeamInboxItemState.PENDING
+        and not inbox_has_current_preparation_blocker(state, item=item)
     ]
     items.sort(key=lambda item: (item.created_at, item.id))
     return items
@@ -298,6 +302,62 @@ def _agent_task_work_ready(state: TeamState, agent_id: str) -> bool:
     )
 
 
+def _dependency_status_snapshot(state: TeamState) -> dict[str, str]:
+    """Capture active dependency-gated tasks before a command transition."""
+
+    terminal = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }
+    return {
+        task.id: state.dependency_status(task.id)
+        for task in state.tasks.values()
+        if task.dependency_task_ids and task.state not in terminal
+    }
+
+
+def _append_newly_ready_task_owner_wake_requested_events(
+    state: TeamState,
+    *,
+    dependency_statuses_before: Mapping[str, str],
+    result: dict[str, Any],
+    now: datetime,
+    max_no_progress_count: int = DEFAULT_MAX_NO_PROGRESS_COUNT,
+) -> None:
+    """Wake only owners whose existing dependency-gated task just became ready."""
+
+    newly_ready_owner_ids = {
+        task.owner_agent_id
+        for task_id, previous_status in dependency_statuses_before.items()
+        if previous_status != "satisfied"
+        and (task := state.tasks.get(task_id)) is not None
+        and state.dependency_status(task.id) == "satisfied"
+        and _task_can_wake_owner_for_work(state, task)
+    }
+    for agent_id in sorted(newly_ready_owner_ids):
+        wake = _agent_immediate_wake_request(state, agent_id=agent_id, now=now)
+        if wake is None:
+            continue
+        reason, delay_seconds = wake
+        runtime = state.agent_runtimes.get(agent_id, AgentRuntime(agent_id=agent_id))
+        if (
+            reason == "task_ready"
+            and max_no_progress_count >= 0
+            and runtime.no_progress_count >= max_no_progress_count
+        ):
+            continue
+        _append_agent_wake_requested_event(
+            state,
+            agent_id=agent_id,
+            result=result,
+            reason=reason,
+            now=now,
+            delay_seconds=delay_seconds,
+        )
+
+
 def _append_agent_wake_requested_event(
     state: TeamState,
     *,
@@ -352,5 +412,7 @@ __all__ = [
     "_append_follow_up_agent_wake_requested_event",
     "_agent_immediate_wake_request",
     "_agent_task_work_ready",
+    "_dependency_status_snapshot",
+    "_append_newly_ready_task_owner_wake_requested_events",
     "_append_agent_wake_requested_event",
 ]

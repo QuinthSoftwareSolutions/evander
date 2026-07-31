@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import threading
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 
@@ -15,6 +16,7 @@ from evander.admin.services.managed_git_service import (
     ManagedGitConflictError,
     REGISTRY_SCHEMA,
 )
+from evander.config import GatewayConfig
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.models import SessionManifest, ToolName
 from evander.repositories.session_manifests import JsonSessionManifestRepository
@@ -117,6 +119,82 @@ def test_registration_deduplicates_ancestor_and_isolates_siblings(tmp_path: Path
         service.get_repository(owner["managed_repo_id"], "root/team-b")
 
 
+def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    branch = "agents/session-backend/tasks/task"
+    _run(
+        "git",
+        f"--git-dir={bare}",
+        "update-ref",
+        f"refs/heads/{branch}",
+        first,
+    )
+
+    assert (
+        service.resolve_branch_commit(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch=branch,
+        )
+        == first
+    )
+    assert (
+        service.resolve_branch_commit(
+            repo_id,
+            directory_path="root/team-a",
+            branch="agents/session-backend/tasks/missing",
+        )
+        is None
+    )
+    with pytest.raises(LookupError):
+        service.resolve_branch_commit(
+            repo_id,
+            directory_path="root/team-b",
+            branch=branch,
+        )
+
+
+def test_host_commit_identity_update_is_repository_scoped(tmp_path: Path) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+
+    updated = service.set_host_commit_identity(
+        repo_id,
+        directory_path="root/team-a/project",
+        name=" Jonathan Quinth ",
+        email=" operator@example.invalid ",
+    )
+
+    assert updated["host_commit_identity"] == {
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
+    assert _internal_record(service, repo_id)["host_commit_identity"] == {
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
+    with pytest.raises(LookupError):
+        service.set_host_commit_identity(
+            repo_id,
+            directory_path="root/team-b",
+            name="Other Team",
+            email="other-team@example.invalid",
+        )
+    with pytest.raises(ValueError, match="characters Git does not permit"):
+        service.set_host_commit_identity(
+            repo_id,
+            directory_path="root/team-a",
+            name="Invalid <Identity>",
+            email="invalid@example.invalid",
+        )
+
+
 def test_descendant_cannot_override_ancestor_default_branch_without_owner_authorization(
     tmp_path: Path,
 ) -> None:
@@ -175,6 +253,64 @@ def test_git_environment_drops_inherited_askpass_credentials(
     assert "EVANDER_GIT_PASSWORD" not in worktree_env
 
 
+def test_git_environment_rewrites_azure_ssh_refresh_when_only_general_pat_is_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AZURE_DEVOPS_PR_PAT", raising=False)
+    monkeypatch.setenv("AZURE_DEVOPS_PAT", "test-secret")
+    service = ManagedGitAdminService(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        SimpleNamespace(),
+        tmp_path,
+    )
+    refresh_source = "ssh://git@ssh.dev.azure.com/v3/example/Example%20Project/ExampleRepo"
+    canonical_url = "https://dev.azure.com/example/Example%20Project/_git/ExampleRepo"
+
+    git_env = service._git_environment(
+        {
+            "provider": "azure_devops",
+            "directory_path": "root",
+            "refresh_source": refresh_source,
+            "canonical_repository_url": canonical_url,
+        }
+    )
+    git_config = {
+        git_env[f"GIT_CONFIG_KEY_{index}"]: git_env[f"GIT_CONFIG_VALUE_{index}"]
+        for index in range(int(git_env["GIT_CONFIG_COUNT"]))
+    }
+
+    assert git_env["EVANDER_GIT_USERNAME"] == "evander"
+    assert git_env["EVANDER_GIT_PASSWORD"] == "test-secret"
+    assert git_config[f"url.{canonical_url}.insteadOf"] == refresh_source
+
+
+def test_git_environment_preserves_azure_ssh_refresh_without_pat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AZURE_DEVOPS_PR_PAT", raising=False)
+    monkeypatch.delenv("AZURE_DEVOPS_PAT", raising=False)
+    service = ManagedGitAdminService(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        SimpleNamespace(),
+        tmp_path,
+    )
+
+    git_env = service._git_environment(
+        {
+            "provider": "azure_devops",
+            "directory_path": "root",
+            "refresh_source": "ssh://git@ssh.dev.azure.com/v3/example/project/repo",
+            "canonical_repository_url": "https://dev.azure.com/example/project/_git/repo",
+        }
+    )
+    git_config_keys = {
+        git_env[f"GIT_CONFIG_KEY_{index}"] for index in range(int(git_env["GIT_CONFIG_COUNT"]))
+    }
+
+    assert "EVANDER_GIT_PASSWORD" not in git_env
+    assert not any(key.startswith("url.") for key in git_config_keys)
+
+
 def test_git_environment_fails_closed_when_scoped_config_resolution_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -226,6 +362,7 @@ def test_git_subprocess_timeout_is_bounded_and_path_free(
 
 def test_resolve_snapshot_and_evidence_are_pinned_and_directory_scoped(tmp_path: Path) -> None:
     source, _, commit_sha = _source_repository(tmp_path)
+    tree_hash = _run("git", "rev-parse", "HEAD^{tree}", cwd=source)
     service = _service(tmp_path)
     record = service.register_repository("root/team-a", str(source))
 
@@ -241,6 +378,24 @@ def test_resolve_snapshot_and_evidence_are_pinned_and_directory_scoped(tmp_path:
         "source_ref": "refs/heads/main",
         "commit_sha": commit_sha,
     }
+    assert service.resolve_snapshot(
+        record["managed_repo_id"],
+        "root/team-a/project",
+        source_ref="main",
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+    ) == {
+        **snapshot,
+        "tree_hash": tree_hash,
+    }
+    with pytest.raises(ManagedGitConflictError, match="not the pinned tree"):
+        service.resolve_snapshot(
+            record["managed_repo_id"],
+            "root/team-a/project",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash="f" * 40,
+        )
     assert (
         service.validate_snapshot_evidence(
             record["managed_repo_id"],
@@ -1364,6 +1519,159 @@ def test_local_registration_never_mutates_checkout(tmp_path: Path) -> None:
     assert "refresh_source" not in record
 
 
+def test_materialize_candidate_checkout_creates_exact_detached_checkout_without_internal_path(
+    tmp_path: Path,
+) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team", str(source))
+    tree_hash = _run("git", "rev-parse", f"{commit_sha}^{{tree}}", cwd=source)
+    target = tmp_path / "candidate-review"
+
+    result = service.materialize_candidate_checkout(
+        record["managed_repo_id"],
+        "root/team/project",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+        target_dir=target,
+    )
+
+    assert result == {
+        "managed_repo_id": record["managed_repo_id"],
+        "directory_path": "root/team/project",
+        "canonical_repository_identity": record["canonical_repository_identity"],
+        "source_ref": "refs/heads/main",
+        "commit_sha": commit_sha,
+        "tree_hash": tree_hash,
+        "target_dir": str(target),
+        "detached": True,
+    }
+    assert _run("git", "rev-parse", "HEAD", cwd=target) == commit_sha
+    assert _run("git", "rev-parse", "HEAD^{tree}", cwd=target) == tree_hash
+    assert subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=target,
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode == 1
+    assert _run("git", "remote", "get-url", "origin", cwd=target) == record[
+        "canonical_repository_url"
+    ]
+    internal_path = str(_bare_path(service, record["managed_repo_id"]))
+    git_metadata = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (target / ".git").rglob("*")
+        if path.is_file()
+    )
+    assert internal_path not in git_metadata
+    assert str(service.runtime_dir / "git-worktrees") not in git_metadata
+
+
+def test_export_pinned_source_archive_writes_verified_source_only_zip(
+    tmp_path: Path,
+) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team", str(source))
+    tree_hash = _run("git", "rev-parse", f"{commit_sha}^{{tree}}", cwd=source)
+    archive_path = tmp_path / "candidate-review.zip"
+
+    result = service.export_pinned_source_archive(
+        record["managed_repo_id"],
+        "root/team/project",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+        archive_path=archive_path,
+    )
+
+    assert result == {
+        "managed_repo_id": record["managed_repo_id"],
+        "directory_path": "root/team/project",
+        "source_ref": "refs/heads/main",
+        "commit_sha": commit_sha,
+        "tree_hash": tree_hash,
+    }
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["README.md"]
+        assert archive.read("README.md") == b"first\n"
+
+    _commit(source, "README.md", "second\n", "move main")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(record["managed_repo_id"])
+    with pytest.raises(ManagedGitConflictError, match=f"not {commit_sha}"):
+        service.export_pinned_source_archive(
+            record["managed_repo_id"],
+            "root/team/project",
+            source_ref="refs/heads/main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            archive_path=tmp_path / "moved-candidate-review.zip",
+        )
+
+
+def test_materialize_candidate_checkout_refuses_existing_or_mismatched_targets(
+    tmp_path: Path,
+) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    tree_hash = _run("git", "rev-parse", f"{commit_sha}^{{tree}}", cwd=source)
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ManagedGitConflictError, match="never overwrites"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            target_dir=existing,
+        )
+    assert (existing / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+
+    mismatched = tmp_path / "mismatched"
+    with pytest.raises(ManagedGitConflictError, match="pinned tree"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash="f" * 40,
+            target_dir=mismatched,
+        )
+    assert not mismatched.exists()
+
+    _commit(source, "README.md", "second\n", "move main")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(record["managed_repo_id"])
+    moved_ref_target = tmp_path / "moved-ref"
+    with pytest.raises(ManagedGitConflictError, match="no longer equals"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            target_dir=moved_ref_target,
+        )
+    assert not moved_ref_target.exists()
+
+    with pytest.raises(ValueError, match="outside the Evander runtime"):
+        service.materialize_candidate_checkout(
+            record["managed_repo_id"],
+            "root",
+            source_ref="main",
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+            target_dir=service.runtime_dir / "review",
+        )
+
+
 def test_default_branch_override_is_stored_in_registry_and_bare_metadata(
     tmp_path: Path,
 ) -> None:
@@ -1767,6 +2075,12 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
     record = service.register_repository("root", str(source))
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
+    service.set_host_commit_identity(
+        repo_id,
+        directory_path="root",
+        name="Jonathan Quinth",
+        email="operator@example.invalid",
+    )
     feature_a = tmp_path / "feature-a.txt"
     _run("git", "checkout", "-b", "agents/session-1/a", cwd=source)
     first_feature = _commit(source, feature_a.name, "a\n", "feature a")
@@ -1783,6 +2097,7 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         "team/releases/release-1",
         directory_path="root",
         base_branch="main",
+        required_source_ancestor_commit_sha=base_commit,
         expected_source_commits={
             "agents/session-1/a": first_feature,
             "agents/session-2/b": second_feature,
@@ -1825,12 +2140,78 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         _run(
             "git",
             f"--git-dir={bare}",
+            "show",
+            "-s",
+            "--format=%an <%ae>|%cn <%ce>",
+            result["commit_sha"],
+        )
+        == (
+            "Jonathan Quinth <operator@example.invalid>"
+            "|Jonathan Quinth <operator@example.invalid>"
+        )
+    )
+    assert (
+        _run(
+            "git",
+            f"--git-dir={bare}",
             "for-each-ref",
             "--format=%(refname)",
             "refs/evander/consolidations",
         )
         == ""
     )
+
+
+def test_consolidation_rejects_source_outside_required_ancestor(
+    tmp_path: Path,
+) -> None:
+    source, _, base_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    base_tree = _run("git", "rev-parse", f"{base_commit}^{{tree}}", cwd=source)
+    unrelated_commit = _run(
+        "git",
+        "commit-tree",
+        base_tree,
+        "-m",
+        "unrelated correction source",
+        cwd=source,
+    )
+    _run(
+        "git",
+        "update-ref",
+        "refs/heads/agents/session-1/unrelated",
+        unrelated_commit,
+        cwd=source,
+    )
+    _run(
+        "git",
+        "push",
+        str(bare),
+        "agents/session-1/unrelated",
+        cwd=source,
+    )
+
+    result = service.consolidate_branches(
+        repo_id,
+        ["agents/session-1/unrelated"],
+        "team/corrections/release-1",
+        directory_path="root",
+        base_commit_sha=base_commit,
+        required_source_ancestor_commit_sha=base_commit,
+        expected_source_commits={
+            "agents/session-1/unrelated": unrelated_commit,
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "scope_mismatch"
+    assert result["non_descendant_source_branches"] == [
+        "agents/session-1/unrelated"
+    ]
+    assert result["required_source_ancestor_commit_sha"] == base_commit
 
 
 def test_reconcile_removes_only_lock_free_managed_stale_worktrees(tmp_path: Path) -> None:

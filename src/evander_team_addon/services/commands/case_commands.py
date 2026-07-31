@@ -20,7 +20,6 @@ from .work_item_helpers import (
     _team_create_case_normalized_payload,
 )
 from ...models import (
-    RolePermission,
     TeamCase,
     TeamCaseStatus,
     HumanReviewFinding,
@@ -32,7 +31,6 @@ from ...models import (
     _unique_text_list,
 )
 from ..domain.agent_access import (
-    _agent_has_role_permission_for_project,
     _is_project_lead_for,
     _is_team_manager,
 )
@@ -48,8 +46,8 @@ from ..domain.common import (
 )
 from ..domain.human_reviews import (
     close_post_release_feedback_case,
-    create_human_finding_correction_root,
     record_human_finding_resolution_proposal,
+    route_human_finding_correction,
 )
 
 from .executor import TeamCommandExecutor
@@ -428,17 +426,14 @@ class TeamCaseCommandService(TeamCommandExecutor):
             reject_stale_high_priority_inbox=True,
         )
 
-    def create_human_finding_correction_root_command(
+    def route_human_finding_correction_command(
         self,
         *,
         session_id: str,
         finding_id: str,
         owner_agent_id: str,
-        title: str,
-        description: str,
         request_id: str,
-        task_id: str | None = None,
-        originating_task_id: str | None = None,
+        target_deliverable_ids: Sequence[str] | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -446,18 +441,22 @@ class TeamCaseCommandService(TeamCommandExecutor):
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_finding_id = _required_text(finding_id, "finding_id")
         normalized_owner_id = _required_text(owner_agent_id, "owner_agent_id")
-        normalized_title = _required_text(title, "title")
-        normalized_description = _required_text(description, "description")
         normalized_request_id = _required_text(request_id, "request_id")
-        normalized_task_id = _optional_text(task_id)
-        normalized_origin_id = _optional_text(originating_task_id)
+        normalized_target_ids = (
+            _unique_text_list(
+                target_deliverable_ids,
+                "target_deliverable_ids",
+            )
+            if target_deliverable_ids is not None
+            else None
+        )
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
             "handled_inbox_item_ids",
         )
         context = TeamCommandContext(
             ambient_session_id=normalized_session_id,
-            tool_name="team_create_human_finding_correction_root",
+            tool_name="team_route_human_finding_correction",
             request_id=normalized_request_id,
             correlation_id=_optional_text(correlation_id),
             causation_id=_optional_text(causation_id),
@@ -466,10 +465,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
         normalized_payload = {
             "finding_id": normalized_finding_id,
             "owner_agent_id": normalized_owner_id,
-            "title": normalized_title,
-            "description": normalized_description,
-            "task_id": normalized_task_id,
-            "originating_task_id": normalized_origin_id,
+            "target_deliverable_ids": normalized_target_ids,
             "handled_inbox_item_ids": sorted(normalized_handled_ids),
             "correlation_id": context.correlation_id,
             "causation_id": context.causation_id,
@@ -481,7 +477,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
         ) -> TeamCommandApplyResult:
             actor = _require_command_agent(
                 resolved,
-                "team_create_human_finding_correction_root",
+                "team_route_human_finding_correction",
             )
             finding, _request, _release, project, case = (
                 _human_finding_command_context(
@@ -494,45 +490,31 @@ class TeamCaseCommandService(TeamCommandExecutor):
                 or _is_project_lead_for(state, actor.id, project.id)
                 or _is_team_manager(state, actor)
             )
-            has_root_authority = _agent_has_role_permission_for_project(
-                state,
-                actor,
-                RolePermission.CREATE_ROOT_TASK,
-                project.id,
-            )
-            if not authorized_triage_actor or not has_root_authority:
+            if not authorized_triage_actor:
                 raise TeamCommandValidationError(
-                    code="human_finding_retarget_not_permitted",
+                    code="human_finding_route_not_permitted",
                     message=(
-                        f"agent {actor.id} cannot create an independent correction "
-                        f"root for human review finding {finding.id}"
+                        f"agent {actor.id} cannot route the correction task for "
+                        f"human review finding {finding.id}"
                     ),
                     correction_context={
                         "finding_id": finding.id,
                         "case_id": case.id,
-                        "required_permission": (
-                            RolePermission.CREATE_ROOT_TASK.value
-                        ),
                     },
                 )
             result: dict[str, Any] = {"events": []}
             try:
-                correction_task = create_human_finding_correction_root(
+                correction_task = route_human_finding_correction(
                     state,
                     finding_id=finding.id,
                     owner_agent_id=normalized_owner_id,
-                    title=normalized_title,
-                    description=normalized_description,
-                    request_id=normalized_request_id,
                     result=result,
-                    task_id=normalized_task_id,
-                    originating_task_id=normalized_origin_id,
-                    created_by_agent_id=actor.id,
+                    target_deliverable_ids=normalized_target_ids,
                 )
             except ValueError as exc:
                 raise _team_command_validation_error_from_exception(
                     exc,
-                    code="human_finding_retarget_invalid",
+                    code="human_finding_route_invalid",
                     correction_context={
                         "finding_id": finding.id,
                         "case_id": case.id,
@@ -546,7 +528,6 @@ class TeamCaseCommandService(TeamCommandExecutor):
                     "progress_made": True,
                 },
                 created_domain_ids=[
-                    correction_task.id,
                     *result.get("created_inbox_item_ids", []),
                 ],
                 created_event_ids=[

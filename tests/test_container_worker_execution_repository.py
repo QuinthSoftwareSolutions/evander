@@ -123,6 +123,43 @@ def test_repository_put_get_delete_and_read_all_round_trip(tmp_path: Path) -> No
     assert repo.read_all() == {}
 
 
+def test_repository_session_summaries_and_cursor_page_are_bounded(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    for execution_id, session_id, status, minute in (
+        ("exec-a-1", "session-a", "removed", 1),
+        ("exec-a-2", "session-a", "running", 2),
+        ("exec-b-1", "session-b", "starting", 3),
+    ):
+        repo.put(
+            _record(
+                execution_id,
+                session_id=session_id,
+                last_status=status,
+                directory_path="root/team",
+                created_at=_utc_at(minute),
+            )
+        )
+
+    summaries = repo.list_session_summaries("root/team")
+    by_session = {summary.session_id: summary for summary in summaries}
+    assert by_session["session-a"].execution_count == 2
+    assert by_session["session-a"].active_execution_count == 1
+    assert by_session["session-a"].active_running_count == 1
+    assert by_session["session-a"].latest_execution is not None
+    assert by_session["session-a"].latest_execution.execution_id == "exec-a-2"
+    assert by_session["session-b"].active_execution_count == 1
+
+    first_page = repo.list_page_by_session("session-a", limit=1)
+    assert [record.execution_id for record in first_page] == ["exec-a-2"]
+    second_page = repo.list_page_by_session(
+        "session-a",
+        limit=1,
+        before_created_at=first_page[0].created_at.isoformat().replace("+00:00", "Z"),
+        before_execution_id=first_page[0].execution_id,
+    )
+    assert [record.execution_id for record in second_page] == ["exec-a-1"]
+
+
 def test_repository_json_constructor_uses_sibling_db_and_imports_legacy_json_once(
     tmp_path: Path,
 ) -> None:

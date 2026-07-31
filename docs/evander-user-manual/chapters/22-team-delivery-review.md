@@ -138,7 +138,21 @@ The branch remains internal evidence at this stage. Review does not publish it t
 > - base branch, base commit, and current verified commit;
 > - status and timestamps.
 >
-> A Git deliverable must submit its <code>branch_context_id</code>. The server verifies the caller, task, dispatch, and context and derives the accepted agent branch. An agent cannot substitute an arbitrary branch string. Artifact-only deliverables remain valid without Git.
+> An explicitly Git-backed deliverable supplies
+> <code>branch_context_id</code> and <code>git_refs.commit_sha</code>. Unknown Git
+> reference fields are rejected. The server verifies caller, task, dispatch,
+> context, current managed branch tip, and exact commit, then derives the
+> accepted agent branch and pins the same submitted SHA for review.
+>
+> Omitting Git fields is not a way to hide changed code. If exactly one active
+> task context exists, Team resolves its live branch tip. A tip different from
+> the pinned base is automatically bound to the deliverable with the exact
+> context, branch, and commit. If the tip still equals the base, an artifact-only
+> result is legitimate. No active context also remains artifact-only. Multiple
+> contexts, an unavailable base, or an unresolvable branch fails with an
+> actionable correction instead of guessing. Historical accepted records
+> without pinned provenance remain readable and immutable; any explicit rework
+> replacement must satisfy the current rules.
 >
 > The branch is evidence inside the managed bare repository, not a canonical publication. Promotion begins only through the reviewed Git flows in Chapter 24.
 
@@ -168,6 +182,15 @@ authoritative.
 
 A review may be requested by an authorized producer, supervisor, project lead, or Team manager. The assigned reviewer must be active, in the same Team, and compatible with any selected review profile.
 
+An assigned reviewer must inspect the immutable work specification, not only
+the deliverable summary. For a leaf, read the complete task description,
+outcome and deliverable contracts, profile, implementation, artifacts, and
+verification. For a composite task, also traverse the declared contribution
+tasks, required current source deliverables, and recursively relevant ancestor
+specifications and evidence. Complete contribution IDs prove coverage, not
+correct integration. If any required task or evidence record is unavailable,
+decide <code>blocked</code> and name the missing IDs instead of guessing.
+
 Review profiles can apply by project and role, define required and optional criteria, and require
 specific outcome kinds. Archived profiles cannot be assigned to new reviews. When more than one
 profile matches a reviewer, delivered outcome kinds narrow the implicit choice; an ambiguous
@@ -189,7 +212,17 @@ Creating the same active review for one deliverable and reviewer is replay-safe:
 > <code>superior_acceptance</code> from <code>review</code>, so UI labels and manager routing do
 > not treat an ordinary superior notice as an unassigned reviewer gap.
 >
-> Workflow authors can use <code>trigger:team:deliverable-created</code> and one <code>effect:team:create-review-request</code> node per required reviewer/profile. The trigger owns its cursor and suppresses old deliverables when first enabled, avoiding an accidental historical review storm.
+> Workflow authors can use <code>trigger:team:deliverable-created</code>.
+> <code>effect:team:create-review-request</code> creates an independent review
+> request when each request should retain its ordinary individual lifecycle. If
+> the complete reviewer set must decide as one round, use one
+> <code>effect:team:create-review-cohort</code>; it creates, seals, and queues
+> every reviewer slot in one transaction. Exact retries are idempotent, while
+> mismatched membership or pre-existing independent requests fail closed. The
+> combined <code>team_submit_deliverable_for_review</code> command likewise
+> atomically seals the review list supplied with a new deliverable. The trigger
+> owns its cursor and suppresses old deliverables when first enabled, avoiding
+> an accidental historical review storm.
 
 ## Review decisions
 
@@ -213,12 +246,17 @@ own rules.
 
 ### Rejected
 
-A rejected review:
+For an ordinary independent review, a rejection immediately:
 
 - marks the reviewed deliverable rejected;
 - returns the task to <code>in_progress</code>;
 - creates a rework inbox item for the producer;
 - preserves concrete findings.
+
+For a sealed cohort, the review decision and findings are still persisted
+immediately, but deliverable rejection and the consolidated rework notice wait
+until every other active cohort slot is accepted or rejected. A pending or
+blocked slot keeps the cohort unresolved as described below.
 
 Imani does not edit the rejected deliverable after Rowan finds that jitter can exceed the deadline. Imani produces a new deliverable that explicitly supersedes the rejected one. Open findings are carried forward.
 
@@ -234,34 +272,78 @@ A blocked non-release review can be retried with <code>team_retry_review</code>.
 the blocked attempt, links a new pending successor, reopens the deliverable, and resolves the
 obsolete review blocker. Do not overwrite the original decision.
 
+For a Git-backed retry, Team re-resolves the work context's authoritative agent
+branch. The retry proceeds only when that tip still equals the one pinned
+reviewed/submitted commit. A missing or inconsistent context, missing pinned
+commit, or advanced branch requires a replacement deliverable; the immutable
+review is never retargeted to new code.
+
 An authorized requester, producer, supervisor, project lead, or manager can withdraw a mistaken
 pending non-release review with <code>team_withdraw_review</code>. A project lead or manager can
 retire a terminal non-release attempt with <code>team_retire_review</code>. Withdrawal records no
 decision; both actions preserve history. Retirement preserves the decision and does not resolve or
 waive open findings.
 
-A rejected or blocked deliverable can be replaced by a same-task rework submission. When an
-accepted deliverable from another task is the intentional replacement, an authorized project
-lead or manager can link it explicitly with <code>team_link_deliverable_replacement</code>.
-Migration does not guess replacement lineage.
+An ordinary rejected or blocked deliverable can be replaced by a same-task
+rework submission. A sealed-cohort deliverable cannot be replaced while any
+cohort slot is pending or blocked; settle the round or recover the exact
+blocked slot first. When an accepted deliverable from another task is the
+intentional replacement, an authorized project lead or manager can link it
+explicitly with <code>team_link_deliverable_replacement</code>. Migration does
+not guess replacement lineage.
+
+When a current accepted deliverable later proves invalid, the task owner,
+project lead, or same-Team manager uses
+<code>team_reopen_task_for_rework</code> with that exact accepted deliverable
+and a reason. The recorded task owner must still be active and a member of the
+project's Team; otherwise the reopen fails before creating an obligation. The
+original acceptance and reviews remain immutable. The task
+returns to <code>in_progress</code>, its ancestor/project/release readiness is no
+longer complete, and the original owner receives one high-priority rework
+obligation. The next same-task deliverable must explicitly supersede that
+accepted ID and repeat every current required review profile through fresh
+formal review; direct finish, direct superior acceptance, unrelated
+replacement, and cross-project or foreign deliverables cannot close the
+rework. The original owner receives one high-priority item and targeted wake,
+not a stream of duplicate obligations. If the accepted predecessor had a
+sealed cohort, the replacement must create the complete fresh cohort described
+below.
 
 An unlocked operator has equivalent revision-checked <code>/withdraw</code> and
 <code>/retire</code> routes. Release reviews continue through their release-gate recovery path.
 
-## Multi-review cascades
+## Independent reviews and sealed cohorts
 
-Suppose Northstar requires both Rowan's software-quality review and Priya's operational-readiness review.
+Independent requests retain the ordinary lifecycle above: each decision is
+immutable and a rejection can return the deliverable to rework while other
+independent evidence remains visible.
 
-1. Imani submits deliverable D1.
-2. The runtime creates R1 for Rowan and R2 for Priya.
-3. Rowan accepts R1. D1 stays pending because R2 remains open.
-4. Priya rejects R2 with an unresolved deployment-safety finding. D1 becomes rejected and the task returns to rework.
-5. Imani submits D2 superseding D1. The open finding is carried to D2.
-6. New reviews target D2 and its exact pinned commit.
-7. Both profiles accept and the owning profile resolves the carried finding.
-8. D2 and the task become accepted.
+A sealed cohort represents one coordinated review round. Suppose Northstar
+requires Rowan's software-quality slot and Priya's operational-readiness slot:
 
-This cascade prevents “one approval wins,” prevents review of a moving branch tip, and preserves why rework occurred.
+1. Imani submits D1 with both reviewer slots, or a workflow atomically creates
+   the complete cohort on existing D1.
+2. Rowan may accept while Priya remains pending; D1 stays under review.
+3. If Priya rejects, Team persists that decision but waits for every other
+   active slot to settle before notifying Imani. One early rejection does not
+   interrupt reviewers who are still producing evidence.
+4. A blocked slot makes the cohort and task unresolved while the other
+   reviewers may still decide. Recover that exact slot with a retry or
+   authorized replacement; do not discard the rest of the cohort.
+5. Once no active slot is pending or blocked, Team consolidates all rejected
+   reviews and open findings into one rework notice.
+6. Imani submits D2 superseding D1. D2 must atomically create a complete fresh
+   cohort preserving every predecessor slot: review-profile multiplicity and
+   each unprofiled reviewer identity.
+7. The new cohort reviews D2's exact pinned commit and carried findings. Only
+   complete acceptance can accept D2 and the task.
+
+Membership is sealed: no late reviewer can be appended, two slots cannot be
+collapsed onto one reviewer, and the final active member cannot simply be
+withdrawn. An exact terminal-cohort workflow retry remains terminal; it does
+not reopen accepted or rejected decisions. This cascade prevents “one approval
+wins,” preserves the complete evidence round, and keeps rework replacement
+from silently reducing required review coverage.
 
 ![Deliverable review and rework cascade](../../assets/evander-user-manual/diagrams/14-review-cascade.svg)
 
@@ -289,6 +371,7 @@ The distinction operators should remember is that **seeing a review is not the s
 > - <code>team_withdraw_review</code>;
 > - <code>team_retire_review</code>;
 > - <code>team_link_deliverable_replacement</code>;
+> - <code>team_reopen_task_for_rework</code>;
 > - delivery list/get tools;
 > - Git promotion and release tools covered in Chapter 24.
 >
@@ -303,10 +386,14 @@ The distinction operators should remember is that **seeing a review is not the s
 | Artifact path rejected | The requested path escapes the allowed artifact root or has invalid shape. | Publish from a safe relative path below the session artifact root. |
 | Artifact ref exists but bytes are unavailable | Metadata was recorded without publication, permission/version access failed, or an ordinary recipient has not imported it yet. | Inspect the artifact-space record; for ordinary handoffs call <code>team_import_artifact</code>, and for reviews inspect the reviewer import error. |
 | Git context mismatch | Agent/task/session/dispatch or derived branch does not match the submitted context. | Use the current task work context; never type an alternate branch. |
+| Artifact-only submission gains Git provenance or is rejected | The single active task branch changed from its pinned base, or Team could not prove a safe unchanged/unique context. | Accept the automatic exact binding, or supply the named current context and commit; do not omit Git fields to hide code. |
 | Reviewer cannot be assigned | Agent is inactive, cross-Team, or incompatible with the profile. | Select an active same-Team reviewer matching policy. |
 | Accepted decision rejected by validation | A required criterion is missing/failed or findings remain open. | Record complete criterion results and resolve only authorized findings. |
 | Second decision refused | Review decisions are immutable. | Create the appropriate successor deliverable/review; do not overwrite history. |
 | Task stays waiting after one acceptance | Another active review or open carried finding remains. | Inspect the complete current deliverable review set. |
+| Cohort rejection does not wake the producer yet | Another sealed-cohort slot is pending or blocked. | Let remaining reviewers decide and recover any blocked slot; rework is consolidated only after the cohort settles. |
+| Sealed-cohort replacement is refused | The fresh review list omitted a predecessor profile slot or unprofiled reviewer identity, or attempted a direct-acceptance replacement. | Resubmit through <code>team_submit_deliverable_for_review</code> with the complete fresh cohort and exact predecessor ID. |
+| Previously accepted result is now known invalid | Immutable acceptance cannot be edited in place. | Use <code>team_reopen_task_for_rework</code>; the original owner must submit an explicit formally reviewed replacement. |
 | Rejected task has no useful next step | Findings were vague. | Preserve evidence and create concrete, testable findings in the review decision. |
 | Outcome deliverable rejected before review | Its outcome kind is missing, forbidden, or lacks a durable reference ID. | Match the task contract and identify the actual external record; do not substitute prose or evidence-only output. |
 | Evidenced no-op does not resolve the task | The contract disallows it, evidence refs are absent, or the submitted completion has not been accepted. | Correct the contract-compatible evidence and follow the normal acceptance/review path; do not mark the outcome task finished. |
@@ -354,9 +441,9 @@ Do not edit a terminal review or force the task state merely because one accepta
 
 - <code>src/evander_team_addon/models.py</code> — task outcome contracts/completions plus deliverable, verification, review, profile, criterion, finding, and supersession models.
 - <code>src/evander_team_addon/services/commands/deliverable_submission_commands.py</code> and <code>review_commands.py</code> — submission, request authority, deduplication, and immutable decisions.
-- <code>src/evander_team_addon/services/commands/task_update_commands.py</code> — outcome-completion and blocked-source guards.
+- <code>src/evander_team_addon/services/commands/task_update_commands.py</code> — accepted-deliverable rework plus outcome-completion and blocked-source guards.
 - <code>src/evander_team_addon/services/domain/deliverables.py</code>, <code>review.py</code>, and <code>git_work_contexts.py</code> — outcome validation, acceptance cascades, retries, findings, artifact/Git evidence, and context validation.
-- <code>src/evander_team_addon/providers.py</code> — deliverable trigger, review-request effect, artifact import, and wake prompt projection.
+- <code>src/evander_team_addon/providers.py</code> — deliverable trigger, independent/cohort review effects, artifact import, and hierarchy-aware reviewer prompt projection.
 - <code>src/evander_team_addon/mcp.py</code> and <code>api.py</code> — grouped delivery tools and operator routes.
 - <code>docs/addons.md</code> — artifact publication, review profiles, rework findings, and release handoff.
 - <code>tests/test_team_addon_mcp.py</code>, <code>tests/test_team_addon_workflow_primitives.py</code>, and <code>tests/test_team_addon_runtime.py</code> — submission, profile enforcement, duplicate review, cascade, and reviewer-input behavior.

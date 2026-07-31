@@ -92,7 +92,7 @@ The links around a task are intentionally not interchangeable:
 | Link | Meaning | Does it gate completion? |
 |---|---|---|
 | <code>parent_task_id</code> | This task is a constituent part of the parent outcome. | Yes. Every descendant must resolve before the parent can resolve or release. |
-| <code>dependency_task_ids</code> | Another task must resolve before this task is actionable. | It gates readiness, but does not make the dependency part of this task's output. |
+| <code>dependency_task_ids</code> | Another task must resolve before this task is actionable. | It always gates readiness. For Git-backed work, accepted current Git deliverables from direct dependencies are also composed into the prepared successor checkout; a dependency with no Git deliverable remains lifecycle-only. |
 | <code>originating_task_id</code> | Work on another task caused this independent work to be created. | No. It is provenance only and grants no creation or access authority. |
 | <code>case_id</code> | Several tasks share one intake, correction, or feedback story. | No. The case groups records; task and finding state still decide completion. |
 | <code>source_deliverable_ids</code> | A parent deliverable incorporated these exact accepted direct-child outputs. | Yes for contribution coverage. Transitive lineage is derived recursively. |
@@ -100,6 +100,14 @@ The links around a task are intentionally not interchangeable:
 If work can continue independently after another task finishes, model it as an
 independent root, optionally with <code>originating_task_id</code>. Do not make it
 a child merely because one task discovered or requested it.
+
+An explicit <code>integration_boundary</code> marks a final acceptance boundary
+regardless of task title or hierarchy depth. Its <code>deliverable_contract</code>
+can require pinned Git provenance and the exact direct-child or dependency task
+contributions that the final deliverable must name. Parent containment does not
+itself inherit Git content: use dependencies for accepted predecessor commits
+that the successor checkout must compose, and
+<code>source_deliverable_ids</code> for exact contribution evidence.
 
 ### Evidence and decisions
 
@@ -188,7 +196,7 @@ Three supported write paths share the repository rules:
 
 Templates are a fourth convenience surface, but they materialize the same Team records through one optimistic mutation. A template does not create a core session, VM, container job, managed repository, or external accounting action. Those resources must already exist or be created through their owning Evander flows.
 
-Reads are grouped rather than duplicated across every chapter. Operators use the scoped Team UI views and Admin API. Agents use Team list/get tools such as tasks, inbox, cases, deliverables, reviews, releases, projects, agents, runtime attention, identity, and memory search. Workflows use <code>query:team:state</code>, <code>query:team:memory</code>, and <code>query:team:session-routing</code>.
+Reads are grouped rather than duplicated across every chapter. Operators use the scoped Team UI views and Admin API. Agents use Team list/get tools such as tasks, inbox, cases, deliverables, reviews, releases, projects, agents, runtime attention, identity, and memory search. During an active wake, <code>team_get_current_dispatch_context</code> hydrates the immutable dispatch scope and its scoped task, inbox, blocker, review, project, and Git records; it does not widen that scope. Workflows use <code>query:team:state</code>, <code>query:team:memory</code>, and <code>query:team:session-routing</code>.
 
 ## Troubleshooting
 

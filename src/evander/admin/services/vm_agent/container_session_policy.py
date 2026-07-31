@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.codex_auth import CodexAuthMode, effective_codex_auth_mode
 from evander.admin.services.vm_agent.common import (
     Any,
     SessionManifest,
@@ -10,13 +11,44 @@ from evander.admin.services.vm_agent.common import (
 
 
 class VmAgentContainerSessionPolicyMixin:
+    def _agent_codex_auth_mode_payload(self, session: SessionManifest) -> dict[str, str]:
+        resolver = getattr(self.runtime, "provider_config", None)
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        try:
+            config = (
+                resolve_for_directory(session.directory_path)
+                if callable(resolve_for_directory)
+                else self.config
+            )
+        except Exception:
+            config = self.config
+
+        explicit_mode = session.codex_auth_mode
+        effective_mode = effective_codex_auth_mode(session=session, config=config)
+        source = "session_override" if explicit_mode is not None else "directory_default"
+
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        model_provider_mode = str(
+            metadata.get("model_provider_mode")
+            or getattr(config, "model_provider_mode", None)
+            or "openai_public"
+        ).strip()
+        if model_provider_mode != "openai_public":
+            effective_mode = CodexAuthMode.METERED_API
+            source = "provider_route"
+
+        return {
+            "effective_codex_auth_mode": effective_mode.value,
+            "codex_auth_mode_source": source,
+        }
+
     def _agent_session_policy_payload(
         self, session: SessionManifest | None
     ) -> dict[str, Any] | None:
         if session is None:
             return None
         labels = _normalize_session_labels(session.metadata.get("labels"))
-        return {
+        payload = {
             "session_id": session.session_id,
             "model": session.model,
             "expires_at": session.expires_at,
@@ -93,6 +125,8 @@ class VmAgentContainerSessionPolicyMixin:
             "metadata": dict(session.metadata),
             "labels": labels,
         }
+        payload.update(self._agent_codex_auth_mode_payload(session))
+        return payload
 
     def _approval_notification_target_options(
         self, session: SessionManifest | None

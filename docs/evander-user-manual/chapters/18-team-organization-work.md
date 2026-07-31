@@ -51,7 +51,11 @@ A Team has exactly one manager identity and may contain subordinate agents. Agen
 >
 > This keeps routine coordination local. Broader intervention uses task reassignment, manager routing, governance, or an operator directive rather than a covert communication shortcut.
 
-An active stand-down overlays the hierarchy. A hold on an agent's subtree prevents descendants from acquiring Team work even if their tasks otherwise appear ready. Chapter 20 covers its runtime effect.
+An active stand-down overlays the hierarchy. An agent-scoped hold pauses only
+the named agent; a subtree hold also prevents descendants from acquiring Team
+work even if their tasks otherwise appear ready. Chapter 20 covers its runtime
+effect and the narrow completion exception for work already leased before a
+hold.
 
 ![Team Org chart for Mira, Priya, Imani, Rowan, and Riley](../../assets/evander-user-manual/screenshots/team-org-chart.png)
 
@@ -93,6 +97,7 @@ To an operator, a task is the clearest answer to “who owns the next concrete p
 > - case;
 > - deliverables;
 > - task kind, outcome contract, and structured completion;
+> - integration-boundary designation and deliverable contract;
 > - reason-coded cancellation;
 > - metadata and timestamps.
 
@@ -134,8 +139,10 @@ Use the relationship that describes the real lifecycle:
   combined outcome. It recursively gates parent submission, acceptance,
   resolution, and release.
 - <code>dependency_task_ids</code> means this task must wait for another task to
-  resolve. It does not transfer ownership and does not make that task part of
-  this task's deliverable.
+  resolve. It does not transfer ownership. For Git-backed work, preparation
+  also verifies and composes the accepted current Git deliverables of direct
+  dependencies into the successor's worktree. A dependency with no Git
+  deliverable remains lifecycle-only.
 - <code>originating_task_id</code> records that another task caused independent
   work to be created. It is immutable provenance only: neither task gates the
   other, and the reference confers no visibility or authority.
@@ -144,9 +151,36 @@ Use the relationship that describes the real lifecycle:
 
 For example, an investigation child whose result must be integrated belongs
 under the incident outcome. A newly discovered, separately releasable
-improvement is an independent root with optional provenance. Human correction
-tasks are likewise independent roots linked by a correction case; they do not
-rewrite or become children of the accepted historical task.
+improvement is an independent root with optional provenance. Human review
+corrections use one coordination-only parent inside the correction case and one
+child per immutable finding. Those children may retain provenance to the
+historical source task, but they never rewrite or become children of that
+accepted historical task.
+
+### Explicit integration and final-acceptance boundaries
+
+Do not infer the task that owns final integration from words such as “root,”
+“lead,” or “integration,” or from hierarchy depth. Set
+<code>integration_boundary=true</code> explicitly and attach a
+<code>deliverable_contract</code>. That contract can:
+
+- require authoritative pinned Git provenance with
+  <code>require_git_provenance</code>; and
+- name exact <code>required_contribution_task_ids</code>.
+
+Required contribution tasks must be direct children or dependencies in the
+same project. The boundary's final deliverable must name the current accepted
+deliverable from every required task in
+<code>source_deliverable_ids</code>—no missing, unexpected, stale, or
+superseded source satisfies the contract. When Git provenance is required,
+artifact-only submission, direct finish, and direct acceptance cannot bypass
+the boundary.
+
+Before any deliverable has been submitted, the task owner, an authorized
+supervisor, the project lead, or the same-Team manager may designate or edit
+the boundary and contract. Once any deliverable exists, or once the task is
+terminal, that policy is immutable. Plan the boundary and exact contribution
+set before execution rather than weakening it after evidence arrives.
 
 ### Support work and outcome work
 
@@ -249,11 +283,17 @@ Team does not wake every agent who has an unfinished task. It looks for work tha
 > - ownership and active agent status;
 > - recursive descendant resolution and direct-child contribution coverage;
 > - dependency readiness and canonical blockers;
+> - exact accepted dependency Git inputs when the worktree must inherit code;
 > - pending direct acceptance, reviews, and rework;
 > - inbox and action feedback;
 > - active leases, stand-downs, no-progress state, and cost caps.
 
-A task in <code>waiting_for_review</code> with an active review normally wakes its reviewer, not its producer. A rejected review returns the task to active rework. Accepted deliverables and closed findings can cascade the task to accepted. Only then should project goals and status be reevaluated.
+A task in <code>waiting_for_review</code> with an active review normally wakes
+its reviewer, not its producer. An independent rejected review returns the task
+to active rework; a sealed-cohort rejection waits until every active slot
+settles, then returns one consolidated rework obligation. Accepted deliverables
+and closed findings can cascade the task to accepted. Only then should project
+goals and status be reevaluated.
 
 An aggregate parent that is merely waiting on children does not receive
 periodic implementation wakes. Notify its owner on child blocker, handoff,
@@ -291,6 +331,8 @@ Start with the record that appears stuck. For a task, read its owner, dependenci
 | Unknown role, agent, or project | A referenced stable ID is absent or archived. | Reload Team state and choose an active in-scope record. |
 | Reporting cycle or invalid manager hierarchy | The organizational graph would no longer have a valid root. | Correct the proposed reporting edge; do not patch the database. |
 | Parent or dependency cycle | The task graph would make readiness undefined. | Remove or reverse the bad edge and resubmit the whole intended mutation. |
+| Dependency resolves but successor preparation fails | A current Git-backed dependency is unaccepted, moved, belongs to another managed repository, or cannot be composed at its pinned commit. | Inspect the preparation blocker and dependency Git sources; repair or replace the exact accepted source instead of starting from project base. |
+| Integration deliverable reports contract mismatch | Required Git provenance or the exact current accepted contribution set is missing, unexpected, stale, or superseded. | Read contribution coverage, then submit one pinned deliverable naming the required current source deliverables. |
 | Parent is terminal with unresolved descendants | Historical or manual state contradicts recursive resolution. | Inspect the assessment's exact descendant IDs and repair through supported task/deliverable transitions; do not force project status. |
 | Outcome task is merely <code>finished</code> | No accepted contracted result or evidenced no-op exists. | Submit and accept a contract-compatible deliverable, or record an authorized cancellation when the work is truly obsolete. |
 | Root creation denied despite provenance | The caller lacks <code>create_root_task</code>; provenance does not grant authority. | Ask an authorized planner/lead to create the root or use the normal proposal/inbox path. |
@@ -309,7 +351,9 @@ When establishing a project:
 4. Define goals as outcomes, not implementation steps.
 5. Create intake cases with stable external references where useful.
 6. Create root tasks with clear owners, then add only necessary parent and dependency edges.
-7. Verify the Org chart, Task board dependency summary, Cases links, and project status at the returned revision.
+7. Designate any integration boundary and exact deliverable contract before its
+   first submission.
+8. Verify the Org chart, Task board dependency summary, Cases links, and project status at the returned revision.
 
 When work appears stuck:
 
@@ -328,6 +372,6 @@ If the domain records look ready but no wake or session activity follows, hand a
 - <code>src/evander_team_addon/services/commands/task_creation_commands.py</code>, <code>task_update_commands.py</code>, and <code>case_commands.py</code> — task and case authorization and mutation behavior.
 - <code>src/evander_team_addon/api.py</code> — revision-checked project, role, agent, case, and task routes.
 - <code>src/evander_team_addon/mcp.py</code> — agent-facing organization and work commands and grouped read tools.
-- <code>src/evander_team_addon/providers.py</code> and <code>provider_schemas.py</code> — workflow case/task effects and filtered state queries.
+- <code>src/evander_team_addon/providers.py</code> and <code>provider_schemas.py</code> — workflow case/task effects, accepted dependency-Git preparation, and filtered state queries.
 - <code>docs/addons.md</code> — Team roles, cases, tasks, templates, communication, and runtime overview.
 - <code>tests/test_team_addon_models.py</code>, <code>tests/test_team_addon_mcp.py</code>, and <code>tests/test_team_addon_api.py</code> — graph, authorization, link, and transition cases.

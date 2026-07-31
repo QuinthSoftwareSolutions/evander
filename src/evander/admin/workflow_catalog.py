@@ -262,6 +262,18 @@ def _communication_target_option_metadata(
         metadata["teams_target_normalized"] = parsed_target.normalized
     if purpose == "read-message":
         metadata["required_capability"] = "read"
+    elif purpose == "team-chat-bridge":
+        metadata["required_capabilities"] = ["read", "write or reply"]
+        metadata["thread_id"] = {
+            "top_level": {
+                "supported": "write" in capabilities,
+                "requires_capability": "write",
+            },
+            "reply": {
+                "supported": provider in {"teams", "email"} and "reply" in capabilities,
+                "requires_capability": "reply",
+            },
+        }
     elif purpose == "agent-session":
         metadata["supported_capabilities"] = ["read", "write", "reply"]
         if provider == "email":

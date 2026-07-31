@@ -176,6 +176,7 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
 
     assert "FROM ubuntu:24.04" in dockerfile
     assert "COPY codex /usr/local/bin/codex" in dockerfile
+    assert "bubblewrap" in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
     assert "WORKDIR /home/agent" in dockerfile
     assert "useradd --uid 1001" not in dockerfile

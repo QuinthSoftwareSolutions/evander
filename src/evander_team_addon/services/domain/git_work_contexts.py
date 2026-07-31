@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from datetime import datetime
+import re
 from typing import Any
 
 from ...models import (
+    Deliverable,
+    GitWorkContext,
     GitWorkContextState,
     TeamState,
     TeamTaskState,
     WorktreeCleanupState,
 )
-from .common import _ensure_utc, _optional_mapping, _optional_text
+from .common import _ensure_utc, _optional_mapping, _optional_text, utc_now
 
 
 class GitWorkContextValidationError(ValueError):
@@ -27,6 +30,9 @@ class GitWorkContextValidationError(ValueError):
         self.correction_context = dict(correction_context or {})
 
 
+GitCandidateCommitResolver = Callable[..., str | None]
+
+
 _TERMINAL_TASK_STATES = frozenset(
     {
         TeamTaskState.FINISHED,
@@ -35,6 +41,201 @@ _TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.CANCELLED,
     }
 )
+
+
+def require_authoritative_git_review_retry_candidate(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    reviewed_commit_sha: str | None,
+    candidate_commit_resolver: GitCandidateCommitResolver | None,
+) -> str | None:
+    """Verify a retried Git review still names the server-owned branch tip."""
+
+    git_refs = deliverable.git_refs
+    recorded_candidate_shas = {
+        candidate.casefold()
+        for candidate in (
+            reviewed_commit_sha,
+            git_refs.reviewed_commit_sha,
+            git_refs.submitted_commit_sha,
+            git_refs.commit_sha,
+        )
+        if candidate is not None
+    }
+    has_git_metadata = any(
+        (
+            git_refs.branch_context_id,
+            git_refs.agent_branch,
+            git_refs.review_branch,
+            git_refs.feature_branch,
+            git_refs.release_branch,
+            *recorded_candidate_shas,
+        )
+    )
+    if not has_git_metadata:
+        return None
+
+    correction_context: dict[str, Any] = {
+        "deliverable_id": deliverable.id,
+        "task_id": deliverable.task_id,
+        "required_action": "submit_replacement_deliverable",
+    }
+    if len(recorded_candidate_shas) != 1:
+        raise GitWorkContextValidationError(
+            code="git_review_candidate_inconsistent",
+            message=(
+                f"Git-backed deliverable {deliverable.id} does not have one consistent "
+                "pinned candidate; submit a replacement deliverable before retrying review"
+            ),
+            correction_context={
+                **correction_context,
+                "recorded_commit_shas": sorted(recorded_candidate_shas),
+            },
+        )
+    pinned_commit_sha = next(iter(recorded_candidate_shas))
+    branch_context_id = git_refs.branch_context_id
+    if branch_context_id is None:
+        raise GitWorkContextValidationError(
+            code="git_review_branch_context_required",
+            message=(
+                f"Git-backed deliverable {deliverable.id} has no branch context; "
+                "submit a replacement deliverable before retrying review"
+            ),
+            correction_context=correction_context,
+        )
+    context = state.git_work_contexts.get(branch_context_id)
+    if context is None:
+        raise GitWorkContextValidationError(
+            code="git_review_branch_context_not_found",
+            message=(
+                f"Git work context {branch_context_id} no longer exists; "
+                "submit a replacement deliverable before retrying review"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+            },
+        )
+    if context.task_id != deliverable.task_id:
+        raise GitWorkContextValidationError(
+            code="git_review_branch_context_task_mismatch",
+            message=(
+                f"Git work context {branch_context_id} belongs to task "
+                f"{context.task_id}, not {deliverable.task_id}"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "context_task_id": context.task_id,
+            },
+        )
+    if git_refs.agent_branch is not None and git_refs.agent_branch != context.agent_branch:
+        raise GitWorkContextValidationError(
+            code="git_review_agent_branch_mismatch",
+            message=(
+                f"deliverable agent branch {git_refs.agent_branch!r} does not match "
+                f"Git work context branch {context.agent_branch!r}"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "agent_branch": git_refs.agent_branch,
+                "expected_agent_branch": context.agent_branch,
+            },
+        )
+    task = state.tasks.get(deliverable.task_id)
+    project = state.projects.get(task.project_id) if task is not None else None
+    if project is None or project.git is None:
+        raise GitWorkContextValidationError(
+            code="git_review_project_configuration_required",
+            message=(
+                f"Git-backed deliverable {deliverable.id} has no managed Git "
+                "project configuration"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "project_id": task.project_id if task is not None else None,
+            },
+        )
+    if candidate_commit_resolver is None:
+        raise GitWorkContextValidationError(
+            code="git_review_candidate_resolution_unavailable",
+            message=(
+                "Git review retry cannot verify the pinned candidate because "
+                "server-owned branch resolution is unavailable"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "agent_branch": context.agent_branch,
+            },
+        )
+    try:
+        authoritative_commit_sha = candidate_commit_resolver(
+            managed_repo_id=project.git.managed_repo_id,
+            directory_path=project.git.directory_path,
+            agent_branch=context.agent_branch,
+        )
+    except GitWorkContextValidationError:
+        raise
+    except Exception as exc:
+        raise GitWorkContextValidationError(
+            code="git_review_candidate_resolution_failed",
+            message=(
+                f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "agent_branch": context.agent_branch,
+            },
+        ) from None
+    if authoritative_commit_sha is None:
+        raise GitWorkContextValidationError(
+            code="git_review_candidate_branch_not_found",
+            message=(
+                f"managed Git branch {context.agent_branch!r} no longer exists; "
+                "submit a replacement deliverable before retrying review"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "agent_branch": context.agent_branch,
+            },
+        )
+    authoritative_commit_sha = authoritative_commit_sha.strip().casefold()
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", authoritative_commit_sha) is None:
+        raise GitWorkContextValidationError(
+            code="git_review_candidate_resolution_failed",
+            message=(
+                "managed Git returned an invalid candidate commit for branch "
+                f"{context.agent_branch!r}"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "agent_branch": context.agent_branch,
+            },
+        )
+    if pinned_commit_sha != authoritative_commit_sha:
+        raise GitWorkContextValidationError(
+            code="git_review_candidate_mismatch",
+            message=(
+                f"review candidate {pinned_commit_sha!r} does not match verified "
+                f"branch commit {authoritative_commit_sha!r}; submit a replacement "
+                "deliverable before retrying review"
+            ),
+            correction_context={
+                **correction_context,
+                "branch_context_id": branch_context_id,
+                "reviewed_commit_sha": pinned_commit_sha,
+                "expected_commit_sha": authoritative_commit_sha,
+                "agent_branch": context.agent_branch,
+            },
+        )
+    return authoritative_commit_sha
 
 
 def _referenced_git_work_context_ids(state: TeamState) -> set[str]:
@@ -216,6 +417,7 @@ def bind_deliverable_git_refs_to_work_context(
     task_id: str,
     deliverable: MutableMapping[str, Any],
     dispatch_id: str | None = None,
+    candidate_commit_resolver: GitCandidateCommitResolver | None = None,
 ) -> None:
     """Derive deliverable git_refs from a server-owned Git work context.
 
@@ -231,6 +433,75 @@ def bind_deliverable_git_refs_to_work_context(
     supplied_commit_sha = _optional_text(git_refs.get("commit_sha"))
     has_git_metadata = any((branch_context_id, supplied_agent_branch, supplied_commit_sha))
     if not has_git_metadata:
+        active_contexts = sorted(
+            (
+                context
+                for context in state.git_work_contexts.values()
+                if context.state == GitWorkContextState.ACTIVE
+                and context.agent_id == agent_id
+                and context.task_id == task_id
+                and context.dispatch_id in {None, dispatch_id}
+            ),
+            key=lambda context: context.id,
+        )
+        if not active_contexts:
+            return
+        if len(active_contexts) != 1:
+            raise GitWorkContextValidationError(
+                code="git_submission_context_ambiguous",
+                message=(
+                    f"task {task_id} has multiple active Git work contexts for "
+                    "this dispatch; include branch_context_id explicitly"
+                ),
+                correction_context={
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "dispatch_id": dispatch_id,
+                    "branch_context_ids": [
+                        context.id for context in active_contexts
+                    ],
+                    "required_field": "branch_context_id",
+                },
+            )
+        inferred_context = active_contexts[0]
+        authoritative_commit_sha = _resolve_git_context_branch_commit(
+            state,
+            context=inferred_context,
+            task_id=task_id,
+            candidate_commit_resolver=candidate_commit_resolver,
+            require_live_resolution=True,
+        )
+        inferred_context.commit_sha = authoritative_commit_sha
+        inferred_context.updated_at = utc_now()
+        base_commit_sha = _optional_text(inferred_context.base_commit)
+        if base_commit_sha is None:
+            raise GitWorkContextValidationError(
+                code="git_submission_base_commit_unavailable",
+                message=(
+                    f"Git work context {inferred_context.id} has no pinned base "
+                    "commit, so an artifact-only submission cannot prove that "
+                    "the task branch is unmodified"
+                ),
+                correction_context={
+                    "branch_context_id": inferred_context.id,
+                    "task_id": task_id,
+                    "agent_branch": inferred_context.agent_branch,
+                    "expected_commit_sha": authoritative_commit_sha,
+                    "required_action": "submit_with_git_refs",
+                },
+            )
+        if authoritative_commit_sha == base_commit_sha.casefold():
+            # A task may legitimately produce only an external artifact even
+            # though its dispatch received a project worktree. Do not turn an
+            # unchanged checkout into a Git-backed deliverable.
+            return
+        deliverable["branch_context_id"] = inferred_context.id
+        deliverable["git_refs"] = {
+            "branch_context_id": inferred_context.id,
+            "agent_branch": inferred_context.agent_branch,
+            "commit_sha": authoritative_commit_sha,
+            "submitted_commit_sha": authoritative_commit_sha,
+        }
         return
     if branch_context_id is None:
         raise GitWorkContextValidationError(
@@ -352,49 +623,170 @@ def bind_deliverable_git_refs_to_work_context(
                 "expected_agent_branch": context.agent_branch,
             },
         )
-    if context.commit_sha is not None and supplied_commit_sha not in {None, context.commit_sha}:
+    if supplied_commit_sha is None:
+        raise GitWorkContextValidationError(
+            code="git_candidate_commit_required",
+            message=(
+                "Git deliverables require git_refs.commit_sha so the submitted "
+                "candidate can be checked against the server-owned branch"
+            ),
+            correction_context={
+                "branch_context_id": branch_context_id,
+                "task_id": task_id,
+                "required_field": "git_refs.commit_sha",
+            },
+        )
+
+    authoritative_commit_sha = _resolve_git_context_branch_commit(
+        state,
+        context=context,
+        task_id=task_id,
+        candidate_commit_resolver=candidate_commit_resolver,
+        require_live_resolution=False,
+    )
+    context.commit_sha = authoritative_commit_sha
+    context.updated_at = utc_now()
+
+    if supplied_commit_sha.casefold() != authoritative_commit_sha:
         raise GitWorkContextValidationError(
             code="commit_sha_mismatch",
             message=(
                 f"commit_sha {supplied_commit_sha!r} does not match verified "
-                f"context commit {context.commit_sha!r}"
+                f"branch commit {authoritative_commit_sha!r}"
             ),
             correction_context={
                 "branch_context_id": branch_context_id,
                 "commit_sha": supplied_commit_sha,
-                "expected_commit_sha": context.commit_sha,
+                "expected_commit_sha": authoritative_commit_sha,
+                "agent_branch": context.agent_branch,
             },
         )
 
     git_refs["branch_context_id"] = context.id
     git_refs["agent_branch"] = context.agent_branch
-    resolved_commit_sha = supplied_commit_sha or context.commit_sha
-    if resolved_commit_sha is not None:
-        git_refs["commit_sha"] = resolved_commit_sha
-        submitted_commit_sha = _optional_text(git_refs.get("submitted_commit_sha"))
-        if submitted_commit_sha not in {None, resolved_commit_sha}:
-            raise GitWorkContextValidationError(
-                code="submitted_commit_sha_mismatch",
-                message=(
-                    f"submitted_commit_sha {submitted_commit_sha!r} does not match "
-                    f"verified context commit {resolved_commit_sha!r}"
-                ),
-                correction_context={
-                    "branch_context_id": branch_context_id,
-                    "submitted_commit_sha": submitted_commit_sha,
-                    "expected_commit_sha": resolved_commit_sha,
-                },
-            )
-        git_refs["submitted_commit_sha"] = resolved_commit_sha
+    resolved_commit_sha = authoritative_commit_sha
+    git_refs["commit_sha"] = resolved_commit_sha
+    submitted_commit_sha = _optional_text(git_refs.get("submitted_commit_sha"))
+    if submitted_commit_sha not in {None, resolved_commit_sha}:
+        raise GitWorkContextValidationError(
+            code="submitted_commit_sha_mismatch",
+            message=(
+                f"submitted_commit_sha {submitted_commit_sha!r} does not match "
+                f"verified context commit {resolved_commit_sha!r}"
+            ),
+            correction_context={
+                "branch_context_id": branch_context_id,
+                "submitted_commit_sha": submitted_commit_sha,
+                "expected_commit_sha": resolved_commit_sha,
+            },
+        )
+    git_refs["submitted_commit_sha"] = resolved_commit_sha
     deliverable["branch_context_id"] = context.id
     deliverable["git_refs"] = git_refs
 
 
+def _resolve_git_context_branch_commit(
+    state: TeamState,
+    *,
+    context: GitWorkContext,
+    task_id: str,
+    candidate_commit_resolver: GitCandidateCommitResolver | None,
+    require_live_resolution: bool,
+) -> str:
+    recorded_commit_sha = _optional_text(context.commit_sha)
+    if (
+        candidate_commit_resolver is None
+        and not require_live_resolution
+        and recorded_commit_sha is not None
+    ):
+        return recorded_commit_sha.casefold()
+    task = state.tasks.get(task_id)
+    project = state.projects.get(task.project_id) if task is not None else None
+    if project is None or project.git is None:
+        raise GitWorkContextValidationError(
+            code="git_project_configuration_required",
+            message=(
+                f"task {task_id} has a Git work context but its project has no "
+                "managed Git configuration"
+            ),
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+                "project_id": task.project_id if task is not None else None,
+            },
+        )
+    if candidate_commit_resolver is None:
+        raise GitWorkContextValidationError(
+            code="git_candidate_commit_resolution_unavailable",
+            message=(
+                "Git deliverable submission cannot verify the current task "
+                "branch because server-owned branch resolution is unavailable"
+            ),
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+                "agent_branch": context.agent_branch,
+                "required_action": "retry_submission_when_git_resolution_is_available",
+            },
+        )
+    try:
+        authoritative_commit_sha = candidate_commit_resolver(
+            managed_repo_id=project.git.managed_repo_id,
+            directory_path=project.git.directory_path,
+            agent_branch=context.agent_branch,
+        )
+    except GitWorkContextValidationError:
+        raise
+    except Exception as exc:
+        raise GitWorkContextValidationError(
+            code="git_candidate_commit_resolution_failed",
+            message=(
+                f"could not resolve managed Git branch "
+                f"{context.agent_branch!r}: {exc}"
+            ),
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+                "agent_branch": context.agent_branch,
+            },
+        ) from None
+    if authoritative_commit_sha is None:
+        raise GitWorkContextValidationError(
+            code="git_candidate_branch_not_found",
+            message=(
+                f"managed Git branch {context.agent_branch!r} does not exist; "
+                "push the task branch before submitting the deliverable"
+            ),
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+                "agent_branch": context.agent_branch,
+            },
+        )
+    authoritative_commit_sha = authoritative_commit_sha.strip().casefold()
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", authoritative_commit_sha) is None:
+        raise GitWorkContextValidationError(
+            code="git_candidate_commit_resolution_failed",
+            message=(
+                "managed Git returned an invalid candidate commit for branch "
+                f"{context.agent_branch!r}"
+            ),
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+                "agent_branch": context.agent_branch,
+            },
+        )
+    return authoritative_commit_sha
+
+
 __all__ = [
+    "GitCandidateCommitResolver",
     "GitWorkContextValidationError",
     "bind_deliverable_git_refs_to_work_context",
     "finalize_active_git_work_contexts_for_dispatch",
     "finalize_active_git_work_contexts_for_task",
     "mark_git_work_context_submitted",
     "reconcile_git_work_context_lifecycle",
+    "require_authoritative_git_review_retry_candidate",
 ]

@@ -32,6 +32,8 @@ export function createTeamMailController({
   humanizeToken,
   taskStateLabel,
   inboxItemLabels,
+  disclosureAttributes,
+  captureDisclosures,
   pageSize = 50,
 }) {
   let mailState = emptyMailState();
@@ -176,6 +178,7 @@ export function createTeamMailController({
   }
 
   function render() {
+    captureDisclosures?.();
     renderFilterOptions();
     renderFolders();
     renderStatus();
@@ -345,7 +348,7 @@ export function createTeamMailController({
         <span>Message ID: ${escapeHtml(item.id)}</span>
         ${updated}
       </div>
-      <details class="mail-reader-envelope">
+      <details class="mail-reader-envelope" ${disclosureAttributes?.(`mail:message:${item.id}:envelope`) || ""}>
         <summary>Full message envelope</summary>
         <dl class="mail-envelope-grid">${renderEnvelope(item)}</dl>
       </details>

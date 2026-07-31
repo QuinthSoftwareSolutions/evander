@@ -361,6 +361,7 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "User=operator" in unit
     assert "SupplementaryGroups=docker" in unit
     assert f"EnvironmentFile=-{tmp_path / 'local-secrets.env'}" in unit
+    assert "Environment=EVANDER_WORKER_CODEX_AUTH_IMAGE=evander-runner:latest" in unit
     assert "evander-worker-daemon --host 127.0.0.1 --port 11890" in unit
     assert "--runtime-dir /var/lib/agent-worker/runtime" in unit
     assert "--worker-root /var/lib/agent-worker" in unit
@@ -373,6 +374,7 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
         f"ssh://evander-git-host-write{tmp_path / 'runtime' / 'managed-git'}/"
     ) in unit
     assert "--git-ssh-source-dir /home/operator/.ssh" in unit
+    assert "--codex-auth-image evander-runner:latest" in unit
     assert (
         "--readonly-mount "
         "/var/lib/agent-worker/toolchain-cache/dotnet:/opt/evander/toolchains/dotnet"
@@ -396,6 +398,19 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
         "/var/lib/agent-worker/toolchain-cache/nuget-cache-ro:/opt/evander/nuget-cache-ro"
     ) in unit
     assert "Requires=docker.service" in unit
+
+
+def test_setup_local_container_worker_uses_configured_default_image_for_codex_auth(
+    tmp_path: Path,
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.provider_config["container_worker_default_image"] = "registry.test/runner:2026.07"
+
+    unit = manager._local_container_worker_unit_content(state, run_user="operator")
+
+    assert "--codex-auth-image registry.test/runner:2026.07" in unit
+    assert "Environment=EVANDER_WORKER_CODEX_AUTH_IMAGE=registry.test/runner:2026.07" in unit
 
 
 def test_setup_local_container_worker_git_access_generates_client_key_without_prefix_auth(

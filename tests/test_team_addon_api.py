@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import zipfile
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from evander.addons import AddonContext
+from evander.admin.services.managed_git_common import ManagedGitConflictError
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.events.internal import InternalEventBus, internal_event_store_path
@@ -360,7 +362,7 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     assert report_issue_route.methods == {"POST"}
     for path in (
         "/human-review-findings/{human_review_finding_id}/resolution-proposal",
-        "/human-review-findings/{human_review_finding_id}/correction-root",
+        "/human-review-findings/{human_review_finding_id}/route",
         "/cases/{case_id}/close-post-release",
     ):
         mutation_route = next(route for route in routes if route.path == path)
@@ -1023,7 +1025,56 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _attach_project_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team",
+        )
+        return state
+
+    repo.update(_attach_project_git)
     _attach_pending_human_review(repo)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="source-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=4,
+        title="Source contribution",
+        description="Provide the source contribution.",
+        created_by_agent_id="lead",
+    )
+    _team_admin_service(repo).record_deliverable(
+        deliverable_id="source-deliverable",
+        task_id="source-task",
+        producer_agent_id="backend",
+        summary="Source contribution summary.",
+    )
+
+    def _attach_contribution_graph(state):
+        state.release_packages["release-1"].manifest.contribution_graph = {
+            "deliverable": ["source-deliverable"],
+        }
+        return state
+
+    repo.update(_attach_contribution_graph)
+    managed_repo_calls: list[tuple[str, str | None]] = []
+
+    class _ManagedGit:
+        @staticmethod
+        def get_repository(
+            managed_repo_id: str,
+            *,
+            directory_path: str | None = None,
+        ) -> dict[str, str]:
+            managed_repo_calls.append((managed_repo_id, directory_path))
+            return {
+                "managed_repo_id": managed_repo_id,
+                "canonical_repository_identity": "azure-devops:org/project/app",
+                "display_name": "ExampleIndustryAPP",
+            }
+
+    addon_service = SimpleNamespace(managed_git_admin=_ManagedGit())
     reviewer_auth = _HumanApiAuthStub(login="reviewer@example.com")
     reviewer_app = Starlette(
         routes=team_addon_api.admin_api_routes(
@@ -1032,6 +1083,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
                 runtime_dir=runtime_dir,
                 addon_runtime_dir=runtime_dir / "addons" / "team-addon",
                 auth=reviewer_auth,
+                service=addon_service,
             )
         )
     )
@@ -1050,10 +1102,54 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     assert detail.status_code == 200
     assert detail.json()["release"]["candidate_commit_sha"] == "candidate-sha"
     assert detail.json()["project"]["name"] == "Project"
+    assert detail.json()["target_deliverable_options"] == [
+        {
+            "deliverable_id": "deliverable",
+            "task_id": "waiting-task",
+            "task_title": "Waiting task",
+            "producer": {
+                "agent_id": "backend",
+                "display_name": "backend",
+            },
+            "summary": "Waiting task deliverable.",
+            "is_top_level": True,
+        },
+        {
+            "deliverable_id": "source-deliverable",
+            "task_id": "source-task",
+            "task_title": "Source contribution",
+            "producer": {
+                "agent_id": "backend",
+                "display_name": "backend",
+            },
+            "summary": "Source contribution summary.",
+            "is_top_level": False,
+        },
+    ]
     assert release_detail.status_code == 200
     assert release_detail.json()["human_review"]["requests"][0]["id"] == (
         "human-review-1"
     )
+    assert release_detail.json()["human_review"]["requests"][0][
+        "target_deliverable_options"
+    ] == detail.json()["target_deliverable_options"]
+    assert release_detail.json()["candidate_checkout"] == {
+        "canonical_repository_identity": "azure-devops:org/project/app",
+        "repository_display_name": "ExampleIndustryAPP",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
+        "release_ref": "refs/heads/team/team/releases/release-1",
+        "candidate_commit_sha": "candidate-sha",
+        "candidate_tree_hash": "candidate-tree",
+        "checkout_command": (
+            "evander-cli team checkout-release-candidate release-1 "
+            "--target ./release-candidate-release-1 "
+            "--expected-commit-sha candidate-sha "
+            f"--runtime-dir {runtime_dir}"
+        ),
+    }
+    assert managed_repo_calls == [
+        ("mr_0123456789abcdefabcd", "root/team")
+    ]
 
     compact_state = _team_state_payload_for_request(
         reviewer_auth,
@@ -1094,6 +1190,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
                 runtime_dir=runtime_dir,
                 addon_runtime_dir=runtime_dir / "addons" / "team-addon",
                 auth=outsider_auth,
+                service=addon_service,
             )
         )
     )
@@ -1109,6 +1206,201 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         "required": True,
         "preparation_mode": "manual",
     }
+    assert "candidate_checkout" not in outsider_release.json()
+    assert managed_repo_calls == [
+        ("mr_0123456789abcdefabcd", "root/team")
+    ]
+
+
+def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _attach_project_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team",
+        )
+        return state
+
+    repo.update(_attach_project_git)
+    _attach_pending_human_review(repo)
+    archive_calls: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        @staticmethod
+        def export_pinned_source_archive(
+            managed_repo_id: str,
+            directory_path: str,
+            *,
+            source_ref: str,
+            commit_sha: str,
+            tree_hash: str,
+            archive_path: Path,
+        ) -> dict[str, str]:
+            archive_calls.append(
+                {
+                    "managed_repo_id": managed_repo_id,
+                    "directory_path": directory_path,
+                    "source_ref": source_ref,
+                    "commit_sha": commit_sha,
+                    "tree_hash": tree_hash,
+                }
+            )
+            with zipfile.ZipFile(archive_path, mode="w") as archive:
+                archive.writestr("src/Feature.cs", "namespace ReviewBundle;\n")
+            return {
+                "managed_repo_id": managed_repo_id,
+                "directory_path": directory_path,
+                "source_ref": source_ref,
+                "commit_sha": commit_sha,
+                "tree_hash": tree_hash,
+            }
+
+    addon_service = SimpleNamespace(managed_git_admin=_ManagedGit())
+    reviewer_auth = _HumanApiAuthStub(login="reviewer@example.com")
+    reviewer_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=reviewer_auth,
+                    service=addon_service,
+                )
+            )
+        )
+    )
+
+    response = reviewer_client.get("/human-review-requests/human-review-1/review-bundle")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/zip")
+    assert response.headers["cache-control"] == "no-store"
+    assert 'filename="release-1-review-bundle.zip"' in response.headers["content-disposition"]
+    assert archive_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root/team",
+            "source_ref": "refs/heads/team/team/releases/release-1",
+            "commit_sha": "candidate-sha",
+            "tree_hash": "candidate-tree",
+        }
+    ]
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["src/Feature.cs", "EVANDER-REVIEW.json"]
+        assert archive.read("src/Feature.cs") == b"namespace ReviewBundle;\n"
+        manifest = json.loads(archive.read("EVANDER-REVIEW.json"))
+    assert {
+        key: manifest[key]
+        for key in (
+            "schema",
+            "release_package_id",
+            "human_review_request_id",
+            "project",
+            "candidate",
+            "test_instructions",
+        )
+    } == {
+        "schema": "evander.team.human-review-bundle/v1",
+        "release_package_id": "release-1",
+        "human_review_request_id": "human-review-1",
+        "project": {
+            "id": "project",
+            "name": "Project",
+            "directory_path": "root/team",
+        },
+        "candidate": {
+            "source_ref": "refs/heads/team/team/releases/release-1",
+            "commit_sha": "candidate-sha",
+            "tree_hash": "candidate-tree",
+        },
+        "test_instructions": "Exercise the candidate before deciding.",
+    }
+    assert manifest["release_manifest"]["candidate_commit_sha"] == "candidate-sha"
+    assert manifest["release_manifest"]["candidate_tree_hash"] == "candidate-tree"
+    assert manifest["release_manifest"]["release_branch"] == "team/team/releases/release-1"
+    assert [
+        deliverable["deliverable_id"]
+        for deliverable in manifest["release_manifest"]["deliverables"]
+    ] == ["deliverable"]
+    assert (
+        manifest["release_manifest"]["human_review_requirement"]["test_instructions"]
+        == "Exercise the candidate before deciding."
+    )
+
+    outsider_auth = _HumanApiAuthStub(login="outsider@example.com")
+    outsider_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=outsider_auth,
+                    service=addon_service,
+                )
+            )
+        )
+    )
+    assert (
+        outsider_client.get("/human-review-requests/human-review-1/review-bundle").status_code
+        == 403
+    )
+    assert len(archive_calls) == 1
+
+    class _MovedReleaseManagedGit:
+        @staticmethod
+        def export_pinned_source_archive(*_args, **_kwargs) -> None:
+            raise ManagedGitConflictError("Release ref no longer equals the pinned candidate")
+
+    moved_release_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=reviewer_auth,
+                    service=SimpleNamespace(managed_git_admin=_MovedReleaseManagedGit()),
+                )
+            )
+        )
+    )
+    moved_release = moved_release_client.get(
+        "/human-review-requests/human-review-1/review-bundle"
+    )
+    assert moved_release.status_code == 409
+    assert moved_release.json()["error"] == "Release ref no longer equals the pinned candidate"
+
+
+@pytest.mark.parametrize(
+    "reserved_member",
+    [
+        "EVANDER-REVIEW.json",
+        "./evander-review.json",
+        ".\\EVANDER-REVIEW.json",
+        "source/../EVANDER-REVIEW.json",
+    ],
+)
+def test_human_review_bundle_rejects_reserved_manifest_members(
+    tmp_path: Path,
+    reserved_member: str,
+) -> None:
+    archive_path = tmp_path / "candidate.zip"
+    with zipfile.ZipFile(archive_path, mode="w") as archive:
+        archive.writestr(reserved_member, "candidate-controlled\n")
+
+    with pytest.raises(ValueError, match="reserved review-bundle path"):
+        team_addon_api._append_human_review_bundle_manifest(
+            archive_path,
+            {"schema": "evander.team.human-review-bundle/v1"},
+        )
+
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == [reserved_member]
+        assert archive.read(reserved_member) == b"candidate-controlled\n"
 
 
 def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
@@ -1196,6 +1488,87 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     )
     assert spoofed.status_code == 400
     assert "derived from the authenticated session" in spoofed.json()["error"]
+
+
+def test_human_review_changes_requested_publishes_correction_wake_before_cron(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _attach_pending_human_review(repo)
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(
+                        login="Reviewer@Example.com",
+                        group_assignments=[
+                            SimpleNamespace(
+                                login="reviewer@example.com",
+                                group_id="human-reviewers",
+                                directory_path="root/team",
+                            )
+                        ],
+                    ),
+                )
+            )
+        )
+    )
+    payload = {
+        "decision": "changes_requested",
+        "summary": "The release needs a correction.",
+        "findings": [
+            {
+                "text": "Correct the release-wide workflow failure.",
+                "evidence_refs": ["artifact-space:reports/release-failure.txt"],
+            }
+        ],
+        "expected_revision": 0,
+        "request_id": "changes-requested-1",
+    }
+
+    decided = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+
+    assert decided.status_code == 200, decided.text
+    decided_payload = decided.json()
+    assert decided_payload["result"]["idempotent_replay"] is False
+    assert len(decided_payload["result"]["outbox_record_ids"]) == 1
+    assert len(decided_payload["published_event_ids"]) == 1
+    wake_events = [
+        event
+        for event in InternalEventBus(
+            internal_event_store_path(runtime_dir)
+        ).list_events()
+        if event.event_type == "team.agent.wake_requested"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0].event_id == decided_payload["published_event_ids"][0]
+    assert wake_events[0].payload["agent_id"] == "backend"
+    assert wake_events[0].payload["reason"] == "inbox"
+
+    replay = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json=payload,
+    )
+
+    assert replay.status_code == 200, replay.text
+    replay_payload = replay.json()
+    assert replay_payload["result"]["idempotent_replay"] is True
+    assert replay_payload["published_event_ids"] == decided_payload["published_event_ids"]
+    replay_wake_events = [
+        event
+        for event in InternalEventBus(
+            internal_event_store_path(runtime_dir)
+        ).list_events()
+        if event.event_type == "team.agent.wake_requested"
+    ]
+    assert len(replay_wake_events) == 1
 
 
 def test_human_review_owner_reassign_resume_and_preparation_result_api(
@@ -1509,12 +1882,14 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
         json=payload,
     )
     assert reported.status_code == 200, reported.text
-    assert reported.json()["case"]["source"] == "post_release_feedback"
-    assert reported.json()["case"]["metadata"]["reporter_user_id"] == (
+    reported_payload = reported.json()
+    assert reported_payload["case"]["source"] == "post_release_feedback"
+    assert reported_payload["case"]["metadata"]["reporter_user_id"] == (
         "reporter@example.com"
     )
-    first_revision = reported.json()["revision"]
-    first_result = reported.json()["result"]
+    assert len(reported_payload["published_event_ids"]) == 1
+    first_revision = reported_payload["revision"]
+    first_result = reported_payload["result"]
     reported_state = repo.read()
     feedback_cases = [
         case
@@ -1543,14 +1918,26 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert report_outbox.intent_type == "team.agent.wake_requested"
     assert report_outbox.payload["payload"]["agent_id"] == "lead"
     assert set(reported_state.release_packages) == release_ids_before
+    wake_events = [
+        event
+        for event in InternalEventBus(
+            internal_event_store_path(runtime_dir)
+        ).list_events()
+        if event.event_type == "team.agent.wake_requested"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0].event_id == reported_payload["published_event_ids"][0]
+    assert wake_events[0].payload["agent_id"] == "lead"
 
     replay = client.post(
         "/release-packages/release-1/report-issue",
         json=payload,
     )
     assert replay.status_code == 200
-    assert replay.json()["result"]["idempotent_replay"] is True
-    assert replay.json()["revision"] == first_revision
+    replay_payload = replay.json()
+    assert replay_payload["result"]["idempotent_replay"] is True
+    assert replay_payload["revision"] == first_revision
+    assert replay_payload["published_event_ids"] == reported_payload["published_event_ids"]
     replay_state = repo.read()
     assert len(
         [
@@ -1578,6 +1965,15 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
         for record in repo.list_outbox_records()
         if record.id in first_result["outbox_record_ids"]
     } == set(first_result["outbox_record_ids"])
+    assert len(
+        [
+            event
+            for event in InternalEventBus(
+                internal_event_store_path(runtime_dir)
+            ).list_events()
+            if event.event_type == "team.agent.wake_requested"
+        ]
+    ) == 1
 
     conflict = client.post(
         "/release-packages/release-1/report-issue",
@@ -1760,19 +2156,23 @@ def test_human_finding_correction_and_post_release_closure_admin_api(
     )
 
     created = client.post(
-        "/human-review-findings/human-finding-api/correction-root",
+        "/human-review-findings/human-finding-api/route",
         json={
             "owner_agent_id": "backend",
-            "title": "Correct release-wide behavior",
-            "description": "Implement and verify the independent correction.",
-            "originating_task_id": "human-correction-triage",
             "expected_revision": repo.read().revision,
-            "request_id": "create-correction-root-api",
+            "request_id": "route-correction-api",
         },
     )
-    assert created.status_code == 201, created.text
+    assert created.status_code == 200, created.text
     correction_task_id = created.json()["correction_task"]["id"]
-    assert created.json()["correction_task"]["parent_task_id"] is None
+    assert correction_task_id == "human-correction-triage"
+    aggregation_task_id = repo.read().cases[
+        "human-correction-case"
+    ].metadata["human_correction_aggregation_task_id"]
+    assert (
+        created.json()["correction_task"]["parent_task_id"]
+        == aggregation_task_id
+    )
     assert created.json()["correction_task"]["assessment"]["task_id"] == (
         correction_task_id
     )
@@ -3247,6 +3647,180 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
     asyncio.run(_exercise())
 
 
+def test_team_addon_admin_api_designates_explicit_integration_boundary(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    async def _exercise() -> None:
+        app = create_app(
+            build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            unlock = await client.post("/api/admin/privileged/unlock")
+            assert unlock.status_code == 200
+
+            ordinary = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "ordinary-edit",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 20,
+                    "title": "Ordinary task",
+                    "description": "Submit then edit this task.",
+                    "created_by_agent_id": "lead",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert ordinary.status_code == 201, ordinary.text
+            ordinary_deliverable = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "ordinary-deliverable",
+                    "task_id": "ordinary-edit",
+                    "producer_agent_id": "backend",
+                    "summary": "Ordinary submission.",
+                    "artifact_refs": ["artifact:ordinary"],
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert ordinary_deliverable.status_code == 201, (
+                ordinary_deliverable.text
+            )
+            ordinary_title_edit = await client.patch(
+                "/api/addons/team-addon/tasks/ordinary-edit",
+                json={
+                    "title": "Ordinary task renamed",
+                    "integration_boundary": False,
+                    "deliverable_contract": None,
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert ordinary_title_edit.status_code == 200, (
+                ordinary_title_edit.text
+            )
+            assert ordinary_title_edit.json()["tasks"]["ordinary-edit"][
+                "title"
+            ] == "Ordinary task renamed"
+
+            parent = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "clarification",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 10,
+                    "title": "Clarify and integrate",
+                    "description": "Coordinate implementation contributions.",
+                    "created_by_agent_id": "lead",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert parent.status_code == 201, parent.text
+            child = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "implementation",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "parent_task_id": "clarification",
+                    "priority": 10,
+                    "title": "Implement",
+                    "description": "Produce the implementation contribution.",
+                    "created_by_agent_id": "lead",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert child.status_code == 201, child.text
+
+            designated = await client.patch(
+                "/api/addons/team-addon/tasks/clarification",
+                json={
+                    "integration_boundary": True,
+                    "deliverable_contract": {
+                        "require_git_provenance": True,
+                        "required_contribution_task_ids": ["implementation"],
+                    },
+                    "expected_revision": repo.read().revision,
+                },
+            )
+
+            assert designated.status_code == 200, designated.text
+            task = designated.json()["tasks"]["clarification"]
+            assert task["integration_boundary"] is True
+            assert task["deliverable_contract"] == {
+                "require_git_provenance": True,
+                "required_contribution_task_ids": ["implementation"],
+            }
+
+            detach_contribution = await client.patch(
+                "/api/addons/team-addon/tasks/implementation",
+                json={
+                    "parent_task_id": None,
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert detach_contribution.status_code == 400
+            assert "must remain a direct child or dependency" in (
+                detach_contribution.text
+            )
+
+            contribution = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "implementation-deliverable",
+                    "task_id": "implementation",
+                    "producer_agent_id": "backend",
+                    "summary": "Accepted implementation contribution.",
+                    "artifact_refs": ["artifact:implementation"],
+                    "state": "accepted",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert contribution.status_code == 201, contribution.text
+            finished_child = await client.patch(
+                "/api/addons/team-addon/tasks/implementation",
+                json={
+                    "state": "finished",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert finished_child.status_code == 200, finished_child.text
+
+            artifact_only = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "integration-artifact-only",
+                    "task_id": "clarification",
+                    "producer_agent_id": "backend",
+                    "summary": "Aggregate without authoritative Git provenance.",
+                    "artifact_refs": ["artifact:aggregate"],
+                    "source_deliverable_ids": ["implementation-deliverable"],
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert artifact_only.status_code == 400
+            assert "cannot bind server-verified git_refs" in artifact_only.text
+            assert "integration-artifact-only" not in repo.read().deliverables
+
+            direct_finish = await client.patch(
+                "/api/addons/team-addon/tasks/clarification",
+                json={
+                    "state": "finished",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert direct_finish.status_code == 400
+            assert "accepted deliverable" in direct_finish.text
+
+    asyncio.run(_exercise())
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:
@@ -4168,6 +4742,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
+    assert "data-resume-release-recovery-blocker-id" in script.text
+    assert "resumeReleaseRecovery" in script.text
+    assert "admin_ui_release_recovery" in script.text
+    assert "Resume release recovery" in script.text
     assert "data-resolve-terminal-blocker-id" in script.text
     assert "resolveTerminalBlocker" in script.text
     assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
@@ -5632,7 +6210,8 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["auto_context_clearing_enabled"] is True
     assert runtime["context_rotation_pending"] is True
     assert runtime["context_rotation_reason"] == "idle"
-    assert "Active tasks: none." in runtime["last_handoff_summary"]
+    assert "Context continuity checkpoint" in runtime["last_handoff_summary"]
+    assert "Active tasks:" not in runtime["last_handoff_summary"]
 
     response = client.patch(
         "/api/addons/team-addon/agents/backend",
@@ -5727,7 +6306,8 @@ def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) ->
     assert runtime["context_rotation_reason"] == "manual"
     assert runtime["context_rotation_requested_by"] == "operator:test"
     assert runtime["context_rotation_request_note"] == "controlled smoke"
-    assert "active-work" in runtime["last_handoff_summary"]
+    assert "controlled smoke" in runtime["last_handoff_summary"]
+    assert "active-work" not in runtime["last_handoff_summary"]
 
 
 def test_team_addon_admin_api_manual_context_rotation_rejects_archived_agent(
@@ -5816,6 +6396,7 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
     assert len(body["stand_downs"]) == 1
     stand_down = next(iter(body["stand_downs"].values()))
     assert stand_down["agent_id"] == "lead"
+    assert stand_down["scope"] == "subtree"
     assert stand_down["source"] == "operator"
     assert body["agents"]["lead"]["stand_down_active"] is True
     assert body["agents"]["backend"]["stand_down_active"] is True
@@ -5831,6 +6412,26 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
     stand_down = next(iter(body["stand_downs"].values()))
     assert stand_down["cleared_at"] is not None
     assert body["agents"]["lead"]["stand_down_active"] is False
+    assert body["agents"]["backend"]["stand_down_active"] is False
+
+    response = client.post(
+        "/api/addons/team-addon/agents/lead/stand-down",
+        json={
+            "reason": "Pause only the lead.",
+            "scope": "agent",
+            "expected_revision": 6,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    active_stand_down = next(
+        stand_down
+        for stand_down in body["stand_downs"].values()
+        if stand_down["cleared_at"] is None
+    )
+    assert active_stand_down["scope"] == "agent"
+    assert body["agents"]["lead"]["stand_down_active"] is True
     assert body["agents"]["backend"]["stand_down_active"] is False
 
 
@@ -6039,6 +6640,14 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
             "git": {"managed_repo_id": "mr_0123456789abcdefabcd"},
+            "release_policy": {
+                "allow_ungated": True,
+                "resource_limits": {
+                    "memory": "6g",
+                    "cpus": 4,
+                    "pids_limit": 1536,
+                },
+            },
             "expected_revision": 3,
         },
     )
@@ -6046,6 +6655,11 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert response.json()["projects"]["project"]["git"]["managed_repo_id"] == (
         "mr_0123456789abcdefabcd"
     )
+    assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
 
     response = client.patch(
         "/api/addons/team-addon/projects/project",
@@ -6061,6 +6675,11 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     git = response.json()["projects"]["project"]["git"]
     assert git["managed_repo_id"] == "mr_0123456789abcdefabcd"
     assert git["base_branch"] == "develop"
+    assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
+        "memory": "6g",
+        "cpus": 4.0,
+        "pids_limit": 1536,
+    }
 
     response = client.post(
         "/api/addons/team-addon/projects",

@@ -25,12 +25,19 @@ type TrackedDeviceLogin = DeviceLogin & {
   directoryPath: string;
 };
 
+type SelectedAgentUsage = {
+  agentLabel: string;
+  mode: "metered_api" | "chatgpt_subscription";
+};
+
 export function CodexAuthPanel({
   directoryPath,
   privilegedUnlocked,
+  selectedAgentUsage,
 }: {
   directoryPath: string;
   privilegedUnlocked: boolean;
+  selectedAgentUsage: SelectedAgentUsage | null;
 }) {
   const [status, setStatus] = useState<CodexAuthStatus | null>(null);
   const [login, setLogin] = useState<TrackedDeviceLogin | null>(null);
@@ -143,18 +150,38 @@ export function CodexAuthPanel({
       : status?.available === false
         ? "Unavailable"
         : "Not signed in";
+  const selectedAgentStillMetered =
+    status?.signed_in === true && selectedAgentUsage?.mode === "metered_api";
 
   return (
-    <details className="panel compact-disclosure">
+    <details className="panel compact-disclosure agents-shared-auth-panel">
       <summary className="panel-header compact-disclosure-summary">
-        <span>Worker ChatGPT subscription</span>
-        <span className="panel-meta">{loading ? "Checking..." : summary}</span>
+        <span>Shared worker ChatGPT subscription account</span>
+        <span className="panel-meta">
+          {loading
+            ? "Checking..."
+            : selectedAgentStillMetered
+              ? `${summary} · selected agent still metered`
+              : summary}
+        </span>
       </summary>
       <div className="panel-body field-stack">
+        <p className="muted-text">
+          Shared worker account for <strong>{directoryPath || "root"}</strong>. This sign-in is not
+          specific to the selected agent and does not switch any agent to subscription usage
+          automatically.
+        </p>
         {!privilegedUnlocked ? (
           <div className="callout warning-callout">Unlock privileged operations to view or change the worker account.</div>
         ) : null}
         {error || status?.error ? <div className="callout error-callout">{error ?? status?.error}</div> : null}
+        {selectedAgentStillMetered ? (
+          <div className="callout warning-callout">
+            The shared account is signed in, but <strong>{selectedAgentUsage.agentLabel}</strong> is
+            still using Metered API. Change that agent&apos;s Codex usage in Edit policy to use the
+            subscription.
+          </div>
+        ) : null}
         {status?.signed_in ? (
           <p className="muted-text">
             Subscription turns use this worker-owned account. Metered turns continue to use the configured relay.

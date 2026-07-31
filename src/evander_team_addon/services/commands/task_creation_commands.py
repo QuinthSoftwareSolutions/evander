@@ -79,6 +79,8 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
         dependency_task_ids: Sequence[str] | None = None,
         task_kind: str = "support",
         outcome_contract: Mapping[str, Any] | None = None,
+        integration_boundary: bool = False,
+        deliverable_contract: Mapping[str, Any] | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -99,6 +101,8 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             dependency_task_ids=dependency_task_ids,
             task_kind=task_kind,
             outcome_contract=outcome_contract,
+            integration_boundary=integration_boundary,
+            deliverable_contract=deliverable_contract,
         )
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 from .types import (
     TeamCommandApplyResult,
     TeamCommandContext,
@@ -25,6 +25,7 @@ from ..domain.common import (
 from ..domain.stand_down import (
     _apply_superior_stand_down,
     _apply_superior_stand_down_revocation,
+    _normalize_stand_down_scope,
 )
 
 from .executor import TeamCommandExecutor
@@ -38,6 +39,7 @@ class TeamAgentControlCommandService(TeamCommandExecutor):
         agent_id: str,
         reason: str,
         request_id: str,
+        scope: Literal["agent", "subtree"] | str = "subtree",
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -46,6 +48,7 @@ class TeamAgentControlCommandService(TeamCommandExecutor):
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_reason = _optional_text(reason) or ""
+        normalized_scope = _normalize_stand_down_scope(scope)
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
             "handled_inbox_item_ids",
@@ -61,6 +64,7 @@ class TeamAgentControlCommandService(TeamCommandExecutor):
         normalized_payload = {
             "agent_id": normalized_agent_id,
             "reason": normalized_reason,
+            "scope": normalized_scope,
             "handled_inbox_item_ids": sorted(normalized_handled_ids),
             "correlation_id": context.correlation_id,
             "causation_id": context.causation_id,
@@ -89,7 +93,11 @@ class TeamAgentControlCommandService(TeamCommandExecutor):
                 stand_down_id = _apply_superior_stand_down(
                     state,
                     actor=agent,
-                    request={"agent_id": normalized_agent_id, "reason": normalized_reason},
+                    request={
+                        "agent_id": normalized_agent_id,
+                        "reason": normalized_reason,
+                        "scope": normalized_scope,
+                    },
                 )
             except ValueError as exc:
                 raise _team_command_validation_error_from_exception(

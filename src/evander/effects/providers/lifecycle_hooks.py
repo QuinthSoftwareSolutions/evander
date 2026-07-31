@@ -13,6 +13,7 @@ from evander.effects.providers.agent_session import (
     container_worker_guest_gateway_url,
     container_prompt_command,
     container_worker_image_for_session,
+    container_worker_resource_limits_for_session,
     default_agent_model_for_provider,
     gateway_url_with_session_context,
     safe_effect_execution_id,
@@ -550,15 +551,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             if isinstance(record_metadata, dict)
             else ""
         )
-        mcp_gateway_url = None
-        if mcp_tool_approval_lease_id:
-            mcp_gateway_url = gateway_url_with_session_context(
-                container_worker_guest_gateway_url(config),
-                session_id=session_id,
-                workflow_run_id=workflow_run_id or None,
-                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                mcp_session_token=session_mcp_auth_token(session),
-            )
+        mcp_gateway_url = gateway_url_with_session_context(
+            container_worker_guest_gateway_url(config),
+            session_id=session_id,
+            workflow_run_id=workflow_run_id or None,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id or None,
+            mcp_session_token=session_mcp_auth_token(session),
+        )
         effective_resume_thread_id = self._effective_record_resume_thread_id(
             record=record,
             session=session,
@@ -594,10 +593,12 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                         session_id=session_id,
                         directory_path=getattr(session, "directory_path", None) or "root",
                         image=container_worker_image_for_session(session, config),
+                        resource_limits=container_worker_resource_limits_for_session(session),
                         command=container_prompt_command(
                             prompt=record.prompt,
                             model=model,
                             resume_thread_id=effective_resume_thread_id,
+                            session=session,
                             agent_provider=agent_harness,
                             resume_mode=getattr(record, "resume_mode", None),
                             mcp_gateway_url=mcp_gateway_url,

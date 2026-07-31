@@ -18,7 +18,6 @@ from .deliverable_helpers import (
     _publish_command_deliverable_artifacts,
     _team_submit_deliverable_for_review_normalized_payload,
     _team_submit_deliverable_normalized_payload,
-    _validate_command_deliverable_has_acceptance_recipient,
     _validate_command_deliverable_submission_pre_publication,
 )
 from .executor import TeamCommandExecutor
@@ -72,6 +71,159 @@ from ..domain.task_supervision import queue_parent_task_transition
 from ..domain.work_due import (
     _mark_agent_work_due,
 )
+from ..domain.wake import _append_agent_wake_requested_event_for_inbox_item
+
+
+def _require_predecessor_review_coverage(
+    state: TeamState,
+    *,
+    task_id: str,
+    predecessor: Deliverable | None,
+    planned_reviews: Sequence[Mapping[str, Any]],
+) -> None:
+    if predecessor is None:
+        return
+    if (
+        predecessor.review_cohort_id is not None
+        and predecessor.review_cohort_sealed_at is not None
+    ):
+        predecessor_slots = [
+            review
+            for review_id in predecessor.review_request_ids
+            if (review := state.review_requests.get(review_id)) is not None
+            and review.review_cohort_id == predecessor.review_cohort_id
+            and review.superseded_by_review_request_id is None
+            and review.retired_at is None
+        ]
+        required_profile_counts: dict[str, int] = {}
+        required_unprofiled_reviewer_counts: dict[str, int] = {}
+        for review in predecessor_slots:
+            if review.review_profile_id is not None:
+                required_profile_counts[review.review_profile_id] = (
+                    required_profile_counts.get(review.review_profile_id, 0) + 1
+                )
+            else:
+                required_unprofiled_reviewer_counts[review.reviewer_agent_id] = (
+                    required_unprofiled_reviewer_counts.get(
+                        review.reviewer_agent_id,
+                        0,
+                    )
+                    + 1
+                )
+        planned_profile_counts: dict[str, int] = {}
+        planned_unprofiled_reviewer_counts: dict[str, int] = {}
+        for review in planned_reviews:
+            profile_id = _optional_text(review.get("review_profile_id"))
+            reviewer_id = _required_text(
+                review.get("reviewer_agent_id"),
+                "reviewer_agent_id",
+            )
+            if profile_id is not None:
+                planned_profile_counts[profile_id] = (
+                    planned_profile_counts.get(profile_id, 0) + 1
+                )
+            else:
+                planned_unprofiled_reviewer_counts[reviewer_id] = (
+                    planned_unprofiled_reviewer_counts.get(reviewer_id, 0) + 1
+                )
+        missing_profile_counts = {
+            profile_id: required_count - planned_profile_counts.get(profile_id, 0)
+            for profile_id, required_count in required_profile_counts.items()
+            if planned_profile_counts.get(profile_id, 0) < required_count
+        }
+        missing_unprofiled_reviewer_counts = {
+            reviewer_id: (
+                required_count
+                - planned_unprofiled_reviewer_counts.get(reviewer_id, 0)
+            )
+            for reviewer_id, required_count
+            in required_unprofiled_reviewer_counts.items()
+            if (
+                planned_unprofiled_reviewer_counts.get(reviewer_id, 0)
+                < required_count
+            )
+        }
+        if missing_profile_counts or missing_unprofiled_reviewer_counts:
+            error_code = (
+                "accepted_deliverable_rework_review_coverage_incomplete"
+                if (
+                    predecessor.state == TeamRecordState.ACCEPTED
+                    and predecessor.rework_requested_at is not None
+                )
+                else "sealed_review_cohort_replacement_coverage_incomplete"
+            )
+            raise TeamCommandValidationError(
+                code=error_code,
+                message=(
+                    f"replacement for sealed-cohort deliverable {predecessor.id} "
+                    "must preserve every current review slot"
+                ),
+                correction_context={
+                    "task_id": task_id,
+                    "supersedes_deliverable_id": predecessor.id,
+                    "review_cohort_id": predecessor.review_cohort_id,
+                    "required_review_profile_counts": required_profile_counts,
+                    "planned_review_profile_counts": planned_profile_counts,
+                    "missing_review_profile_counts": missing_profile_counts,
+                    "required_unprofiled_reviewer_counts": (
+                        required_unprofiled_reviewer_counts
+                    ),
+                    "planned_unprofiled_reviewer_counts": (
+                        planned_unprofiled_reviewer_counts
+                    ),
+                    "missing_unprofiled_reviewer_counts": (
+                        missing_unprofiled_reviewer_counts
+                    ),
+                    # Preserve the legacy accepted-rework correction shape.
+                    "required_review_profile_ids": sorted(
+                        required_profile_counts
+                    ),
+                    "missing_review_profile_ids": sorted(
+                        missing_profile_counts
+                    ),
+                    "missing_unprofiled_reviewer_agent_ids": sorted(
+                        missing_unprofiled_reviewer_counts
+                    ),
+                },
+            )
+        return
+    if not (
+        predecessor.state == TeamRecordState.ACCEPTED
+        and predecessor.rework_requested_at is not None
+    ):
+        return
+    required_review_profile_ids = sorted(
+        {
+            review.review_profile_id
+            for review_id in predecessor.review_request_ids
+            if (review := state.review_requests.get(review_id)) is not None
+            and review.state == TeamRecordState.ACCEPTED
+            and review.review_profile_id is not None
+            and review.superseded_by_review_request_id is None
+            and review.retired_at is None
+        }
+    )
+    planned_review_profile_ids = {
+        _optional_text(review.get("review_profile_id"))
+        for review in planned_reviews
+    }
+    missing_review_profile_ids = sorted(
+        set(required_review_profile_ids) - planned_review_profile_ids
+    )
+    if missing_review_profile_ids:
+        raise TeamCommandValidationError(
+            code="accepted_deliverable_rework_review_coverage_incomplete",
+            message=(
+                f"replacement for accepted deliverable {predecessor.id} "
+                "must repeat every current required review profile"
+            ),
+            correction_context={
+                "task_id": task_id,
+                "supersedes_deliverable_id": predecessor.id,
+                "required_review_profile_ids": required_review_profile_ids,
+                "missing_review_profile_ids": missing_review_profile_ids,
+            },
+        )
 
 
 class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
@@ -147,7 +299,6 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 agent=agent,
                 task_id=normalized_deliverable["task_id"],
             )
-            _validate_command_deliverable_has_acceptance_recipient(agent)
             deliverable_id = _command_deliverable_id(
                 state,
                 deliverable=normalized_deliverable,
@@ -160,7 +311,29 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 deliverable=normalized_deliverable,
                 deliverable_id=deliverable_id,
                 dispatch_id=resolved.dispatch_id,
+                candidate_commit_resolver=self.git_candidate_commit_resolver,
             )
+            predecessor_id = _optional_text(
+                normalized_deliverable.get("supersedes_deliverable_id")
+            )
+            predecessor = state.deliverables.get(predecessor_id or "")
+            if (
+                predecessor is not None
+                and predecessor.state == TeamRecordState.ACCEPTED
+                and predecessor.rework_requested_at is not None
+            ):
+                raise TeamCommandValidationError(
+                    code="accepted_deliverable_rework_requires_fresh_reviews",
+                    message=(
+                        f"replacement for accepted deliverable {predecessor.id} "
+                        "must be submitted with fresh formal reviews"
+                    ),
+                    correction_context={
+                        "task_id": task.id,
+                        "supersedes_deliverable_id": predecessor.id,
+                        "recommended_tool": "team_submit_deliverable_for_review",
+                    },
+                )
             published_records = _publish_command_deliverable_artifacts(
                 state,
                 agent=agent,
@@ -179,6 +352,17 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 published_records=published_records,
                 suppress_superior_notice=False,
             )
+            submission_events: dict[str, Any] = {"events": []}
+            for inbox_id in created_inbox_ids:
+                inbox_item = state.inbox.get(inbox_id)
+                if inbox_item is None:
+                    continue
+                _append_agent_wake_requested_event_for_inbox_item(
+                    state,
+                    item=inbox_item,
+                    result=submission_events,
+                    now=inbox_item.created_at,
+                )
             published_refs = [
                 _required_text(record.get("artifact_ref"), "artifact_ref")
                 for record in published_records
@@ -188,6 +372,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     "deliverable_id": deliverable_id,
                     "created_deliverable_ids": [deliverable_id],
                     "created_inbox_item_ids": created_inbox_ids,
+                    "events": list(submission_events["events"]),
                     "published_artifact_refs": published_refs,
                     "published_deliverable_artifacts": [
                         dict(record) for record in published_records
@@ -401,6 +586,8 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     deliverable=deliverable,
                     task=task,
                     now=now,
+                    result=side_effects,
+                    accepted_by_agent_id=agent.id,
                 )
             else:
                 deliverable.state = TeamRecordState.REJECTED
@@ -585,6 +772,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 deliverable=normalized_deliverable,
                 deliverable_id=deliverable_id,
                 dispatch_id=resolved.dispatch_id,
+                candidate_commit_resolver=self.git_candidate_commit_resolver,
             )
             if not normalized_reviews:
                 raise TeamCommandValidationError(
@@ -614,6 +802,71 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 reviews=normalized_reviews,
                 request_id=normalized_request_id,
             )
+            planned_reviewer_ids = [
+                _required_text(
+                    request_payload.get("reviewer_agent_id"),
+                    "reviewer_agent_id",
+                )
+                for request_payload in planned_reviews
+            ]
+            duplicate_reviewer_ids = sorted(
+                {
+                    reviewer_id
+                    for reviewer_id in planned_reviewer_ids
+                    if planned_reviewer_ids.count(reviewer_id) > 1
+                }
+            )
+            if duplicate_reviewer_ids:
+                raise TeamCommandValidationError(
+                    code="duplicate_review_cohort_members",
+                    message=(
+                        "a sealed review cohort requires one review slot per "
+                        "reviewer; duplicate reviewers: "
+                        + ", ".join(duplicate_reviewer_ids)
+                    ),
+                    correction_context={
+                        "deliverable_id": deliverable_id,
+                        "duplicate_reviewer_agent_ids": duplicate_reviewer_ids,
+                    },
+                )
+            delivered_outcome_kinds = {
+                outcome.kind for outcome in provisional_deliverable.outcomes
+            }
+            for request_payload in planned_reviews:
+                profile_id = _optional_text(
+                    request_payload.get("review_profile_id")
+                )
+                profile = state.review_profiles.get(profile_id or "")
+                if profile is None or not profile.required_outcome_kinds:
+                    continue
+                missing_outcome_kinds = sorted(
+                    set(profile.required_outcome_kinds)
+                    - delivered_outcome_kinds
+                )
+                if missing_outcome_kinds:
+                    raise TeamCommandValidationError(
+                        code="review_profile_outcome_requirements_unsatisfied",
+                        message=(
+                            f"review profile {profile.id} requires deliverable "
+                            "outcome kinds: "
+                            + ", ".join(missing_outcome_kinds)
+                        ),
+                        correction_context={
+                            "deliverable_id": deliverable_id,
+                            "review_profile_id": profile.id,
+                            "missing_outcome_kinds": missing_outcome_kinds,
+                        },
+                    )
+            predecessor_id = _optional_text(
+                normalized_deliverable.get("supersedes_deliverable_id")
+            )
+            predecessor = state.deliverables.get(predecessor_id or "")
+            _require_predecessor_review_coverage(
+                state,
+                task_id=task.id,
+                predecessor=predecessor,
+                planned_reviews=planned_reviews,
+            )
             published_records = _publish_command_deliverable_artifacts(
                 state,
                 agent=agent,
@@ -632,13 +885,19 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 published_records=published_records,
                 suppress_superior_notice=True,
             )
+            submitted_deliverable = state.deliverables[deliverable_id]
+            review_cohort_id = f"review-cohort-{deliverable_id}"
+            submitted_deliverable.review_cohort_id = review_cohort_id
             review_result = {"errors": [], "created_inbox_item_ids": []}
             created_review_ids: list[str] = []
             for index, request_payload in enumerate(planned_reviews):
                 created_id = _apply_review_request(
                     state,
                     actor=agent,
-                    request=request_payload,
+                    request={
+                        **request_payload,
+                        "review_cohort_id": review_cohort_id,
+                    },
                     result=review_result,
                 )
                 if created_id is None:
@@ -654,6 +913,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     )
                 if _review_request_was_created(review_result, created_id):
                     created_review_ids.append(created_id)
+            submitted_deliverable.review_cohort_sealed_at = utc_now()
             for review_id in created_review_ids:
                 review = state.review_requests[review_id]
                 _mark_agent_work_due(
@@ -669,6 +929,10 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             return TeamCommandApplyResult(
                 response_payload={
                     "deliverable_id": deliverable_id,
+                    "review_cohort_id": review_cohort_id,
+                    "review_cohort_sealed_at": (
+                        submitted_deliverable.review_cohort_sealed_at.isoformat()
+                    ),
                     "created_deliverable_ids": [deliverable_id],
                     "created_review_request_ids": created_review_ids,
                     "existing_review_request_ids": list(

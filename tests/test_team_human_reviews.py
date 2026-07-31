@@ -8,6 +8,7 @@ from threading import Barrier
 import pytest
 
 from evander_team_addon.models import (
+    AgentStatus,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
     AgentTask,
@@ -47,7 +48,7 @@ from evander_team_addon.services.domain import human_reviews as human_review_dom
 from evander_team_addon.services.domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     close_post_release_feedback_case,
-    create_human_finding_correction_root,
+    route_human_finding_correction,
     ensure_human_review_request,
     expire_human_review_targets,
     reassign_human_review,
@@ -638,7 +639,7 @@ def test_changes_requested_rejects_squatted_system_record_ids(
         f"{human_review_domain._stable_token(request_id, length=24)}"
     )
     task_id = (
-        f"human-triage-"
+        f"human-correction-aggregation-"
         f"{human_review_domain._stable_token(request_id, length=24)}"
     )
 
@@ -1070,7 +1071,7 @@ def test_concurrent_admin_terminal_decisions_have_one_atomic_outcome(
         assert canonical_promotions == []
         assert len(correction_cases) == 1
         assert len(state.human_review_findings) == 1
-        assert len(correction_cases[0].task_ids) == 1
+        assert len(correction_cases[0].task_ids) == 2
 
 
 def test_changes_requested_transaction_rolls_back_after_consequence_failure(
@@ -1091,7 +1092,7 @@ def test_changes_requested_transaction_rolls_back_after_consequence_failure(
         assert len(state.human_review_decisions) == 1
         assert len(state.human_review_findings) == 1
         assert len(state.cases) == 1
-        assert len(state.tasks) == 2
+        assert len(state.tasks) == 3
         assert len(state.inbox) == 1
         observed_constructed_consequences = True
         raise RuntimeError("injected after human-review consequence construction")
@@ -1181,7 +1182,10 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
     ]
     assert len(correction_cases) == 1
     case = correction_cases[0]
-    assert len(case.task_ids) == 2
+    assert len(case.task_ids) == 3
+    aggregation_task_id = case.metadata[
+        "human_correction_aggregation_task_id"
+    ]
     assert {
         first_state.tasks[task_id].owner_agent_id for task_id in case.task_ids
     } == {"lead", "owner"}
@@ -1191,19 +1195,25 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
         if item.payload.get("human_review_request_id") == request_id
     ]
     assert len(correction_inbox) == 2
-    assert {item.task_id for item in correction_inbox} == set(case.task_ids)
-    assert set(first_state.agent_runtimes) == {"lead", "owner"}
+    assert {item.task_id for item in correction_inbox} == {
+        finding.correction_task_id
+        for finding in first_state.human_review_findings.values()
+    }
+    assert aggregation_task_id not in {
+        item.task_id for item in correction_inbox
+    }
+    assert set(first_state.agent_runtimes) == {"owner"}
     assert all(
         first_state.agent_runtimes[agent_id].next_wake_at is None
-        for agent_id in ("lead", "owner")
+        for agent_id in ("owner",)
     )
     wake_records = repository.list_outbox_records(
         intent_type="team.agent.wake_requested"
     )
-    assert len(wake_records) == 2
+    assert len(wake_records) == 1
     assert {
         record.payload["payload"]["agent_id"] for record in wake_records
-    } == {"lead", "owner"}
+    } == {"owner"}
     assert not any(
         record.promotion_kind == "canonical_push"
         for record in first_state.git_promotions.values()
@@ -1249,11 +1259,33 @@ def test_empty_assignment_blocks_and_reassignment_resumes_same_request() -> None
     assert blocker.reason_code == "human_review_assignment_unavailable"
     assert blocker.route == TeamBlockerRoute.OPERATOR
     assert blocker.owner_agent_id == "lead"
-    assert all(
-        item.state == TeamInboxItemState.HANDLED
+    blocker_items = [
+        item
         for item in state.inbox.values()
         if item.payload.get("blocker_id") == blocker.id
+    ]
+    assert any(
+        item.state == TeamInboxItemState.HANDLED
+        and item.payload.get("kind") == "blocker_reported"
+        for item in blocker_items
     )
+    visibility_item = next(
+        item
+        for item in blocker_items
+        if item.payload.get("kind")
+        == "human_review_operator_recovery_visibility"
+    )
+    assert visibility_item.state == TeamInboxItemState.PENDING
+    assert visibility_item.recipient_agent_id == "lead"
+    assert visibility_item.priority.value == "high"
+    assert visibility_item.payload["route"] == "operator"
+    visibility_wake = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "lead"
+    )
+    assert visibility_wake["payload"]["reason"] == "inbox"
     routing_event = next(
         event
         for event in state.blocker_events.values()
@@ -1420,11 +1452,25 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     finding = next(iter(state.human_review_findings.values()))
     correction = state.tasks[finding.correction_task_id]
     case = state.cases[correction.case_id or ""]
-    assert correction.parent_task_id is None
+    assert finding.target_deliverable_ids == ["source-deliverable"]
+    assert correction.title == finding.text
+    assert correction.description == finding.text
+    assert correction.parent_task_id == case.metadata[
+        "human_correction_aggregation_task_id"
+    ]
     assert correction.originating_task_id == "source-task"
     assert correction.owner_agent_id == "owner"
     assert case.source_ref == request.id
     assert len(state.inbox) == 1
+    ensure_result: dict[str, object] = {}
+    ensured_parent = human_review_domain.ensure_human_correction_aggregation(
+        state,
+        case=case,
+        result=ensure_result,
+    )
+    assert ensured_parent.id == correction.parent_task_id
+    assert "created_task_ids" not in ensure_result
+    assert "reparented_correction_task_ids" not in ensure_result
 
     replay_result: dict[str, object] = {}
     replay = record_human_review_decision(
@@ -1485,8 +1531,9 @@ def test_specific_finding_routes_to_lead_when_historical_owner_is_detached() -> 
     TeamState.model_validate(state.model_dump(mode="json"))
 
 
-def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
+def test_routed_ambiguous_finding_rejects_artifact_only_successor() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.agents["owner"].status = AgentStatus.PAUSED
     state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
     state.deliverables["source-deliverable"].verification = (
         DeliverableVerification(status="passed")
@@ -1516,29 +1563,30 @@ def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
         result={"events": []},
     )
     finding = next(iter(state.human_review_findings.values()))
-    triage_task_id = finding.correction_task_id
-    case_id = state.tasks[triage_task_id].case_id
+    correction_task_id = finding.correction_task_id
+    case_id = state.tasks[correction_task_id].case_id
+    state.agents["owner"].status = AgentStatus.ACTIVE
     result: dict[str, object] = {"events": []}
 
-    correction = create_human_finding_correction_root(
+    correction = route_human_finding_correction(
         state,
         finding_id=finding.id,
         owner_agent_id="owner",
-        title="Correct release-wide recovery behavior",
-        description="Implement and verify the human review correction.",
-        request_id="retarget-ambiguous-finding",
-        originating_task_id="source-task",
-        created_by_agent_id="lead",
         result=result,
     )
 
-    assert correction.parent_task_id is None
+    aggregation_task_id = state.cases[case_id or ""].metadata[
+        "human_correction_aggregation_task_id"
+    ]
+    assert correction.id == correction_task_id
+    assert correction.parent_task_id == aggregation_task_id
     assert correction.originating_task_id == "source-task"
     assert correction.case_id == case_id
     assert finding.correction_task_id == correction.id
-    assert triage_task_id in state.tasks
     assert correction.id in state.cases[case_id or ""].task_ids
-    assert correction.id in result["created_task_ids"]
+    assert "created_task_ids" not in result
+    assert correction.title == finding.text
+    assert correction.description == finding.text
 
     correction.state = TeamTaskState.FINISHED
     deliverable = Deliverable(
@@ -1561,33 +1609,6 @@ def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
     )
     assert proposed.proposed_by_deliverable_ids == [deliverable.id]
 
-    unresolved_result: dict[str, object] = {
-        "errors": [],
-        "events": [],
-        "git_promotion_event_ids": [],
-    }
-    assert (
-        _build_release_package(
-            state,
-            project=state.projects["project"],
-            request={
-                "id": "successor-with-unresolved-triage",
-                "deliverable_ids": [deliverable.id],
-                "supersedes_release_package_id": release.id,
-                "waiver_actor_kind": "operator",
-                "waiver_actor_id": "admin",
-            },
-            result=unresolved_result,
-            projects_to_recalc=set(),
-            actor_agent_id="lead",
-            team_id="team",
-        )
-        is None
-    )
-    assert triage_task_id in str(unresolved_result["errors"])
-    assert "must be resolved" in str(unresolved_result["errors"])
-
-    state.tasks[triage_task_id].state = TeamTaskState.FINISHED
     completed_result: dict[str, object] = {
         "errors": [],
         "events": [],
@@ -1598,7 +1619,7 @@ def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
             state,
             project=state.projects["project"],
             request={
-                "id": "successor-after-triage",
+                "id": "successor-with-artifact-only-correction",
                 "deliverable_ids": [deliverable.id],
                 "supersedes_release_package_id": release.id,
                 "waiver_actor_kind": "operator",
@@ -1615,7 +1636,81 @@ def test_ambiguous_finding_retarget_rejects_artifact_only_successor() -> None:
         "successor release correction deliverables must include reviewed Git "
         "content so a changed candidate can enter release gates"
     ]
-    assert "successor-after-triage" not in state.release_packages
+    assert "successor-with-artifact-only-correction" not in state.release_packages
+
+
+def test_routes_every_ambiguous_finding_after_legacy_graph_conversion() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.agents["owner"].status = AgentStatus.PAUSED
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="legacy-multi-finding",
+        expected_revision=request.revision,
+        checklist_results={"smoke": True},
+        findings=[
+            {"text": "Correct the first release-wide behavior."},
+            {"text": "Correct the second release-wide behavior."},
+        ],
+        result={"events": []},
+    )
+    findings = sorted(
+        state.human_review_findings.values(),
+        key=lambda finding: finding.text,
+    )
+    case = state.cases[state.tasks[findings[0].correction_task_id].case_id or ""]
+    aggregation_task_id = case.metadata.pop(
+        human_review_domain.HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
+    )
+    case.metadata.pop(
+        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    )
+    case.metadata.pop("human_correction_graph_version")
+    case.task_ids.remove(aggregation_task_id)
+    state.tasks.pop(aggregation_task_id)
+    for finding in findings:
+        state.tasks[finding.correction_task_id].parent_task_id = None
+
+    state.agents["owner"].status = AgentStatus.ACTIVE
+    first = route_human_finding_correction(
+        state,
+        finding_id=findings[0].id,
+        owner_agent_id="owner",
+        result={"events": []},
+    )
+
+    converted_aggregation_id = case.metadata[
+        human_review_domain.HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
+    ]
+    assert first.id == findings[0].correction_task_id
+    assert first.parent_task_id == converted_aggregation_id
+    assert case.metadata[
+        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == [findings[1].id]
+
+    second = route_human_finding_correction(
+        state,
+        finding_id=findings[1].id,
+        owner_agent_id="owner",
+        result={"events": []},
+    )
+
+    assert second.id == findings[1].correction_task_id
+    assert second.parent_task_id == converted_aggregation_id
+    assert case.metadata[
+        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == []
+    TeamState.model_validate(state.model_dump(mode="json"))
 
 
 def test_preview_result_rejects_secrets_and_blocked_resume_reuses_request() -> None:

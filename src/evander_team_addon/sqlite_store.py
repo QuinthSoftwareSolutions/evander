@@ -22,12 +22,13 @@ from .models import (
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamState,
+    summarize_worktree_cleanup_inventory,
 )
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 36
+SQLITE_SCHEMA_VERSION = 43
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -93,10 +94,14 @@ class TeamStateSqliteStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 payload = self._read_payload(connection)
+                previous_state = TeamState.model_validate(payload)
                 result = updater(payload)
-                state = TeamState.model_validate(payload)
-                self._write_state(connection, state)
-                return result
+                state = self._persist_updated_payload(
+                    connection,
+                    previous_state=previous_state,
+                    payload=payload,
+                )
+                return _replace_state_result(result, state)
 
     def update_object_with_command_transaction(
         self,
@@ -106,13 +111,55 @@ class TeamStateSqliteStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 payload = self._read_payload(connection)
+                previous_state = TeamState.model_validate(payload)
+                transaction = TeamStateSqliteCommandTransaction(self, connection)
                 result = updater(
                     payload,
-                    TeamStateSqliteCommandTransaction(self, connection),
+                    transaction,
                 )
-                state = TeamState.model_validate(payload)
-                self._write_state(connection, state)
-                return result
+                state = self._persist_updated_payload(
+                    connection,
+                    previous_state=previous_state,
+                    payload=payload,
+                )
+                return _replace_state_result(result, state)
+
+    def _persist_updated_payload(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        previous_state: TeamState,
+        payload: dict[str, Any],
+    ) -> TeamState:
+        candidate = TeamState.model_validate(payload)
+        previous_content = _state_content_payload(previous_state)
+        candidate_content = _state_content_payload(candidate)
+        state_changed = previous_content != candidate_content
+        if not state_changed:
+            payload.clear()
+            payload.update(previous_state.model_dump(mode="json"))
+            return previous_state
+        updated_at = (
+            candidate.updated_at if candidate.updated_at != previous_state.updated_at else utc_now()
+        )
+        state = TeamState.model_validate(
+            candidate.model_copy(
+                update={
+                    "schema_version": SCHEMA_VERSION,
+                    "revision": previous_state.revision + 1,
+                    "updated_at": updated_at,
+                },
+                deep=True,
+            ).model_dump(mode="json")
+        )
+        payload.clear()
+        payload.update(state.model_dump(mode="json"))
+        self._write_state_delta(
+            connection,
+            previous_state=previous_state,
+            state=state,
+        )
+        return state
 
     def append_dispatch_activity(
         self,
@@ -820,6 +867,18 @@ class TeamStateSqliteStore:
                 previous_schema_version = (
                     int(schema_version_row["value"]) if schema_version_row is not None else 0
                 )
+                state_schema_version_row = connection.execute(
+                    """
+                    SELECT value
+                    FROM team_state_metadata
+                    WHERE key = 'state_schema_version'
+                    """
+                ).fetchone()
+                previous_state_schema_version = (
+                    int(state_schema_version_row["value"])
+                    if state_schema_version_row is not None
+                    else 0
+                )
                 _ensure_column(
                     connection,
                     table_name="team_governance_group_goals",
@@ -892,6 +951,30 @@ class TeamStateSqliteStore:
                     column_name="context_clearing_policy",
                     definition="TEXT NOT NULL DEFAULT 'off'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_handoff_preparation_pending",
+                    definition="INTEGER NOT NULL DEFAULT 0",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_handoff_preparation_status",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="last_agent_handoff_summary",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="last_agent_handoff_at",
+                    definition="TEXT",
+                )
                 connection.execute(
                     """
                     UPDATE team_agent_runtimes
@@ -949,6 +1032,8 @@ class TeamStateSqliteStore:
                 for column_name, definition in (
                     ("task_kind", "TEXT NOT NULL DEFAULT 'support'"),
                     ("outcome_contract_json", "TEXT"),
+                    ("integration_boundary", "INTEGER NOT NULL DEFAULT 0"),
+                    ("deliverable_contract_json", "TEXT"),
                     ("completion_json", "TEXT"),
                     ("originating_task_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
@@ -981,6 +1066,11 @@ class TeamStateSqliteStore:
                     ("supersession_reason", "TEXT"),
                     ("superseded_at", "TEXT"),
                     ("superseded_by_actor", "TEXT"),
+                    ("review_cohort_id", "TEXT"),
+                    ("review_cohort_sealed_at", "TEXT"),
+                    ("rework_requested_at", "TEXT"),
+                    ("rework_requested_by_agent_id", "TEXT"),
+                    ("rework_reason", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -988,6 +1078,12 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition=definition,
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="review_cohort_id",
+                    definition="TEXT",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
@@ -1121,6 +1217,12 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_release_packages",
+                    column_name="owner_agent_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
                     column_name="policy_version",
                     definition="INTEGER NOT NULL DEFAULT 1",
                 )
@@ -1141,6 +1243,7 @@ class TeamStateSqliteStore:
                     "candidate_commit_sha",
                     "candidate_tree_hash",
                     "approved_commit_sha",
+                    "review_correction_task_id",
                 ):
                     _ensure_column(
                         connection,
@@ -1206,6 +1309,12 @@ class TeamStateSqliteStore:
                     column_name="sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="dependency_git_sources_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 connection.execute(
                     """
                     UPDATE team_tasks
@@ -1232,6 +1341,8 @@ class TeamStateSqliteStore:
                 )
                 if previous_schema_version < 31:
                     _migrate_legacy_outcome_kind_definitions(connection)
+                if previous_schema_version < 43:
+                    _migrate_worktree_cleanup_evidence(connection)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -1240,6 +1351,15 @@ class TeamStateSqliteStore:
                     """,
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
+                if previous_state_schema_version < SCHEMA_VERSION:
+                    connection.execute(
+                        """
+                        INSERT INTO team_state_metadata(key, value)
+                        VALUES ('state_schema_version', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        """,
+                        (str(SCHEMA_VERSION),),
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1334,6 +1454,8 @@ class TeamStateSqliteStore:
             "memories": {},
             "conversations": {},
             "conversation_messages": {},
+            "external_chat_ingress": {},
+            "external_chat_deliveries": {},
             "chat_attachments": {},
             "chat_attachment_policies": {},
             "release_packages": {},
@@ -1371,6 +1493,8 @@ class TeamStateSqliteStore:
         self._read_memories(connection, payload)
         self._read_conversations(connection, payload)
         self._read_conversation_messages(connection, payload)
+        self._read_external_chat_ingress(connection, payload)
+        self._read_external_chat_deliveries(connection, payload)
         self._read_chat_attachments(connection, payload)
         self._read_chat_attachment_policies(connection, payload)
         self._read_release_packages(connection, payload)
@@ -1385,6 +1509,10 @@ class TeamStateSqliteStore:
 
     def _write_state(self, connection: sqlite3.Connection, state: TeamState) -> None:
         payload = state.model_dump(mode="json")
+        payload["schema_version"] = max(
+            int(payload.get("schema_version", SCHEMA_VERSION)),
+            SCHEMA_VERSION,
+        )
         self._clear_state_tables(connection)
         self._write_teams(connection, payload["teams"])
         self._write_governance_groups(connection, payload["governance_groups"])
@@ -1412,6 +1540,8 @@ class TeamStateSqliteStore:
         self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
+        self._write_external_chat_ingress(connection, payload["external_chat_ingress"])
+        self._write_external_chat_deliveries(connection, payload["external_chat_deliveries"])
         self._write_chat_attachments(connection, payload["chat_attachments"])
         self._write_chat_attachment_policies(connection, payload["chat_attachment_policies"])
         self._write_release_packages(connection, payload["release_packages"])
@@ -1441,6 +1571,83 @@ class TeamStateSqliteStore:
                 ("state_schema_version", str(payload["schema_version"])),
                 ("revision", str(payload["revision"])),
                 ("updated_at", str(payload["updated_at"])),
+            ),
+        )
+
+    def _write_state_delta(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        previous_state: TeamState,
+        state: TeamState,
+    ) -> None:
+        previous = previous_state.model_dump(mode="json")
+        current = state.model_dump(mode="json")
+        changed_by_field: dict[str, set[str]] = {}
+        for fields, _delete_specs, _writer_name in _PERSISTENCE_GROUPS:
+            for field_name in fields:
+                before = previous[field_name]
+                after = current[field_name]
+                changed_by_field[field_name] = {
+                    record_id
+                    for record_id in set(before) | set(after)
+                    if _json_dumps(before.get(record_id)) != _json_dumps(after.get(record_id))
+                }
+
+        for fields, delete_specs, writer_name in _PERSISTENCE_GROUPS:
+            if not any(changed_by_field[field_name] for field_name in fields):
+                continue
+            for table_name, owner_column, field_name in delete_specs:
+                record_ids = sorted(changed_by_field[field_name])
+                if not record_ids:
+                    continue
+                placeholders = ", ".join("?" for _ in record_ids)
+                connection.execute(
+                    f"DELETE FROM {table_name} WHERE {owner_column} IN ({placeholders})",
+                    record_ids,
+                )
+            if writer_name == "_write_human_reviews":
+                self._write_human_reviews(
+                    connection,
+                    requests={
+                        record_id: current["human_review_requests"][record_id]
+                        for record_id in changed_by_field["human_review_requests"]
+                        if record_id in current["human_review_requests"]
+                    },
+                    decisions={
+                        record_id: current["human_review_decisions"][record_id]
+                        for record_id in changed_by_field["human_review_decisions"]
+                        if record_id in current["human_review_decisions"]
+                    },
+                    findings={
+                        record_id: current["human_review_findings"][record_id]
+                        for record_id in changed_by_field["human_review_findings"]
+                        if record_id in current["human_review_findings"]
+                    },
+                )
+                continue
+            field_name = fields[0]
+            writer = getattr(self, writer_name)
+            writer(
+                connection,
+                {
+                    record_id: current[field_name][record_id]
+                    for record_id in changed_by_field[field_name]
+                    if record_id in current[field_name]
+                },
+            )
+
+        connection.executemany(
+            """
+            INSERT INTO team_state_metadata(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (
+                ("sqlite_schema_version", str(SQLITE_SCHEMA_VERSION)),
+                ("state_schema_version", str(SCHEMA_VERSION)),
+                ("revision", str(state.revision)),
+                ("updated_at", state.updated_at.isoformat()),
             ),
         )
 
@@ -2001,6 +2208,12 @@ class TeamStateSqliteStore:
                 "context_rotation_reason": row["context_rotation_reason"],
                 "context_rotation_request_note": row["context_rotation_request_note"],
                 "last_handoff_summary": row["last_handoff_summary"],
+                "context_handoff_preparation_pending": _bool(
+                    row["context_handoff_preparation_pending"]
+                ),
+                "context_handoff_preparation_status": row["context_handoff_preparation_status"],
+                "last_agent_handoff_summary": row["last_agent_handoff_summary"],
+                "last_agent_handoff_at": row["last_agent_handoff_at"],
                 "last_context_rotated_at": row["last_context_rotated_at"],
                 "last_thread_id": row["last_thread_id"],
                 "updated_at": row["updated_at"],
@@ -2020,9 +2233,11 @@ class TeamStateSqliteStore:
                     auto_context_clearing_enabled, context_rotation_pending,
                     context_rotation_requested_by, context_rotation_requested_at,
                     context_rotation_reason, context_rotation_request_note,
-                    last_handoff_summary, last_context_rotated_at, last_thread_id, updated_at
+                    last_handoff_summary, context_handoff_preparation_pending,
+                    context_handoff_preparation_status, last_agent_handoff_summary,
+                    last_agent_handoff_at, last_context_rotated_at, last_thread_id, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2044,6 +2259,10 @@ class TeamStateSqliteStore:
                     runtime.get("context_rotation_reason"),
                     runtime.get("context_rotation_request_note"),
                     runtime.get("last_handoff_summary"),
+                    _int_bool(runtime.get("context_handoff_preparation_pending")),
+                    runtime.get("context_handoff_preparation_status"),
+                    runtime.get("last_agent_handoff_summary"),
+                    runtime.get("last_agent_handoff_at"),
                     runtime.get("last_context_rotated_at"),
                     runtime.get("last_thread_id"),
                     runtime["updated_at"],
@@ -2128,6 +2347,12 @@ class TeamStateSqliteStore:
                     if row["outcome_contract_json"] is not None
                     else None
                 ),
+                "integration_boundary": _bool(row["integration_boundary"]),
+                "deliverable_contract": (
+                    _json_loads(row["deliverable_contract_json"])
+                    if row["deliverable_contract_json"] is not None
+                    else None
+                ),
                 "completion": (
                     _json_loads(row["completion_json"])
                     if row["completion_json"] is not None
@@ -2162,9 +2387,10 @@ class TeamStateSqliteStore:
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     originating_task_id, cancellation_json, task_kind,
-                    outcome_contract_json, completion_json, created_at, updated_at
+                    outcome_contract_json, integration_boundary,
+                    deliverable_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2189,6 +2415,12 @@ class TeamStateSqliteStore:
                     (
                         _json_dumps(task.get("outcome_contract"))
                         if task.get("outcome_contract") is not None
+                        else None
+                    ),
+                    _int_bool(task.get("integration_boundary")),
+                    (
+                        _json_dumps(task.get("deliverable_contract"))
+                        if task.get("deliverable_contract") is not None
                         else None
                     ),
                     (
@@ -2287,6 +2519,11 @@ class TeamStateSqliteStore:
                 "supersession_reason": row["supersession_reason"],
                 "superseded_at": row["superseded_at"],
                 "superseded_by_actor": row["superseded_by_actor"],
+                "review_cohort_id": row["review_cohort_id"],
+                "review_cohort_sealed_at": row["review_cohort_sealed_at"],
+                "rework_requested_at": row["rework_requested_at"],
+                "rework_requested_by_agent_id": row["rework_requested_by_agent_id"],
+                "rework_reason": row["rework_reason"],
                 "created_at": row["created_at"],
             }
 
@@ -2304,9 +2541,12 @@ class TeamStateSqliteStore:
                     superseded_by_deliverable_id, carried_findings_json,
                     review_manifest_json, acceptance_recipient_agent_id,
                     acceptance_decision_json, supersession_reason, superseded_at,
-                    superseded_by_actor, outcomes_json, completion_json, created_at
+                    superseded_by_actor, review_cohort_id,
+                    review_cohort_sealed_at, rework_requested_at,
+                    rework_requested_by_agent_id, rework_reason, outcomes_json,
+                    completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2346,6 +2586,11 @@ class TeamStateSqliteStore:
                     deliverable.get("supersession_reason"),
                     deliverable.get("superseded_at"),
                     deliverable.get("superseded_by_actor"),
+                    deliverable.get("review_cohort_id"),
+                    deliverable.get("review_cohort_sealed_at"),
+                    deliverable.get("rework_requested_at"),
+                    deliverable.get("rework_requested_by_agent_id"),
+                    deliverable.get("rework_reason"),
                     _json_dumps(deliverable.get("outcomes", [])),
                     (
                         _json_dumps(deliverable.get("completion"))
@@ -2564,6 +2809,7 @@ class TeamStateSqliteStore:
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
                 "reviewed_commit_sha": row["reviewed_commit_sha"],
+                "review_cohort_id": row["review_cohort_id"],
                 "supersedes_review_request_id": row["supersedes_review_request_id"],
                 "superseded_by_review_request_id": row["superseded_by_review_request_id"],
                 "retry_reason": row["retry_reason"],
@@ -2586,12 +2832,13 @@ class TeamStateSqliteStore:
                     reviewer_agent_id, requested_by_agent_id, requested_by_actor,
                     state, review_profile_id, criteria_snapshot_json,
                     required_outcome_kind_definitions_json, instructions,
-                    reviewed_commit_sha, supersedes_review_request_id,
+                    reviewed_commit_sha, review_cohort_id,
+                    supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
                     retry_requested_by, block_kind, retired_at, retired_by,
                     retirement_reason, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2611,6 +2858,7 @@ class TeamStateSqliteStore:
                     _json_dumps(request.get("required_outcome_kind_definitions", [])),
                     request.get("instructions"),
                     request.get("reviewed_commit_sha"),
+                    request.get("review_cohort_id"),
                     request.get("supersedes_review_request_id"),
                     request.get("superseded_by_review_request_id"),
                     request.get("retry_reason"),
@@ -3074,6 +3322,123 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_external_chat_ingress(
+        connection: sqlite3.Connection, payload: dict[str, Any]
+    ) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_external_chat_ingress ORDER BY created_at, id"
+        ):
+            payload["external_chat_ingress"][row["id"]] = {
+                "id": row["id"],
+                "provider": row["provider"],
+                "communication_target_id": row["communication_target_id"],
+                "source_message_id": row["source_message_id"],
+                "source_thread_id": row["source_thread_id"],
+                "source_author_id": row["source_author_id"],
+                "source_author_name": row["source_author_name"],
+                "operator_user_id": row["operator_user_id"],
+                "conversation_id": row["conversation_id"],
+                "message_id": row["message_id"],
+                "dispatch_id": row["dispatch_id"],
+                "allow_team_mutations": bool(row["allow_team_mutations"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_external_chat_ingress(
+        connection: sqlite3.Connection,
+        records: dict[str, Any],
+    ) -> None:
+        for record in records.values():
+            connection.execute(
+                """
+                INSERT INTO team_external_chat_ingress(
+                    id, provider, communication_target_id, source_message_id,
+                    source_thread_id, source_author_id, source_author_name,
+                    operator_user_id, conversation_id, message_id, dispatch_id,
+                    allow_team_mutations, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["id"],
+                    record["provider"],
+                    record["communication_target_id"],
+                    record["source_message_id"],
+                    record.get("source_thread_id"),
+                    record["source_author_id"],
+                    record.get("source_author_name"),
+                    record["operator_user_id"],
+                    record["conversation_id"],
+                    record["message_id"],
+                    record["dispatch_id"],
+                    int(bool(record.get("allow_team_mutations"))),
+                    record["created_at"],
+                    record["updated_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_external_chat_deliveries(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_external_chat_deliveries ORDER BY created_at, id"
+        ):
+            payload["external_chat_deliveries"][row["id"]] = {
+                "id": row["id"],
+                "agent_reply_message_id": row["agent_reply_message_id"],
+                "operator_message_id": row["operator_message_id"],
+                "provider": row["provider"],
+                "communication_target_id": row["communication_target_id"],
+                "source_thread_id": row["source_thread_id"],
+                "status": row["status"],
+                "provider_message_id": row["provider_message_id"],
+                "attempt_count": row["attempt_count"],
+                "last_error": row["last_error"],
+                "attempted_at": row["attempted_at"],
+                "delivered_at": row["delivered_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_external_chat_deliveries(
+        connection: sqlite3.Connection,
+        records: dict[str, Any],
+    ) -> None:
+        for record in records.values():
+            connection.execute(
+                """
+                INSERT INTO team_external_chat_deliveries(
+                    id, agent_reply_message_id, operator_message_id, provider,
+                    communication_target_id, source_thread_id, status,
+                    provider_message_id, attempt_count, last_error, attempted_at,
+                    delivered_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["id"],
+                    record["agent_reply_message_id"],
+                    record["operator_message_id"],
+                    record["provider"],
+                    record["communication_target_id"],
+                    record.get("source_thread_id"),
+                    record.get("status", "pending"),
+                    record.get("provider_message_id"),
+                    record.get("attempt_count", 0),
+                    record.get("last_error"),
+                    record.get("attempted_at"),
+                    record.get("delivered_at"),
+                    record["created_at"],
+                    record["updated_at"],
+                ),
+            )
+
+    @staticmethod
     def _read_chat_attachments(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         for row in connection.execute(
             "SELECT * FROM team_chat_attachments ORDER BY created_at, id"
@@ -3204,6 +3569,7 @@ class TeamStateSqliteStore:
             payload["release_packages"][row["id"]] = {
                 "id": row["id"],
                 "project_id": row["project_id"],
+                "owner_agent_id": row["owner_agent_id"],
                 "summary": row["summary"],
                 "supersedes_release_package_id": row["supersedes_release_package_id"],
                 "deliverable_ids": deliverables.get(row["id"], []),
@@ -3216,6 +3582,7 @@ class TeamStateSqliteStore:
                 "candidate_commit_sha": row["candidate_commit_sha"],
                 "candidate_tree_hash": row["candidate_tree_hash"],
                 "approved_commit_sha": row["approved_commit_sha"],
+                "review_correction_task_id": row["review_correction_task_id"],
                 "verification_run_ids": _json_loads(row["verification_run_ids_json"]),
                 "review_request_ids": _json_loads(row["review_request_ids_json"]),
                 "manifest": _json_loads(row["manifest_json"]),
@@ -3245,19 +3612,21 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_release_packages(
-                    id, project_id, summary, supersedes_release_package_id,
+                    id, project_id, owner_agent_id, summary, supersedes_release_package_id,
                     release_branch, canonical_branch, published_commit_sha,
                     base_commit_sha, candidate_commit_sha, candidate_tree_hash,
-                    approved_commit_sha, verification_run_ids_json, review_request_ids_json,
+                    approved_commit_sha, review_correction_task_id,
+                    verification_run_ids_json, review_request_ids_json,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
                     package["project_id"],
+                    package.get("owner_agent_id"),
                     package.get("summary"),
                     package.get("supersedes_release_package_id"),
                     package.get("release_branch"),
@@ -3267,6 +3636,7 @@ class TeamStateSqliteStore:
                     package.get("candidate_commit_sha"),
                     package.get("candidate_tree_hash"),
                     package.get("approved_commit_sha"),
+                    package.get("review_correction_task_id"),
                     _json_dumps(package.get("verification_run_ids", [])),
                     _json_dumps(package.get("review_request_ids", [])),
                     _json_dumps(package.get("manifest") or {}),
@@ -3645,9 +4015,7 @@ class TeamStateSqliteStore:
                     dispatch["session_id"],
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
-                    _json_dumps(
-                        dispatch.get("review_routing_authorities", [])
-                    ),
+                    _json_dumps(dispatch.get("review_routing_authorities", [])),
                     dispatch["status"],
                     dispatch["created_at"],
                     dispatch.get("prepared_at"),
@@ -3877,6 +4245,7 @@ class TeamStateSqliteStore:
                 "base_commit": row["base_commit"],
                 "agent_branch": row["agent_branch"],
                 "commit_sha": row["commit_sha"],
+                "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -3889,9 +4258,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_git_work_contexts(
                     id, agent_id, task_id, dispatch_id, worktree_path, base_branch,
-                    base_commit, agent_branch, commit_sha, state, created_at, updated_at
+                    base_commit, agent_branch, commit_sha,
+                    dependency_git_sources_json, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -3903,6 +4273,7 @@ class TeamStateSqliteStore:
                     context.get("base_commit"),
                     context["agent_branch"],
                     context.get("commit_sha"),
+                    _json_dumps(context.get("dependency_git_sources", [])),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -3986,6 +4357,21 @@ class TeamStateSqliteCommandTransaction:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _state_content_payload(state: TeamState) -> dict[str, Any]:
+    payload = state.model_dump(mode="json")
+    for field_name in ("schema_version", "revision", "updated_at"):
+        payload.pop(field_name, None)
+    return payload
+
+
+def _replace_state_result(result: T, state: TeamState) -> T:
+    if isinstance(result, TeamState):
+        return state  # type: ignore[return-value]
+    if isinstance(result, tuple) and result and isinstance(result[0], TeamState):
+        return (state, *result[1:])  # type: ignore[return-value]
+    return result
 
 
 def _json_loads(value: str | None) -> Any:
@@ -4426,6 +4812,29 @@ def _migrate_human_review_relationships(connection: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        "SELECT id, payload_json FROM team_worktree_cleanup_candidates ORDER BY id"
+    ).fetchall()
+    for row in rows:
+        payload = _json_loads(row["payload_json"])
+        raw_inventory = payload.get("ignored_file_inventory") or []
+        if not isinstance(raw_inventory, list):
+            raw_inventory = []
+        inventory = [
+            item.strip() for item in raw_inventory if isinstance(item, str) and item.strip()
+        ]
+        sample, count, digest, truncated = summarize_worktree_cleanup_inventory(inventory)
+        payload["ignored_file_inventory"] = sample
+        payload["ignored_file_count"] = count
+        payload["ignored_file_inventory_sha256"] = digest
+        payload["ignored_file_inventory_truncated"] = truncated
+        connection.execute(
+            "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = ?",
+            (_json_dumps(payload), row["id"]),
+        )
+
+
 def _backfill_position_values(
     connection: sqlite3.Connection,
     *,
@@ -4531,11 +4940,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
 
     def project_team_id(project_id: str | None) -> str | None:
         project = projects.get(project_id) if project_id is not None else None
-        return (
-            optional_text(project.get("team_id"))
-            if isinstance(project, Mapping)
-            else None
-        )
+        return optional_text(project.get("team_id")) if isinstance(project, Mapping) else None
 
     def definition_for(
         *,
@@ -4581,9 +4986,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
             return existing
         known = _KNOWN_OUTCOME_KIND_MIGRATIONS.get(kind)
         name = (
-            known["name"]
-            if known is not None
-            else kind.replace("_", " ").replace("-", " ").title()
+            known["name"] if known is not None else kind.replace("_", " ").replace("-", " ").title()
         )
         description = (
             known["description"]
@@ -4599,12 +5002,11 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         evidence_requirements = (
             known["evidence_requirements"]
             if known is not None
-            else profile_guidance
-            or "Provide evidence sufficient to verify the claimed outcome."
+            else profile_guidance or "Provide evidence sufficient to verify the claimed outcome."
         )
-        digest = hashlib.sha256(
-            f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")
-        ).hexdigest()[:16]
+        digest = hashlib.sha256(f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")).hexdigest()[
+            :16
+        ]
         base_id = f"outcome-kind-{digest}"
         definition_id = base_id
         suffix = 2
@@ -4641,12 +5043,8 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
             "kind": kind,
             "name": name,
             "description": text(definition.get("description")),
-            "reference_requirements": text(
-                definition.get("reference_requirements")
-            ),
-            "evidence_requirements": text(
-                definition.get("evidence_requirements")
-            ),
+            "reference_requirements": text(definition.get("reference_requirements")),
+            "evidence_requirements": text(definition.get("evidence_requirements")),
         }
 
     for profile in profiles.values():
@@ -4655,12 +5053,16 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         team_id = optional_text(profile.get("team_id"))
         project_id = optional_text(profile.get("project_id"))
         criteria = profile.get("criteria")
-        guidance = "; ".join(
-            text(criterion.get("description") or criterion.get("label"))
-            for criterion in criteria
-            if isinstance(criterion, Mapping)
-            and text(criterion.get("description") or criterion.get("label"))
-        ) if isinstance(criteria, list) else ""
+        guidance = (
+            "; ".join(
+                text(criterion.get("description") or criterion.get("label"))
+                for criterion in criteria
+                if isinstance(criterion, Mapping)
+                and text(criterion.get("description") or criterion.get("label"))
+            )
+            if isinstance(criteria, list)
+            else ""
+        )
         for kind in kind_list(profile.get("required_outcome_kinds")):
             add_definition(
                 team_id=team_id,
@@ -4701,11 +5103,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         if not isinstance(deliverable, Mapping):
             continue
         task = tasks.get(optional_text(deliverable.get("task_id")))
-        project_id = (
-            optional_text(task.get("project_id"))
-            if isinstance(task, Mapping)
-            else None
-        )
+        project_id = optional_text(task.get("project_id")) if isinstance(task, Mapping) else None
         team_id = project_team_id(project_id)
         outcomes = deliverable.get("outcomes")
         if not isinstance(outcomes, list):
@@ -4757,11 +5155,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         if not isinstance(deliverable, Mapping):
             continue
         task = tasks.get(optional_text(deliverable.get("task_id")))
-        project_id = (
-            optional_text(task.get("project_id"))
-            if isinstance(task, Mapping)
-            else None
-        )
+        project_id = optional_text(task.get("project_id")) if isinstance(task, Mapping) else None
         team_id = project_team_id(project_id)
         outcomes = deliverable.get("outcomes")
         if not isinstance(outcomes, list):
@@ -4787,9 +5181,7 @@ def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
         if not isinstance(profile, Mapping):
             continue
         team_id = optional_text(profile.get("team_id"))
-        deliverable = deliverables.get(
-            optional_text(review.get("deliverable_id"))
-        )
+        deliverable = deliverables.get(optional_text(review.get("deliverable_id")))
         task = (
             tasks.get(optional_text(deliverable.get("task_id")))
             if isinstance(deliverable, Mapping)
@@ -5252,6 +5644,8 @@ _STATE_TABLES = (
     "team_ephemeral_assignments",
     "team_release_verification_runs",
     "team_release_packages",
+    "team_external_chat_deliveries",
+    "team_external_chat_ingress",
     "team_chat_attachments",
     "team_chat_attachment_policies",
     "team_conversation_messages",
@@ -5275,6 +5669,249 @@ _STATE_TABLES = (
     "team_roles",
     "team_governance_groups",
     "team_teams",
+)
+
+# Each normalized TeamState table belongs to exactly one persistence group.  The
+# field name on each delete spec identifies the record IDs that own those rows.
+_PERSISTENCE_GROUPS = (
+    (
+        ("teams",),
+        (("team_team_projects", "team_id", "teams"), ("team_teams", "id", "teams")),
+        "_write_teams",
+    ),
+    (
+        ("governance_groups",),
+        (
+            ("team_governance_group_members", "governance_group_id", "governance_groups"),
+            ("team_governance_group_goals", "governance_group_id", "governance_groups"),
+            ("team_governance_groups", "id", "governance_groups"),
+        ),
+        "_write_governance_groups",
+    ),
+    (
+        ("governance_agenda",),
+        (("team_governance_agenda", "id", "governance_agenda"),),
+        "_write_governance_agenda",
+    ),
+    (
+        ("governance_runtimes",),
+        (("team_governance_runtimes", "governance_group_id", "governance_runtimes"),),
+        "_write_governance_runtimes",
+    ),
+    (
+        ("roles",),
+        (("team_role_permissions", "role_id", "roles"), ("team_roles", "id", "roles")),
+        "_write_roles",
+    ),
+    (
+        ("projects",),
+        (("team_project_goals", "project_id", "projects"), ("team_projects", "id", "projects")),
+        "_write_projects",
+    ),
+    (
+        ("agents",),
+        (("team_agent_subordinates", "agent_id", "agents"), ("team_agents", "id", "agents")),
+        "_write_agents",
+    ),
+    (
+        ("project_assignments",),
+        (("team_project_assignments", "id", "project_assignments"),),
+        "_write_project_assignments",
+    ),
+    (("stand_downs",), (("team_agent_stand_downs", "id", "stand_downs"),), "_write_stand_downs"),
+    (
+        ("agent_runtimes",),
+        (("team_agent_runtimes", "agent_id", "agent_runtimes"),),
+        "_write_agent_runtimes",
+    ),
+    (("cases",), (("team_cases", "id", "cases"),), "_write_cases"),
+    (
+        ("tasks",),
+        (
+            ("team_task_dependencies", "task_id", "tasks"),
+            ("team_task_deliverables", "task_id", "tasks"),
+            ("team_tasks", "id", "tasks"),
+        ),
+        "_write_tasks",
+    ),
+    (
+        ("deliverables",),
+        (
+            ("team_deliverable_artifacts", "deliverable_id", "deliverables"),
+            ("team_deliverable_reviews", "deliverable_id", "deliverables"),
+            ("team_deliverable_promotion_records", "deliverable_id", "deliverables"),
+            ("team_deliverable_sources", "deliverable_id", "deliverables"),
+            ("team_deliverables", "id", "deliverables"),
+        ),
+        "_write_deliverables",
+    ),
+    (
+        ("outcome_kind_definitions",),
+        (("team_outcome_kind_definitions", "id", "outcome_kind_definitions"),),
+        "_write_outcome_kind_definitions",
+    ),
+    (
+        ("review_profiles",),
+        (
+            ("team_review_profile_roles", "profile_id", "review_profiles"),
+            ("team_review_profile_criteria", "profile_id", "review_profiles"),
+            ("team_review_profiles", "id", "review_profiles"),
+        ),
+        "_write_review_profiles",
+    ),
+    (
+        ("review_requests",),
+        (
+            ("team_review_request_findings", "review_request_id", "review_requests"),
+            ("team_review_request_criteria", "review_request_id", "review_requests"),
+            ("team_review_requests", "id", "review_requests"),
+        ),
+        "_write_review_requests",
+    ),
+    (("inbox",), (("team_inbox", "id", "inbox"),), "_write_inbox"),
+    (
+        ("blockers",),
+        (
+            ("team_blocker_affected_tasks", "blocker_id", "blockers"),
+            ("team_blockers", "id", "blockers"),
+        ),
+        "_write_blockers",
+    ),
+    (
+        ("blocker_events",),
+        (("team_blocker_events", "id", "blocker_events"),),
+        "_write_blocker_events",
+    ),
+    (
+        ("action_records",),
+        (("team_action_records", "id", "action_records"),),
+        "_write_action_records",
+    ),
+    (
+        ("memories",),
+        (
+            ("team_memory_tags", "memory_id", "memories"),
+            ("team_memory_source_refs", "memory_id", "memories"),
+            ("team_memory_artifact_refs", "memory_id", "memories"),
+            ("team_memories", "id", "memories"),
+        ),
+        "_write_memories",
+    ),
+    (("conversations",), (("team_conversations", "id", "conversations"),), "_write_conversations"),
+    (
+        ("conversation_messages",),
+        (("team_conversation_messages", "id", "conversation_messages"),),
+        "_write_conversation_messages",
+    ),
+    (
+        ("external_chat_ingress",),
+        (("team_external_chat_ingress", "id", "external_chat_ingress"),),
+        "_write_external_chat_ingress",
+    ),
+    (
+        ("external_chat_deliveries",),
+        (("team_external_chat_deliveries", "id", "external_chat_deliveries"),),
+        "_write_external_chat_deliveries",
+    ),
+    (
+        ("chat_attachments",),
+        (("team_chat_attachments", "id", "chat_attachments"),),
+        "_write_chat_attachments",
+    ),
+    (
+        ("chat_attachment_policies",),
+        (("team_chat_attachment_policies", "directory_path", "chat_attachment_policies"),),
+        "_write_chat_attachment_policies",
+    ),
+    (
+        ("release_packages",),
+        (
+            ("team_release_deliverables", "package_id", "release_packages"),
+            ("team_release_artifacts", "package_id", "release_packages"),
+            ("team_release_feature_branches", "package_id", "release_packages"),
+            ("team_release_git_promotions", "package_id", "release_packages"),
+            ("team_release_packages", "id", "release_packages"),
+        ),
+        "_write_release_packages",
+    ),
+    (
+        ("release_verification_runs",),
+        (("team_release_verification_runs", "id", "release_verification_runs"),),
+        "_write_release_verification_runs",
+    ),
+    (
+        ("human_review_requests", "human_review_decisions", "human_review_findings"),
+        (
+            (
+                "team_human_review_request_configured_groups",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            (
+                "team_human_review_request_initial_users",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            (
+                "team_human_review_request_current_users",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            (
+                "team_human_review_request_explicit_users",
+                "human_review_request_id",
+                "human_review_requests",
+            ),
+            ("team_human_review_requests", "id", "human_review_requests"),
+            (
+                "team_human_review_decision_confirmed_findings",
+                "human_review_decision_id",
+                "human_review_decisions",
+            ),
+            ("team_human_review_decisions", "id", "human_review_decisions"),
+            ("team_human_review_finding_targets", "finding_id", "human_review_findings"),
+            ("team_human_review_finding_proposals", "finding_id", "human_review_findings"),
+            ("team_human_review_findings", "id", "human_review_findings"),
+        ),
+        "_write_human_reviews",
+    ),
+    (
+        ("dispatches",),
+        (
+            ("team_dispatch_tasks", "dispatch_id", "dispatches"),
+            ("team_dispatch_blockers", "dispatch_id", "dispatches"),
+            ("team_dispatch_reviews", "dispatch_id", "dispatches"),
+            ("team_dispatch_inbox", "dispatch_id", "dispatches"),
+            ("team_dispatch_projects", "dispatch_id", "dispatches"),
+            ("team_dispatch_repositories", "dispatch_id", "dispatches"),
+            ("team_dispatches", "id", "dispatches"),
+        ),
+        "_write_dispatches",
+    ),
+    (
+        ("worktree_cleanup_candidates",),
+        (("team_worktree_cleanup_candidates", "id", "worktree_cleanup_candidates"),),
+        "_write_worktree_cleanup_candidates",
+    ),
+    (
+        ("ephemeral_assignments",),
+        (
+            ("team_ephemeral_assignment_artifacts", "assignment_id", "ephemeral_assignments"),
+            ("team_ephemeral_assignment_allowed_tools", "assignment_id", "ephemeral_assignments"),
+            ("team_ephemeral_assignments", "id", "ephemeral_assignments"),
+        ),
+        "_write_ephemeral_assignments",
+    ),
+    (
+        ("git_promotions",),
+        (("team_git_promotions", "id", "git_promotions"),),
+        "_write_git_promotions",
+    ),
+    (
+        ("git_work_contexts",),
+        (("team_git_work_contexts", "id", "git_work_contexts"),),
+        "_write_git_work_contexts",
+    ),
 )
 
 
@@ -5483,6 +6120,10 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     context_rotation_reason TEXT,
     context_rotation_request_note TEXT,
     last_handoff_summary TEXT,
+    context_handoff_preparation_pending INTEGER NOT NULL DEFAULT 0,
+    context_handoff_preparation_status TEXT,
+    last_agent_handoff_summary TEXT,
+    last_agent_handoff_at TEXT,
     last_context_rotated_at TEXT,
     last_thread_id TEXT,
     updated_at TEXT NOT NULL
@@ -5533,6 +6174,8 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
+    integration_boundary INTEGER NOT NULL DEFAULT 0,
+    deliverable_contract_json TEXT,
     completion_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -5586,6 +6229,11 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     supersession_reason TEXT,
     superseded_at TEXT,
     superseded_by_actor TEXT,
+    review_cohort_id TEXT,
+    review_cohort_sealed_at TEXT,
+    rework_requested_at TEXT,
+    rework_requested_by_agent_id TEXT,
+    rework_reason TEXT,
     completion_json TEXT,
     created_at TEXT NOT NULL
 );
@@ -5689,6 +6337,7 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     required_outcome_kind_definitions_json TEXT NOT NULL DEFAULT '[]',
     instructions TEXT,
     reviewed_commit_sha TEXT,
+    review_cohort_id TEXT,
     supersedes_review_request_id TEXT,
     superseded_by_review_request_id TEXT,
     retry_reason TEXT,
@@ -5908,6 +6557,46 @@ CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_conversation
 CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_dispatch
     ON team_conversation_messages(dispatch_id, id);
 
+CREATE TABLE IF NOT EXISTS team_external_chat_ingress (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    communication_target_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    source_thread_id TEXT,
+    source_author_id TEXT NOT NULL,
+    source_author_name TEXT,
+    operator_user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL,
+    allow_team_mutations INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(provider, communication_target_id, source_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_external_chat_ingress_message
+    ON team_external_chat_ingress(message_id, id);
+
+CREATE TABLE IF NOT EXISTS team_external_chat_deliveries (
+    id TEXT PRIMARY KEY,
+    agent_reply_message_id TEXT NOT NULL,
+    operator_message_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    communication_target_id TEXT NOT NULL,
+    source_thread_id TEXT,
+    status TEXT NOT NULL,
+    provider_message_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    attempted_at TEXT,
+    delivered_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(agent_reply_message_id, communication_target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_external_chat_deliveries_reply
+    ON team_external_chat_deliveries(agent_reply_message_id, id);
+
 CREATE TABLE IF NOT EXISTS team_chat_attachments (
     id TEXT PRIMARY KEY,
     message_id TEXT NOT NULL,
@@ -5940,6 +6629,7 @@ CREATE TABLE IF NOT EXISTS team_chat_attachment_policies (
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
+    owner_agent_id TEXT,
     summary TEXT,
     supersedes_release_package_id TEXT,
     release_branch TEXT,
@@ -5949,6 +6639,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     candidate_commit_sha TEXT,
     candidate_tree_hash TEXT,
     approved_commit_sha TEXT,
+    review_correction_task_id TEXT,
     verification_run_ids_json TEXT NOT NULL DEFAULT '[]',
     review_request_ids_json TEXT NOT NULL DEFAULT '[]',
     manifest_json TEXT NOT NULL DEFAULT '{}',
@@ -6263,6 +6954,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     base_commit TEXT,
     agent_branch TEXT NOT NULL,
     commit_sha TEXT,
+    dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

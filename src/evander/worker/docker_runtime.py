@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from evander.codex_auth import CodexTurnSpec
 
@@ -15,6 +19,7 @@ from .codex_subscription import (
     CODEX_COMPLETION_MARKER_HOST_DIRNAME,
 )
 from .models import (
+    WorkerFailureCause,
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerSessionPaths,
@@ -32,6 +37,16 @@ from .sandbox_profile import (
 
 
 _CODEX_IMAGE_BINARY = "/usr/local/bin/codex"
+_CODEX_HOME_CONTAINER_PATH = "/home/agent/.config/evander/codex"
+_CODEX_CONFIG_CONTAINER_PATH = f"{_CODEX_HOME_CONTAINER_PATH}/config.toml"
+_CODEX_LEGACY_CONFIG_CONTAINER_PATH = "/home/agent/.codex/config.toml"
+_CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME = "codex-subscription-config.toml"
+_CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME = (
+    "codex-subscription-project-config.toml"
+)
+_PIDS_EXHAUSTION_MARKER_SUFFIX = ".pids-limit-exhausted"
+_PIDS_EVENT_POLL_SECONDS = 0.05
+_PIDS_MONITOR_TERMINAL_JOIN_SECONDS = 0.25
 
 
 class DockerContainerRuntime:
@@ -43,6 +58,8 @@ class DockerContainerRuntime:
         sandbox_profile: WorkerSandboxProfile | None = None,
         read_only_mounts: Sequence[str | WorkerReadOnlyMount] | None = None,
         codex_egress_proxy_url: str | None = None,
+        proc_root: Path = Path("/proc"),
+        cgroup_root: Path = Path("/sys/fs/cgroup"),
     ) -> None:
         profile = sandbox_profile or default_worker_sandbox_profile()
         if docker_network is not None:
@@ -57,6 +74,10 @@ class DockerContainerRuntime:
             for mount in (read_only_mounts or ())
         )
         self.codex_egress_proxy_url = _normalize_proxy_url(codex_egress_proxy_url)
+        self.proc_root = Path(proc_root)
+        self.cgroup_root = Path(cgroup_root)
+        self._pids_monitors: dict[str, threading.Thread] = {}
+        self._pids_monitors_lock = threading.Lock()
 
     def start_job(
         self,
@@ -64,9 +85,13 @@ class DockerContainerRuntime:
         record: WorkerJobRecord,
         paths: WorkerSessionPaths,
     ) -> str:
+        self._pids_exhaustion_marker(record).unlink(missing_ok=True)
         args = self._build_run_args(request=request, record=record, paths=paths)
         completed = subprocess.run(args, check=True, capture_output=True, text=True)
-        return completed.stdout.strip()
+        container_id = completed.stdout.strip()
+        if self._effective_pids_limit(request) is not None:
+            self._start_pids_event_monitor(record, container_id)
+        return container_id
 
     def inspect_job(self, record: WorkerJobRecord) -> dict[str, Any]:
         target = record.container_id or record.container_name
@@ -83,11 +108,26 @@ class DockerContainerRuntime:
         exit_code = state.get("ExitCode")
         oom_killed = bool(state.get("OOMKilled"))
         runtime_error = str(state.get("Error") or "").strip() or None
+        terminal = not bool(state.get("Running")) and str(
+            state.get("Status") or ""
+        ).casefold() in {"exited", "dead"}
+        if terminal:
+            self._join_pids_event_monitor(record)
+        pids_limit_exhausted = (
+            terminal
+            and exit_code not in (0, None)
+            and self._pids_exhaustion_marker(record).is_file()
+        )
         return {
             "status": docker_state_to_status(state),
             "exit_code": exit_code,
             "oom_killed": oom_killed,
             "runtime_error": runtime_error,
+            "failure_cause": (
+                WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value
+                if pids_limit_exhausted
+                else None
+            ),
             "raw_state": {
                 "status": state.get("Status"),
                 "running": state.get("Running"),
@@ -95,6 +135,164 @@ class DockerContainerRuntime:
                 "oom_killed": oom_killed,
             },
         }
+
+    def _effective_pids_limit(self, request: WorkerJobRequest) -> int | None:
+        return (
+            request.resource_limits.pids_limit
+            if request.resource_limits.pids_limit is not None
+            else self.sandbox_profile.default_pids_limit
+        )
+
+    def _pids_exhaustion_marker(self, record: WorkerJobRecord) -> Path:
+        return Path(record.logs_path) / f"{record.job_id}{_PIDS_EXHAUSTION_MARKER_SUFFIX}"
+
+    def _start_pids_event_monitor(
+        self,
+        record: WorkerJobRecord,
+        container_id: str,
+    ) -> None:
+        events_path = self._container_pids_events_path(container_id)
+        if events_path is None:
+            return
+        maximum_events = self._pids_max_events(events_path)
+        if maximum_events is None:
+            return
+        if maximum_events > 0:
+            self._record_pids_limit_exhaustion(record)
+            return
+        monitor = threading.Thread(
+            target=self._monitor_pids_events,
+            args=(record, events_path),
+            name=f"evander-pids-monitor-{record.job_id}",
+            daemon=True,
+        )
+        with self._pids_monitors_lock:
+            self._pids_monitors[record.job_id] = monitor
+        monitor.start()
+
+    def _monitor_pids_events(
+        self,
+        record: WorkerJobRecord,
+        events_path: Path,
+    ) -> None:
+        try:
+            while True:
+                maximum_events = self._pids_max_events(events_path)
+                if maximum_events is None:
+                    return
+                if maximum_events > 0:
+                    self._record_pids_limit_exhaustion(record)
+                    return
+                if self._cgroup_is_populated(events_path.parent / "cgroup.events") is False:
+                    return
+                time.sleep(_PIDS_EVENT_POLL_SECONDS)
+        finally:
+            with self._pids_monitors_lock:
+                current = self._pids_monitors.get(record.job_id)
+                if current is threading.current_thread():
+                    self._pids_monitors.pop(record.job_id, None)
+
+    def _join_pids_event_monitor(self, record: WorkerJobRecord) -> None:
+        with self._pids_monitors_lock:
+            monitor = self._pids_monitors.get(record.job_id)
+        if monitor is not None:
+            monitor.join(timeout=_PIDS_MONITOR_TERMINAL_JOIN_SECONDS)
+
+    def _container_pids_events_path(self, container_id: str) -> Path | None:
+        if not container_id:
+            return None
+        try:
+            completed = subprocess.run(
+                [
+                    self.docker_binary,
+                    "inspect",
+                    "--format",
+                    "{{.State.Pid}}",
+                    container_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            pid = int(completed.stdout.strip())
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            return None
+        if pid <= 0:
+            return None
+        try:
+            cgroup_lines = (self.proc_root / str(pid) / "cgroup").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            return None
+        for line in cgroup_lines.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) != 3:
+                continue
+            hierarchy, controllers, relative_path = parts
+            controller_set = {item for item in controllers.split(",") if item}
+            if hierarchy == "0" and not controller_set:
+                candidate = self._contained_cgroup_path(relative_path) / "pids.events"
+            elif "pids" in controller_set:
+                candidate = (
+                    self._contained_cgroup_path(f"pids/{relative_path.lstrip('/')}")
+                    / "pids.events"
+                )
+            else:
+                continue
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _contained_cgroup_path(self, relative_path: str) -> Path:
+        relative = Path(str(relative_path or "").lstrip("/"))
+        if ".." in relative.parts:
+            return self.cgroup_root / "__invalid__"
+        return self.cgroup_root / relative
+
+    @staticmethod
+    def _pids_max_events(events_path: Path) -> int | None:
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for line in lines:
+            key, separator, raw_value = line.partition(" ")
+            if key != "max" or not separator:
+                continue
+            try:
+                return int(raw_value.strip())
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _cgroup_is_populated(events_path: Path) -> bool | None:
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for line in lines:
+            key, separator, raw_value = line.partition(" ")
+            if key != "populated" or not separator:
+                continue
+            if raw_value.strip() == "1":
+                return True
+            if raw_value.strip() == "0":
+                return False
+            return None
+        return None
+
+    def _record_pids_limit_exhaustion(self, record: WorkerJobRecord) -> None:
+        marker = self._pids_exhaustion_marker(record)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         subprocess.run(
@@ -152,6 +350,8 @@ class DockerContainerRuntime:
             f"HTTP_PROXY={self.codex_egress_proxy_url}",
             "-e",
             f"NO_PROXY={','.join(dict.fromkeys(no_proxy))}",
+            "-e",
+            f"CODEX_HOME={_CODEX_HOME_CONTAINER_PATH}",
             record.container_id or record.container_name,
             _CODEX_IMAGE_BINARY,
             "app-server",
@@ -175,6 +375,7 @@ class DockerContainerRuntime:
         paths.assert_contained()
         identity_mounts = self._container_identity_mounts(paths)
         subscription_completion_mount: str | None = None
+        subscription_config_mounts: tuple[str, ...] = ()
         if (
             request.codex_turn is not None
             and request.codex_turn.auth_mode.value == "chatgpt_subscription"
@@ -194,6 +395,10 @@ class DockerContainerRuntime:
             reject_unsafe_mount(completion_dir, CODEX_COMPLETION_MARKER_CONTAINER_DIR)
             subscription_completion_mount = (
                 f"{completion_dir}:{CODEX_COMPLETION_MARKER_CONTAINER_DIR}:ro"
+            )
+            subscription_config_mounts = self._subscription_config_mounts(
+                paths,
+                request.codex_turn,
             )
 
         args = [
@@ -216,6 +421,8 @@ class DockerContainerRuntime:
             args.extend(["-v", mount])
         if subscription_completion_mount is not None:
             args.extend(["-v", subscription_completion_mount])
+        for mount in subscription_config_mounts:
+            args.extend(["-v", mount])
         for mount in self.read_only_mounts:
             args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
@@ -281,6 +488,66 @@ class DockerContainerRuntime:
             f"{group_path}:/etc/group:ro",
         ]
 
+    def _subscription_config_mounts(
+        self,
+        paths: WorkerSessionPaths,
+        turn: CodexTurnSpec,
+    ) -> tuple[str, ...]:
+        """Overlay metered provider config for one subscription job only.
+
+        Container session bootstrap deliberately keeps relay configuration in both
+        the active Codex home and the legacy ``~/.codex`` location. A subscription
+        app-server must retain the same persisted thread store, but it must not load
+        that metered provider or treat the legacy copy as project-local config.
+        Worker-owned read-only overlays preserve the thread/skill directories while
+        keeping external-token authentication independent of ``OPENAI_API_KEY``.
+        The per-session MCP server must be present before app-server starts; a
+        thread-resume config override alone does not initialize a newly introduced
+        MCP connection.
+        """
+
+        config_path = paths.root / _CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME
+        project_config_path = (
+            paths.root / _CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME
+        )
+        for description, path in (
+            ("Codex subscription config", config_path),
+            ("Codex subscription project config", project_config_path),
+        ):
+            ensure_resolved_path_within(
+                base=paths.root,
+                candidate=path,
+                description=description,
+            )
+        config_content = (
+            'forced_login_method = "chatgpt"\n'
+            "check_for_update_on_startup = false\n"
+            'model_reasoning_effort = "high"\n'
+            'personality = "pragmatic"\n'
+            "\n"
+            '[projects."/home/agent"]\n'
+            'trust_level = "trusted"\n'
+        )
+        if turn.mcp_gateway_url is not None:
+            config_content += (
+                "\n"
+                "[mcp_servers.evander]\n"
+                f"url = {json.dumps(str(turn.mcp_gateway_url))}\n"
+                "enabled = true\n"
+            )
+        _write_worker_owned_config(config_path, config_content)
+        _write_worker_owned_config(
+            project_config_path,
+            (
+                "# The metered relay provider is intentionally hidden from\n"
+                "# subscription-authenticated app-server turns.\n"
+            ),
+        )
+        return (
+            f"{config_path}:{_CODEX_CONFIG_CONTAINER_PATH}:ro",
+            f"{project_config_path}:{_CODEX_LEGACY_CONFIG_CONTAINER_PATH}:ro",
+        )
+
 
 def _numeric_container_identity(user: str | None) -> tuple[int, int] | None:
     normalized = str(user or "").strip()
@@ -299,6 +566,23 @@ def _numeric_container_identity(user: str | None) -> tuple[int, int] | None:
 def _write_container_identity_file(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o644)
+
+
+def _write_worker_owned_config(path: Path, content: str) -> None:
+    try:
+        if path.is_file() and not path.is_symlink():
+            if path.read_text(encoding="utf-8") == content:
+                path.chmod(0o600)
+                return
+    except OSError:
+        pass
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def docker_state_to_status(state: dict[str, Any]) -> str:

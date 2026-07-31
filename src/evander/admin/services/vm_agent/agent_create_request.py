@@ -299,6 +299,7 @@ class VmAgentCreateRequestMixin:
         if worker_url:
             metadata["worker_url"] = worker_url
         metadata["container_worker"] = container_image_selection
+        metadata["playwright"] = bool(payload.get("playwright", False))
         if "http_targets" in payload:
             metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
         resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(

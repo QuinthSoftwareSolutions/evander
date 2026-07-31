@@ -15,6 +15,7 @@ from evander_team_addon.models import (
     ProjectGitConfig,
     ProjectGoal,
     TeamDispatch,
+    TeamDispatchActivityStatus,
     TeamDispatchStatus,
     TeamState,
     TeamTaskState,
@@ -22,7 +23,11 @@ from evander_team_addon.models import (
     WorktreeCleanupState,
 )
 from evander_team_addon.repository import TeamStateRepository
-from evander_team_addon.providers import _prepare_project_repo_task_worktree
+from evander_team_addon.providers import (
+    _prepare_project_repo_task_worktree,
+    _project_repo_agent_branch,
+    _prior_project_repo_task_base_commit,
+)
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.git_work_contexts import (
     reconcile_git_work_context_lifecycle,
@@ -39,7 +44,7 @@ _WORKTREE_PATH = "/home/agent/worktrees/project/task-12345678"
 
 
 class FakeCleanupBackend:
-    def __init__(self, outcomes: list[dict[str, Any]]) -> None:
+    def __init__(self, outcomes: list[dict[str, Any] | Exception]) -> None:
         self.outcomes = list(outcomes)
         self.calls: list[tuple[WorktreeCleanupCandidate, bool]] = []
 
@@ -60,7 +65,10 @@ class FakeCleanupBackend:
         dry_run: bool,
     ) -> dict[str, Any]:
         self.calls.append((candidate.model_copy(deep=True), dry_run))
-        return self.outcomes.pop(0)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def _seed_cleanup_state(
@@ -154,6 +162,22 @@ def _removed_outcome(*, reclaimed_bytes: int = 512) -> dict[str, Any]:
     }
 
 
+def _dry_run_outcome(*, worktree_bytes: int = 512) -> dict[str, Any]:
+    return {
+        "state": "dry_run",
+        "safe_to_remove": True,
+        "removed": False,
+        "pruned": False,
+        "validation_count": 2,
+        "failed_check": None,
+        "message": "task worktree dry-run passed",
+        "ignored_paths": [".cache/generated.bin"],
+        "ignored_bytes": 64,
+        "worktree_bytes": worktree_bytes,
+        "reclaimed_bytes": 0,
+    }
+
+
 def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     tmp_path,
 ) -> None:
@@ -195,6 +219,9 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     candidate = next(iter(final_state.worktree_cleanup_candidates.values()))
     assert candidate.state == WorktreeCleanupState.SUCCEEDED
     assert candidate.ignored_file_inventory == [".cache/generated.bin"]
+    assert candidate.ignored_file_count == 1
+    assert candidate.ignored_file_inventory_sha256 is not None
+    assert candidate.ignored_file_inventory_truncated is False
     assert candidate.ignored_bytes == 64
     assert candidate.worktree_bytes == 512
     assert candidate.reclaimed_bytes == 512
@@ -205,6 +232,145 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert audit[0].audit_record_id == candidate.id
     assert audit[0].status.value == "success"
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
+
+
+def test_cleanup_retains_bounded_deterministic_inventory_evidence(tmp_path) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    outcome = _removed_outcome()
+    outcome["ignored_paths"] = [
+        f"node_modules/cache/{index:04d}.bin" for index in range(250, -1, -1)
+    ]
+    outcome["ignored_paths"].append("node_modules/cache/0042.bin")
+    backend = FakeCleanupBackend([outcome])
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+
+    result = TeamWorktreeCleanupService(repository, backend).reconcile(
+        now=now,
+        grace_seconds=0,
+        retry_seconds=0,
+        dry_run=False,
+    )
+
+    assert result.succeeded_count == 1
+    candidate = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert candidate.ignored_file_count == 251
+    assert candidate.ignored_file_inventory == sorted(set(outcome["ignored_paths"]))[:200]
+    assert candidate.ignored_file_inventory_sha256 is not None
+    assert candidate.ignored_file_inventory_truncated is True
+
+
+def test_automatic_cleanup_audits_then_removes_on_later_eligible_pass(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    backend = FakeCleanupBackend(
+        [
+            _dry_run_outcome(worktree_bytes=1024),
+            _removed_outcome(reclaimed_bytes=1024),
+        ]
+    )
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+    service = TeamWorktreeCleanupService(repository, backend)
+
+    first = service.reconcile(
+        now=now,
+        grace_seconds=0,
+        retry_seconds=300,
+        dry_run=None,
+    )
+
+    assert first.dry_run_count == 1
+    assert first.succeeded_count == 0
+    after_dry_run = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert after_dry_run.state == WorktreeCleanupState.PENDING
+    assert after_dry_run.last_safety_check == "dry_run_safe"
+    assert after_dry_run.eligible_at == now + timedelta(seconds=300)
+    assert after_dry_run.worktree_bytes == 1024
+    assert [dry_run for _candidate, dry_run in backend.calls] == [True]
+
+    too_early = service.reconcile(
+        now=now + timedelta(seconds=299),
+        grace_seconds=0,
+        retry_seconds=300,
+        dry_run=None,
+    )
+    assert too_early.attempted_count == 0
+
+    second = service.reconcile(
+        now=now + timedelta(seconds=300),
+        grace_seconds=0,
+        retry_seconds=300,
+        dry_run=None,
+    )
+
+    assert second.dry_run_count == 0
+    assert second.succeeded_count == 1
+    assert second.reclaimed_bytes == 1024
+    succeeded = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert succeeded.state == WorktreeCleanupState.SUCCEEDED
+    assert succeeded.attempt_count == 2
+    assert [dry_run for _candidate, dry_run in backend.calls] == [True, False]
+    audits = repository.list_dispatch_activity(tool_name="team_worktree_cleanup")
+    assert len(audits) == 2
+    assert all(audit.status == TeamDispatchActivityStatus.SUCCESS for audit in audits)
+
+
+def test_explicit_dry_run_only_never_progresses_to_removal(tmp_path) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    backend = FakeCleanupBackend([_dry_run_outcome(), _dry_run_outcome()])
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+    service = TeamWorktreeCleanupService(repository, backend)
+
+    first = service.reconcile(
+        now=now,
+        grace_seconds=0,
+        retry_seconds=300,
+        dry_run=True,
+    )
+    second = service.reconcile(
+        now=now + timedelta(seconds=300),
+        grace_seconds=0,
+        retry_seconds=300,
+        dry_run=True,
+    )
+
+    assert first.dry_run_count == 1
+    assert second.dry_run_count == 1
+    assert [dry_run for _candidate, dry_run in backend.calls] == [True, True]
+    candidate = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert candidate.state == WorktreeCleanupState.PENDING
+    assert candidate.last_safety_check == "dry_run_safe"
+
+
+def test_dry_run_cannot_authorize_later_removal_without_its_audit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    backend = FakeCleanupBackend([_dry_run_outcome()])
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+
+    def _reject_audit(_connection, _activity):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(
+        repository.store,
+        "_insert_dispatch_activity",
+        _reject_audit,
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        TeamWorktreeCleanupService(repository, backend).reconcile(
+            now=now,
+            grace_seconds=0,
+            retry_seconds=300,
+            dry_run=None,
+        )
+
+    candidate = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert candidate.state == WorktreeCleanupState.PROCESSING
+    assert candidate.last_safety_check is None
+    assert repository.list_dispatch_activity(tool_name="team_worktree_cleanup") == []
 
 
 def test_cleanup_audit_failure_rolls_back_success_and_context_prune(
@@ -306,6 +472,91 @@ def test_backend_refusal_is_durable_recovery_and_retry_is_idempotent(
     assert succeeded.state == WorktreeCleanupState.SUCCEEDED
     assert succeeded.attempt_count == 2
     assert len(repository.list_dispatch_activity(tool_name="team_worktree_cleanup")) == 2
+
+
+def test_cleanup_metadata_refresh_preserves_recovery_backoff_across_maintenance(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    old_commit = "2" * 40
+    current_commit = "3" * 40
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+
+    def _add_historical_context(state: TeamState) -> TeamState:
+        state.git_work_contexts["historical-context"] = GitWorkContext(
+            id="historical-context",
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/tasks/task-12345678",
+            base_branch="main",
+            base_commit=_BASE_COMMIT,
+            commit_sha=old_commit,
+            worktree_path=_WORKTREE_PATH,
+            state=GitWorkContextState.ABANDONED,
+            created_at=now - timedelta(hours=2),
+            updated_at=now - timedelta(hours=1),
+        )
+        current = state.git_work_contexts["context"]
+        current.commit_sha = current_commit
+        current.created_at = now - timedelta(minutes=30)
+        current.updated_at = now - timedelta(minutes=15)
+        return state
+
+    repository.update(_add_historical_context)
+    backend = FakeCleanupBackend(
+        [
+            RuntimeError(
+                "container worker POST /v1/sessions/session-backend/"
+                "worktrees/cleanup returned HTTP 404: Not Found"
+            ),
+            _removed_outcome(),
+        ]
+    )
+    service = TeamWorktreeCleanupService(repository, backend)
+
+    first = service.reconcile(
+        now=now,
+        grace_seconds=0,
+        retry_seconds=300,
+    )
+
+    assert first.recovery_required_count == 1
+    failed = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert failed.state == WorktreeCleanupState.RECOVERY_REQUIRED
+    assert failed.expected_head == current_commit
+    assert failed.attempt_count == 1
+    assert failed.eligible_at == now + timedelta(seconds=300)
+    assert failed.last_safety_check == "backend_cleanup_failed"
+
+    # Agent-completion maintenance can run between cron ticks. Re-reading the
+    # historical and current contexts must not erase the failed attempt's
+    # durable retry schedule or evidence.
+    early = service.reconcile(
+        now=now + timedelta(minutes=1),
+        grace_seconds=0,
+        retry_seconds=300,
+    )
+
+    assert early.attempted_count == 0
+    still_deferred = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert still_deferred.state == WorktreeCleanupState.RECOVERY_REQUIRED
+    assert still_deferred.expected_head == current_commit
+    assert still_deferred.attempt_count == 1
+    assert still_deferred.eligible_at == now + timedelta(seconds=300)
+    assert still_deferred.last_safety_check == "backend_cleanup_failed"
+    assert len(backend.calls) == 1
+
+    retried = service.reconcile(
+        now=now + timedelta(seconds=300),
+        grace_seconds=0,
+        retry_seconds=300,
+    )
+
+    assert retried.succeeded_count == 1
+    succeeded = next(iter(repository.read().worktree_cleanup_candidates.values()))
+    assert succeeded.state == WorktreeCleanupState.SUCCEEDED
+    assert succeeded.attempt_count == 2
+    assert len(backend.calls) == 2
 
 
 def test_active_dispatch_defers_cleanup_without_calling_backend(tmp_path) -> None:
@@ -607,4 +858,199 @@ def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path)
     assert "/home/agent/.evander/locks/task-worktree-project.lock" in command
     assert 'exec 9>"$lock"' in command
     assert "flock 9" in command
+    fresh_base_fetch = "\n".join(
+        (
+            '  if [ -z "$pinned_base_commit" ]; then',
+            '    if [ "$base" = "HEAD" ]; then',
+            "      git fetch --no-tags origin HEAD",
+            "    else",
+            '      git fetch --no-tags origin "refs/heads/$base"',
+            "    fi",
+            '    base_commitish="$(git rev-parse --verify FETCH_HEAD^{commit})"',
+            "  fi",
+            '  git worktree add -b "$branch" "$target" "$base_commitish"',
+        )
+    )
+    assert fresh_base_fetch in command
     assert 'git -C "$target" rev-parse HEAD' in command
+
+
+def test_container_preparation_records_pinned_base_separately_from_task_head(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    task_head = "2" * 40
+
+    class FakeContainerBackend:
+        def prepare_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(
+                target_dir=_WORKTREE_PATH,
+                branch=kwargs["branch"],
+                commit_sha=task_head,
+                base_commit_sha=_BASE_COMMIT,
+            )
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.selected_execution_backend_for_target",
+        lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers.container_backend",
+        lambda *_args, **_kwargs: FakeContainerBackend(),
+    )
+
+    path, base_commit = _prepare_project_repo_task_worktree(
+        SimpleNamespace(metadata={"directory_path": "root"}),
+        project_repo={
+            "guest_repo_name": "project",
+            "target_dir": "/home/agent/repos/project",
+            "execution_backend": "container_worker_vm",
+        },
+        session_id="session-backend",
+        task_id="task",
+        agent_branch="agents/session-backend/tasks/task-12345678",
+        base_ref="team/team/releases/release-1234",
+        pinned_base_commit=_BASE_COMMIT,
+        pinned_base_tree="3" * 40,
+    )
+
+    assert path == _WORKTREE_PATH
+    assert base_commit == _BASE_COMMIT
+    assert calls == [
+        {
+            "session_id": "session-backend",
+            "repo_name": "project",
+            "worktree_name": (
+                f"task-{hashlib.sha256(b'task').hexdigest()[:8]}-{_BASE_COMMIT[:12]}"
+            ),
+            "branch": "agents/session-backend/tasks/task-12345678",
+            "base_ref": "team/team/releases/release-1234",
+            "expected_base_commit_sha": _BASE_COMMIT,
+            "expected_base_tree_hash": "3" * 40,
+            "dependency_git_sources": [],
+        }
+    ]
+
+
+def test_candidate_correction_branch_is_scoped_to_the_pinned_candidate() -> None:
+    ordinary = _project_repo_agent_branch("session", task_id="correction-task")
+    candidate = _project_repo_agent_branch(
+        "session",
+        task_id="correction-task",
+        candidate_commit_sha="a" * 40,
+    )
+
+    assert candidate == f"{ordinary}-{'a' * 12}"
+
+
+def test_container_preparation_recovers_legacy_base_from_prior_team_context(
+    monkeypatch,
+) -> None:
+    task_head = "2" * 40
+
+    class FakeContainerBackend:
+        def prepare_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                target_dir=_WORKTREE_PATH,
+                branch=kwargs["branch"],
+                commit_sha=task_head,
+                base_commit_sha=None,
+                created=False,
+            )
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.selected_execution_backend_for_target",
+        lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers.container_backend",
+        lambda *_args, **_kwargs: FakeContainerBackend(),
+    )
+
+    path, base_commit = _prepare_project_repo_task_worktree(
+        SimpleNamespace(metadata={"directory_path": "root"}),
+        project_repo={
+            "guest_repo_name": "project",
+            "target_dir": "/home/agent/repos/project",
+            "execution_backend": "container_worker_vm",
+        },
+        session_id="session-backend",
+        task_id="task",
+        agent_branch="agents/session-backend/tasks/task-12345678",
+        base_ref="main",
+        prior_base_commit=_BASE_COMMIT,
+    )
+
+    assert path == _WORKTREE_PATH
+    assert base_commit == _BASE_COMMIT
+
+
+def test_container_preparation_refuses_to_guess_legacy_base_from_task_head(
+    monkeypatch,
+) -> None:
+    class FakeContainerBackend:
+        def prepare_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                target_dir=_WORKTREE_PATH,
+                branch=kwargs["branch"],
+                commit_sha="2" * 40,
+                base_commit_sha=None,
+                created=False,
+            )
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.selected_execution_backend_for_target",
+        lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers.container_backend",
+        lambda *_args, **_kwargs: FakeContainerBackend(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="did not report its base commit.*repair evander.baseCommit",
+    ):
+        _prepare_project_repo_task_worktree(
+            SimpleNamespace(metadata={"directory_path": "root"}),
+            project_repo={
+                "guest_repo_name": "project",
+                "target_dir": "/home/agent/repos/project",
+                "execution_backend": "container_worker_vm",
+            },
+            session_id="session-backend",
+            task_id="task",
+            agent_branch="agents/session-backend/tasks/task-12345678",
+            base_ref="main",
+        )
+
+
+def test_prior_task_base_commit_rejects_conflicting_team_provenance() -> None:
+    state = SimpleNamespace(
+        git_work_contexts={
+            "ctx-first": GitWorkContext(
+                id="ctx-first",
+                agent_id="backend",
+                task_id="task",
+                agent_branch="agents/session-backend/tasks/task-12345678",
+                base_commit="1" * 40,
+            ),
+            "ctx-second": GitWorkContext(
+                id="ctx-second",
+                agent_id="backend",
+                task_id="task",
+                agent_branch="agents/session-backend/tasks/task-12345678",
+                base_commit="2" * 40,
+            ),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="conflicting base commits"):
+        _prior_project_repo_task_base_commit(
+            state,
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/tasks/task-12345678",
+        )

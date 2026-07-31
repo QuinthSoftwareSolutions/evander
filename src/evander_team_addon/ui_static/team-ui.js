@@ -13,6 +13,16 @@ const taskStates = [
   "rejected",
   "cancelled",
 ];
+const directlyCancellableTaskStates = new Set([
+  "pending",
+  "in_progress",
+  "blocked",
+  "waiting_for_review",
+  "rejected",
+]);
+const directlyEditableTaskStates = taskStates.filter(
+  (stateValue) => !["accepted", "cancelled"].includes(stateValue),
+);
 const caseStatuses = [
   "open",
   "triage",
@@ -180,6 +190,7 @@ let selectedChatConversationId = null;
 let selectedChatOperatorUserId = null;
 let chatSending = false;
 const pendingChatAttachments = new Map();
+const chatComposerDrafts = new Map();
 let chatStream = null;
 let chatStreamConversationId = null;
 let chatStreamErrorRefreshPending = false;
@@ -209,13 +220,16 @@ let activeTeamView = initialHumanReviewDeepLink.enabled
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
+// Native disclosure state belongs to the DOM, so keep its intentional state
+// separately whenever a view renderer replaces that DOM. Rendered keys include
+// their Team view so shared renderers cannot couple hidden view copies.
+const openTeamDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
 let projectCreateFormOpen = false;
 let projectReviewProfileCreateProjectId = null;
 const projectRecordSectionPages = {};
 const projectRecordShowRejected = new Set();
-const openProjectRecordSections = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -249,6 +263,8 @@ let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
 let orgContextMenuState = null;
 const formDraftRegistry = new Map();
+const formDraftFocusKey = "__team_form_focus__";
+let pendingFormFocusDraft = null;
 let pendingConflictRetry = null;
 let coreAgentSessions = [];
 let coreAgentSessionsDirectoryPath = "";
@@ -373,6 +389,10 @@ const elements = {
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
   editFormBody: document.querySelector("#edit-form-body"),
+  taskCancellationModal: document.querySelector("#task-cancellation-modal"),
+  taskCancellationModalTitle: document.querySelector("#task-cancellation-modal-title"),
+  taskCancellationSubject: document.querySelector("#task-cancellation-subject"),
+  taskCancellationForm: document.querySelector("#task-cancellation-form"),
   chatAttachmentPolicyModal: document.querySelector("#chat-attachment-policy-modal"),
   chatAttachmentPolicyForm: document.querySelector("#chat-attachment-policy-form"),
 };
@@ -385,7 +405,7 @@ const deliveryStatusOrder = [
   "rejected",
   "blocked",
 ];
-const deliveryFilterOptions = new Set(["all", ...deliveryStatusOrder]);
+const deliveryFilterOptions = new Set(["attention", "all", ...deliveryStatusOrder]);
 const deliveryStatusLabels = {
   pending: "Pending",
   waiting_for_acceptance: "Waiting for acceptance",
@@ -394,9 +414,11 @@ const deliveryStatusLabels = {
   rejected: "Rejected",
   blocked: "Blocked",
   all: "All",
+  attention: "Needs attention",
 };
 
-let selectedDeliveryFilter = "all";
+let selectedDeliveryFilter = "attention";
+let selectedDeliveryProjectId = "";
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
 let humanReviewQueue = {
@@ -503,6 +525,9 @@ const fieldTooltips = {
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
+  "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
+  "create-task-form:require_git_provenance": "Require the integration deliverable to carry server-verified Git branch and commit provenance.",
+  "create-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
   "update-task-form:state": "New task state. Leave blank to keep the current state.",
@@ -512,6 +537,9 @@ const fieldTooltips = {
   "update-task-form:description": "New description. Leave blank to keep the current description.",
   "update-task-form:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "update-task-form:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
+  "update-task-form:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
+  "update-task-form:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "update-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "create-review-profile-form:team_id": "Team that owns this review profile.",
   "create-review-profile-form:project_id": "Optional project scope. Blank makes the profile team-wide.",
@@ -593,6 +621,9 @@ const fieldTooltips = {
   "edit:task:description": "Update the instructions for the owning agent.",
   "edit:task:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
+  "edit:task:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
+  "edit:task:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "edit:task:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
   "edit:review-profile:project_id": "Optional project scope. Clear it to make the profile team-wide.",
   "edit:review-profile:name": "Rename the review profile without changing its immutable ID.",
   "edit:review-profile:description": "Optional summary of when this profile should be used.",
@@ -627,6 +658,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
+  bindTeamDisclosures();
   bindProjectFocus();
   bindTaskBoardSelectors();
   bindCaseFilters();
@@ -772,6 +804,8 @@ const mailController = createTeamMailController({
   humanizeToken,
   taskStateLabel,
   inboxItemLabels,
+  disclosureAttributes: teamDisclosureAttributes,
+  captureDisclosures: rememberOpenTeamDisclosures,
 });
 
 const activityController = createTeamActivityController({
@@ -959,6 +993,8 @@ function targetIsActive(target) {
 }
 
 function renderIntoActiveTargets(selector, html) {
+  const drafts = captureFormDrafts();
+  rememberOpenTeamDisclosures();
   const targets = Array.from(document.querySelectorAll(selector));
   targets.forEach((target) => {
     if (targetIsActive(target)) {
@@ -967,6 +1003,7 @@ function renderIntoActiveTargets(selector, html) {
       target.innerHTML = "";
     }
   });
+  restoreFormDrafts(drafts);
   return targets.filter(targetIsActive).length;
 }
 
@@ -1510,7 +1547,7 @@ function governanceOversightTeamOptions(group, mode) {
   return values(state.teams)
     .filter(isVisibleTeam)
     .filter((team) => memberTeamIds.has(text(team.id)) === includeMember)
-    .sort(byId)
+    .sort(comparePeopleTeams)
     .map((team) => [team.id, `${team.name || team.id} (${team.id})`]);
 }
 
@@ -1668,8 +1705,8 @@ function bindForms() {
       return;
     }
     const reason = window.prompt(
-      "Why is this unchanged-candidate gate retry safe?",
-      "Transient infrastructure or evidence blocker resolved.",
+      "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
+      "",
     );
     if (!text(reason)) {
       setStatus("A retry reason is required.", "error");
@@ -1753,6 +1790,38 @@ function bindForms() {
       return;
     }
 
+    const humanReviewApprove = event.target?.closest?.(
+      '[data-human-review-decision="approved"]',
+    );
+    if (humanReviewApprove) {
+      humanReviewApprove
+        .closest("[data-human-review-decision-form]")
+        ?.querySelectorAll?.('[name="human_finding_text"]')
+        .forEach((field) => field.setCustomValidity(""));
+    }
+
+    const findingAdd = event.target?.closest?.("[data-human-review-finding-add]");
+    if (findingAdd) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review findings")) {
+        return;
+      }
+      addHumanReviewFindingRow(
+        findingAdd.closest("[data-human-review-findings-editor]"),
+      );
+      return;
+    }
+
+    const findingRemove = event.target?.closest?.("[data-human-review-finding-remove]");
+    if (findingRemove) {
+      event.preventDefault();
+      if (!guardTeamMutation("edit human review findings")) {
+        return;
+      }
+      removeHumanReviewFindingRow(findingRemove);
+      return;
+    }
+
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
     if (addButton) {
       event.preventDefault();
@@ -1803,6 +1872,7 @@ function bindForms() {
     if (!select) {
       return;
     }
+    rememberCurrentChatComposerDraft();
     selectedChatOperatorUserId = text(select.value) || null;
     selectedChatConversationId = null;
     chatNewPickerOpen = false;
@@ -1811,6 +1881,13 @@ function bindForms() {
   });
 
   document.addEventListener("input", (event) => {
+    const chatComposer = event.target?.closest?.(
+      '[data-chat-message-form] textarea[name="body"]',
+    );
+    if (chatComposer instanceof HTMLTextAreaElement) {
+      rememberCurrentChatComposerDraft();
+      return;
+    }
     const governanceGoalField = event.target?.closest?.(
       '[name="governance_goal_name"], [name="governance_goal_description"], [name="governance_goal_state"]',
     );
@@ -1840,6 +1917,18 @@ function bindForms() {
         .forEach((field) => field.setCustomValidity(""));
       syncHumanReviewChecklistEditor(editor);
     }
+    const humanReviewFindingField = event.target?.closest?.(
+      '[name="human_finding_text"], [name="human_finding_target_deliverable_ids"], [name="human_finding_evidence_refs"]',
+    );
+    if (
+      humanReviewFindingField instanceof HTMLTextAreaElement
+      || humanReviewFindingField instanceof HTMLInputElement
+    ) {
+      humanReviewFindingField
+        .closest("[data-human-review-finding-row]")
+        ?.querySelector?.('[name="human_finding_text"]')
+        ?.setCustomValidity("");
+    }
     const governanceTeamSearch = event.target?.closest?.("[data-governance-team-search]");
     if (!(governanceTeamSearch instanceof HTMLInputElement)) {
       return;
@@ -1868,6 +1957,15 @@ function bindForms() {
 }
 
 function bindRecordEditing() {
+  document.addEventListener("pointerdown", (event) => {
+    if (
+      event.target?.closest?.(
+        ".chat-conversation-row[data-chat-conversation-id]",
+      )
+    ) {
+      rememberCurrentChatComposerDraft();
+    }
+  });
   document.addEventListener("click", (event) => {
     const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
     if (openCreateTeamButton) {
@@ -2012,6 +2110,7 @@ function bindRecordEditing() {
     const chatConversationButton = event.target.closest(".chat-conversation-row[data-chat-conversation-id]");
     if (chatConversationButton) {
       event.preventDefault();
+      rememberCurrentChatComposerDraft();
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
       markChatConversationRead(selectedChatConversationId, { rerender: false });
       renderChat();
@@ -2081,6 +2180,7 @@ function bindRecordEditing() {
       void requestAgentStandDown(
         standDownButton,
         standDownButton.dataset.standDownAgentId,
+        standDownButton.dataset.standDownScope,
       );
       return;
     }
@@ -2113,6 +2213,22 @@ function bindRecordEditing() {
       void dismissActionRecordAttention(
         dismissActionButton,
         dismissActionButton.dataset.dismissActionId,
+      );
+      return;
+    }
+
+    const resumeReleaseRecoveryButton = event.target.closest(
+      "[data-resume-release-recovery-blocker-id]",
+    );
+    if (resumeReleaseRecoveryButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("resume release recoveries")) {
+        return;
+      }
+      void resumeReleaseRecovery(
+        resumeReleaseRecoveryButton,
+        resumeReleaseRecoveryButton.dataset.resumeReleaseRecoveryBlockerId,
+        resumeReleaseRecoveryButton.dataset.resumeReleaseRecoveryTaskId,
       );
       return;
     }
@@ -2192,6 +2308,35 @@ function bindRecordEditing() {
       return;
     }
 
+    const taskCancellationClose = event.target.closest("[data-task-cancellation-close]");
+    if (taskCancellationClose) {
+      if (
+        taskCancellationClose.classList.contains("edit-modal-backdrop") &&
+        event.target !== taskCancellationClose
+      ) {
+        return;
+      }
+      closeTaskCancellationDialog();
+      return;
+    }
+
+    if (elements.taskCancellationModal?.contains(event.target)) {
+      return;
+    }
+
+    const taskCancellationControl = event.target.closest("[data-task-cancel-id]");
+    if (taskCancellationControl) {
+      event.preventDefault();
+      if (
+        taskCancellationControl.matches(":disabled") ||
+        taskCancellationControl.getAttribute("aria-disabled") === "true"
+      ) {
+        return;
+      }
+      openTaskCancellationDialog(taskCancellationControl.dataset.taskCancelId);
+      return;
+    }
+
     const closeTarget = event.target.closest("[data-edit-close]");
     if (closeTarget) {
       if (closeTarget.classList.contains("edit-modal-backdrop") && event.target !== closeTarget) {
@@ -2216,6 +2361,14 @@ function bindRecordEditing() {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (
+      event.key === "Escape" &&
+      elements.taskCancellationModal &&
+      !elements.taskCancellationModal.hidden
+    ) {
+      closeTaskCancellationDialog();
+      return;
+    }
     if (event.key === "Escape" && elements.editModal && !elements.editModal.hidden) {
       closeEditDialog();
       return;
@@ -2240,6 +2393,10 @@ function bindRecordEditing() {
   elements.editForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitEditForm(elements.editForm);
+  });
+  elements.taskCancellationForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitTaskCancellation(elements.taskCancellationForm);
   });
 }
 
@@ -2555,10 +2712,14 @@ const lockedMutationControlSelectors = [
   ["[data-human-review-checklist-add]", "edit human review checklist"],
   ["[data-human-review-checklist-remove]", "edit human review checklist"],
   ["[data-human-review-checklist-move]", "reorder human review checklist"],
+  ["[data-human-review-finding-add]", "edit human review findings"],
+  ["[data-human-review-finding-remove]", "edit human review findings"],
   ["[data-context-rotation-agent-id]", "clear agent context"],
   ["[data-stand-down-agent-id]", "stand down agents"],
   ["[data-stand-down-revoke-agent-id]:not(:disabled)", "revoke stand-downs"],
+  ["[data-task-cancel-id]:not(:disabled)", "cancel tasks"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
+  ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -2584,6 +2745,7 @@ const lockedMutationControlSelectors = [
   ["#update-task-form button[type='submit']", "update tasks"],
   ["#decide-review-form button[type='submit']", "record review decisions"],
   ["#edit-record-form button[type='submit']", "save changes"],
+  ["#task-cancellation-form button[type='submit']", "cancel tasks"],
   ["#chat-attachment-policy-form button[type='submit']", "configure Team Chat attachments"],
 ];
 
@@ -2971,6 +3133,21 @@ function bindDeliveryFilters() {
     }
     renderReleases();
   });
+  document.addEventListener("change", (event) => {
+    const projectSelect = event.target?.closest?.("[data-delivery-project-filter]");
+    if (!projectSelect) {
+      return;
+    }
+    selectedDeliveryProjectId = text(projectSelect.value);
+    if (selectedDeliveryProjectId) {
+      openTeamDisclosures.add(
+        teamDisclosureStateKey(
+          teamDisclosureKey("delivery", "project", selectedDeliveryProjectId),
+        ),
+      );
+    }
+    renderReviewDeliveryWorkspace();
+  });
   document.addEventListener("click", (event) => {
     const copyButton = event.target?.closest?.("[data-copy-identifier]");
     if (copyButton) {
@@ -2982,6 +3159,15 @@ function bindDeliveryFilters() {
     if (retryButton) {
       event.preventDefault();
       void loadMyHumanReviews();
+      return;
+    }
+    const pipelineDetailButton = event.target?.closest?.("[data-delivery-pipeline-detail-id]");
+    if (pipelineDetailButton) {
+      event.preventDefault();
+      const releaseId = text(pipelineDetailButton.dataset.deliveryPipelineDetailId);
+      if (releaseId) {
+        void loadReleaseDetail(releaseId);
+      }
       return;
     }
     const detailButton = event.target?.closest?.("[data-release-detail-id]");
@@ -3053,20 +3239,25 @@ function bindPlanningFilters() {
   updatePlanningFilterControls();
 }
 
-function bindProjectFocus() {
+function bindTeamDisclosures() {
   document.addEventListener("toggle", (event) => {
-    const section = event.target;
-    if (!section?.matches?.("[data-project-record-section]")) {
+    const disclosure = event.target;
+    if (!disclosure?.matches?.("details[data-team-disclosure-key]")) {
       return;
     }
-    const key = projectRecordSectionKey(section.dataset.projectId, section.dataset.projectSection);
-    if (section.open) {
-      openProjectRecordSections.add(key);
+    const key = text(disclosure.dataset.teamDisclosureKey);
+    if (!key) {
+      return;
+    }
+    if (disclosure.open) {
+      openTeamDisclosures.add(key);
     } else {
-      openProjectRecordSections.delete(key);
+      openTeamDisclosures.delete(key);
     }
   }, true);
+}
 
+function bindProjectFocus() {
   document.addEventListener("click", (event) => {
     const createToggle = event.target?.closest?.("[data-project-create-toggle]");
     if (createToggle) {
@@ -3144,7 +3335,7 @@ function bindProjectFocus() {
         projectRecordShowRejected.add(key);
       }
       projectRecordSectionPages[key] = 1;
-      openProjectRecordSections.add(key);
+      openTeamDisclosures.add(teamDisclosureStateKey(key));
       renderProjectFocus();
       return;
     }
@@ -3157,7 +3348,7 @@ function bindProjectFocus() {
         pageButton.dataset.projectSection,
       );
       projectRecordSectionPages[key] = Math.max(1, Math.floor(Number(pageButton.dataset.projectSectionPage) || 1));
-      openProjectRecordSections.add(key);
+      openTeamDisclosures.add(teamDisclosureStateKey(key));
       renderProjectFocus();
     }
   });
@@ -3791,7 +3982,7 @@ function ensureStateStream() {
       return;
     }
     stateStreamErrorRefreshPending = true;
-    void loadView(activeTeamView, { force: true }).finally(() => {
+    void loadView(activeTeamView, { force: true, preserveForms: true }).finally(() => {
       if (stateStream === stream) {
         stateStreamErrorRefreshPending = false;
       }
@@ -4034,9 +4225,11 @@ function applyChatCollectionPayload(
   if (requestId !== chatRequestId) {
     return;
   }
+  const previousSelectedConversationId = text(selectedChatConversationId);
   const previousConversations = new Map(
     chatState.conversations.map((conversation) => [text(conversation.id), conversation]),
   );
+  rememberCurrentChatComposerDraft();
   chatState = normalizeChat(payload);
   maybePlayChatCollectionNotificationSound(previousConversations, chatState.conversations);
   selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
@@ -4048,7 +4241,11 @@ function applyChatCollectionPayload(
     selectExistingConversationId(text(payload.selected_conversation_id) || fallbackCandidateId) ||
     firstConversationId();
   const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
-  if (selectedMessagesLoaded) {
+  if (
+    selectedMessagesLoaded &&
+    (previousSelectedConversationId !== text(selectedChatConversationId) ||
+      !chatMessageListElement(selectedChatConversationId))
+  ) {
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   if (activeTeamView === "chat") {
@@ -4084,7 +4281,11 @@ function syncStateAgentsFromChat(chatPayload) {
   state = normalizeState({ ...state, revision: chatPayload.revision ?? state.revision, agents });
 }
 
-async function loadConversationDetail(conversationId, requestId = chatRequestId) {
+async function loadConversationDetail(
+  conversationId,
+  requestId = chatRequestId,
+  { preserveScroll = false } = {},
+) {
   const normalizedConversationId = text(conversationId);
   if (!normalizedConversationId) {
     return;
@@ -4105,7 +4306,16 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     if (activeTeamView === "chat" && text(selectedChatConversationId) === normalizedConversationId) {
       markChatConversationRead(normalizedConversationId, { rerender: false });
     }
-    scheduleChatScrollToBottom(normalizedConversationId);
+    const shouldStickToBottom =
+      !preserveScroll || chatIsScrolledNearBottom(normalizedConversationId);
+    const scrollSnapshot = shouldStickToBottom
+      ? null
+      : captureChatScroll(normalizedConversationId);
+    if (shouldStickToBottom) {
+      scheduleChatScrollToBottom(normalizedConversationId);
+    } else if (scrollSnapshot) {
+      scheduleChatScrollPreserve(normalizedConversationId, scrollSnapshot);
+    }
     renderChat();
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -4214,7 +4424,7 @@ function syncChatStreamForActiveView({ refresh = false } = {}) {
   }
   ensureChatStream(selectedChatConversationId);
   if (refresh) {
-    void loadConversationDetail(selectedChatConversationId);
+    void loadConversationDetail(selectedChatConversationId, chatRequestId, { preserveScroll: true });
   }
 }
 
@@ -4256,7 +4466,7 @@ function ensureChatStream(conversationId) {
       return;
     }
     chatStreamErrorRefreshPending = true;
-    void loadConversationDetail(normalizedConversationId).finally(() => {
+    void loadConversationDetail(normalizedConversationId, chatRequestId, { preserveScroll: true }).finally(() => {
       if (chatStream === stream) {
         chatStreamErrorRefreshPending = false;
       }
@@ -4314,6 +4524,7 @@ async function createOrFocusChat(agentId) {
     return;
   }
   setStatus("Opening chat.", "loading");
+  rememberCurrentChatComposerDraft();
   try {
     const response = await teamFetch(`${API_BASE}/conversations`, {
       method: "POST",
@@ -4411,6 +4622,7 @@ async function submitChatMessage(form) {
       }
       pendingChatAttachments.delete(conversationId);
     }
+    chatComposerDrafts.delete(conversationId);
     if (payload.dispatch?.success === false && !payload.dispatch?.queued) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
@@ -4517,6 +4729,7 @@ function renderShell() {
 }
 
 function render() {
+  rememberOpenTeamDisclosures();
   renderShell();
   renderActiveView(activeTeamView);
 }
@@ -4593,6 +4806,7 @@ function renderActiveView(view = activeTeamView) {
 }
 
 function renderActiveViewLoading(view = activeTeamView) {
+  const drafts = captureFormDrafts();
   const panel = document.querySelector(`[data-team-view-panel="${normalizedTeamView(view)}"]`);
   const target =
     panel?.querySelector("[data-chat-thread-view]") ||
@@ -4611,6 +4825,7 @@ function renderActiveViewLoading(view = activeTeamView) {
   if (target) {
     target.innerHTML = `<p class="empty-state">Loading ${escapeHtml(humanizeToken(view))}.</p>`;
   }
+  restoreFormDrafts(drafts);
 }
 
 function activeViewPanel() {
@@ -4648,7 +4863,7 @@ function renderFocusedOrgChartIfActive() {
 }
 
 function setDeliveryFilter(filter) {
-  const nextFilter = deliveryFilterOptions.has(filter) ? filter : "all";
+  const nextFilter = deliveryFilterOptions.has(filter) ? filter : "attention";
   if (selectedDeliveryFilter === nextFilter) {
     updateDeliveryFilterButtons();
     return;
@@ -4689,15 +4904,22 @@ function renderReviewDeliveryWorkspace() {
   }
   updateDeliveryFilterButtons();
   const workspaceRows = buildReviewDeliveryRows();
-  const visibleRows =
+  const statusRows =
     selectedDeliveryFilter === "all"
       ? workspaceRows
-      : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
+      : selectedDeliveryFilter === "attention"
+        ? workspaceRows.filter(deliveryRowNeedsAttention)
+        : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
+  const visibleRows = selectedDeliveryProjectId
+    ? statusRows.filter((row) => text(row.project?.id) === selectedDeliveryProjectId)
+    : statusRows;
+  const controls = renderDeliveryWorkspaceControls(workspaceRows, statusRows, visibleRows);
 
   if (!visibleRows.length) {
     renderIntoActiveTargets("[data-review-delivery-view]", `
+      ${controls}
       <p class="empty-state">
-        No deliverables match the ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
+        No deliverables match the selected project and ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
       </p>
     `);
     bindWorkspaceReviewDecisionForms();
@@ -4706,13 +4928,92 @@ function renderReviewDeliveryWorkspace() {
 
   const teamGroups = groupReviewDeliveryRows(visibleRows);
   const bucketStatuses =
-    selectedDeliveryFilter === "all" ? deliveryStatusOrder : [selectedDeliveryFilter];
+    ["all", "attention"].includes(selectedDeliveryFilter)
+      ? deliveryStatusOrder
+      : [selectedDeliveryFilter];
 
   renderIntoActiveTargets(
     "[data-review-delivery-view]",
-    teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join(""),
+    `
+      ${controls}
+      <div class="delivery-focused-results">
+        ${teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join("")}
+      </div>
+    `,
   );
   bindWorkspaceReviewDecisionForms();
+}
+
+function deliveryRowNeedsAttention(row) {
+  if (text(row.deliverable.superseded_by_deliverable_id)) {
+    return false;
+  }
+  if (
+    currentDeliveryReleasePackages(row.releasePackages).some(
+      (release) => !["accepted", "cancelled"].includes(text(release.state)),
+    )
+  ) {
+    return true;
+  }
+  if (
+    ["accepted", "cancelled"].includes(text(row.task?.state)) &&
+    ["rejected", "blocked"].includes(row.effectiveStatus)
+  ) {
+    return false;
+  }
+  return row.effectiveStatus !== "accepted";
+}
+
+function renderDeliveryWorkspaceControls(allRows, statusRows, visibleRows) {
+  const projects = new Map();
+  allRows.forEach((row) => {
+    const projectId = text(row.project?.id);
+    if (!projectId) {
+      return;
+    }
+    let entry = projects.get(projectId);
+    if (!entry) {
+      entry = { project: row.project, rows: [], total: 0, attention: 0 };
+      projects.set(projectId, entry);
+    }
+    entry.rows.push(row);
+    entry.total += 1;
+    if (deliveryRowNeedsAttention(row)) {
+      entry.attention += 1;
+    }
+  });
+  if (selectedDeliveryProjectId && !projects.has(selectedDeliveryProjectId)) {
+    selectedDeliveryProjectId = "";
+  }
+  const projectOptions = [...projects.entries()]
+    .sort((left, right) => projectSortKey(left[1].project).localeCompare(projectSortKey(right[1].project)))
+    .map(([projectId, entry]) => {
+      const count =
+        selectedDeliveryFilter === "attention"
+          ? entry.attention
+          : selectedDeliveryFilter === "all"
+            ? entry.total
+            : entry.rows.filter((row) => row.effectiveStatus === selectedDeliveryFilter).length;
+      const countLabel = `${count} matching`;
+      return `<option value="${escapeAttr(projectId)}"${selectedDeliveryProjectId === projectId ? " selected" : ""}>${escapeHtml(entry.project?.name || projectId)} (${escapeHtml(countLabel)})</option>`;
+    })
+    .join("");
+  const activeCount = visibleRows.filter(deliveryRowNeedsAttention).length;
+  return `
+    <div class="delivery-focus-bar">
+      <label class="delivery-project-filter">
+        <span>Focus project</span>
+        <select data-delivery-project-filter>
+          <option value="">All projects (collapsed)</option>
+          ${projectOptions}
+        </select>
+      </label>
+      <div class="delivery-focus-summary" role="status">
+        <strong>${visibleRows.length} matching deliverable${visibleRows.length === 1 ? "" : "s"}</strong>
+        <span>${activeCount} still need attention. ${selectedDeliveryProjectId ? "The selected project is expanded." : "Open a project to inspect its deliverables."}</span>
+      </div>
+    </div>
+  `;
 }
 
 function renderMemoryView() {
@@ -4877,6 +5178,7 @@ function renderWorkspaceDashboard() {
 function renderWorkspaceTarget(panel, selector, html) {
   const target = panel.querySelector(selector);
   if (target) {
+    rememberOpenTeamDisclosures();
     target.innerHTML = html;
   }
 }
@@ -4892,7 +5194,7 @@ function buildWorkspaceDashboardModel() {
   const visibleAgents = values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => !agent.team_id || visibleTeamIds.has(text(agent.team_id)))
-    .sort(byId);
+    .sort(comparePeopleAgents);
   const visibleAgentIds = new Set(visibleAgents.map((agent) => text(agent.id)));
   const openTasks = values(state.tasks)
     .filter((task) => !terminalTaskStates.has(task.state))
@@ -5517,7 +5819,9 @@ function renderGovernance() {
   if (!document.querySelector("[data-governance-view]")) {
     return;
   }
-  const groups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(byId);
+  const groups = values(state.governance_groups)
+    .filter(isVisibleGovernanceGroup)
+    .sort(compareGovernanceGroups);
   if (!groups.length) {
     renderIntoActiveTargets("[data-governance-view]", `
       <p class="empty-state">No governance groups registered.</p>
@@ -5534,7 +5838,8 @@ function renderGovernanceGroup(group) {
   const manager = state.agents?.[group.manager_agent_id] || null;
   const memberTeams = (group.member_team_ids || [])
     .map((teamId) => state.teams?.[teamId])
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort(comparePeopleTeams);
   const agenda = governanceAgendaForGroup(group.id);
   const pendingAgenda = agenda.filter((item) => item.state === "pending");
   const visibleAgenda = showHandledGovernanceAgenda
@@ -5560,7 +5865,9 @@ function renderGovernanceGroup(group) {
       ${renderTechnicalDetails([
         ["Governance group ID", group.id],
         ["Manager agent ID", group.manager_agent_id],
-      ])}
+      ], {
+        disclosureKey: teamDisclosureKey("governance-group", group.id, "technical"),
+      })}
     </li>
   `;
 }
@@ -6473,6 +6780,15 @@ function runtimeAttentionRecommendedAction(row) {
   if (row.kind === "failed_ephemeral_assignment") {
     return "Inspect the assignment error, then reconcile or clean up the assignment through its owning ephemeral workflow.";
   }
+  if (row.kind === "team_blocker" && row.blocker_id) {
+    const blocker = state.blockers?.[row.blocker_id];
+    if (
+      text(blocker?.source_kind) === "release_package" &&
+      releaseRecoveryTaskForBlocker(blocker)
+    ) {
+      return "Resume the existing release-recovery task. The assigned agent must submit the resolved ref through the release recovery lifecycle; do not resolve this blocker generically.";
+    }
+  }
   if (category === "blocker") {
     return "Resolve the underlying blocker, dependency, or release gate before continuing.";
   }
@@ -6531,7 +6847,10 @@ function renderRuntimeAttentionTechnicalDetails(row) {
     ["Source branch", row.source_branch],
     ["Target branch", row.target_branch],
     ["Commit", row.commit_sha || row.candidate_commit_sha],
-  ], { summary: "Identifiers, branches, and hashes" });
+  ], {
+    summary: "Identifiers, branches, and hashes",
+    disclosureKey: teamDisclosureKey("runtime-attention", row.id, "technical"),
+  });
 }
 
 function renderRuntimeAttentionActions(row) {
@@ -6624,7 +6943,7 @@ function renderCompactRuntimeAttentionRow(row) {
   const where = runtimeAttentionWhere(row);
   return `
     <li class="record-item runtime-item runtime-item-compact runtime-attention-card runtime-attention-kind-${escapeAttr(category.id)} runtime-severity-${escapeAttr(row.severity || "info")}" data-attention-id="${escapeAttr(row.id)}">
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("operations", "attention", row.id, "detail"))}>
         <summary class="runtime-summary compact-record-summary">
           <span class="runtime-attention-summary-icon" aria-hidden="true">${escapeHtml(category.icon)}</span>
           <span class="compact-record-main runtime-attention-summary-main">
@@ -6670,6 +6989,8 @@ function renderRuntimeAgentRow(agent) {
   const wakeLease = runtimeText(agent.wake_leased_until);
   const dispatchId = runtimeText(agent.active_dispatch_id);
   const contextPending = Boolean(agent.context_rotation_pending);
+  const handoffPreparing = Boolean(agent.context_handoff_preparation_pending);
+  const handoffPreparationStatus = runtimeText(agent.context_handoff_preparation_status);
   const contextPolicy = contextClearingPolicyValue(agent);
   const lastRotated = runtimeText(agent.last_context_rotated_at);
   const handoffSummary = text(agent.last_handoff_summary);
@@ -6687,10 +7008,10 @@ function renderRuntimeAgentRow(agent) {
       <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}</div>
       ${
         handoffSummary
-          ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
+          ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey(activeTeamView, "runtime-agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
           : ""
       }
       <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
@@ -6722,7 +7043,7 @@ function renderCompactRuntimeAgentRow(agent) {
   ].filter(Boolean);
   return `
     <li class="record-item runtime-item runtime-item-compact runtime-agent-item">
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("operations", "agent", agent.id, "detail"))}>
         <summary class="runtime-summary compact-record-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(agent.id)}</strong>
@@ -6743,7 +7064,7 @@ function renderCompactRuntimeAgentRow(agent) {
           <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
           ${
             handoffSummary
-              ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
+              ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey("operations", "agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
               : ""
           }
           <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
@@ -7059,7 +7380,7 @@ function syncOrgFocusTeamTabs(visibleTeams) {
 
 function buildFocusedOrgChartPayload() {
   const teams = values(state.teams);
-  const visibleTeams = teams.filter(isVisibleTeam).sort(byId);
+  const visibleTeams = teams.filter(isVisibleTeam).sort(comparePeopleTeams);
   if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
     selectedOrgTeamId = "all";
   }
@@ -7112,7 +7433,7 @@ function buildOrgFlowGraph(focusedTeams) {
   const governanceGroups = values(state.governance_groups)
     .filter(isVisibleGovernanceGroup)
     .filter((group) => (group.member_team_ids || []).some((teamId) => focusedTeamIds.has(text(teamId))))
-    .sort(byId);
+    .sort(compareGovernanceGroups);
   const teamLayouts = [];
   let nextX = 0;
   const governanceRows = governanceGroups.length;
@@ -7647,7 +7968,7 @@ function renderHierarchyNode(node, options = {}) {
 
 function renderAgents() {
   try {
-    const allAgents = values(state.agents).sort(byId);
+    const allAgents = values(state.agents).sort(comparePeopleAgents);
     const agents = allAgents.filter(isVisibleAgent);
     if (activeTeamView === "people") {
       renderPeopleAgents(allAgents, agents);
@@ -7704,9 +8025,9 @@ function renderPeopleAgents(allAgents, agents) {
   const visibleTeams = peopleViewTeams();
   const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
   const teamAgents = agents.filter((agent) => isTeamInPeopleScope(agent, visibleTeamIds));
-  const allProjects = values(state.projects).sort(byId);
+  const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter((project) => isVisibleProject(project) && visibleTeamIds.has(text(project.team_id)));
-  const allRoles = values(state.roles).sort(byId);
+  const allRoles = values(state.roles).sort(compareTeamRoles);
   const roles = allRoles.filter((role) => isVisibleRole(role) && visibleTeamIds.has(text(role.team_id)));
 
   if (!visibleTeams.length) {
@@ -7917,7 +8238,7 @@ function renderTeamInlineProjectForm(teamId) {
         )}</select></label>
         <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
       </div>
-      <details class="team-inline-create-advanced">
+      <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "git"))}>
         <summary>Git config</summary>
         <div class="team-inline-create-fields">
           <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
@@ -7928,7 +8249,7 @@ function renderTeamInlineProjectForm(teamId) {
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
       </details>
-      <details class="team-inline-create-advanced">
+      <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "release-gates"))}>
         <summary>Release gates</summary>
         <label>Automated and agent-review policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
         ${renderHumanReviewPolicyEditor()}
@@ -8323,6 +8644,13 @@ function comparePeopleTeams(left, right) {
   return teamSortKey(left).localeCompare(teamSortKey(right)) || byId(left, right);
 }
 
+function compareGovernanceGroups(left, right) {
+  return (
+    text(left?.name || left?.id).localeCompare(text(right?.name || right?.id)) ||
+    byId(left, right)
+  );
+}
+
 function comparePeopleAgents(left, right) {
   return (
     teamRecordSortKey(left).localeCompare(teamRecordSortKey(right)) ||
@@ -8349,6 +8677,17 @@ function compareTeamRoles(left, right) {
   return (
     teamRecordSortKey(left).localeCompare(teamRecordSortKey(right)) ||
     roleLabel(left).localeCompare(roleLabel(right)) ||
+    byId(left, right)
+  );
+}
+
+function compareReviewProfiles(left, right) {
+  const leftProject = state.projects?.[text(left?.project_id)] || { id: text(left?.project_id) };
+  const rightProject = state.projects?.[text(right?.project_id)] || { id: text(right?.project_id) };
+  return (
+    teamRecordSortKey(left).localeCompare(teamRecordSortKey(right)) ||
+    projectSortKey(leftProject).localeCompare(projectSortKey(rightProject)) ||
+    text(left?.name || left?.id).localeCompare(text(right?.name || right?.id)) ||
     byId(left, right)
   );
 }
@@ -8504,7 +8843,7 @@ function renderTeamProjectDetail(project) {
       ${renderProjectReleasePolicy(project.release_policy)}
       <section class="agent-detail-section">
         <h3>Goals</h3>
-        ${renderGoals(project.goals || [], { compact: true })}
+        ${renderGoals(project.id, project.goals || [], { compact: true })}
       </section>
       <section class="agent-detail-section">
         <h3>Tasks</h3>
@@ -8951,7 +9290,10 @@ function renderChatThread() {
     `;
     return;
   }
-  const composerState = captureChatComposerState(conversation.id);
+  const composerState =
+    captureChatComposerState(conversation.id)
+    || chatComposerDrafts.get(text(conversation.id))
+    || null;
   const agent = conversation.agent || {};
   const messages = conversationMessages(conversation);
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
@@ -9168,6 +9510,33 @@ function captureChatComposerState(expectedConversationId) {
   };
 }
 
+function rememberCurrentChatComposerDraft() {
+  const conversationId = text(
+    elements.chatThreadView
+      ?.querySelector("[data-chat-scroll-conversation-id]")
+      ?.dataset?.chatScrollConversationId,
+  );
+  if (!conversationId) {
+    return null;
+  }
+  const composerState = captureChatComposerState(conversationId);
+  if (composerState) {
+    const previous = chatComposerDrafts.get(conversationId);
+    chatComposerDrafts.set(
+      conversationId,
+      previous?.hadFocus && !composerState.hadFocus
+        ? {
+            ...composerState,
+            hadFocus: true,
+            selectionStart: previous.selectionStart,
+            selectionEnd: previous.selectionEnd,
+          }
+        : composerState,
+    );
+  }
+  return composerState;
+}
+
 function restoreChatComposerState(expectedConversationId, composerState) {
   if (!composerState || composerState.conversationId !== text(expectedConversationId)) {
     return;
@@ -9212,6 +9581,9 @@ function renderChatMessage(message) {
   const status = text(message.status);
   const type = text(message.message_type) || "text";
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const externalDelivery = metadata.external_delivery && typeof metadata.external_delivery === "object"
+    ? metadata.external_delivery
+    : null;
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
@@ -9221,11 +9593,26 @@ function renderChatMessage(message) {
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
+          ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
         ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
       </div>
     </article>
   `;
+}
+
+function externalChatDeliveryLabel(delivery) {
+  const state = text(delivery?.state) || "pending";
+  const provider = text(delivery?.provider);
+  return `${provider ? `${provider} ` : "External "}${state}`;
+}
+
+function externalChatDeliveryTitle(delivery) {
+  const parts = [externalChatDeliveryLabel(delivery)];
+  const attempts = Number(delivery?.attempt_count || 0);
+  if (attempts > 0) parts.push(`attempt ${attempts}`);
+  if (text(delivery?.last_error)) parts.push(text(delivery.last_error));
+  return parts.join(" · ");
 }
 
 function renderChatAttachment(attachment) {
@@ -9803,7 +10190,7 @@ function renderRoles() {
   if (!document.querySelector("[data-roles-view]")) {
     return;
   }
-  const allRoles = values(state.roles).sort(byId);
+  const allRoles = values(state.roles).sort(compareTeamRoles);
   const roles = allRoles.filter(isVisibleRole);
   if (!allRoles.length) {
     renderIntoActiveTargets("[data-roles-view]", `<p class="empty-state">No roles registered.</p>`);
@@ -9846,7 +10233,7 @@ function pendingInboxForAgent(agentId) {
         item.state !== "handled" &&
         pendingInboxItemIsCurrent(item),
     )
-    .sort(byId);
+    .sort(compareWorkspaceInboxItems);
 }
 
 function pendingInboxItemIsCurrent(item) {
@@ -10062,7 +10449,10 @@ function renderAgentStandDownControls(agentId, record) {
   const standDowns = effectiveStandDowns(record);
   const active = Boolean(record?.standDownActive || record?.stand_down_active) || standDowns.length > 0;
   if (!active) {
-    return `<button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}">Stand down</button>`;
+    return `
+      <button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}" data-stand-down-scope="agent">Stand down</button>
+      <button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}" data-stand-down-scope="subtree">Stand down subtree</button>
+    `;
   }
   const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
   const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
@@ -10106,10 +10496,12 @@ function agentStandDownSummary(record) {
   const standDowns = effectiveStandDowns(record);
   const primary = standDowns[standDowns.length - 1] || {};
   const source = text(primary.source) || "stand-down";
+  const scope = text(primary.scope) || "subtree";
   const root = text(primary.root_agent_id || primary.agent_id);
   const reason = text(primary.reason);
   const inherited = Boolean(primary.inherited) && root ? ` inherited from ${root}` : "";
-  return `${humanizeToken(source)} stand-down${inherited}${reason ? `: ${reason}` : ""}`;
+  const direct = scope === "agent" ? " (agent only)" : "";
+  return `${humanizeToken(source)} stand-down${direct}${inherited}${reason ? `: ${reason}` : ""}`;
 }
 
 function runtimeSummary(agentId) {
@@ -10618,7 +11010,7 @@ function teamHierarchyGraph(team) {
   const managerId = text(team?.manager_agent_id);
   const teamAgents = values(state.agents)
     .filter((agent) => text(agent?.team_id) === teamId)
-    .sort(byId);
+    .sort(comparePeopleAgents);
   const seen = new Set();
 
   function buildNode(agentId, ancestry = {}) {
@@ -10802,7 +11194,8 @@ function inboxPriorityLabel(item) {
 }
 
 function renderProjects() {
-  const allProjects = values(state.projects).sort(byId);
+  rememberOpenTeamDisclosures();
+  const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter(isVisibleProject);
   if (!allProjects.length) {
     renderIntoActiveTargets("[data-projects-view]", `<p class="empty-state">No projects registered.</p>`);
@@ -10884,7 +11277,7 @@ function renderProjects() {
           <div class="project-columns">
             <div>
               <p class="subheading">Goals</p>
-              ${renderGoals(project.goals || [])}
+              ${renderGoals(project.id, project.goals || [])}
               <p class="subheading">Deliverables</p>
               ${renderDeliverables(projectDeliverables)}
             </div>
@@ -10901,6 +11294,8 @@ function renderProjects() {
 }
 
 function renderProjectFocus() {
+  const drafts = captureFormDrafts();
+  rememberOpenTeamDisclosures();
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
   }
@@ -10953,6 +11348,7 @@ function renderProjectFocus() {
   });
   syncProjectCreatePanel();
   applyLockedMutationControls();
+  restoreFormDrafts(drafts);
 }
 
 function renderProjectFocusListItem(project) {
@@ -11026,7 +11422,7 @@ function renderProjectFocusDetail(project) {
     <div class="projects-detail-grid">
       <section>
         <h3>Goals</h3>
-        ${renderGoals(project.goals || [], { compact: true })}
+        ${renderGoals(project.id, project.goals || [], { compact: true })}
       </section>
       <section>
         <h3>Project roles</h3>
@@ -11113,7 +11509,7 @@ function renderProjectOutcomeKinds(definitions) {
     <ul class="review-list compact-record-list">
       ${definitions.map((definition) => `
         <li class="record-item compact-record-card">
-          <details>
+          <details ${teamDisclosureAttributes(teamDisclosureKey("projects", "outcome-kind", definition.id, "detail"))}>
             <summary class="compact-record-summary">
               <span class="compact-record-main">
                 <strong>${escapeHtml(definition.name)}</strong>
@@ -11142,6 +11538,7 @@ function renderProjectOutcomeKindCreateForm(project) {
     <form
       class="project-review-profile-form"
       data-form-id="create-outcome-kind-form"
+      data-form-draft-scope="${escapeAttr(project.id)}"
       data-endpoint="/outcome-kinds"
       data-method="POST"
       data-delegated-create-form
@@ -11206,7 +11603,7 @@ function renderProjectRecordSection(project, section, title, records, renderPage
       data-project-record-section
       data-project-id="${escapeAttr(project.id)}"
       data-project-section="${escapeAttr(section)}"
-      ${openProjectRecordSections.has(key) ? "open" : ""}
+      ${teamDisclosureAttributes(key)}
     >
       <summary class="project-record-section-summary">
         <span class="compact-record-main">
@@ -11275,7 +11672,7 @@ function renderProjectRecordPager(projectId, section, page, totalPages, totalRec
 }
 
 function projectRecordSectionKey(projectId, section) {
-  return `${text(projectId)}:${text(section)}`;
+  return teamDisclosureKey("projects", "record-section", projectId, section);
 }
 
 function isRejectedProjectRecord(record) {
@@ -11288,6 +11685,10 @@ function compareProjectDeliverablesLatest(left, right) {
 
 function compareProjectReleasesLatest(left, right) {
   return compareProjectRecordsLatest(left, right, ["published_at", "updated_at", "created_at"]);
+}
+
+function compareReviewRequestsLatest(left, right) {
+  return compareProjectRecordsLatest(left, right, ["updated_at", "created_at"]);
 }
 
 function compareProjectRecordsLatest(left, right, fields) {
@@ -11464,7 +11865,7 @@ function renderCaseFilters(cases) {
         <span>${resolvedCount} resolved</span>
         <span>${closedCount} closed</span>
       </div>
-      <form class="case-history-search" data-case-search-form>
+      <form class="case-history-search" data-case-search-form data-form-id="case-history-search-form">
         <label>
           <span>Search cases</span>
           <input name="query" type="search" value="${escapeAttr(caseQuery)}" placeholder="Title, description, source, tag, or ID" />
@@ -11716,6 +12117,7 @@ function renderProjectReviewProfileCreateForm(project) {
       id="create-review-profile-for-project-form"
       class="project-review-profile-form"
       data-form-id="create-review-profile-form"
+      data-form-draft-scope="${escapeAttr(project.id)}"
       data-endpoint="/review-profiles"
       data-method="POST"
       data-delegated-create-form
@@ -11748,7 +12150,7 @@ function renderProjectReviewProfiles(projectProfiles, teamProfiles) {
     : `<p class="empty-state">No project-specific review profiles.</p>`;
   const teamList = teamProfiles.length
     ? `
-      <details class="team-wide-review-profiles">
+      <details class="team-wide-review-profiles" ${teamDisclosureAttributes(teamDisclosureKey("projects", "team-review-profiles", project.id))}>
         <summary>Team-wide profiles available to this project</summary>
         <ul class="review-list compact-record-list">${teamProfiles.map(renderCompactReviewProfile).join("")}</ul>
       </details>
@@ -11766,14 +12168,14 @@ function projectSpecificReviewProfiles(project) {
   return values(state.review_profiles)
     .filter(isVisibleReviewProfile)
     .filter((profile) => profile.project_id === project.id)
-    .sort(byId);
+    .sort(compareReviewProfiles);
 }
 
 function teamWideReviewProfilesForProject(project) {
   return values(state.review_profiles)
     .filter(isVisibleReviewProfile)
     .filter((profile) => !profile.project_id && profile.team_id === project.team_id)
-    .sort(byId);
+    .sort(compareReviewProfiles);
 }
 
 function renderTaskBoard() {
@@ -11901,7 +12303,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
           : `<span class="task-board-history-note">${terminalCount} completed task${terminalCount === 1 ? "" : "s"} included in hierarchy</span>`
       }
     </div>
-    <form class="task-board-filters" data-task-board-search-form role="search">
+    <form class="task-board-filters" data-task-board-search-form data-form-id="task-board-search-form" data-form-draft-scope="${escapeAttr(`${selectedTaskBoardTeamId}:${selectedTaskBoardProjectId}`)}" role="search">
       <label class="task-board-search-filter">
         Search
         <span class="task-board-search-controls">
@@ -12389,6 +12791,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
           ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
         </div>
         ${warnings.length ? `<div class="task-board-hierarchy-warning">${escapeHtml(warnings.join(" "))}</div>` : ""}
+        ${renderTaskBoardBrief(task)}
         ${renderTaskBoardBlockerLine(task)}
         ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
       </article>
@@ -12689,11 +13092,13 @@ function renderTaskBoardCard(task, focus) {
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
       <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
-      ${renderTaskBoardUnresolvedDescendants(unresolvedIds)}
+      ${renderTaskBoardBrief(task)}
+      ${renderTaskBoardUnresolvedDescendants(task.id, unresolvedIds)}
       ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
       ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
       ${renderTaskBoardBlockerLine(task)}
       ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
+      <div class="record-actions">${taskCancellationButton(task)}</div>
     </li>
   `;
 }
@@ -12719,7 +13124,7 @@ function taskBoardTaskReferenceLabel(taskId) {
   return text(linkedTask?.title) || "Unavailable task";
 }
 
-function renderTaskBoardUnresolvedDescendants(unresolvedIds) {
+function renderTaskBoardUnresolvedDescendants(taskId, unresolvedIds) {
   const ids = [...new Set((unresolvedIds || []).map(text).filter(Boolean))];
   if (!ids.length) {
     return "";
@@ -12743,7 +13148,7 @@ function renderTaskBoardUnresolvedDescendants(unresolvedIds) {
         <strong>${descendants.length} unresolved descendant${descendants.length === 1 ? "" : "s"}</strong>
         <span>${escapeHtml(previewLabels.join(", "))}</span>
       </div>
-      <details class="task-board-descendant-details">
+      <details class="task-board-descendant-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "task", taskId, "descendants"))}>
         <summary>View all ${descendants.length} descendant${descendants.length === 1 ? "" : "s"}</summary>
         <ul class="task-board-descendant-list">
           ${descendants.map((descendant) => `
@@ -12776,13 +13181,16 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
+    ["Integration boundary", task.integration_boundary ? "Yes" : ""],
+    ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
+    ["Required contribution task IDs", (task.deliverable_contract?.required_contribution_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Blocking task IDs", (task.blocked_by_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Blocker IDs", [...new Set(blockerIds)].join(", ")],
     ["Worktree context IDs", worktreeContextIds.join(", ")],
     ["Unresolved descendant IDs", (unresolvedIds || []).map(text).filter(Boolean).join(", ")],
   ].filter(([, value]) => value);
   return `
-    <details class="technical-details task-board-technical-details">
+    <details class="technical-details task-board-technical-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "task", task.id, "technical"))}>
       <summary>Technical details</summary>
       <dl class="technical-details-list">
         ${rows.map(([label, value]) => `
@@ -12845,6 +13253,23 @@ function taskBoardSortTime(task) {
 function taskBoardLaneEnteredText(task) {
   const timestamp = task.state_entered_at || task.updated_at || task.created_at;
   return timestamp ? formatTimelineTimestamp(timestamp) : "Unknown";
+}
+
+function renderTaskBoardBrief(task) {
+  const brief = text(task?.description);
+  if (!brief) {
+    return "";
+  }
+  const isLong = brief.length > 240 || brief.split(/\r?\n/).length > 3;
+  if (!isLong) {
+    return `<div class="task-board-task-brief"><strong>Task brief:</strong> ${escapeHtml(brief)}</div>`;
+  }
+  return `
+    <details class="task-board-task-brief task-board-task-brief-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "brief", task.id))}>
+      <summary>Show full task brief: ${escapeHtml(readablePreview(brief, 160))}</summary>
+      <div class="task-board-task-brief-content">${escapeHtml(brief)}</div>
+    </details>
+  `;
 }
 
 function isTaskBoardBlocked(task) {
@@ -12938,6 +13363,29 @@ function blockerRoutingLabel(blocker) {
   return parts.join(" - ");
 }
 
+function releaseRecoveryTaskForBlocker(blocker) {
+  if (
+    !blocker ||
+    text(blocker.source_kind) !== "release_package" ||
+    !["governance", "operator"].includes(text(blocker.route))
+  ) {
+    return null;
+  }
+  const terminalStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
+  const candidates = uniqueTextList([
+    blocker.task_id,
+    ...(blocker.affected_task_ids || []),
+  ])
+    .map((taskId) => state.tasks?.[taskId])
+    .filter(
+      (task) =>
+        task &&
+        text(task.created_by_actor) === "system:git-merge-recovery" &&
+        !terminalStates.has(text(task.state)),
+    );
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
   if (
     !blocker ||
@@ -12945,6 +13393,30 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
     !["governance", "operator"].includes(text(blocker.route))
   ) {
     return "";
+  }
+  if (text(blocker.source_kind) === "release_package") {
+    const recoveryTask = releaseRecoveryTaskForBlocker(blocker);
+    if (!recoveryTask) {
+      return "";
+    }
+    const pendingDirective = Object.values(state.inbox || {}).find(
+      (item) =>
+        text(item.item_type) === "operator_directive" &&
+        text(item.state) === "pending" &&
+        text(item.task_id) === text(recoveryTask.id) &&
+        text(item.payload?.source) === "admin_ui_release_recovery",
+    );
+    return `
+      <div class="record-actions ${escapeAttr(extraClass)}">
+        <button
+          type="button"
+          class="record-action"
+          data-resume-release-recovery-blocker-id="${escapeAttr(blocker.id)}"
+          data-resume-release-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+          ${pendingDirective ? "disabled aria-disabled=\"true\"" : lockedAttrs("resume release recoveries")}
+        >${pendingDirective ? "Recovery wake queued" : "Resume release recovery"}</button>
+      </div>
+    `;
   }
   return `
     <div class="record-actions ${escapeAttr(extraClass)}">
@@ -13040,8 +13512,8 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
     detailBits.push(`${hiddenCount} hidden`);
   }
   return `
-    <article class="project-block planning-project-card">
-      <details>
+    <article class="project-block planning-project-card" data-planning-project-id="${escapeAttr(project.id)}">
+      <details ${planningDisclosureAttributes("project", project.id)}>
         <summary class="planning-project-summary">
           <span class="planning-project-main">
             <strong>${escapeHtml(project.name)}</strong>
@@ -13069,7 +13541,7 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
           <div class="project-columns planning-project-columns">
             <div>
               <p class="subheading">Goals</p>
-              ${renderGoals(goals, { compact: true })}
+              ${renderGoals(project.id, goals, { compact: true })}
               <p class="subheading">Deliverables</p>
               ${renderDeliverables(projectDeliverables, { compact: true })}
             </div>
@@ -13082,6 +13554,48 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
       </details>
     </article>
   `;
+}
+
+function teamDisclosureKey(...parts) {
+  return parts.map(text).filter(Boolean).join(":");
+}
+
+function teamDisclosureStateKey(key, view = activeTeamView) {
+  const normalizedKey = text(key);
+  if (!normalizedKey) {
+    return "";
+  }
+  return teamDisclosureKey(normalizedTeamView(view), normalizedKey);
+}
+
+function teamDisclosureAttributes(key) {
+  const normalizedKey = teamDisclosureStateKey(key);
+  if (!normalizedKey) {
+    return "";
+  }
+  return `data-team-disclosure-key="${escapeAttr(normalizedKey)}"${openTeamDisclosures.has(normalizedKey) ? " open" : ""}`;
+}
+
+function rememberOpenTeamDisclosures(root = document) {
+  root.querySelectorAll?.("details[data-team-disclosure-key]").forEach((disclosure) => {
+    const key = text(disclosure.dataset.teamDisclosureKey);
+    if (!key) {
+      return;
+    }
+    if (disclosure.open) {
+      openTeamDisclosures.add(key);
+    } else {
+      openTeamDisclosures.delete(key);
+    }
+  });
+}
+
+function planningDisclosureKey(kind, recordId) {
+  return teamDisclosureKey("planning", kind, recordId);
+}
+
+function planningDisclosureAttributes(kind, recordId) {
+  return teamDisclosureAttributes(planningDisclosureKey(kind, recordId));
 }
 
 function renderProjectGit(git) {
@@ -13106,7 +13620,7 @@ function renderProjectReleasePolicy(policy) {
   return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")} - ${escapeHtml(humanLabel)}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
 }
 
-function renderGoals(goals, { compact = false } = {}) {
+function renderGoals(projectId, goals, { compact = false } = {}) {
   if (!goals.length) {
     return `<p class="empty-state">No goals.</p>`;
   }
@@ -13117,7 +13631,7 @@ function renderGoals(goals, { compact = false } = {}) {
           .map((goal) => {
             return `
               <li class="record-item compact-record-card">
-                <details>
+                <details ${teamDisclosureAttributes(teamDisclosureKey("goal", projectId, goal.id, "detail"))}>
                   <summary class="compact-record-summary">
                     <span class="compact-record-main">
                       <strong>${escapeHtml(goal.description)}</strong>
@@ -13232,6 +13746,7 @@ function renderTaskHierarchyRow(
   const body = `
     <div class="record-actions">
       ${editButton("task", task.id)}
+      ${taskCancellationButton(task)}
     </div>
     <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
     ${renderTaskGraph(task)}
@@ -13240,7 +13755,7 @@ function renderTaskHierarchyRow(
   if (compact) {
     return `
       <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}">
-        <details>
+        <details ${teamDisclosureAttributes(teamDisclosureKey("task", task.id, "detail"))}>
           <summary class="compact-record-summary">
             <span class="compact-record-main">
               <strong>${escapeHtml(task.title)}</strong>
@@ -13260,6 +13775,7 @@ function renderTaskHierarchyRow(
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
           ${editButton("task", task.id)}
+          ${taskCancellationButton(task)}
         </div>
       </div>
       <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
@@ -13449,7 +13965,7 @@ function renderPlanningTaskHierarchy(task) {
     ${
       hasTree
         ? `
-          <details class="planning-hierarchy-details">
+          <details class="planning-hierarchy-details" ${planningDisclosureAttributes("hierarchy", task.id)}>
             <summary>Show named hierarchy (${unresolvedIds.length} unresolved)</summary>
             ${renderPlanningTaskTree(task.id, unresolvedIds)}
           </details>
@@ -13652,7 +14168,7 @@ function renderPlanningTaskBrief(task) {
     return body;
   }
   return `
-    <details class="planning-task-brief-details">
+    <details class="planning-task-brief-details" ${planningDisclosureAttributes("brief", task.id)}>
       <summary>Show full brief</summary>
       ${body}
     </details>
@@ -13675,14 +14191,20 @@ function renderPlanningTaskTechnicalDetails(task) {
       ["Parent task ID", task.parent_task_id],
       ["Originating task ID", task.originating_task_id],
       ["Dependency task IDs", task.dependency_task_ids || []],
+      ["Integration boundary", task.integration_boundary ? "Yes" : null],
+      ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : null],
+      ["Required contribution task IDs", task.deliverable_contract?.required_contribution_task_ids || []],
       ["Child task IDs", task.child_task_ids || assessment.direct_child_ids || []],
       ["Unresolved task IDs", assessment.unresolved_descendant_ids || []],
       ["Deliverable IDs", task.deliverable_ids || []],
       ["Acceptance IDs", assessment.active_acceptance_ids || []],
       ["Review IDs", assessment.active_review_request_ids || []],
       ["Blocker IDs", blockerIds],
-    ], { summary: "Identifiers and lifecycle references" })}
-    ${worktreeContexts.length ? `<details class="technical-details planning-worktree-details"><summary>Worktree mapping</summary>${renderTaskWorktreeMapping(task)}</details>` : ""}
+    ], {
+      summary: "Identifiers and lifecycle references",
+      disclosureKey: planningDisclosureKey("technical", task.id),
+    })}
+    ${worktreeContexts.length ? `<details class="technical-details planning-worktree-details" ${planningDisclosureAttributes("worktree", task.id)}><summary>Worktree mapping</summary>${renderTaskWorktreeMapping(task)}</details>` : ""}
   `;
 }
 
@@ -13719,7 +14241,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
   ].filter(Boolean).join(" ");
   return `
     <li class="${classes}" style="--task-depth: ${Math.max(0, Number(depth) || 0)}" data-planning-task-id="${escapeAttr(task.id)}">
-      <details class="planning-task-details">
+      <details class="planning-task-details" ${planningDisclosureAttributes("task", task.id)}>
         <summary class="compact-record-summary planning-task-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(task.title)}</strong>
@@ -13733,7 +14255,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
         </summary>
         <div class="compact-record-body planning-task-body">
           <section class="planning-task-section">
-            <div class="planning-task-section-heading"><h4>Overview</h4><div class="record-actions">${editButton("task", task.id)}</div></div>
+            <div class="planning-task-section-heading"><h4>Overview</h4><div class="record-actions">${editButton("task", task.id)}${taskCancellationButton(task)}</div></div>
             <div class="planning-task-overview">
               <div><span>Owner</span><strong>${escapeHtml(ownerName)}</strong></div>
               <div><span>State</span><strong>${escapeHtml(taskStateLabel(task))}</strong></div>
@@ -14017,12 +14539,21 @@ function renderTaskWorktreeMapping(task) {
 
 function renderTaskCleanupCandidate(candidate) {
   const recovery = text(candidate.state) === "recovery_required";
+  const ignoredCount = Number(candidate.ignored_file_count || 0);
+  const ignoredSample = (candidate.ignored_file_inventory || []).slice(0, 5);
   const details = [
     `cleanup ${candidate.state}`,
     candidate.last_safety_check ? `check ${candidate.last_safety_check}` : "",
     candidate.last_error,
     candidate.worktree_path,
     candidate.branch,
+    ignoredCount
+      ? `${ignoredCount} ignored file${ignoredCount === 1 ? "" : "s"}${candidate.ignored_file_inventory_truncated ? " (sampled)" : ""}`
+      : "",
+    candidate.ignored_file_inventory_sha256
+      ? `inventory sha256 ${candidate.ignored_file_inventory_sha256}`
+      : "",
+    ignoredSample.length ? `sample ${ignoredSample.join(", ")}` : "",
     Number(candidate.reclaimed_bytes || 0) ? `reclaimed ${candidate.reclaimed_bytes} bytes` : "",
   ].filter(Boolean).join(" - ");
   return `<div class="${recovery ? "task-cleanup-recovery" : "meta-line"}">${escapeHtml(details)}</div>`;
@@ -14084,7 +14615,7 @@ function renderIdentifierCopy(value, { label = "Copy ID" } = {}) {
   `;
 }
 
-function renderTechnicalDetails(entries, { summary = "Technical details" } = {}) {
+function renderTechnicalDetails(entries, { summary = "Technical details", disclosureKey = "" } = {}) {
   const rows = entries
     .map(([label, value, copyLabel]) => {
       const values = Array.isArray(value) ? uniqueTextList(value) : [text(value)].filter(Boolean);
@@ -14103,7 +14634,7 @@ function renderTechnicalDetails(entries, { summary = "Technical details" } = {})
     return "";
   }
   return `
-    <details class="technical-details">
+    <details class="technical-details" ${teamDisclosureAttributes(disclosureKey)}>
       <summary>${escapeHtml(summary)}</summary>
       <dl class="technical-details-list">${rows.join("")}</dl>
     </details>
@@ -14190,7 +14721,9 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
-  ]);
+  ], {
+    disclosureKey: teamDisclosureKey("deliverable", deliverable.id, "technical"),
+  });
 }
 
 function renderDeliverableCard(deliverable, { compact = false } = {}) {
@@ -14201,7 +14734,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
   const reviewIds = deliverable.review_request_ids || [];
   return `
     <li class="record-item compact-record-card deliverable-card${compact ? " deliverable-card-compact" : ""}" data-deliverable-id="${escapeAttr(deliverable.id)}">
-      <details class="deliverable-card-details">
+      <details class="deliverable-card-details" ${teamDisclosureAttributes(teamDisclosureKey("deliverable", deliverable.id, "detail"))}>
         <summary class="compact-record-summary deliverable-card-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(subject)}</strong>
@@ -14296,7 +14829,9 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
                 ["Deliverable ID", review.deliverable_id],
                 ["Release ID", review.release_package_id],
                 ["Reviewed commit", review.reviewed_commit_sha],
-              ])}
+              ], {
+                disclosureKey: teamDisclosureKey("review-request", review.id, "technical"),
+              })}
             </li>
           `;
         })
@@ -14474,7 +15009,7 @@ function renderReviewProfiles() {
   if (!document.querySelector("[data-review-profiles-view]")) {
     return;
   }
-  const allProfiles = values(state.review_profiles).sort(byId);
+  const allProfiles = values(state.review_profiles).sort(compareReviewProfiles);
   const profiles = allProfiles.filter(isVisibleReviewProfile);
   if (!allProfiles.length) {
     renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No review profiles.</p>`);
@@ -14509,7 +15044,7 @@ function renderCompactReviewProfile(profile) {
           ${editButton("review-profile", profile.id)}
         </div>
       </div>
-      <details class="review-profile-card-details">
+      <details class="review-profile-card-details" ${teamDisclosureAttributes(teamDisclosureKey("review-profile", profile.id, "detail"))}>
         <summary class="review-profile-detail-toggle">View profile</summary>
         <div class="review-profile-card-body">
           <div class="review-profile-section-grid">
@@ -14624,7 +15159,7 @@ function renderProfileCriteria(criteria) {
 function renderReviewProfileTechnicalDetails(profile, scope, outcomeKinds) {
   const criteria = profile.criteria || [];
   return `
-    <details class="technical-details review-profile-technical-details">
+    <details class="technical-details review-profile-technical-details" ${teamDisclosureAttributes(teamDisclosureKey("review-profile", profile.id, "technical"))}>
       <summary>Technical details</summary>
       <dl class="technical-details-list">
         <div>
@@ -15058,6 +15593,7 @@ function addReviewProfileCriterionRow(editor) {
   }
   rows.appendChild(row);
   decorateFieldTooltips(row);
+  rememberFormDraft(editor.closest("form"));
   row.querySelector('input[name="criterion_label"]')?.focus();
 }
 
@@ -15071,7 +15607,9 @@ function removeReviewProfileCriterionRow(button) {
   row.remove();
   if (!rows.querySelector("[data-review-profile-criterion-row]")) {
     addReviewProfileCriterionRow(editor);
+    return;
   }
+  rememberFormDraft(editor.closest("form"));
 }
 
 function reviewProfileCriteriaFromForm(form) {
@@ -15187,6 +15725,69 @@ function releaseAgentReviews(release) {
     .filter((review) => review && !review.superseded_by_review_request_id);
 }
 
+function releaseVerificationCommandFailed(result) {
+  const resultState = text(result?.state);
+  const hasNonzeroExitCode =
+    result?.exit_code !== null &&
+    result?.exit_code !== undefined &&
+    Number(result.exit_code) !== 0;
+  return (
+    ["failed", "timed_out", "blocked", "rejected"].includes(resultState) ||
+    hasNonzeroExitCode ||
+    Boolean(text(result?.failure_cause))
+  );
+}
+
+function releaseVerificationDecisiveError(result, run = null) {
+  const excerpt = text(result?.log_excerpt || run?.error);
+  if (!excerpt) {
+    return "";
+  }
+  const lines = excerpt
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return "";
+  }
+  const diagnosticPattern =
+    /\b(?:error|failed|failure|fatal|exception|traceback|timed?\s*out|exit(?:ed)?)\b|(?:TS|CS)\d{3,}|ERR!/i;
+  const diagnosticLines = lines.filter((line) => diagnosticPattern.test(line));
+  return readablePreview(diagnosticLines.at(-1) || lines.at(-1), 220);
+}
+
+function releaseVerificationFailureSummary(runs) {
+  const failedRuns = (runs || []).filter((run) =>
+    ["failed", "timed_out", "blocked", "rejected"].includes(text(run.state)),
+  );
+  const run = failedRuns.at(-1);
+  if (!run) {
+    return "";
+  }
+  const failedResults = (run.command_results || []).filter(
+    releaseVerificationCommandFailed,
+  );
+  const result = failedResults.at(-1);
+  if (!result) {
+    return run.error
+      ? `Checks need attention · Error: ${readablePreview(run.error, 190)}`
+      : "Checks need attention";
+  }
+  const parts = [`Failed command: ${text(result.name) || "Unnamed command"}`];
+  if (result.exit_code !== null && result.exit_code !== undefined) {
+    parts.push(`exit code ${Number(result.exit_code)}`);
+  }
+  if (result.failure_cause) {
+    parts.push(`failure cause: ${humanizeToken(result.failure_cause)}`);
+  }
+  const decisiveError = releaseVerificationDecisiveError(result, run);
+  if (decisiveError) {
+    parts.push(`Error: ${decisiveError}`);
+  }
+  return readablePreview(parts.join(" · "), 260);
+}
+
 function releaseProgressStages(release) {
   const manifest = release.manifest || null;
   const modern = Number(release.policy_version || 1) >= 2 || Boolean(manifest);
@@ -15220,20 +15821,20 @@ function releaseProgressStages(release) {
     stages.push({
       label: "Automated verification",
       state: failed ? "blocked" : completed ? "complete" : "pending",
-      detail: failed ? "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
+      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
     });
   }
 
   if (!modern && !reviews.length) {
-    stages.push({ label: "Agent review", state: "legacy", detail: "Not recorded (legacy release)" });
+    stages.push({ label: "Release agent review", state: "legacy", detail: "Not recorded (legacy release)" });
   } else if (!reviewRequirements.length && !reviews.length) {
-    stages.push({ label: "Agent review", state: "not-applicable", detail: "No agent review required" });
+    stages.push({ label: "Release agent review", state: "not-applicable", detail: "No agent review required" });
   } else {
     const reviewStates = reviews.map((review) => text(review.state));
     const failed = reviewStates.some((stateValue) => ["blocked", "rejected"].includes(stateValue));
     const completed = reviewStates.length && reviewStates.every((stateValue) => stateValue === "accepted");
     stages.push({
-      label: "Agent review",
+      label: "Release agent review",
       state: failed ? "blocked" : completed ? "complete" : "pending",
       detail: failed ? "Review needs attention" : completed ? `${reviews.length} review${reviews.length === 1 ? "" : "s"} accepted` : "Awaiting agent review",
     });
@@ -15311,7 +15912,10 @@ function renderReleaseNotes(release) {
   return `<div class="release-notes">${escapeHtml(summary)}</div>`;
 }
 
-function renderReleaseTechnicalDetails(release) {
+function renderReleaseTechnicalDetails(
+  release,
+  { disclosureKey = teamDisclosureKey("release", release.id, "technical") } = {},
+) {
   const manifest = release.manifest || {};
   return renderTechnicalDetails([
     ["Release ID", release.id],
@@ -15330,7 +15934,7 @@ function renderReleaseTechnicalDetails(release) {
     ["Review IDs", release.review_request_ids || []],
     ["Verification run IDs", release.verification_run_ids || []],
     ["Promotion IDs", release.git_promotion_record_ids || []],
-  ]);
+  ], { disclosureKey });
 }
 
 function renderReleaseCardBody(release) {
@@ -15354,8 +15958,10 @@ function renderReleaseCardBody(release) {
       ${renderPostReleaseReportControl(release)}
       ${renderReleaseDetailControl(release)}
       ${renderCachedReleaseDetail(release.id)}
-      ${renderReleasePolicyDetails(release) ? `<details class="technical-details release-policy-details"><summary>Policy and gate details</summary><div class="release-policy-body">${renderReleasePolicyDetails(release)}</div></details>` : ""}
-      ${renderReleaseTechnicalDetails(release)}
+      ${renderReleasePolicyDetails(release) ? `<details class="technical-details release-policy-details" ${teamDisclosureAttributes(teamDisclosureKey("release-card", release.id, "policy"))}><summary>Policy and gate details</summary><div class="release-policy-body">${renderReleasePolicyDetails(release)}</div></details>` : ""}
+      ${renderReleaseTechnicalDetails(release, {
+        disclosureKey: teamDisclosureKey("release-card", release.id, "technical"),
+      })}
     </div>
   `;
 }
@@ -15369,7 +15975,7 @@ function renderReleaseCard(release, { compact = false } = {}) {
   ].filter(Boolean);
   return `
     <li class="record-item compact-record-card release-card${compact ? " release-card-compact" : ""}" data-release-id="${escapeAttr(release.id)}">
-      <details${expandedReleaseDetailIds.has(text(release.id)) || postReleaseReportResults.has(text(release.id)) ? " open" : ""}>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("release-card", release.id, "detail"))}>
         <summary class="compact-record-summary release-card-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(releaseDisplayLabel(release))}</strong>
@@ -15388,7 +15994,7 @@ function renderReleases() {
     return;
   }
   updateMyHumanReviewsFilterButton();
-  const allReleases = values(state.release_packages).sort(byId);
+  const allReleases = values(state.release_packages).sort(compareProjectReleasesLatest);
   const focusedRequest = focusedHumanReviewRequestId
     ? humanReviewQueue.requests.find(
         (request) => text(request.id) === focusedHumanReviewRequestId,
@@ -15485,11 +16091,13 @@ function renderPostReleaseReportControl(release) {
   return `
     <div class="post-release-report-control">
       ${resultMarkup}
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("release-card", release.id, "post-release-report"))}>
         <summary>Report regression or adjustment</summary>
         <form
           class="post-release-report-form"
           data-post-release-report-form
+          data-form-id="post-release-report-form"
+          data-form-draft-scope="${escapeAttr(release.id)}"
           data-release-id="${escapeAttr(release.id)}"
         >
           <p class="post-release-report-boundary">
@@ -15558,10 +16166,16 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
+    openTeamDisclosures.delete(
+      teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+    );
     renderReleaseDetailSurfaces();
     return;
   }
   expandedReleaseDetailIds.add(releaseId);
+  openTeamDisclosures.add(
+    teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+  );
   renderReleaseDetailSurfaces();
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
@@ -15572,6 +16186,7 @@ async function toggleReleaseDetail(releaseId) {
 function renderReleaseDetailSurfaces() {
   renderReleases();
   renderProjectFocus();
+  renderReviewDeliveryWorkspace();
 }
 
 async function loadReleaseDetail(releaseId) {
@@ -15631,8 +16246,9 @@ async function loadMyHumanReviews() {
 }
 
 async function openHumanReviewDeepLink(requestId) {
+  const normalizedRequestId = text(requestId);
   myHumanReviewsOnly = true;
-  focusedHumanReviewRequestId = text(requestId);
+  focusedHumanReviewRequestId = normalizedRequestId;
   await loadMyHumanReviews();
   if (!focusedHumanReviewRequestId) {
     return true;
@@ -15647,6 +16263,9 @@ async function openHumanReviewDeepLink(requestId) {
     return false;
   }
   expandedReleaseDetailIds.add(releaseId);
+  openTeamDisclosures.add(
+    teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+  );
   renderReleases();
   await loadReleaseDetail(releaseId);
   focusHumanReviewRequestElement(focusedHumanReviewRequestId);
@@ -15657,6 +16276,14 @@ function focusHumanReviewRequestElement(requestId) {
   const element = document.getElementById(`human-review-${text(requestId)}`);
   if (!element) {
     return;
+  }
+  const disclosure = element.closest("details[data-team-disclosure-key]");
+  if (disclosure) {
+    disclosure.open = true;
+    const disclosureKey = text(disclosure.dataset.teamDisclosureKey);
+    if (disclosureKey) {
+      openTeamDisclosures.add(disclosureKey);
+    }
   }
   element.focus({ preventScroll: true });
   element.scrollIntoView({ block: "center", behavior: "auto" });
@@ -15691,13 +16318,43 @@ function renderReleaseDetail(release) {
         <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${release.published_at ? renderRecordDate(release.published_at, "Published") : escapeHtml(release.next_action_hint || release.next_action || "Not published")}</div></div>
         <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
       </div>
+      ${renderReleaseCandidateCheckout(release)}
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
-      ${renderReleaseContributionGraph(contributionGraph)}
-      ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [])}
-      ${renderReleaseAgentReviews(releaseReviews)}
-      ${renderReleaseHumanRequests(humanRequests, manifest)}
+      ${renderReleaseContributionGraph(contributionGraph, release.id)}
+      ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [], release.id)}
+      ${renderReleaseAgentReviews(releaseReviews, release.id)}
+      ${renderReleaseHumanRequests(humanRequests, manifest, release.id)}
       ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
     </section>
+  `;
+}
+
+function renderReleaseCandidateCheckout(release) {
+  const checkout = release.candidate_checkout;
+  if (!checkout?.checkout_command) {
+    return "";
+  }
+  const repositoryLabel =
+    text(checkout.repository_display_name) ||
+    text(checkout.canonical_repository_identity) ||
+    "Managed repository";
+  return `
+    <div class="release-detail-section release-candidate-checkout">
+      <h4>Test this candidate</h4>
+      <p class="release-candidate-checkout-intro">Create a new detached checkout of the exact candidate that passed this release pipeline. The command verifies the immutable release ref, commit, and tree before writing anything.</p>
+      <dl class="release-candidate-checkout-metadata">
+        <div><dt>Repository</dt><dd><strong>${escapeHtml(repositoryLabel)}</strong><code>${escapeHtml(checkout.canonical_repository_identity)}</code></dd></div>
+        <div><dt>Managed repository ID</dt><dd>${renderIdentifierCopy(checkout.managed_repo_id, { label: "Copy ID" })}</dd></div>
+        <div><dt>Immutable release ref</dt><dd>${renderIdentifierCopy(checkout.release_ref, { label: "Copy ref" })}</dd></div>
+        <div><dt>Candidate commit</dt><dd>${renderIdentifierCopy(checkout.candidate_commit_sha, { label: "Copy SHA" })}</dd></div>
+        <div><dt>Candidate tree</dt><dd>${renderIdentifierCopy(checkout.candidate_tree_hash, { label: "Copy tree" })}</dd></div>
+      </dl>
+      <div class="release-candidate-checkout-command">
+        <div class="delivery-detail-label">Supported host command</div>
+        ${renderIdentifierCopy(checkout.checkout_command, { label: "Copy command" })}
+      </div>
+      <p class="meta-line">The target directory must be new. Existing or non-empty paths are never overwritten.</p>
+    </div>
   `;
 }
 
@@ -15708,7 +16365,9 @@ function renderReleaseDeliverableEvidence(rows, release) {
       ? `<div class="release-detail-section"><h4>Included work evidence</h4><ul class="delivery-detail-list">${deliverableIds.map((id) => {
           const deliverable = state.deliverables[id] || {};
           const task = deliverableTask(deliverable);
-          return `<li><strong>${escapeHtml(task?.title || deliverableDisplaySubject(deliverable))}</strong>${deliverable.summary ? `<div>${escapeHtml(readablePreview(deliverable.summary, 320))}</div>` : ""}${renderTechnicalDetails([["Deliverable ID", id], ["Task ID", deliverable.task_id]])}</li>`;
+          return `<li><strong>${escapeHtml(task?.title || deliverableDisplaySubject(deliverable))}</strong>${deliverable.summary ? `<div>${escapeHtml(readablePreview(deliverable.summary, 320))}</div>` : ""}${renderTechnicalDetails([["Deliverable ID", id], ["Task ID", deliverable.task_id]], {
+            disclosureKey: teamDisclosureKey("release-detail", release.id, "deliverable", id, "technical"),
+          })}</li>`;
         }).join("")}</ul></div>`
       : "";
   }
@@ -15731,7 +16390,9 @@ function renderReleaseDeliverableEvidence(rows, release) {
               ["Feature branch", row.feature_branch],
               ["Feature commit", row.feature_commit_sha],
               ["Review IDs", reviews.map((review) => review.review_request_id)],
-            ])}
+            ], {
+              disclosureKey: teamDisclosureKey("release-detail", release.id, "deliverable", row.deliverable_id, "technical"),
+            })}
           </li>`;
         }).join("")}
       </ul>
@@ -15739,7 +16400,7 @@ function renderReleaseDeliverableEvidence(rows, release) {
   `;
 }
 
-function renderReleaseContributionGraph(graph) {
+function renderReleaseContributionGraph(graph, releaseId) {
   const rows = Object.entries(graph || {});
   if (!rows.length) {
     return "";
@@ -15754,7 +16415,9 @@ function renderReleaseContributionGraph(graph) {
           return `<li>
             <strong>${escapeHtml(deliverable ? deliverableDisplaySubject(deliverable) : "Included work")}</strong>
             <div class="meta-line">${sources.length ? `Built from ${escapeHtml(sources.map(deliverableDisplaySubject).join(", "))}` : "Direct contribution"}</div>
-            ${renderTechnicalDetails([["Deliverable ID", deliverableId], ["Source deliverable IDs", sourceIds || []]])}
+            ${renderTechnicalDetails([["Deliverable ID", deliverableId], ["Source deliverable IDs", sourceIds || []]], {
+              disclosureKey: teamDisclosureKey("release-detail", releaseId, "contribution", deliverableId, "technical"),
+            })}
           </li>`;
         }).join("")}
       </ul>
@@ -15762,7 +16425,64 @@ function renderReleaseContributionGraph(graph) {
   `;
 }
 
-function renderReleaseVerificationRuns(runs, commands) {
+function renderReleaseVerificationCommandResult(
+  result,
+  run,
+  disclosureKey,
+) {
+  const failed = releaseVerificationCommandFailed(result);
+  const decisiveError = failed
+    ? releaseVerificationDecisiveError(result, run)
+    : "";
+  const metadata = [];
+  if (result.exit_code !== null && result.exit_code !== undefined) {
+    metadata.push(`Exit code: ${Number(result.exit_code)}`);
+  }
+  if (result.failure_cause) {
+    metadata.push(`Failure cause: ${humanizeToken(result.failure_cause)}`);
+  }
+  if (result.duration_seconds !== null && result.duration_seconds !== undefined) {
+    metadata.push(`Duration: ${Number(result.duration_seconds)} seconds`);
+  }
+  const logExcerpt = text(result.log_excerpt);
+  return `
+    <li class="release-verification-command-result${failed ? " release-verification-command-failed" : ""}">
+      <div class="release-verification-command-heading">
+        <strong>${failed ? "Failed command" : "Command"}: ${escapeHtml(result.name || "Unnamed command")}</strong>
+        <span class="state-pill ${escapeAttr(result.state)}">${escapeHtml(humanizeToken(result.state))}</span>
+      </div>
+      ${metadata.length ? `<div class="meta-line">${escapeHtml(metadata.join(" · "))}</div>` : ""}
+      ${decisiveError ? `<div class="release-verification-decisive-error"><strong>Decisive error:</strong> ${escapeHtml(decisiveError)}</div>` : ""}
+      ${
+        logExcerpt
+          ? `<details class="release-verification-log" ${teamDisclosureAttributes(disclosureKey)}>
+              <summary>Show captured command log</summary>
+              <pre>${escapeHtml(logExcerpt)}</pre>
+            </details>`
+          : ""
+      }
+    </li>
+  `;
+}
+
+function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
+  const results = run.command_results || [];
+  if (!results.length) {
+    return "";
+  }
+  return `
+    <ul class="release-verification-command-list">
+      ${results.map((result, index) =>
+        renderReleaseVerificationCommandResult(
+          result,
+          run,
+          teamDisclosureKey(disclosureKeyPrefix, run.id, "command", String(index), "log"),
+        )).join("")}
+    </ul>
+  `;
+}
+
+function renderReleaseVerificationRuns(runs, commands, releaseId) {
   if (!runs.length && !commands.length) {
     return "";
   }
@@ -15774,8 +16494,10 @@ function renderReleaseVerificationRuns(runs, commands) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${(run.command_results || []).length ? `<ul class="inline-list">${run.command_results.map((result) => `<li>${escapeHtml(result.name)}: ${escapeHtml(result.state)}${result.log_excerpt ? ` - ${escapeHtml(result.log_excerpt)}` : ""}</li>`).join("")}</ul>` : ""}
-              ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]])}
+              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`)}
+              ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
+                disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
+              })}
             </li>`).join("")}</ul>`
           : `<div class="meta-line">Configured commands: ${escapeHtml(commands.map((command) => command.name).join(", "))}</div>`
       }
@@ -15783,7 +16505,7 @@ function renderReleaseVerificationRuns(runs, commands) {
   `;
 }
 
-function renderReleaseAgentReviews(reviews) {
+function renderReleaseAgentReviews(reviews, releaseId) {
   if (!reviews.length) {
     return "";
   }
@@ -15798,7 +16520,9 @@ function renderReleaseAgentReviews(reviews) {
           ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
           ${renderReleaseReviewCriteria(review)}
           ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
-          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]])}
+          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
+            disclosureKey: teamDisclosureKey("release-detail", releaseId, "agent-review", review.id, "technical"),
+          })}
         </li>`;
         }).join("")}
       </ul>
@@ -15835,7 +16559,7 @@ function renderReleaseReviewCriteria(review) {
   return `<ul class="inline-list">${rows.map((row) => `<li>${escapeHtml(row.label)}: ${escapeHtml(row.state)}${row.finding ? ` - ${escapeHtml(row.finding)}` : ""}</li>`).join("")}</ul>`;
 }
 
-function renderReleaseHumanRequests(requests, manifest) {
+function renderReleaseHumanRequests(requests, manifest, releaseId) {
   const carriedFindings = manifest.carried_human_findings || [];
   if (!requests.length) {
     return manifest.human_review_requirement
@@ -15847,13 +16571,13 @@ function renderReleaseHumanRequests(requests, manifest) {
       <h4>Human request and decision history</h4>
       ${carriedFindings.length ? `<div class="release-carried-findings"><strong>Carried findings requiring explicit confirmation:</strong> ${escapeHtml(carriedFindings.map((finding) => finding.finding_id || finding.id).join(", "))}</div>` : ""}
       <div class="human-review-request-list">
-        ${requests.map((request) => renderHumanReviewRequest(request, carriedFindings)).join("")}
+        ${requests.map((request) => renderHumanReviewRequest(request, carriedFindings, releaseId)).join("")}
       </div>
     </div>
   `;
 }
 
-function renderHumanReviewRequest(request, carriedFindings) {
+function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
   const assignment = request.current_assignment || {};
   const target = request.test_target || null;
   const checklist = request.requirement_snapshot?.checklist || [];
@@ -15869,10 +16593,15 @@ function renderHumanReviewRequest(request, carriedFindings) {
       <div class="meta-line">Assigned reviewers: ${escapeHtml([...(assignment.explicitly_assigned_user_ids || []), ...(assignment.eligible_user_ids || [])].filter((value, index, values_) => values_.indexOf(value) === index).length || "none")}</div>
       <div class="meta-line">Preparation mode ${escapeHtml(humanizeToken(request.requirement_snapshot?.preparation_mode || "manual"))} · ${checklist.length} checklist item${checklist.length === 1 ? "" : "s"}</div>
       ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${escapeHtml(request.requirement_snapshot.test_instructions)}</div>` : ""}
+      ${renderHumanReviewBundleDownload(request)}
       ${renderHumanReviewTarget(target)}
       ${renderHumanChecklistHistory(checklist)}
       ${renderHumanDecisionHistory(decisions)}
-      ${renderHumanFindingHistory(findings, request.correction_tasks || [])}
+      ${renderHumanFindingHistory(
+        findings,
+        request.correction_tasks || [],
+        request.target_deliverable_options || [],
+      )}
       ${request.state === "pending" ? renderHumanReviewDecisionForm(request, checklist, carriedFindings) : ""}
       ${renderHumanReviewOwnerActions(request)}
       ${renderTechnicalDetails([
@@ -15880,8 +16609,24 @@ function renderHumanReviewRequest(request, carriedFindings) {
         ["Release ID", request.release_package_id],
         ["Candidate commit", request.candidate_commit_sha],
         ["Candidate tree", request.candidate_tree_hash],
-      ])}
+      ], {
+        disclosureKey: teamDisclosureKey("human-review", releaseId || request.release_package_id, request.id, "technical"),
+      })}
     </article>
+  `;
+}
+
+function renderHumanReviewBundleDownload(request) {
+  const requestId = text(request.id);
+  if (!requestId) {
+    return "";
+  }
+  const href = `${API_BASE}/human-review-requests/${encodeURIComponent(requestId)}/review-bundle`;
+  return `
+    <div class="human-review-bundle">
+      <a class="human-review-bundle-download" href="${escapeAttr(href)}" download>Download review bundle</a>
+      <span class="meta-line">Source ZIP for this pinned candidate. Unpack it, then run the normal setup such as <code>dotnet restore</code> and <code>npm ci</code> where applicable.</span>
+    </div>
   `;
 }
 
@@ -15918,7 +16663,36 @@ function renderHumanDecisionHistory(decisions) {
   </li>`).join("")}</ul>`;
 }
 
-function renderHumanFindingHistory(findings, correctionTasks) {
+function humanReviewTargetOptionLabel(option) {
+  const title =
+    text(option?.task_title) ||
+    text(option?.summary) ||
+    text(option?.deliverable_id) ||
+    "Included work";
+  const producer =
+    text(option?.producer?.display_name) ||
+    text(option?.producer?.agent_id);
+  const parts = [
+    title,
+    producer ? `by ${producer}` : "",
+    option?.is_top_level ? "included deliverable" : "contribution",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function humanReviewTargetLabels(targetIds, targetOptions) {
+  const optionsById = new Map(
+    (targetOptions || []).map((option) => [text(option.deliverable_id), option]),
+  );
+  return (targetIds || []).map((deliverableId) => {
+    const option = optionsById.get(text(deliverableId));
+    return option
+      ? humanReviewTargetOptionLabel(option)
+      : text(deliverableId);
+  });
+}
+
+function renderHumanFindingHistory(findings, correctionTasks, targetOptions = []) {
   if (!findings.length && !correctionTasks.length) {
     return "";
   }
@@ -15928,7 +16702,7 @@ function renderHumanFindingHistory(findings, correctionTasks) {
       <ul class="delivery-detail-list">
         ${findings.map((finding) => `<li>
           <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
-          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` - targets ${escapeHtml(finding.target_deliverable_ids.join(", "))}` : ""}</div>
+          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` · affected work: ${escapeHtml(humanReviewTargetLabels(finding.target_deliverable_ids, targetOptions).join(", "))}` : ""}</div>
           ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
           ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
         </li>`).join("")}
@@ -15938,9 +16712,251 @@ function renderHumanFindingHistory(findings, correctionTasks) {
   `;
 }
 
+function humanReviewFindingListFieldValue(value) {
+  if (Array.isArray(value)) {
+    return value.join("\n");
+  }
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function renderHumanReviewTargetSelector(targetOptions, selectedTargetIds) {
+  if ((targetOptions || []).length <= 1) {
+    return "";
+  }
+  const selected = new Set(splitList(selectedTargetIds));
+  return `
+    <div class="human-review-finding-targets" role="group" aria-label="Affected work">
+      <span>Affected work <small>(optional)</small></span>
+      <div class="human-review-finding-target-options">
+        ${targetOptions.map((option) => `
+          <label class="checkbox-label">
+            <input
+              type="checkbox"
+              name="human_finding_target_deliverable_ids"
+              value="${escapeAttr(option.deliverable_id)}"
+              ${selected.has(text(option.deliverable_id)) ? "checked" : ""}
+            />
+            <span>
+              <strong>${escapeHtml(humanReviewTargetOptionLabel(option))}</strong>
+              ${option.summary && text(option.summary) !== text(option.task_title) ? `<small>${escapeHtml(readablePreview(option.summary, 180))}</small>` : ""}
+            </span>
+          </label>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderHumanReviewFindingRow(finding = {}, targetOptions = []) {
+  return `
+    <div class="human-review-finding-row" data-human-review-finding-row>
+      <div class="human-review-finding-row-heading">
+        <strong data-human-review-finding-number>Finding</strong>
+        <button
+          class="record-action human-review-finding-remove"
+          type="button"
+          data-human-review-finding-remove
+        >Remove</button>
+      </div>
+      <label class="human-review-finding-description">
+        <span>Description</span>
+        <textarea
+          name="human_finding_text"
+          rows="3"
+          placeholder="Describe one concrete, actionable problem"
+        >${escapeHtml(finding.text || "")}</textarea>
+      </label>
+      <div class="human-review-finding-metadata">
+        ${renderHumanReviewTargetSelector(
+          targetOptions,
+          finding.target_deliverable_ids,
+        )}
+        <label>
+          <span>Evidence references <small>(optional)</small></span>
+          <textarea
+            name="human_finding_evidence_refs"
+            rows="2"
+            placeholder="artifact-space:..., one per line"
+          >${escapeHtml(humanReviewFindingListFieldValue(finding.evidence_refs))}</textarea>
+        </label>
+      </div>
+    </div>
+  `;
+}
+
+function renderHumanReviewFindingsEditor(targetOptions = []) {
+  return `
+    <div
+      class="human-review-findings-editor"
+      data-human-review-findings-editor
+      data-human-review-target-options="${escapeAttr(JSON.stringify(targetOptions))}"
+    >
+      <div class="human-review-findings-heading">
+        <strong>Findings</strong>
+        <span>Required only when requesting changes.</span>
+      </div>
+      <div class="human-review-finding-rows" data-human-review-finding-rows></div>
+      <p class="human-review-findings-empty" data-human-review-findings-empty>No findings added.</p>
+      <button
+        class="record-action human-review-finding-add"
+        type="button"
+        data-human-review-finding-add
+      >Add finding</button>
+    </div>
+  `;
+}
+
+function humanReviewTargetOptionsFromEditor(editor) {
+  try {
+    const options = JSON.parse(editor?.dataset?.humanReviewTargetOptions || "[]");
+    return Array.isArray(options) ? options : [];
+  } catch {
+    return [];
+  }
+}
+
+function syncHumanReviewFindingEditor(editor) {
+  if (!editor) {
+    return;
+  }
+  const rows = Array.from(editor.querySelectorAll("[data-human-review-finding-row]"));
+  rows.forEach((row, index) => {
+    const number = row.querySelector("[data-human-review-finding-number]");
+    if (number) {
+      number.textContent = `Finding ${index + 1}`;
+    }
+    const remove = row.querySelector("[data-human-review-finding-remove]");
+    if (remove) {
+      remove.setAttribute("aria-label", `Remove finding ${index + 1}`);
+    }
+  });
+  const empty = editor.querySelector("[data-human-review-findings-empty]");
+  if (empty) {
+    empty.hidden = rows.length > 0;
+  }
+}
+
+function addHumanReviewFindingRow(editor, finding = {}) {
+  const rows = editor?.querySelector?.("[data-human-review-finding-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderHumanReviewFindingRow(
+    finding,
+    humanReviewTargetOptionsFromEditor(editor),
+  );
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  syncHumanReviewFindingEditor(editor);
+  rememberFormDraft(editor.closest("form"));
+  row.querySelector('[name="human_finding_text"]')?.focus();
+}
+
+function removeHumanReviewFindingRow(button) {
+  const editor = button.closest("[data-human-review-findings-editor]");
+  button.closest("[data-human-review-finding-row]")?.remove();
+  syncHumanReviewFindingEditor(editor);
+  rememberFormDraft(editor?.closest("form"));
+}
+
+function humanReviewFindingFromRow(row) {
+  return {
+    text: text(row.querySelector('[name="human_finding_text"]')?.value),
+    target_deliverable_ids: Array.from(
+      row.querySelectorAll(
+        'input[name="human_finding_target_deliverable_ids"]:checked',
+      ),
+    ).map((field) => text(field.value)).filter(Boolean),
+    evidence_refs: splitList(
+      row.querySelector('[name="human_finding_evidence_refs"]')?.value,
+    ),
+  };
+}
+
+function humanReviewFindingsFromForm(form, { validate = false } = {}) {
+  const rows = Array.from(form.querySelectorAll("[data-human-review-finding-row]"));
+  const findings = [];
+  let valid = true;
+  rows.forEach((row) => {
+    const description = row.querySelector('[name="human_finding_text"]');
+    description?.setCustomValidity("");
+    const finding = humanReviewFindingFromRow(row);
+    const hasMetadata =
+      finding.target_deliverable_ids.length > 0 || finding.evidence_refs.length > 0;
+    if (!finding.text) {
+      if (validate) {
+        description?.setCustomValidity(
+          hasMetadata
+            ? "Describe the finding before attaching targets or evidence."
+            : "Describe this finding or remove the empty row.",
+        );
+        valid = false;
+      }
+      return;
+    }
+    findings.push(finding);
+  });
+  if (validate && !rows.length) {
+    setStatus("Request changes requires at least one actionable finding.", "error");
+    form.querySelector("[data-human-review-finding-add]")?.focus();
+    return null;
+  }
+  if (validate && !valid) {
+    form.reportValidity();
+    setStatus(
+      "Describe or remove every added finding before requesting changes.",
+      "error",
+    );
+    return null;
+  }
+  return findings;
+}
+
+function humanReviewFindingDraftFromRow(row) {
+  return {
+    text: row.querySelector('[name="human_finding_text"]')?.value || "",
+    target_deliverable_ids: Array.from(
+      row.querySelectorAll(
+        'input[name="human_finding_target_deliverable_ids"]:checked',
+      ),
+    ).map((field) => text(field.value)).filter(Boolean),
+    evidence_refs:
+      row.querySelector('[name="human_finding_evidence_refs"]')?.value || "",
+  };
+}
+
+function humanReviewFindingsDraftFromForm(form) {
+  const editor = form.querySelector("[data-human-review-findings-editor]");
+  if (!editor) {
+    return null;
+  }
+  return Array.from(editor.querySelectorAll("[data-human-review-finding-row]")).map(
+    humanReviewFindingDraftFromRow,
+  );
+}
+
+function restoreHumanReviewFindingsDraft(form, findings) {
+  const editor = form.querySelector("[data-human-review-findings-editor]");
+  const rows = editor?.querySelector?.("[data-human-review-finding-rows]");
+  if (!rows || !Array.isArray(findings)) {
+    return;
+  }
+  const targetOptions = humanReviewTargetOptionsFromEditor(editor);
+  rows.innerHTML = findings
+    .map((finding) => renderHumanReviewFindingRow(finding, targetOptions))
+    .join("");
+  decorateFieldTooltips(rows);
+  syncHumanReviewFindingEditor(editor);
+}
+
 function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
   return `
-    <form class="human-review-decision-form" data-human-review-decision-form data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
+    <form class="human-review-decision-form" data-human-review-decision-form data-form-id="human-review-decision-form" data-form-draft-scope="${escapeAttr(request.id)}" data-human-review-request-id="${escapeAttr(request.id)}" data-release-id="${escapeAttr(request.release_package_id)}" data-request-revision="${Number(request.revision || 0)}">
       <fieldset>
         <legend>Human acceptance checklist</legend>
         ${checklist.map((item) => `<label class="checkbox-label"><input type="checkbox" data-human-checklist-id="${escapeAttr(item.id)}"${item.required === false ? "" : " required"} /> ${escapeHtml(item.label)}${item.required === false ? " (optional)" : ""}</label>`).join("") || `<p class="empty-state">No checklist items.</p>`}
@@ -15952,11 +16968,7 @@ function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
       }
       <label>Decision summary<textarea name="summary" rows="3" placeholder="What was tested and why this decision is appropriate"></textarea></label>
       <label>Evidence references<textarea name="evidence_refs" rows="2" placeholder="artifact-space:..., one per line"></textarea></label>
-      <details>
-        <summary>Changes requested fields</summary>
-        <label>Actionable findings<textarea name="findings" rows="4" placeholder="One actionable finding per line"></textarea></label>
-        <label>Target deliverable IDs<textarea name="target_deliverable_ids" rows="2" placeholder="One per line"></textarea></label>
-      </details>
+      ${renderHumanReviewFindingsEditor(request.target_deliverable_options || [])}
       <div class="record-actions">
         <button type="submit" class="record-action human-review-approve" data-human-review-decision="approved">Approve</button>
         <button type="submit" class="record-action" data-human-review-decision="changes_requested" formnovalidate>Request changes</button>
@@ -16062,11 +17074,16 @@ async function submitPostReleaseReport(form, submitter) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    clearFormDraft(form);
+    form.reset();
     state.revision = payload.revision ?? state.revision;
     postReleaseReportResults.set(releaseId, {
       case: payload.case || null,
       triageTaskId: text(payload.result?.triage_task_id),
     });
+    openTeamDisclosures.add(
+      teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
+    );
     releaseDetailCache.delete(releaseId);
     await loadView("delivery", { force: true, preserveForms: false });
     if (expandedReleaseDetailIds.has(releaseId)) {
@@ -16108,14 +17125,12 @@ async function submitHumanReviewDecision(form, submitter) {
     .map((input) => text(input.dataset.confirmFindingId))
     .filter(Boolean);
   const data = formData(form);
-  const findings = splitList(data.findings).map((findingText) => ({
-    text: findingText,
-    target_deliverable_ids: splitList(data.target_deliverable_ids),
-    evidence_refs: splitList(data.evidence_refs),
-  }));
-  if (decision === "changes_requested" && !findings.length) {
-    setStatus("Request changes requires at least one actionable finding.", "error");
-    return;
+  let findings = [];
+  if (decision === "changes_requested") {
+    findings = humanReviewFindingsFromForm(form, { validate: true });
+    if (!findings) {
+      return;
+    }
   }
   const payload = {
     decision,
@@ -16125,8 +17140,10 @@ async function submitHumanReviewDecision(form, submitter) {
     confirmed_finding_ids: confirmedFindingIds,
     summary: text(data.summary),
     evidence_refs: splitList(data.evidence_refs),
-    findings,
   };
+  if (decision === "changes_requested") {
+    payload.findings = findings;
+  }
   await mutateHumanReview(
     submitter,
     `/human-review-requests/${encodeURIComponent(requestId)}/decisions`,
@@ -16197,6 +17214,11 @@ async function mutateHumanReview(control, endpoint, payload, { requestId, releas
       throw new Error(await responseText(response));
     }
     const result = await response.json();
+    const decisionForm = control?.closest?.("[data-human-review-decision-form]");
+    if (decisionForm) {
+      clearFormDraft(decisionForm);
+      decisionForm.reset();
+    }
     state.revision = result.revision ?? state.revision;
     const updatedRequest = result.human_review_request;
     if (updatedRequest) {
@@ -16901,8 +17923,12 @@ function buildReviewDeliveryRows() {
       const task = taskByDeliverable.get(deliverable.task_id) || null;
       const project = task ? projectByTask.get(task.id) || null : null;
       const team = project ? teamByProject.get(project.id) || null : null;
-      const reviewRequests = (reviewsByDeliverable.get(deliverable.id) || []).slice().sort(byId);
-      const releasePackages = (releasePackagesByDeliverable.get(deliverable.id) || []).slice().sort(byId);
+      const reviewRequests = (reviewsByDeliverable.get(deliverable.id) || [])
+        .slice()
+        .sort(compareReviewRequestsLatest);
+      const releasePackages = (releasePackagesByDeliverable.get(deliverable.id) || [])
+        .slice()
+        .sort(compareProjectReleasesLatest);
       const gitPromotionIds = [
         ...(deliverable.git_refs?.promotion_record_ids || []),
         ...releasePackages.flatMap((release) => release.git_promotion_record_ids || []),
@@ -17038,21 +18064,22 @@ function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
   if (!bucketMarkup) {
     return "";
   }
+  const expanded = Boolean(project && selectedDeliveryProjectId === text(project.id));
   return `
-    <article class="delivery-project">
-      <div class="delivery-project-title">
-        <div>
-          <p class="section-label">Project</p>
-          <h4>${projectLabel}</h4>
-          ${project ? renderProjectCostCounter(project.id) : ""}
-          ${project ? `<div class="meta-line">Team ${escapeHtml(state.teams?.[project.team_id]?.name || "Unknown team")}</div>` : ""}
-        </div>
-        <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"}</span>
-      </div>
-      <div class="delivery-buckets">
+    <details class="delivery-project" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "project", project?.id || projectGroup.project_id || "unknown"))}>
+      <summary class="delivery-project-title">
+        <span class="delivery-project-heading-main">
+          <span class="section-label">Project</span>
+          <strong>${projectLabel}</strong>
+          ${project ? `<span class="meta-line">Team ${escapeHtml(state.teams?.[project.team_id]?.name || "Unknown team")}</span>` : ""}
+        </span>
+        <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"} · ${expanded ? "focused" : "open project"}</span>
+      </summary>
+      ${project ? renderProjectCostCounter(project.id) : ""}
+      <div class="delivery-buckets delivery-project-body">
         ${bucketMarkup}
       </div>
-    </article>
+    </details>
   `;
 }
 
@@ -17123,7 +18150,7 @@ function renderCompactDeliveryRow(row) {
   const reviewText = `${reviewIds.length} review${reviewIds.length === 1 ? "" : "s"}`;
   const releaseText = `${row.releasePackages.length} release${row.releasePackages.length === 1 ? "" : "s"}`;
   return `
-    <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
+    <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "deliverable", deliverable.id, "detail"))}>
       <summary class="delivery-row-summary">
         <span class="delivery-summary-main">
           <strong>${escapeHtml(deliverableDisplaySubject(deliverable))}</strong>
@@ -17148,6 +18175,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
   const deliverable = row.deliverable;
   const task = row.task;
   return `
+    ${renderDeliverablePipeline(row)}
     <section class="deliverable-detail-group">
       <h4>Summary / outcome</h4>
       <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
@@ -17187,6 +18215,260 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
   `;
 }
 
+function currentReleaseForDeliveryRow(row) {
+  if (!row.releasePackages.length) {
+    return null;
+  }
+  const currentReleases = currentDeliveryReleasePackages(row.releasePackages);
+  return (currentReleases.length ? currentReleases : row.releasePackages)
+    .slice()
+    .sort((left, right) => {
+      const leftTimestamp = Date.parse(left.updated_at || left.created_at || "") || 0;
+      const rightTimestamp = Date.parse(right.updated_at || right.created_at || "") || 0;
+      return rightTimestamp - leftTimestamp || text(right.id).localeCompare(text(left.id));
+    })[0];
+}
+
+function currentDeliveryReleasePackages(releasePackages) {
+  const supersededReleaseIds = new Set(
+    releasePackages
+      .map((release) => text(release.supersedes_release_package_id))
+      .filter(Boolean),
+  );
+  return releasePackages.filter(
+    (release) => !supersededReleaseIds.has(text(release.id)),
+  );
+}
+
+function deliverableAcceptanceStage(row) {
+  const deliverable = row.deliverable;
+  const activeReviews = row.reviewRequests.filter(
+    (review) => !text(review.superseded_by_review_request_id),
+  );
+  const label = activeReviews.length
+    ? "Deliverable agent review"
+    : "Deliverable acceptance";
+  if (text(deliverable.state) === "accepted") {
+    return {
+      label,
+      state: "complete",
+      detail: activeReviews.length
+        ? `${activeReviews.length} deliverable review${activeReviews.length === 1 ? "" : "s"} accepted`
+        : "Deliverable accepted",
+    };
+  }
+  const blockedReview = activeReviews.find(
+    (review) => ["blocked", "rejected"].includes(text(review.state)),
+  );
+  if (
+    ["blocked", "rejected"].includes(text(deliverable.state)) ||
+    blockedReview
+  ) {
+    return {
+      label,
+      state: "blocked",
+      detail: blockedReview
+        ? `Deliverable review ${humanizeToken(blockedReview.state)}`
+        : `Deliverable ${humanizeToken(deliverable.state)}`,
+    };
+  }
+  if (activeReviews.length) {
+    const decidedCount = activeReviews.filter((review) => text(review.state) === "accepted").length;
+    return {
+      label,
+      state: "pending",
+      detail: `${decidedCount} of ${activeReviews.length} deliverable reviews accepted`,
+    };
+  }
+  return {
+    label,
+    state: "pending",
+    detail:
+      text(row.task?.waiting_reason) === "superior_acceptance"
+        ? "Waiting for direct superior acceptance"
+        : "Submission recorded; no acceptance decision yet",
+  };
+}
+
+function deliverableEvidenceStage(deliverable) {
+  const evidenceCount =
+    (deliverable.artifact_refs || []).length +
+    (deliverable.outcomes || []).flatMap(
+      (outcome) => [...(outcome.reference_ids || []), ...(outcome.evidence_refs || [])],
+    ).length;
+  const hasGitEvidence = Boolean(
+    text(deliverable.git_refs?.branch_context_id) ||
+    text(deliverable.git_refs?.commit_sha) ||
+    text(deliverable.git_refs?.feature_commit_sha),
+  );
+  const evidenceParts = [
+    evidenceCount ? `${evidenceCount} evidence reference${evidenceCount === 1 ? "" : "s"}` : "",
+    hasGitEvidence ? "Git evidence pinned" : "",
+  ].filter(Boolean);
+  return {
+    label: "Implementation evidence",
+    state: "complete",
+    detail: evidenceParts.length ? evidenceParts.join(" · ") : "Deliverable submission recorded",
+  };
+}
+
+function deliverablePipelineStages(row, release) {
+  const stages = [
+    deliverableEvidenceStage(row.deliverable),
+    deliverableAcceptanceStage(row),
+  ];
+  if (!release) {
+    stages.push({
+      label: "Release inclusion",
+      state: "waiting",
+      detail: "No release package includes this deliverable yet",
+    });
+    return stages;
+  }
+  const manifest = release.manifest || {};
+  const candidatePinned = Boolean(
+    text(release.candidate_commit_sha || manifest.candidate_commit_sha),
+  );
+  stages.push({
+    label: "Release inclusion",
+    state: "complete",
+    detail: candidatePinned
+      ? "Included in a release with a pinned candidate"
+      : "Included in a release; candidate preparation is pending",
+  });
+  stages.push(
+    ...releaseProgressStages(release).filter(
+      (stage) => stage.label !== "Candidate prepared",
+    ),
+  );
+  return stages;
+}
+
+function deliveryPipelineCurrentStage(stages) {
+  return (
+    stages.find((stage) => stage.state === "blocked") ||
+    stages.find((stage) => ["pending", "waiting"].includes(stage.state)) ||
+    stages[stages.length - 1]
+  );
+}
+
+function deliveryPipelineBlockers(row, release) {
+  const blockers = [
+    ...activeBlockersForRecord("deliverable", row.deliverable.id, row.task?.id),
+    ...(release ? activeBlockersForRecord("release_package", release.id) : []),
+  ];
+  return [...new Map(blockers.map((blocker) => [blocker.id, blocker])).values()];
+}
+
+function renderDeliverablePipeline(row) {
+  const compactRelease = currentReleaseForDeliveryRow(row);
+  const cached = compactRelease
+    ? releaseDetailCache.get(text(compactRelease.id))
+    : null;
+  const release = cached?.release || compactRelease;
+  const stages = deliverablePipelineStages(row, release);
+  const currentStage = deliveryPipelineCurrentStage(stages);
+  const blockers = deliveryPipelineBlockers(row, release);
+  return `
+    <section class="deliverable-detail-group deliverable-pipeline" aria-label="Deliverable delivery pipeline">
+      <div class="deliverable-pipeline-heading">
+        <div>
+          <p class="section-label">Delivery pipeline</p>
+          <h4>Current: ${escapeHtml(currentStage?.label || "Implementation evidence")}</h4>
+          <p>${escapeHtml(currentStage?.detail || "Deliverable recorded")}</p>
+        </div>
+        <span class="state-pill ${escapeAttr(currentStage?.state || "pending")}">${escapeHtml(humanizeToken(currentStage?.state || "pending"))}</span>
+      </div>
+      ${
+        blockers.length
+          ? `<div class="deliverable-pipeline-blocker"><strong>Active blocker:</strong> ${escapeHtml(blockers.map((blocker) => blocker.summary || blocker.reason_code || blocker.id).join(" · "))}</div>`
+          : release?.error
+            ? `<div class="deliverable-pipeline-blocker"><strong>Release needs attention:</strong> ${escapeHtml(release.error)}</div>`
+            : ""
+      }
+      <ol class="release-progress deliverable-progress" aria-label="Deliverable progress">
+        ${stages.map((stage, index) => `
+          <li class="release-progress-stage release-progress-${escapeAttr(stage.state)}">
+            <span class="release-progress-marker" aria-hidden="true">${stage.state === "complete" ? "✓" : index + 1}</span>
+            <span class="release-progress-copy">
+              <strong>${escapeHtml(stage.label)}</strong>
+              <span>${escapeHtml(stage.detail)}</span>
+            </span>
+          </li>
+        `).join("")}
+      </ol>
+      ${renderDeliveryPipelineEvidenceControl(compactRelease, cached)}
+      ${renderDeliveryPipelineGateEvidence(cached?.release)}
+    </section>
+  `;
+}
+
+function renderDeliveryPipelineEvidenceControl(release, cached) {
+  if (!release) {
+    return "";
+  }
+  if (cached?.loading) {
+    return `<p class="meta-line">Loading exact release gate evidence.</p>`;
+  }
+  if (cached?.error) {
+    return `
+      <div class="task-invalid-warning">
+        ${escapeHtml(cached.error)}
+        <button type="button" class="record-action" data-delivery-pipeline-detail-id="${escapeAttr(release.id)}">Retry</button>
+      </div>
+    `;
+  }
+  if (cached?.release) {
+    return `<p class="meta-line">Showing exact release gate evidence available to this operator.</p>`;
+  }
+  return `
+    <div class="record-actions">
+      <button type="button" class="record-action" data-delivery-pipeline-detail-id="${escapeAttr(release.id)}">
+        Load exact gate evidence
+      </button>
+    </div>
+  `;
+}
+
+function renderDeliveryPipelineGateEvidence(release) {
+  if (!release) {
+    return "";
+  }
+  const verificationRuns = release.verification_runs || [];
+  const releaseReviews = release.release_reviews || [];
+  const humanRequests = release.human_review?.requests || [];
+  if (!verificationRuns.length && !releaseReviews.length && !humanRequests.length) {
+    return `<p class="meta-line">No individual gate attempts have been recorded yet.</p>`;
+  }
+  return `
+    <details class="delivery-pipeline-evidence" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "release", release.id, "gate-evidence"))}>
+      <summary>Gate attempts and decisions</summary>
+      <ul class="delivery-detail-list">
+        ${verificationRuns.map((run) => `
+          <li>
+            <strong>Automated verification attempt ${Number(run.attempt_number || 1)}</strong>
+            <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
+            ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
+            ${renderReleaseVerificationCommandResults(run, `delivery:${release.id}:verification`)}
+          </li>
+        `).join("")}
+        ${releaseReviews.map((review) => `
+          <li>
+            <strong>Release review by ${escapeHtml(state.agents?.[review.reviewer_agent_id] ? agentLabel(state.agents[review.reviewer_agent_id]) : "assigned reviewer")}</strong>
+            <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span>
+          </li>
+        `).join("")}
+        ${humanRequests.map((request) => `
+          <li>
+            <strong>Human review request</strong>
+            <span class="state-pill ${escapeAttr(request.state)}">${escapeHtml(humanizeToken(request.state))}</span>
+          </li>
+        `).join("")}
+      </ul>
+    </details>
+  `;
+}
+
 function renderReleaseSummary(releasePackages) {
   if (!releasePackages.length) {
     return "";
@@ -17205,11 +18487,13 @@ function renderReleaseSummary(releasePackages) {
                 </div>
                 <div class="meta-line">${escapeHtml(releaseProjectLabel(release))}${release.published_at ? ` · ${renderRecordDate(release.published_at, "published")}` : ""}</div>
                 ${renderReleaseProgress(release)}
-                <details class="release-related-details">
+                <details class="release-related-details" ${teamDisclosureAttributes(teamDisclosureKey("delivery", "related-release", release.id, "detail"))}>
                   <summary>Release notes, included work, and technical details</summary>
                   ${renderReleaseNotes(release)}
                   ${renderReleaseIncludedWork(release)}
-                  ${renderReleaseTechnicalDetails(release)}
+                  ${renderReleaseTechnicalDetails(release, {
+                    disclosureKey: teamDisclosureKey("delivery", "related-release", release.id, "technical"),
+                  })}
                 </details>
                 ${renderRecordBlockers("release_package", release.id)}
               </li>
@@ -17222,28 +18506,48 @@ function renderReleaseSummary(releasePackages) {
 }
 
 function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPromotions) {
+  const currentReviews = reviews.filter(
+    (review) => !text(review.superseded_by_review_request_id),
+  );
+  const currentReleases = currentDeliveryReleasePackages(releasePackages);
+  const currentPromotionIds = new Set(
+    currentReleases.flatMap((release) => release.git_promotion_record_ids || []),
+  );
+  const relevantGitPromotions = currentPromotionIds.size
+    ? gitPromotions.filter((promotion) => currentPromotionIds.has(text(promotion.id)))
+    : gitPromotions;
   if (deliverable.state === "blocked") {
     return "blocked";
   }
   if (task && (task.state === "blocked" || task.state === "rejected")) {
     return "blocked";
   }
-  if (reviews.some((review) => review.state === "blocked")) {
+  if (currentReviews.some((review) => review.state === "blocked")) {
     return "blocked";
   }
-  if (releasePackages.some((release) => release.state === "blocked" || release.state === "rejected")) {
+  if (currentReleases.some((release) => release.state === "blocked" || release.state === "rejected")) {
     return "blocked";
   }
-  if (gitPromotions.some((promotion) => promotion.state === "failed")) {
+  if (relevantGitPromotions.some((promotion) => promotion.state === "failed")) {
     return "blocked";
   }
-  if (deliverable.state === "rejected" || reviews.some((review) => review.state === "rejected")) {
+  if (deliverable.state === "rejected" || currentReviews.some((review) => review.state === "rejected")) {
     return "rejected";
   }
-  const reviewsPending = reviews.some(
+  if (
+    currentReleases.some((release) =>
+      ["pending", "in_progress"].includes(text(release.state)),
+    )
+  ) {
+    return "pending";
+  }
+  const reviewsPending = currentReviews.some(
     (review) => review.state === "pending" || review.state === "in_progress",
   );
-  if (deliverable.state === "accepted" && reviews.every((review) => review.state === "accepted")) {
+  if (
+    deliverable.state === "accepted" &&
+    currentReviews.every((review) => review.state === "accepted")
+  ) {
     return "accepted";
   }
   if (
@@ -17286,7 +18590,7 @@ function renderCompactTimelineEntry(entry) {
   const headline = timelineEntryHeadline(entry);
   return `
     <li class="timeline-entry timeline-entry-compact">
-      <details>
+      <details ${teamDisclosureAttributes(teamDisclosureKey("timeline", entry.id, "detail"))}>
         <summary class="timeline-entry-summary">
           <span class="timeline-summary-main">
             <span class="timeline-timestamp">${escapeHtml(timestamp)}</span>
@@ -17621,7 +18925,9 @@ function renderTimelineTechnicalDetails(entry) {
       return [`${label} ID`, entry[key]];
     }
     return [key, label];
-  }));
+  }), {
+    disclosureKey: teamDisclosureKey("timeline", entry.id, "technical"),
+  });
 }
 
 function renderTimelineEntryDetails(entry) {
@@ -17736,11 +19042,11 @@ function refreshSelects({ includeEditForm = false } = {}) {
 }
 
 function buildSelectOptionSets() {
-  const teams = values(state.teams).filter(isVisibleTeam).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
-  const governanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(byId).map((group) => [group.id, `${group.name} (${group.id})`]);
-  const projects = values(state.projects).filter(isVisibleProject).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
-  const roles = values(state.roles).filter(isVisibleRole).sort(byId).map((role) => [role.id, `${role.name} (${role.id})`]);
-  const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
+  const teams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams).map((team) => [team.id, `${team.name} (${team.id})`]);
+  const governanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(compareGovernanceGroups).map((group) => [group.id, `${group.name} (${group.id})`]);
+  const projects = values(state.projects).filter(isVisibleProject).sort(compareTeamProjects).map((project) => [project.id, `${project.name} (${project.id})`]);
+  const roles = values(state.roles).filter(isVisibleRole).sort(compareTeamRoles).map((role) => [role.id, `${role.name} (${role.id})`]);
+  const agents = values(state.agents).filter(isVisibleAgent).sort(comparePeopleAgents).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
   const agentsByDisplayName = values(state.agents)
     .filter(isVisibleAgent)
     .map((agent) => [agent.id, text(agent.display_name) || text(agent.id)])
@@ -17758,13 +19064,15 @@ function buildSelectOptionSets() {
     );
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const cases = values(state.cases).filter(isVisibleCase).sort(compareCases).map((item) => [item.id, caseLabel(item)]);
-  const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
+  const deliverables = values(state.deliverables)
+    .sort((left, right) => text(left.summary || left.id).localeCompare(text(right.summary || right.id)) || byId(left, right))
+    .map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
     .sort(byId)
     .map((review) => [review.id, `${review.id} - ${review.state}`]);
   const reviewProfiles = values(state.review_profiles)
     .filter(isVisibleReviewProfile)
-    .sort(byId)
+    .sort(compareReviewProfiles)
     .map((profile) => [profile.id, `${profile.name} (${profile.id})`]);
   const selectedProject = state.projects[selectedProjectFocusId] || null;
   const projectOutcomeKinds = selectedProject
@@ -17787,7 +19095,7 @@ function buildSelectOptionSets() {
         ])
     : [];
   const releasePackages = values(state.release_packages)
-    .sort(byId)
+    .sort(compareProjectReleasesLatest)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
   const timelineOptions = buildTimelineSelectOptions();
   return {
@@ -17811,6 +19119,7 @@ function buildSelectOptionSets() {
     "inbox-priorities": inboxPriorities.map((item) => [item, humanizeToken(item)]),
     "case-statuses": caseStatuses.map((item) => [item, humanizeToken(item)]),
     "task-states": taskStates.map((item) => [item, item]),
+    "task-edit-states": directlyEditableTaskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
     "context-clearing-policies": contextClearingPolicies,
@@ -17926,7 +19235,7 @@ function projectLeadAgentOptionsForTeam(teamId) {
   return values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => text(agent.team_id) === normalizedTeamId)
-    .sort(byId)
+    .sort(comparePeopleAgents)
     .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
 }
 
@@ -18111,6 +19420,20 @@ async function submitTaskUpdate(form) {
   if (description) payload.description = description;
   payload.parent_task_id = parentTaskId || null;
   payload.dependency_task_ids = splitList(data.dependency_task_ids);
+  const integrationBoundary = Boolean(
+    form.elements.integration_boundary?.checked,
+  );
+  payload.integration_boundary = integrationBoundary;
+  payload.deliverable_contract = integrationBoundary
+    ? {
+        require_git_provenance: Boolean(
+          form.elements.require_git_provenance?.checked,
+        ),
+        required_contribution_task_ids: splitList(
+          data.required_contribution_task_ids,
+        ),
+      }
+    : null;
   await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
     resetOnSuccess: false,
   });
@@ -19340,13 +20663,26 @@ function agentVoiceTranscriptExcerpt(call, { limit = 12 } = {}) {
     .join("\n");
 }
 
-async function requestAgentStandDown(button, agentId) {
+async function requestAgentStandDown(button, agentId, requestedScope) {
   if (!guardTeamMutation("stand down agents")) {
     return;
   }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     setStatus("No agent selected.", "error");
+    return;
+  }
+  const scope = text(requestedScope).toLowerCase();
+  if (!["agent", "subtree"].includes(scope)) {
+    setStatus("Stand-down scope must be agent or subtree.", "error");
+    return;
+  }
+  if (
+    scope === "subtree"
+    && !window.confirm(
+      `Stand down ${normalizedAgentId} and every subordinate in that agent's subtree?`,
+    )
+  ) {
     return;
   }
   const reason = text(window.prompt(`Reason to stand down ${normalizedAgentId}`));
@@ -19356,7 +20692,7 @@ async function requestAgentStandDown(button, agentId) {
   }
   const drafts = captureFormDrafts();
   button.disabled = true;
-  setStatus("Standing down agent subtree.", "loading");
+  setStatus(scope === "agent" ? "Standing down agent." : "Standing down agent subtree.", "loading");
   try {
     const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`;
     const response = await teamFetch(
@@ -19370,6 +20706,7 @@ async function requestAgentStandDown(button, agentId) {
         },
         body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason,
+          scope,
         })),
       },
     );
@@ -19550,6 +20887,89 @@ async function resolveTerminalBlocker(button, blockerId, note) {
     setStatus(`Resolved blocker ${normalizedBlockerId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Blocker resolution failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function resumeReleaseRecovery(button, blockerId, taskId) {
+  if (!guardTeamMutation("resume release recoveries")) {
+    return;
+  }
+  const blocker = state.blockers?.[text(blockerId)];
+  const recoveryTask = state.tasks?.[text(taskId)];
+  if (
+    !blocker ||
+    text(blocker.state) !== "open" ||
+    text(blocker.source_kind) !== "release_package" ||
+    !["governance", "operator"].includes(text(blocker.route))
+  ) {
+    setStatus("This release blocker is no longer eligible for operator recovery.", "error");
+    return;
+  }
+  if (
+    !recoveryTask ||
+    text(recoveryTask.created_by_actor) !== "system:git-merge-recovery" ||
+    text(recoveryTask.owner_agent_id) === "" ||
+    text(recoveryTask.project_id) === ""
+  ) {
+    setStatus("The release blocker has no active merge-recovery task to resume.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  const releaseId = text(blocker.source_id);
+  setStatus(`Queuing release recovery ${recoveryTask.id}.`, "loading");
+  const endpoint = "/operator-directives";
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", {
+          team_id: blocker.team_id,
+          recipient_agent_id: recoveryTask.owner_agent_id,
+          project_id: recoveryTask.project_id,
+          task_id: recoveryTask.id,
+          title: `Resume release recovery for ${releaseId}`,
+          message: (
+            `Resume the existing recovery task ${recoveryTask.id} for release ${releaseId}. ` +
+            "The control-plane schema is current. Reuse the already resolved agents/... ref when valid, " +
+            "then call team_recover_release with its exact commit SHA. Do not create a replacement release package."
+          ),
+          source: "admin_ui_release_recovery",
+          source_message_id: `release-recovery:${blocker.id}:${recoveryTask.id}`,
+          created_by: "operator:admin-ui",
+        }),
+      ),
+    });
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(
+        `Revision conflict. Reloaded revision ${current}; verify the release blocker and resume again.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    await applyMutationResultPayload(await response.json());
+    restoreFormDrafts(drafts);
+    setStatus(`Queued release recovery ${recoveryTask.id} for its assigned agent.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Release recovery could not be resumed.", "error");
   } finally {
     if (button.isConnected) {
       button.disabled = false;
@@ -19822,6 +21242,20 @@ function payloadForForm(form, data = formData(form)) {
       payload.parent_task_id = parentTaskId;
     }
     payload.dependency_task_ids = splitList(data.dependency_task_ids);
+    const integrationBoundary = Boolean(
+      form.elements.integration_boundary?.checked,
+    );
+    if (integrationBoundary) {
+      payload.integration_boundary = true;
+      payload.deliverable_contract = {
+        require_git_provenance: Boolean(
+          form.elements.require_git_provenance?.checked,
+        ),
+        required_contribution_task_ids: splitList(
+          data.required_contribution_task_ids,
+        ),
+      };
+    }
     return payload;
   }
   if (formId === "create-review-profile-form") {
@@ -20303,6 +21737,98 @@ function findingResolutionsFromForm(form) {
     .filter(Boolean);
 }
 
+function openTaskCancellationDialog(taskId) {
+  if (!guardTeamMutation("cancel tasks")) {
+    return;
+  }
+  const task = state.tasks?.[text(taskId)] || null;
+  const availability = taskCancellationAvailability(task);
+  if (!task || !availability.allowed) {
+    setStatus(availability.explanation, "warning");
+    return;
+  }
+  const form = elements.taskCancellationForm;
+  const modal = elements.taskCancellationModal;
+  if (!form || !modal) {
+    setStatus("The task cancellation dialog is unavailable.", "error");
+    return;
+  }
+
+  form.reset();
+  form.dataset.taskId = task.id;
+  if (elements.taskCancellationModalTitle) {
+    elements.taskCancellationModalTitle.textContent = `Cancel ${task.title}`;
+  }
+  if (elements.taskCancellationSubject) {
+    elements.taskCancellationSubject.textContent =
+      `${task.title} · ${taskStateLabel(task)} · owner ${agentLabel(state.agents?.[task.owner_agent_id]) || task.owner_agent_id}`;
+  }
+  const successorSelect = form.elements.successor_task_id;
+  if (successorSelect instanceof HTMLSelectElement) {
+    const successorOptions = values(state.tasks)
+      .filter(
+        (candidate) =>
+          candidate.id !== task.id &&
+          text(candidate.project_id) === text(task.project_id),
+      )
+      .sort(byPriority)
+      .map(
+        (candidate) =>
+          `<option value="${escapeAttr(candidate.id)}">${escapeHtml(candidate.title)} · ${escapeHtml(taskStateLabel(candidate))}</option>`,
+      )
+      .join("");
+    successorSelect.innerHTML = `<option value="">No successor</option>${successorOptions}`;
+  }
+  modal.hidden = false;
+  form.elements.reason_code?.focus();
+}
+
+function closeTaskCancellationDialog() {
+  const form = elements.taskCancellationForm;
+  if (elements.taskCancellationModal) {
+    elements.taskCancellationModal.hidden = true;
+  }
+  if (elements.taskCancellationModalTitle) {
+    elements.taskCancellationModalTitle.textContent = "Cancel task";
+  }
+  if (elements.taskCancellationSubject) {
+    elements.taskCancellationSubject.textContent = "";
+  }
+  if (form) {
+    clearFormDraft(form);
+    form.reset();
+    form.dataset.taskId = "";
+  }
+}
+
+async function submitTaskCancellation(form) {
+  if (!guardTeamMutation("cancel tasks")) {
+    return;
+  }
+  const taskId = text(form?.dataset?.taskId);
+  const task = state.tasks?.[taskId] || null;
+  const availability = taskCancellationAvailability(task);
+  if (!task || !availability.allowed) {
+    setStatus(availability.explanation, "warning");
+    return;
+  }
+  const data = formData(form);
+  const saved = await submitMutation(
+    form,
+    `/tasks/${encodeURIComponent(task.id)}/cancel`,
+    "POST",
+    {
+      reason_code: text(data.reason_code),
+      reason: text(data.reason),
+      successor_task_id: text(data.successor_task_id) || null,
+    },
+    { resetOnSuccess: false },
+  );
+  if (saved) {
+    closeTaskCancellationDialog();
+  }
+}
+
 function openEditDialog(type, id) {
   if (!guardTeamMutation("edit Team records")) {
     return;
@@ -20447,7 +21973,9 @@ function renderEditFields(type, record) {
       ${renderTechnicalDetails([
         ["Governance group ID", record.id],
         ["Manager agent ID", record.manager_agent_id],
-      ])}
+      ], {
+        disclosureKey: teamDisclosureKey("edit", "governance-group", record.id, "technical"),
+      })}
     `;
   }
   if (type === "project") {
@@ -20531,13 +22059,16 @@ function renderEditFields(type, record) {
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
       ${readonlyField("Owner", record.owner_agent_id)}
-      ${selectField("State", "state", "task-states", record.state || "pending", { required: true })}
+      ${taskEditStateField(record)}
       ${selectField("Case", "case_id", "cases", record.case_id || "", { placeholder: "No case" })}
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
       ${selectField("Parent task", "parent_task_id", "tasks", record.parent_task_id || "", { placeholder: "No parent" })}
       ${textareaField("Dependency tasks", "dependency_task_ids", (record.dependency_task_ids || []).join("\n"), { rows: 2 })}
+      ${checkboxField("Integration boundary", "integration_boundary", Boolean(record.integration_boundary))}
+      ${checkboxField("Require Git provenance", "require_git_provenance", Boolean(record.deliverable_contract?.require_git_provenance))}
+      ${textareaField("Required contribution task IDs", "required_contribution_task_ids", (record.deliverable_contract?.required_contribution_task_ids || []).join("\n"), { rows: 2 })}
     `;
   }
   if (type === "review-profile") {
@@ -20567,6 +22098,23 @@ function renderEditFields(type, record) {
     `;
   }
   return "";
+}
+
+function taskEditStateField(task) {
+  const stateValue = text(task?.state) || "pending";
+  if (directlyEditableTaskStates.includes(stateValue)) {
+    return selectField(
+      "State",
+      "state",
+      "task-edit-states",
+      stateValue,
+      { required: true },
+    );
+  }
+  return `
+    ${readonlyField("State", taskStateLabel(task))}
+    <input type="hidden" name="state" value="${escapeAttr(stateValue)}" />
+  `;
 }
 
 function renderAvatarEditControls(record) {
@@ -20700,7 +22248,20 @@ function editPayloadForForm(type, form) {
     };
   }
   if (type === "task") {
-    return {
+    const integrationBoundary = Boolean(
+      form.elements.integration_boundary?.checked,
+    );
+    const deliverableContract = integrationBoundary
+      ? {
+          require_git_provenance: Boolean(
+            form.elements.require_git_provenance?.checked,
+          ),
+          required_contribution_task_ids: splitList(
+            data.required_contribution_task_ids,
+          ),
+        }
+      : null;
+    const payload = {
       state: text(data.state),
       case_id: text(data.case_id) || null,
       priority: numberOrZero(data.priority),
@@ -20709,6 +22270,17 @@ function editPayloadForForm(type, form) {
       parent_task_id: text(data.parent_task_id) || null,
       dependency_task_ids: splitList(data.dependency_task_ids),
     };
+    const currentTask = state.tasks?.[text(form.dataset.editId)];
+    const currentContract = currentTask?.deliverable_contract || null;
+    if (
+      !currentTask
+      || Boolean(currentTask.integration_boundary) !== integrationBoundary
+      || JSON.stringify(currentContract) !== JSON.stringify(deliverableContract)
+    ) {
+      payload.integration_boundary = integrationBoundary;
+      payload.deliverable_contract = deliverableContract;
+    }
+    return payload;
   }
   if (type === "review-profile") {
     return {
@@ -20797,6 +22369,33 @@ function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
   if (!keepEditedValues || !form.elements.dependency_task_ids.value) {
     form.elements.dependency_task_ids.value = (task.dependency_task_ids || []).join("\n");
   }
+  if (
+    form.elements.integration_boundary
+    && (!keepEditedValues || !form.elements.integration_boundary.checked)
+  ) {
+    form.elements.integration_boundary.checked = Boolean(
+      task.integration_boundary,
+    );
+  }
+  if (
+    form.elements.require_git_provenance
+    && (!keepEditedValues || !form.elements.require_git_provenance.checked)
+  ) {
+    form.elements.require_git_provenance.checked = Boolean(
+      task.deliverable_contract?.require_git_provenance,
+    );
+  }
+  if (
+    form.elements.required_contribution_task_ids
+    && (
+      !keepEditedValues
+      || !form.elements.required_contribution_task_ids.value
+    )
+  ) {
+    form.elements.required_contribution_task_ids.value = (
+      task.deliverable_contract?.required_contribution_task_ids || []
+    ).join("\n");
+  }
 }
 
 function formData(form) {
@@ -20827,6 +22426,10 @@ function formDraftKey(form) {
   if (semanticId && semanticId !== formId) {
     parts.push(`semantic:${semanticId}`);
   }
+  const draftScope = text(form.dataset.formDraftScope);
+  if (draftScope) {
+    parts.push(`scope:${draftScope}`);
+  }
   const editType = text(form.dataset.editType);
   const editId = text(form.dataset.editId);
   if (editType || editId) {
@@ -20845,7 +22448,11 @@ function formDraftKey(form) {
 }
 
 function shouldTrackFormDraft(form) {
-  return Boolean(form && formIdentifier(form) && !form.matches("[data-chat-message-form]"));
+  return Boolean(
+    form
+    && (formIdentifier(form) || formSemanticIdentifier(form))
+    && !form.matches("[data-chat-message-form]"),
+  );
 }
 
 function rememberFormDraftFromEvent(event) {
@@ -20869,6 +22476,9 @@ function clearFormDraft(form) {
   const key = formDraftKey(form);
   if (key) {
     formDraftRegistry.delete(key);
+    if (pendingFormFocusDraft?.formKey === key) {
+      pendingFormFocusDraft = null;
+    }
   }
 }
 
@@ -20891,6 +22501,20 @@ function formValuesForDraft(form) {
   if (humanReviewChecklistDraft) {
     values.__human_review_checklist = humanReviewChecklistDraft;
   }
+  if (form.matches("[data-human-review-decision-form]")) {
+    values.__human_review_findings = humanReviewFindingsDraftFromForm(form) || [];
+    values.__human_review_checklist_results = Object.fromEntries(
+      Array.from(form.querySelectorAll("[data-human-checklist-id]")).map((field) => [
+        text(field.dataset.humanChecklistId),
+        Boolean(field.checked),
+      ]),
+    );
+    values.__human_review_confirmed_finding_ids = Array.from(
+      form.querySelectorAll("[data-confirm-finding-id]:checked"),
+    )
+      .map((field) => text(field.dataset.confirmFindingId))
+      .filter(Boolean);
+  }
   return values;
 }
 
@@ -20901,16 +22525,31 @@ function findFormByDraftKey(key) {
 function captureFormDrafts() {
   const drafts = Object.fromEntries(formDraftRegistry.entries());
   document.querySelectorAll("form").forEach((form) => {
+    if (form.dataset.formBusy === "true") {
+      return;
+    }
+    const key = formDraftKey(form);
+    if (!key || !formDraftRegistry.has(key)) {
+      return;
+    }
     const remembered = rememberFormDraft(form);
     if (remembered) {
       drafts[remembered[0]] = remembered[1];
     }
   });
+  const focusDraft = captureFormFocusDraft() || pendingFormFocusDraft;
+  if (focusDraft) {
+    drafts[formDraftFocusKey] = focusDraft;
+  }
   return drafts;
 }
 
 function restoreFormDrafts(drafts) {
+  const focusDraft = drafts?.[formDraftFocusKey] || null;
   Object.entries(drafts || {}).forEach(([formId, values]) => {
+    if (formId === formDraftFocusKey) {
+      return;
+    }
     const form = findFormByDraftKey(formId) || document.getElementById(formId);
     if (!form) {
       return;
@@ -20918,6 +22557,19 @@ function restoreFormDrafts(drafts) {
     restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
     restoreGovernanceGoalsDraft(form, values.__governance_goals);
     restoreHumanReviewChecklistDraft(form, values.__human_review_checklist);
+    if (form.matches("[data-human-review-decision-form]")) {
+      restoreHumanReviewFindingsDraft(form, values.__human_review_findings);
+      const checklistResults = values.__human_review_checklist_results || {};
+      form.querySelectorAll("[data-human-checklist-id]").forEach((field) => {
+        field.checked = Boolean(checklistResults[text(field.dataset.humanChecklistId)]);
+      });
+      const confirmedFindingIds = new Set(
+        values.__human_review_confirmed_finding_ids || [],
+      );
+      form.querySelectorAll("[data-confirm-finding-id]").forEach((field) => {
+        field.checked = confirmedFindingIds.has(text(field.dataset.confirmFindingId));
+      });
+    }
     if (formSemanticIdentifier(form) === "setup-template-form") {
       const templateField = form.elements.template_id;
       if (templateField && values.template_id) {
@@ -20930,9 +22582,13 @@ function restoreFormDrafts(drafts) {
         name === "__review_profile_criteria" ||
         name === "__governance_goals" ||
         name === "__human_review_checklist" ||
+        name === "__human_review_findings" ||
+        name === "__human_review_checklist_results" ||
+        name === "__human_review_confirmed_finding_ids" ||
         name.startsWith("criterion_") ||
         name.startsWith("governance_goal_") ||
-        name.startsWith("human_review_checklist_")
+        name.startsWith("human_review_checklist_") ||
+        name.startsWith("human_finding_")
       ) {
         return;
       }
@@ -20983,6 +22639,9 @@ function restoreFormDrafts(drafts) {
     syncHumanReviewChecklistEditor(
       form.querySelector("[data-human-review-checklist-editor]"),
     );
+    syncHumanReviewFindingEditor(
+      form.querySelector("[data-human-review-findings-editor]"),
+    );
     rememberFormDraft(form);
   });
   const updateTaskForm = document.querySelector("#update-task-form");
@@ -20990,6 +22649,130 @@ function restoreFormDrafts(drafts) {
     syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
   }
   renderTemplatePreview();
+  restoreFormFocusDraft(focusDraft);
+}
+
+function captureFormFocusDraft() {
+  const field = document.activeElement;
+  if (
+    !(
+      field instanceof HTMLInputElement
+      || field instanceof HTMLTextAreaElement
+      || field instanceof HTMLSelectElement
+    )
+  ) {
+    return null;
+  }
+  const form = field.form;
+  const formKey = formDraftKey(form);
+  if (!formKey) {
+    return null;
+  }
+  const identity = {
+    id: text(field.id),
+    name: text(field.name),
+    nameIndex: -1,
+    humanChecklistId: text(field.dataset.humanChecklistId),
+    confirmFindingId: text(field.dataset.confirmFindingId),
+  };
+  if (identity.name) {
+    identity.nameIndex = Array.from(form.elements)
+      .filter((candidate) => text(candidate.name) === identity.name)
+      .indexOf(field);
+  }
+  if (
+    ![
+      identity.id,
+      identity.name,
+      identity.humanChecklistId,
+      identity.confirmFindingId,
+    ].some(Boolean)
+  ) {
+    return null;
+  }
+  let selectionStart = null;
+  let selectionEnd = null;
+  let selectionDirection = null;
+  if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+    try {
+      selectionStart = field.selectionStart;
+      selectionEnd = field.selectionEnd;
+      selectionDirection = field.selectionDirection;
+    } catch {
+      // Some input types do not expose text selection.
+    }
+  }
+  return {
+    formKey,
+    identity,
+    selectionStart,
+    selectionEnd,
+    selectionDirection,
+  };
+}
+
+function restoreFormFocusDraft(focusDraft) {
+  if (!focusDraft?.formKey || !focusDraft.identity) {
+    return;
+  }
+  pendingFormFocusDraft = focusDraft;
+  const form = findFormByDraftKey(focusDraft.formKey);
+  if (!form) {
+    return;
+  }
+  const identity = focusDraft.identity;
+  const fields = Array.from(form.elements).filter(
+    (candidate) =>
+      candidate instanceof HTMLInputElement
+      || candidate instanceof HTMLTextAreaElement
+      || candidate instanceof HTMLSelectElement,
+  );
+  let field = identity.id
+    ? fields.find((candidate) => text(candidate.id) === identity.id)
+    : null;
+  if (!field && identity.humanChecklistId) {
+    field = fields.find(
+      (candidate) =>
+        text(candidate.dataset.humanChecklistId) === identity.humanChecklistId,
+    );
+  }
+  if (!field && identity.confirmFindingId) {
+    field = fields.find(
+      (candidate) =>
+        text(candidate.dataset.confirmFindingId) === identity.confirmFindingId,
+    );
+  }
+  if (!field && identity.name) {
+    const namedFields = fields.filter(
+      (candidate) => text(candidate.name) === identity.name,
+    );
+    field = namedFields[Math.max(0, Number(identity.nameIndex) || 0)] || null;
+  }
+  if (!field || field.disabled) {
+    return;
+  }
+  pendingFormFocusDraft = null;
+  field.focus({ preventScroll: true });
+  if (
+    (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)
+    && typeof focusDraft.selectionStart === "number"
+    && typeof focusDraft.selectionEnd === "number"
+  ) {
+    const start = Math.min(Math.max(focusDraft.selectionStart, 0), field.value.length);
+    const end = Math.min(
+      Math.max(focusDraft.selectionEnd, start),
+      field.value.length,
+    );
+    try {
+      field.setSelectionRange(
+        start,
+        end,
+        focusDraft.selectionDirection || undefined,
+      );
+    } catch {
+      // Ignore selection restoration for unsupported input types.
+    }
+  }
 }
 
 function markUnavailableDraftSelections(field, missingValues) {
@@ -21004,6 +22787,11 @@ function markUnavailableDraftSelections(field, missingValues) {
 }
 
 function setFormBusy(form, busy) {
+  if (busy) {
+    form.dataset.formBusy = "true";
+  } else {
+    delete form.dataset.formBusy;
+  }
   form.querySelectorAll("button, input, select, textarea").forEach((field) => {
     field.disabled = busy;
   });
@@ -21083,17 +22871,17 @@ function buildTimelineSelectOptions() {
   const filters = readTimelineFilters();
 
   values(state.teams)
-    .sort(byId)
+    .sort(comparePeopleTeams)
     .forEach((team) => {
       teamLabels.set(team.id, team.name || team.id);
     });
   values(state.projects)
-    .sort(byId)
+    .sort(compareTeamProjects)
     .forEach((project) => {
       projectLabels.set(project.id, project.name || project.id);
     });
   values(state.agents)
-    .sort(byId)
+    .sort(comparePeopleAgents)
     .forEach((agent) => {
       agentLabels.set(
         agent.id,
@@ -21393,6 +23181,61 @@ function escapeAttr(value) {
 
 function editButton(type, id, label = "Edit") {
   return `<button type="button" class="record-action" data-edit-type="${escapeAttr(type)}" data-edit-id="${escapeAttr(id)}">${escapeHtml(label)}</button>`;
+}
+
+function taskCancellationAvailability(task) {
+  const stateValue = text(task?.state);
+  if (!directlyCancellableTaskStates.has(stateValue)) {
+    return {
+      allowed: false,
+      explanation: stateValue
+        ? `This task is already ${taskStateLabel(task)} and cannot be cancelled.`
+        : "This task is unavailable.",
+    };
+  }
+  const assessment = task?.assessment || {};
+  const unresolvedIds = uniqueTextList(
+    task?.unresolved_descendant_ids || assessment.unresolved_descendant_ids || [],
+  );
+  if (unresolvedIds.length) {
+    return {
+      allowed: false,
+      explanation: `Resolve or cancel ${unresolvedIds.length} descendant task${unresolvedIds.length === 1 ? "" : "s"} first.`,
+    };
+  }
+  const acceptanceIds = uniqueTextList(assessment.active_acceptance_ids || []);
+  const blockingReviewIds = uniqueTextList(
+    assessment.active_review_request_ids || [],
+  ).filter((reviewId) => {
+    const review = state.review_requests?.[reviewId];
+    return !(
+      text(review?.state) === "blocked" &&
+      activeBlockersForRecord("review_request", reviewId).length
+    );
+  });
+  if (acceptanceIds.length || blockingReviewIds.length) {
+    return {
+      allowed: false,
+      explanation: "Finish or retire the active acceptance and review handoffs first.",
+    };
+  }
+  return {
+    allowed: true,
+    explanation: "Cancel this task with an audited reason.",
+  };
+}
+
+function taskCancellationButton(task) {
+  const availability = taskCancellationAvailability(task);
+  return `
+    <button
+      type="button"
+      class="record-action task-cancellation-action"
+      data-task-cancel-id="${escapeAttr(task?.id)}"
+      title="${escapeAttr(availability.explanation)}"
+      ${availability.allowed ? "" : 'disabled aria-disabled="true"'}
+    >Cancel task</button>
+  `;
 }
 
 function fieldText(form, name) {

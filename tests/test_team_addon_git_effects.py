@@ -16,6 +16,8 @@ from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.models import WorkflowNodeEnvelope
 from evander_team_addon.models import (
     AgentInboxItem,
+    AgentStandDown,
+    AgentTask,
     Deliverable,
     DeliverableGitRefs,
     EphemeralAgentPolicy,
@@ -33,6 +35,7 @@ from evander_team_addon.models import (
     ReleaseVerificationRun,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamBlocker,
     TeamRecordState,
     TeamTaskState,
 )
@@ -55,12 +58,17 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.git_release_service import (
     _human_review_publication_validation_error,
 )
+from evander_team_addon.services.domain.release_packages import (
+    _apply_git_release_recovery,
+    _release_recovery_permitted,
+)
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 from evander_team_addon.services.release_verification_effects import (
     EffectReleaseVerificationExecutor,
 )
 from evander_team_addon.services.release_verification_runner import (
     ReleaseVerificationTimeoutError,
+    _bounded_verification_log_excerpt,
 )
 
 
@@ -242,6 +250,595 @@ def test_record_git_promotion_failure_blocks_and_notifies(tmp_path: Path) -> Non
     assert blocker.source_kind.value == "deliverable"
     assert blocker.source_id == "deliverable-1"
     assert blocker.owner_agent_id == "lead"
+
+
+def test_release_merge_conflicts_create_one_direct_coder_recovery_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.git_promotion_record_ids = [
+            "merge-promotion-1",
+            "merge-promotion-2",
+        ]
+        for promotion_id, source_branch, target_branch in (
+            (
+                "merge-promotion-1",
+                "agents/backend/tasks/one",
+                "team/team/features/one",
+            ),
+            (
+                "merge-promotion-2",
+                "agents/backend/tasks/two",
+                "team/team/features/two",
+            ),
+        ):
+            state.git_promotions[promotion_id] = GitPromotionRecord(
+                id=promotion_id,
+                project_id="project",
+                task_id="task",
+                release_package_id=release.id,
+                actor_agent_id="lead",
+                source_branch=source_branch,
+                target_branch=target_branch,
+                promotion_kind="feature",
+            )
+        return state
+
+    repo.update(_mutate)
+
+    first = _record_promotion_provider(
+        tmp_path,
+        promotion_id="merge-promotion-1",
+        success=False,
+        error="Merge conflict while consolidating agents/backend/tasks/one",
+        result_outputs={
+            "error_code": "merge_conflict",
+            "conflict_branch": "agents/backend/tasks/one",
+            "output": (
+                "Auto-merging src/one.py\n"
+                "CONFLICT (content): Merge conflict in src/one.py\n"
+                "Automatic merge failed"
+            ),
+        },
+    )
+
+    task_id = first["merge_recovery_task_id"]
+    assert first["created_task_ids"] == [task_id]
+    assert first["merge_recovery_task_owner_agent_id"] == "backend"
+    assert first["merge_recovery_assignment_reason"] == "single_source_owner"
+    backend_wakes = [
+        event
+        for event in first["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "backend"
+    ]
+    assert len(backend_wakes) == 1
+    assert backend_wakes[0]["payload"]["reason"] == "inbox"
+    assert not [
+        event
+        for event in first["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "manager"
+    ]
+
+    second = _record_promotion_provider(
+        tmp_path,
+        promotion_id="merge-promotion-2",
+        success=False,
+        error="Merge conflict while consolidating agents/backend/tasks/two",
+        result_outputs={
+            "error_code": "merge_conflict",
+            "conflict_branch": "agents/backend/tasks/two",
+            "output": "CONFLICT (add/add): Merge conflict in src/two.py",
+        },
+    )
+    replay = _record_promotion_provider(
+        tmp_path,
+        promotion_id="merge-promotion-2",
+        success=False,
+        error="Merge conflict while consolidating agents/backend/tasks/two",
+        result_outputs={
+            "error_code": "merge_conflict",
+            "conflict_branch": "agents/backend/tasks/two",
+            "output": "CONFLICT (add/add): Merge conflict in src/two.py",
+        },
+    )
+
+    assert second["merge_recovery_task_id"] == task_id
+    assert "created_task_ids" not in second
+    assert not [
+        event
+        for event in second["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "backend"
+    ]
+    assert replay["merge_recovery_task_id"] == task_id
+    assert not replay["events"]
+    backend_wake_outbox = [
+        record
+        for record in repo.list_outbox_records(
+            intent_type="team.agent.wake_requested"
+        )
+        if record.payload["payload"]["agent_id"] == "backend"
+    ]
+    assert len(backend_wake_outbox) == 1
+    assert backend_wake_outbox[0].idempotency_key is not None
+    state = repo.read()
+    recovery_tasks = [
+        task
+        for task in state.tasks.values()
+        if task.created_by_actor == "system:git-merge-recovery"
+    ]
+    assert [task.id for task in recovery_tasks] == [task_id]
+    task = recovery_tasks[0]
+    assert task.owner_agent_id == "backend"
+    assert "release-1" in task.description
+    assert "merge-promotion-1" in task.description
+    assert "merge-promotion-2" in task.description
+    assert "src/one.py" in task.description
+    assert "src/two.py" in task.description
+    assert "team_recover_release" in task.description
+    blockers = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_kind.value == "release_package"
+        and blocker.source_id == "release-1"
+    ]
+    assert len(blockers) == 1
+    assert blockers[0].affected_task_ids == [task_id]
+    blocker_notices = [
+        item
+        for item in state.inbox.values()
+        if item.payload.get("blocker_id") == blockers[0].id
+    ]
+    assert len(blocker_notices) == 1
+    assert blocker_notices[0].recipient_agent_id == "backend"
+    assert blocker_notices[0].payload["affected_task_ids"] == [task_id]
+    assert not [
+        item
+        for item in state.inbox.values()
+        if item.recipient_agent_id == "manager"
+        and item.payload.get("blocker_id") == blockers[0].id
+    ]
+    recovery_state = state.model_copy(deep=True)
+    recovery_state.release_packages["release-1"].policy_version = 1
+    recovery_intent: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "release_recovery_event_ids": [],
+    }
+    recovered_release_id = _apply_git_release_recovery(
+        recovery_state,
+        actor=recovery_state.agents["backend"],
+        request={
+            "release_package_id": "release-1",
+            "agent_branch": "agents/backend/release-recovery",
+            "commit_sha": "deadbeef",
+        },
+        result=recovery_intent,
+    )
+    assert recovered_release_id == "release-1"
+    assert recovery_intent["errors"] == []
+    assert len(recovery_intent["events"]) == 1
+    assert recovery_intent["events"][0]["event_type"] == (
+        "team.git.release_recovery_requested"
+    )
+
+
+def test_release_merge_conflict_with_ambiguous_owners_falls_back_to_lead(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        state.tasks["lead-conflict-task"] = AgentTask(
+            id="lead-conflict-task",
+            owner_agent_id="lead",
+            project_id="project",
+            priority=1,
+            title="Lead-owned contribution",
+            description="Create a separate contribution.",
+            created_by_agent_id="manager",
+        )
+        release = state.release_packages["release-1"]
+        release.git_promotion_record_ids = [
+            "backend-promotion",
+            "lead-promotion",
+        ]
+        state.git_promotions["backend-promotion"] = GitPromotionRecord(
+            id="backend-promotion",
+            project_id="project",
+            task_id="task",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch="agents/backend/tasks/conflict",
+            target_branch="team/team/features/backend",
+            promotion_kind="feature",
+        )
+        state.git_promotions["lead-promotion"] = GitPromotionRecord(
+            id="lead-promotion",
+            project_id="project",
+            task_id="lead-conflict-task",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch="agents/lead/tasks/conflict",
+            target_branch="team/team/features/lead",
+            promotion_kind="feature",
+            state="failed",
+            outputs={"error_code": "merge_conflict"},
+            error="Merge conflict in lead contribution",
+        )
+        return state
+
+    repo.update(_mutate)
+
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="backend-promotion",
+        success=False,
+        error="Merge conflict in backend contribution",
+        result_outputs={"error_code": "merge_conflict"},
+    )
+
+    task = repo.read().tasks[result["merge_recovery_task_id"]]
+    assert task.owner_agent_id == "lead"
+    assert result["merge_recovery_assignment_reason"] == (
+        "ambiguous_source_owners_project_lead"
+    )
+    assert len(
+        [
+            event
+            for event in result["events"]
+            if event["event_type"] == "team.agent.wake_requested"
+            and event["payload"]["agent_id"] == "lead"
+        ]
+    ) == 1
+    ambiguous_blocker = next(
+        blocker
+        for blocker in repo.read().blockers.values()
+        if blocker.source_kind.value == "release_package"
+        and blocker.source_id == "release-1"
+    )
+    assert ambiguous_blocker.owner_agent_id == "lead"
+    assert len(
+        [
+            item
+            for item in repo.read().inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.recipient_agent_id == "lead"
+            and item.payload.get("blocker_id") == ambiguous_blocker.id
+        ]
+    ) == 1
+    assert not [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "manager"
+    ]
+    assert not [
+        item
+        for item in repo.read().inbox.values()
+        if item.recipient_agent_id == "manager"
+        and item.payload.get("blocker_id") == ambiguous_blocker.id
+    ]
+
+
+def test_release_merge_recovery_task_respects_active_stand_down(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.git_promotion_record_ids = ["held-merge-promotion"]
+        state.git_promotions["held-merge-promotion"] = GitPromotionRecord(
+            id="held-merge-promotion",
+            project_id="project",
+            task_id="task",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch="agents/backend/tasks/held",
+            target_branch="team/team/features/held",
+            promotion_kind="feature",
+        )
+        state.stand_downs["hold-lead-subtree"] = AgentStandDown(
+            id="hold-lead-subtree",
+            agent_id="lead",
+            scope="subtree",
+            reason="Pause project work during maintenance.",
+            set_by="operator:test",
+        )
+        return state
+
+    repo.update(_mutate)
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="held-merge-promotion",
+        success=False,
+        error="Merge conflict in held contribution",
+        result_outputs={"error_code": "merge_conflict"},
+    )
+
+    task_id = result["merge_recovery_task_id"]
+    assert repo.read().tasks[task_id].owner_agent_id == "backend"
+    blocker = next(
+        blocker
+        for blocker in repo.read().blockers.values()
+        if blocker.source_kind.value == "release_package"
+        and blocker.source_id == "release-1"
+    )
+    assert blocker.affected_task_ids == [task_id]
+    assert not [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "backend"
+    ]
+    assert not [
+        record
+        for record in repo.list_outbox_records(
+            intent_type="team.agent.wake_requested"
+        )
+        if record.payload["payload"]["agent_id"] == "backend"
+    ]
+
+
+def test_release_recovery_permission_is_scoped_to_active_linked_task_owner(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="other-backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-other-backend",
+        reports_to_agent_id="lead",
+        ephemeral_policy=EphemeralAgentPolicy(max_concurrent=0),
+        expected_revision=repo.read().revision,
+    )
+    _seed_release(repo)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.git_promotion_record_ids = ["permission-merge-promotion"]
+        state.git_promotions["permission-merge-promotion"] = GitPromotionRecord(
+            id="permission-merge-promotion",
+            project_id="project",
+            task_id="task",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch="agents/backend/tasks/permission",
+            target_branch="team/team/features/permission",
+            promotion_kind="feature",
+        )
+        return state
+
+    repo.update(_mutate)
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="permission-merge-promotion",
+        success=False,
+        error="Merge conflict in permission contribution",
+        result_outputs={"error_code": "merge_conflict"},
+    )
+    state = repo.read()
+    project = state.projects["project"]
+    release = state.release_packages["release-1"]
+    task_id = result["merge_recovery_task_id"]
+
+    assert _release_recovery_permitted(
+        state,
+        actor=state.agents["backend"],
+        project=project,
+        release=release,
+    )
+    assert not _release_recovery_permitted(
+        state,
+        actor=state.agents["other-backend"],
+        project=project,
+        release=release,
+    )
+
+    terminal_state = state.model_copy(deep=True)
+    terminal_state.tasks[task_id].state = TeamTaskState.FINISHED
+    assert not _release_recovery_permitted(
+        terminal_state,
+        actor=terminal_state.agents["backend"],
+        project=terminal_state.projects["project"],
+        release=terminal_state.release_packages["release-1"],
+    )
+
+    unlinked_state = state.model_copy(deep=True)
+    for blocker in unlinked_state.blockers.values():
+        if (
+            blocker.source_kind.value == "release_package"
+            and blocker.source_id == "release-1"
+        ):
+            blocker.affected_task_ids = []
+    assert not _release_recovery_permitted(
+        unlinked_state,
+        actor=unlinked_state.agents["backend"],
+        project=unlinked_state.projects["project"],
+        release=unlinked_state.release_packages["release-1"],
+    )
+
+
+def test_merge_recovery_replay_retires_legacy_terminal_blocker_route(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.git_promotion_record_ids = ["legacy-terminal-promotion"]
+        state.git_promotions["legacy-terminal-promotion"] = GitPromotionRecord(
+            id="legacy-terminal-promotion",
+            project_id="project",
+            task_id="task",
+            release_package_id=release.id,
+            actor_agent_id="manager",
+            source_branch="agents/backend/tasks/legacy-terminal",
+            target_branch="team/team/features/legacy-terminal",
+            promotion_kind="feature",
+        )
+        state.blockers["legacy-terminal-blocker"] = TeamBlocker(
+            id="legacy-terminal-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind="release_package",
+            source_id=release.id,
+            reporter_agent_id="manager",
+            owner_agent_id="manager",
+            route="operator",
+            summary="Legacy terminal release route",
+        )
+        state.inbox["legacy-manager-inbox"] = AgentInboxItem(
+            id="legacy-manager-inbox",
+            recipient_agent_id="manager",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={
+                "kind": "blocker_reported",
+                "blocker_id": "legacy-terminal-blocker",
+            },
+        )
+        return state
+
+    repo.update(_mutate)
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="legacy-terminal-promotion",
+        success=False,
+        error="Merge conflict in legacy terminal contribution",
+        result_outputs={"error_code": "merge_conflict"},
+    )
+
+    state = repo.read()
+    blocker = state.blockers["legacy-terminal-blocker"]
+    assert blocker.owner_agent_id == "backend"
+    assert blocker.route.value == "owned"
+    assert blocker.affected_task_ids == [result["merge_recovery_task_id"]]
+    assert state.inbox["legacy-manager-inbox"].state == TeamInboxItemState.HANDLED
+    backend_notices = [
+        item
+        for item in state.inbox.values()
+        if item.state == TeamInboxItemState.PENDING
+        and item.recipient_agent_id == "backend"
+        and item.payload.get("blocker_id") == blocker.id
+    ]
+    assert len(backend_notices) == 1
+    assert len(
+        [
+            event
+            for event in result["events"]
+            if event["event_type"] == "team.agent.wake_requested"
+            and event["payload"]["agent_id"] == "backend"
+        ]
+    ) == 1
+    assert any(
+        event.blocker_id == blocker.id
+        and event.event_type.value == "owner_transferred"
+        and event.from_agent_id == "manager"
+        and event.to_agent_id == "backend"
+        for event in state.blocker_events.values()
+    )
+
+
+@pytest.mark.parametrize(
+    ("promotion_kind", "release_package_id", "error_code"),
+    [
+        ("feature", "release-1", "scope_mismatch"),
+        ("canonical_push", "release-1", "merge_conflict"),
+        ("feature", None, "merge_conflict"),
+    ],
+)
+def test_nonrecoverable_git_failures_do_not_create_merge_recovery_tasks(
+    tmp_path: Path,
+    promotion_kind: str,
+    release_package_id: str | None,
+    error_code: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        state.git_promotions["nonrecoverable-promotion"] = GitPromotionRecord(
+            id="nonrecoverable-promotion",
+            project_id="project",
+            task_id="task",
+            release_package_id=release_package_id,
+            actor_agent_id="lead",
+            source_branch="agents/backend/tasks/nonrecoverable",
+            target_branch="team/team/features/nonrecoverable",
+            promotion_kind=promotion_kind,
+        )
+        if release_package_id is not None:
+            state.release_packages[release_package_id].git_promotion_record_ids = [
+                "nonrecoverable-promotion"
+            ]
+        return state
+
+    repo.update(_mutate)
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="nonrecoverable-promotion",
+        success=False,
+        error="promotion failed",
+        result_outputs={"error_code": error_code},
+    )
+
+    assert "merge_recovery_task_id" not in result
+    assert not [
+        task
+        for task in repo.read().tasks.values()
+        if task.created_by_actor == "system:git-merge-recovery"
+    ]
+
+
+def test_terminal_release_does_not_create_merge_recovery_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        release.state = TeamRecordState.REJECTED
+        release.git_promotion_record_ids = ["late-promotion"]
+        state.git_promotions["late-promotion"] = GitPromotionRecord(
+            id="late-promotion",
+            project_id="project",
+            task_id="task",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch="agents/backend/tasks/late",
+            target_branch="team/team/features/late",
+            promotion_kind="feature",
+        )
+        return state
+
+    repo.update(_mutate)
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="late-promotion",
+        success=False,
+        error="late merge conflict",
+        result_outputs={"error_code": "merge_conflict"},
+    )
+
+    assert "merge_recovery_task_id" not in result
+    assert not [
+        task
+        for task in repo.read().tasks.values()
+        if task.created_by_actor == "system:git-merge-recovery"
+    ]
 
 
 def test_record_release_promotion_success_publishes_canonical_push(
@@ -476,6 +1073,11 @@ def _seed_release_verification(repo: TeamStateRepository) -> None:
             command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
         )
         state.projects["project"].release_policy = ProjectReleasePolicy(
+            resource_limits={
+                "memory": "6g",
+                "cpus": 4,
+                "pids_limit": 1536,
+            },
             verification_commands=[
                 ReleaseVerificationCommand(
                     name="live-policy-check",
@@ -509,13 +1111,15 @@ def _stub_release_verifier_setup(
     monkeypatch,
     *,
     destroy_result: dict[str, object],
-) -> tuple[list[list[str]], list[str]]:
+) -> tuple[list[list[str]], list[str], list[dict[str, object]]]:
     executed_commands: list[list[str]] = []
     create_directories: list[str] = []
+    create_metadata: list[dict[str, object]] = []
 
     def _create(self, **kwargs):
         del kwargs
         create_directories.append(self.effect_definition.directory_path)
+        create_metadata.append(dict(self.effect_definition.metadata))
         return {"success": True}
 
     monkeypatch.setattr(AgentCreateEffectProvider, "execute", _create)
@@ -542,7 +1146,7 @@ def _stub_release_verifier_setup(
         "execute",
         lambda self, **kwargs: destroy_result,
     )
-    return executed_commands, create_directories
+    return executed_commands, create_directories, create_metadata
 
 
 def test_release_verifier_executes_commands_from_frozen_manifest(
@@ -551,7 +1155,7 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
 ) -> None:
     repo = _seed_team(tmp_path)
     _seed_release_verification(repo)
-    executed_commands, create_directories = _stub_release_verifier_setup(
+    executed_commands, create_directories, create_metadata = _stub_release_verifier_setup(
         monkeypatch,
         destroy_result={"success": True},
     )
@@ -572,6 +1176,18 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
 
     assert result["success"] is True
     assert create_directories == ["root/team-a"]
+    assert create_metadata == [
+        {
+            "team_release_verification": True,
+            "release_package_id": "release-1",
+            "candidate_commit_sha": "candidate-sha",
+            "container_worker_resource_limits": {
+                "memory": "6g",
+                "cpus": 4.0,
+                "pids_limit": 1536,
+            },
+        }
+    ]
     assert executed_commands[:3] == [
         ["git", "checkout", "--detach", "--force", "candidate-sha"],
         ["git", "reset", "--hard", "candidate-sha"],
@@ -591,7 +1207,7 @@ def test_release_verifier_classifies_agent_command_timeouts(
 ) -> None:
     repo = _seed_team(tmp_path)
     _seed_release_verification(repo)
-    executed_commands, _create_directories = _stub_release_verifier_setup(
+    executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
         monkeypatch,
         destroy_result={"success": True},
     )
@@ -636,6 +1252,144 @@ def test_release_verifier_classifies_agent_command_timeouts(
     assert recorded["verification_state"] == "timed_out"
     assert recorded["failure_kind"] == "timeout"
     assert recorded["command_results"][0]["state"] == "timed_out"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        """
+System.OutOfMemoryException: Exception of type 'System.OutOfMemoryException' was thrown.
+   at System.Threading.Thread.StartCore()
+   at Microsoft.Build.BackEnd.NodeProviderOutOfProcBase.GetNodes(Int32 count)
+"""
+        + ("trailing worker output\n" * 600),
+        """
+Out of memory.
+MSBUILD : error MSB4166: Child node "36" exited prematurely. Shutting down.
+""",
+        "Out of memory.",
+        'MSBUILD : error MSB4166: Child node "36" exited prematurely.',
+        "Expected 4 items, but found 3.",
+    ],
+)
+def test_release_verifier_does_not_infer_resource_exhaustion_from_command_text(
+    tmp_path: Path,
+    monkeypatch,
+    stderr: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            return {
+                "success": False,
+                "status": "stopped",
+                "execution_id": "execution-failed",
+                "failure_kind": "command",
+                "exit_code": 82,
+                "stderr": stderr,
+            }
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "failed"
+    assert recorded["failure_kind"] == "candidate"
+    assert recorded["command_results"][0]["state"] == "failed"
+
+
+def test_release_verifier_excerpt_retains_failure_start_and_final_summary() -> None:
+    diagnostic = "AdminClient TS1117: duplicate property\n"
+    summary = "\nOperatorClient: 40 passing\nShared: 26 passing\n"
+    full_log = diagnostic + ("intermediate output\n" * 600) + summary
+
+    excerpt = _bounded_verification_log_excerpt(full_log)
+
+    assert len(excerpt) == 8000
+    assert excerpt.startswith(diagnostic)
+    assert "... [middle of verifier log omitted] ..." in excerpt
+    assert excerpt.endswith(summary)
+    assert _bounded_verification_log_excerpt("short output") == "short output"
+
+
+def test_release_verifier_uses_structured_worker_resource_exhaustion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            return {
+                "success": False,
+                "status": "failed",
+                "execution_id": "execution-failed",
+                "failure_kind": "infrastructure",
+                "failure_cause": "pids_limit_exhausted",
+                "exit_code": 1,
+                "stderr": "Out of memory.",
+            }
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "failed"
+    assert recorded["failure_kind"] == "infrastructure"
+    assert recorded["command_results"][0]["failure_cause"] == "pids_limit_exhausted"
 
 
 def test_release_verification_effect_adapter_translates_subprocess_timeouts(
@@ -1264,6 +2018,7 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
             source_branches=["team/team/features/task-backend"],
             target_branch="team/team/releases/release-1",
             base_branch="main",
+            required_source_ancestor_commit_sha="a" * 40,
             expected_source_commits={"team/team/features/task-backend": "b" * 40},
             allowed_changed_paths=["src/backend.py"],
         ),
@@ -1281,6 +2036,7 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
                 "target_branch": "team/team/releases/release-1",
                 "base_branch": "main",
                 "base_commit_sha": None,
+                "required_source_ancestor_commit_sha": "a" * 40,
                 "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
             "allowed_changed_paths": ["src/backend.py"],
         }

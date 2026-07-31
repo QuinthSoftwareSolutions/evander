@@ -271,7 +271,6 @@ class WorkflowGenerationAdminService:
                     "schema": self._workflow_generation_response_schema(catalog),
                 }
             },
-            "temperature": 0.2,
             "max_output_tokens": 12000,
         }
 

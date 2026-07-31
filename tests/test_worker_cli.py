@@ -210,6 +210,26 @@ def test_worker_cli_accepts_codex_subscription_broker_and_proxy_flags(
     ]
 
 
+def test_worker_cli_reads_codex_auth_image_from_environment(monkeypatch, tmp_path: Path) -> None:
+    worker_root = tmp_path / "worker-root"
+    monkeypatch.setenv("EVANDER_WORKER_CODEX_AUTH_IMAGE", "evander-runner:latest")
+
+    captured = _run_cli(
+        monkeypatch,
+        [
+            "evander-worker-daemon",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--worker-root",
+            str(worker_root),
+        ],
+    )
+
+    command = captured["create_app"]["codex_auth_command"]
+    assert command[:4] == ("docker", "run", "--rm", "-i")
+    assert command[-4:] == ("evander-runner:latest", "codex", "app-server", "--stdio")
+
+
 def test_worker_cli_reads_sandbox_profile_from_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EVANDER_WORKER_SANDBOX_PROFILE", "strict")
     captured = _run_cli(

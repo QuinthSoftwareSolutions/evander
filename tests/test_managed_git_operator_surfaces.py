@@ -52,6 +52,10 @@ class FakeManagedGitAdmin:
             "directory_path": "root/team-a",
             "canonical_repository_url": "https://github.com/example/project",
             "default_branch": "main",
+            "host_commit_identity": {
+                "name": "Truman Bot",
+                "email": "truman@quinth.se",
+            },
         }
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.delete_error: Exception | None = None
@@ -71,6 +75,14 @@ class FakeManagedGitAdmin:
     def refresh_repository(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("refresh", args, kwargs))
         return {**self.repository, "refreshed": True}
+
+    def set_host_commit_identity(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("set-host-identity", args, kwargs))
+        self.repository["host_commit_identity"] = {
+            "name": kwargs["name"],
+            "email": kwargs["email"],
+        }
+        return dict(self.repository)
 
     def delete_repository(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("delete", args, kwargs))
@@ -183,6 +195,39 @@ def test_managed_git_routes_require_privilege_unlock_for_mutations() -> None:
     assert response.status_code == 403
     assert response.json() == {"error": "Privileged operations are locked."}
     assert [call[0] for call in managed_git.calls] == ["get"]
+    assert auth.permission_paths == ["root/team-a", "root/team-a"]
+
+
+def test_managed_git_route_sets_repository_scoped_host_commit_identity() -> None:
+    managed_git = FakeManagedGitAdmin()
+    client, auth = _route_client(managed_git)
+
+    response = client.put(
+        (
+            f"/api/admin/git-repositories/{managed_git.repository['managed_repo_id']}"
+            "/host-commit-identity"
+        ),
+        json={
+            "name": " Jonathan Quinth ",
+            "email": " operator@example.invalid ",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["repository"]["host_commit_identity"] == {
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
+    assert [call[0] for call in managed_git.calls] == ["get", "set-host-identity"]
+    assert managed_git.calls[1] == (
+        "set-host-identity",
+        (managed_git.repository["managed_repo_id"],),
+        {
+            "directory_path": "root/team-a",
+            "name": "Jonathan Quinth",
+            "email": "operator@example.invalid",
+        },
+    )
     assert auth.permission_paths == ["root/team-a", "root/team-a"]
 
 
@@ -339,6 +384,20 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
             ["git-repos", "show", managed_repo_id, "--directory-path", "root/team-a"],
         ),
         runner.invoke(app, ["git-repos", "refresh", managed_repo_id]),
+        runner.invoke(
+            app,
+            [
+                "git-repos",
+                "set-host-identity",
+                managed_repo_id,
+                "--directory-path",
+                "root/team-a",
+                "--name",
+                "Jonathan Quinth",
+                "--email",
+                "operator@example.invalid",
+            ],
+        ),
         runner.invoke(app, ["git-repos", "delete", managed_repo_id]),
         runner.invoke(
             app,
@@ -352,6 +411,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
         "list",
         "get",
         "refresh",
+        "set-host-identity",
         "delete",
         "maintenance",
     ]
@@ -360,6 +420,11 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
         "include_descendants": False,
     }
     assert managed_git.calls[1][2] == {"directory_path": "root/team-a"}
+    assert managed_git.calls[3][2] == {
+        "directory_path": "root/team-a",
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
 
 
 def test_git_repos_cli_exposes_agent_grant_revoke_and_clone_commands(monkeypatch) -> None:

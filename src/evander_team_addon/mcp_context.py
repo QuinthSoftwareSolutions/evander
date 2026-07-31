@@ -99,6 +99,24 @@ class TeamMcpContextResolver:
             raise ToolError(f"{tool_name} requires an active Team dispatch lease")
         return caller
 
+    def require_context_handoff_context(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: str,
+    ) -> TeamMcpCallerContext:
+        caller = self.resolve(session_id=session_id, tool_name=tool_name)
+        if caller.agent is None:
+            raise ToolError(f"{tool_name} requires a persistent Team agent session")
+        if caller.agent.status != AgentStatus.ACTIVE:
+            raise ToolError(f"{tool_name} requires an active Team agent")
+        if caller.active_dispatch_id is None:
+            raise ToolError(f"{tool_name} requires an active Team dispatch lease")
+        dispatch = caller.state.dispatches.get(caller.active_dispatch_id or "")
+        if dispatch is None or dispatch.cause_kind != "context_handoff":
+            raise ToolError(f"{tool_name} requires an active context handoff dispatch")
+        return caller
+
     def require_persistent_read_context(
         self,
         *,

@@ -70,7 +70,7 @@ The add-on UI currently has these top-level views:
 |---|---|
 | **Workspace** | Broad operational summary and the next records that need attention. |
 | **Operations** | Wake, lease, session, context, stand-down, and runtime attention. |
-| **Delivery** | Deliverables, review requests and profiles, releases, and Git promotions. |
+| **Delivery** | Attention-first, project-grouped deliverables, reviews, releases, Git promotions, and exact gate evidence. |
 | **Memory** | Durable Team memory and semantic-index operations. |
 | **Projects** | Project goals, leads, Git configuration, and release policy. |
 | **Task board** | Task ownership, hierarchy, dependencies, state, and priority. |
@@ -85,6 +85,18 @@ The add-on UI currently has these top-level views:
 | **Org chart** | Reporting hierarchy and operational details per agent. |
 
 There is no top-level **Roles** view. Roles are maintained inside **Teams** and setup/edit forms. Reviews and releases similarly live inside **Delivery**, not separate top-level tabs.
+
+**Delivery** opens on records that still need attention. Projects remain
+collapsed until selected or opened, and the project selector and status filters
+narrow the workspace without removing accepted or historical records from
+**All records**. Opening a deliverable shows the evidence stages that current
+state can prove: implementation, deliverable acceptance or agent review,
+release inclusion, automated verification, release-agent review, human review,
+and publication. The view calls out the current stage and blocker rather than
+presenting every record as equally urgent. For release-backed work, **Load exact
+gate evidence** reads the existing permission-filtered release detail so
+individual verifier attempts and review decisions appear only when authorized
+evidence is available.
 
 When a project policy enables the human release gate, **Delivery** also exposes
 **My Human Reviews** and the human-review detail on the release. The filter is
@@ -103,6 +115,23 @@ eligibility. There is deliberately no MCP tool that can decide on behalf of a
 person.
 
 The Org chart is diagnostic as well as visual. Agent nodes expose session, project, reporting, task, inbox, wake, and ephemeral-capacity information when available. It renders unreachable or malformed references for inspection; rendering never repairs persisted state.
+
+The task board and task detail expose **Cancel task** as a separate audited
+action. Its dialog requires a stable reason code and explanation and may name
+an optional same-project successor. When lifecycle rules forbid cancellation,
+the action remains visible but disabled and its hover explanation names the
+unresolved descendants, active acceptance, or active review that must be
+settled first. The generic task editor cannot move work directly into
+<code>accepted</code> or <code>cancelled</code>.
+
+Background state and cost refreshes preserve open **Planning** project, task,
+hierarchy, full-brief, worktree, and technical-detail disclosures, so a live
+update does not collapse the operator's place in a long task. Disclosure state
+is scoped to the owning Team view, and project-local goal keys are additionally
+scoped by project, so shared renderers and repeated local IDs cannot couple
+hidden copies. Chat state-stream and automatic refreshes similarly preserve a
+reader's scroll position; an intentional thread change, send, or already-bottom
+transcript still follows the newest message.
 
 ![Team Workspace dashboard with attention, delivery, team, and workload summaries](../../assets/evander-user-manual/screenshots/team-workspace.png)
 
