@@ -10231,7 +10231,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     };
   }
 
-  const { port } = await createTeamAddonServer(t, { initialState });
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -10408,6 +10408,30 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     /This final line ensures the brief uses the expandable board presentation\./,
   );
   assert.equal(await pendingCard.evaluate((element) => element.classList.contains("task-board-task-direct-child")), true);
+
+  await boardPanel.locator("details.task-board-create > summary").click();
+  const createTaskForm = boardPanel.locator("[data-task-board-create-form]");
+  await createTaskForm.locator('[name="owner_agent_id"]').selectOption("alpha-lead");
+  await createTaskForm.locator('[name="title"]').fill("Feature workstream task");
+  await createTaskForm.locator('[name="description"]').fill("Keep this task on feature/demo.");
+  await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
+  await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
+  await createTaskForm.getByRole("button", { name: "Create task" }).click();
+  await waitForCondition(
+    () => requests.some((request) => (
+      request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/tasks"
+      && request.payload?.title === "Feature workstream task"
+    )),
+    "expected task-board create request",
+  );
+  const createRequest = requests.find((request) => (
+    request.method === "POST"
+    && request.pathname === "/api/addons/team-addon/tasks"
+    && request.payload?.title === "Feature workstream task"
+  ));
+  assert.equal(createRequest.payload.git_base_branch, "feature/demo");
+  assert.equal(createRequest.payload.parent_task_id, "task-planned");
 });
 
 test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {

@@ -830,7 +830,8 @@ Optional inputs are:
 
 - `team.operator_communication_target_id`
 - `project.git.managed_repo_id`
-- `project.git.base_branch` and `project.git.canonical_release_branch_prefix`
+- `project.git.base_branch` (the default for newly created root tasks) and
+  `project.git.canonical_release_branch_prefix`
 
 The Team Add-on setup, project-create, and project-edit forms include an
 `Import Git repo` action beside the Git fields. It accepts a local checkout or
@@ -1596,11 +1597,23 @@ checkout as a control checkout. If any preparation fails, the complete dispatch
 fails, created contexts are finalized, and the runtime reservation is released;
 Team never silently drops one scoped task.
 
-On first creation of an ordinary task worktree, Team fetches the configured
-base branch from the managed remote before recording its immutable base commit.
-The managed remote refreshes from canonical upstream before serving that fetch,
-so a new no-predecessor task begins at the current configured base at
-preparation time. Reused worktrees retain their original pinned base.
+Every new Git-backed root task snapshots the project's then-current default base
+branch. An explicit task base overrides that default, while children inherit the
+parent snapshot; batch creation resolves those parent links before committing.
+The snapshot can be edited only before any Git work context, deliverable, or
+promotion exists. On first worktree creation Team fetches that task snapshot
+from the managed remote and records the exact base commit. Reused worktrees and
+later dispatches retain both values even if the remote branch or project default
+moves.
+
+Accepted Git deliverables in one release must share one authoritative task base
+branch and commit. Incompatible workstreams fail with
+`mixed_git_base_branches`; a deliberate cross-base merge is represented by an
+explicit integration task on the selected base, and only its accepted integrated
+deliverable enters the release. A task base is not a publication destination:
+updating a pre-existing branch such as `feature/foo` still requires an explicit
+release `canonical_branch`, with the existing exact-SHA and destination-lease
+checks.
 
 Preparation failures are durable and target-specific so the cron loop does not
 repeat the same failing setup before inference:
@@ -1673,7 +1686,8 @@ tools record intent; the packaged pack routes each event on its
 
 Git work contexts are optional Team state records for coding worktrees. They are
 created only by host/runtime setup for tasks that actually involve Git, and they
-bind an agent, task, optional dispatch, worktree path, base branch/base commit,
+bind an agent, task, optional dispatch, worktree path, the task's snapshotted
+base branch/base commit,
 expected agent branch, exact dependency Git sources, and last verified commit.
 Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no

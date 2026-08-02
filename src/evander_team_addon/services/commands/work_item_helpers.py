@@ -6,6 +6,7 @@ from collections.abc import (
     Sequence,
 )
 from typing import Any
+from ...git_naming import validate_branch_name
 from .types import TeamCommandValidationError
 from .validators import _team_command_validation_error_from_exception
 from ...models import (
@@ -123,6 +124,7 @@ def _normalize_task_creation_command_payload(
     state: TeamTaskState | str,
     parent_task_id: str | None,
     originating_task_id: str | None,
+    git_base_branch: str | None,
     dependency_task_ids: Sequence[str] | None,
     task_kind: str = "support",
     outcome_contract: Mapping[str, Any] | None = None,
@@ -141,6 +143,7 @@ def _normalize_task_creation_command_payload(
             "state": state.value if isinstance(state, TeamTaskState) else state,
             "parent_task_id": parent_task_id,
             "originating_task_id": originating_task_id,
+            "git_base_branch": git_base_branch,
             "dependency_task_ids": list(dependency_task_ids or []),
             "task_kind": task_kind,
             "outcome_contract": (
@@ -175,6 +178,7 @@ def _normalize_task_creation_mapping(
         "state": _optional_text(item.get("state")) or TeamTaskState.PENDING.value,
         "parent_task_id": _optional_text(item.get("parent_task_id")),
         "originating_task_id": _optional_text(item.get("originating_task_id")),
+        "git_base_branch": _optional_text(item.get("git_base_branch")),
         "dependency_task_ids": _unique_text_list(
             item.get("dependency_task_ids") or [],
             "dependency_task_ids",
@@ -255,6 +259,9 @@ def _normalize_task_update_command_fields(**fields: object) -> dict[str, Any]:
             normalized[name] = value
         elif name in {"title", "description", "owner_agent_id"}:
             normalized[name] = _optional_text(value)
+        elif name == "git_base_branch":
+            text = _optional_text(value)
+            normalized[name] = validate_branch_name(text) if text is not None else None
         elif name == "completion":
             normalized[name] = dict(value) if isinstance(value, Mapping) else value
         elif name == "integration_boundary":

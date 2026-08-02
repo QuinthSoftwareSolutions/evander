@@ -89,8 +89,11 @@ from .domain.agent_access import (
     _validate_role_filter_assignment,
 )
 from .domain.case_task import (
+    _correction_case_git_base_branch,
     _case_can_link_task,
     _link_task_to_case,
+    _resolve_new_task_git_base_branch,
+    _set_task_git_base_branch,
     _sync_case_task_link,
     _task_graph_edit_error,
     _task_deliverable_contract_scope_error,
@@ -163,7 +166,10 @@ from .domain.human_reviews import (
     route_human_finding_correction,
     resume_human_review,
 )
-from .domain.release_packages import _build_release_package
+from .domain.release_packages import (
+    ReleasePackageValidationError,
+    _build_release_package,
+)
 from .domain.release_gates import retry_release_gate
 from .domain.review import (
     _apply_finding_resolutions,
@@ -1570,6 +1576,22 @@ class TeamAdminService:
                     f"task {task.id} project {project.id} does not belong to "
                     f"agent team {agent.team_id}"
                 )
+            effective_base_branch = normalized_base_branch
+            if task.git_base_branch is None:
+                task.git_base_branch = _resolve_new_task_git_base_branch(
+                    state,
+                    project_id=task.project_id,
+                    explicit_git_base_branch=effective_base_branch,
+                    parent_task_id=task.parent_task_id,
+                    case_id=task.case_id,
+                )
+            if effective_base_branch is None:
+                effective_base_branch = task.git_base_branch
+            if task.git_base_branch != effective_base_branch:
+                raise ValueError(
+                    f"Git work context base {effective_base_branch!r} does not match "
+                    f"task {task.id} snapshot {task.git_base_branch!r}"
+                )
             effective_context_id = normalized_context_id or _generated_id(
                 prefix="gitctx",
                 labels=[normalized_agent_id, normalized_task_id, normalized_agent_branch],
@@ -1585,7 +1607,7 @@ class TeamAdminService:
                 dispatch_id=normalized_dispatch_id,
                 worktree_path=normalized_worktree_path,
                 dependency_git_sources=normalized_dependency_git_sources,
-                base_branch=normalized_base_branch,
+                base_branch=effective_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,
                 commit_sha=normalized_commit_sha,
@@ -2322,6 +2344,8 @@ class TeamAdminService:
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
+        set_git_base_branch: bool = False,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
@@ -2346,6 +2370,8 @@ class TeamAdminService:
             state=state,
             parent_task_id=parent_task_id,
             originating_task_id=originating_task_id,
+            git_base_branch=git_base_branch,
+            set_git_base_branch=set_git_base_branch,
             set_parent_task_id=set_parent_task_id,
             set_case_id=set_case_id,
             dependency_task_ids=dependency_task_ids,
@@ -2374,6 +2400,8 @@ class TeamAdminService:
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
+        set_git_base_branch: bool = False,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
@@ -2393,6 +2421,11 @@ class TeamAdminService:
         normalized_project_id = _required_text(project_id, "project_id")
         normalized_parent_task_id = _optional_text(parent_task_id)
         normalized_originating_task_id = _optional_text(originating_task_id)
+        normalized_git_base_branch = _optional_text(git_base_branch)
+        if normalized_git_base_branch is not None:
+            normalized_git_base_branch = validate_branch_name(
+                normalized_git_base_branch
+            )
         normalized_dependency_task_ids = (
             _unique_text_list(dependency_task_ids, "dependency_task_ids")
             if dependency_task_ids is not None
@@ -2533,11 +2566,13 @@ class TeamAdminService:
                 task.priority = priority
                 task.title = normalized_title
                 task.description = normalized_description
+                case_link_changed = False
                 if set_parent_task_id or parent_task_id is not None:
                     task.parent_task_id = normalized_parent_task_id
                 if set_case_id or case_id is not None:
                     old_case_id = task.case_id
                     task.case_id = normalized_case_id
+                    case_link_changed = old_case_id != task.case_id
                     _sync_case_task_link(
                         state_model,
                         task=task,
@@ -2554,6 +2589,25 @@ class TeamAdminService:
                 if deliverable_policy_edit:
                     task.integration_boundary = proposed_integration_boundary
                     task.deliverable_contract = proposed_deliverable_contract
+                if set_git_base_branch or git_base_branch is not None:
+                    _set_task_git_base_branch(
+                        state_model,
+                        task=task,
+                        git_base_branch=normalized_git_base_branch,
+                    )
+                elif (
+                    case_link_changed
+                    and _correction_case_git_base_branch(
+                        state_model,
+                        case_id=task.case_id,
+                    )
+                    is not None
+                ):
+                    _set_task_git_base_branch(
+                        state_model,
+                        task=task,
+                        git_base_branch=None,
+                    )
                 task.updated_at = now
                 if task.state in _NON_TERMINAL_TASK_STATES:
                     _mark_agent_work_due(
@@ -2633,6 +2687,13 @@ class TeamAdminService:
                 created_by_actor=created_by_actor,
                 parent_task_id=normalized_parent_task_id,
                 originating_task_id=normalized_originating_task_id,
+                git_base_branch=_resolve_new_task_git_base_branch(
+                    state_model,
+                    project_id=normalized_project_id,
+                    explicit_git_base_branch=normalized_git_base_branch,
+                    parent_task_id=normalized_parent_task_id,
+                    case_id=normalized_case_id,
+                ),
                 dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
                 outcome_contract=effective_outcome_contract,
@@ -2700,6 +2761,8 @@ class TeamAdminService:
         set_case_id: bool = False,
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
+        git_base_branch: str | None = None,
+        set_git_base_branch: bool = False,
         dependency_task_ids: list[str] | None = None,
         integration_boundary: bool | None = None,
         deliverable_contract: Mapping[str, Any] | None = None,
@@ -2712,6 +2775,11 @@ class TeamAdminService:
         normalized_task_id = _required_text(task_id, "task_id")
         normalized_case_id = _optional_text(case_id)
         normalized_parent_task_id = _optional_text(parent_task_id)
+        normalized_git_base_branch = _optional_text(git_base_branch)
+        if normalized_git_base_branch is not None:
+            normalized_git_base_branch = validate_branch_name(
+                normalized_git_base_branch
+            )
         normalized_dependency_task_ids = (
             _unique_text_list(dependency_task_ids, "dependency_task_ids")
             if dependency_task_ids is not None
@@ -2861,9 +2929,11 @@ class TeamAdminService:
                 task.title = title
             if description is not None:
                 task.description = description
+            case_link_changed = False
             if set_case_id or case_id is not None:
                 old_case_id = task.case_id
                 task.case_id = normalized_case_id
+                case_link_changed = old_case_id != task.case_id
                 _sync_case_task_link(
                     state_model,
                     task=task,
@@ -2878,6 +2948,25 @@ class TeamAdminService:
             if deliverable_policy_edit:
                 task.integration_boundary = proposed_integration_boundary
                 task.deliverable_contract = proposed_deliverable_contract
+            if set_git_base_branch:
+                _set_task_git_base_branch(
+                    state_model,
+                    task=task,
+                    git_base_branch=normalized_git_base_branch,
+                )
+            elif (
+                case_link_changed
+                and _correction_case_git_base_branch(
+                    state_model,
+                    case_id=task.case_id,
+                )
+                is not None
+            ):
+                _set_task_git_base_branch(
+                    state_model,
+                    task=task,
+                    git_base_branch=None,
+                )
             task.updated_at = now
             if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
                 project = _require_present(state_model.projects, task.project_id, "project")
@@ -3916,6 +4005,7 @@ class TeamAdminService:
                     id=task_ids[task_template.id],
                     owner_agent_id=owner_agent_id,
                     project_id=project_id,
+                    git_base_branch=(git.base_branch if git is not None else None),
                     priority=task_template.priority,
                     state=task_template.state,
                     title=task_template.title,
@@ -4855,6 +4945,11 @@ class TeamAdminService:
             if created_id is not None:
                 result["release_package_ids"].append(created_id)
             if result["errors"]:
+                if result.get("error_code"):
+                    raise ReleasePackageValidationError(
+                        code=str(result["error_code"]),
+                        message="; ".join(result["errors"]),
+                    )
                 raise ValueError("; ".join(result["errors"]))
             for recalc_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, recalc_id)

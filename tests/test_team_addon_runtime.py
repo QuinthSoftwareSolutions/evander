@@ -8062,6 +8062,15 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
 
 def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+
+    def _configure_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure_git)
     _add_task(
         repo,
         task_id="workflow-dependency",
@@ -8091,6 +8100,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             case_id="case",
             state="pending",
             parent_task_id="task",
+            git_base_branch="feature/workflow",
             dependency_task_ids=["workflow-dependency"],
             integration_boundary=True,
             deliverable_contract={
@@ -8118,6 +8128,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     task = reread.tasks["workflow-task"]
     assert task.case_id == "case"
     assert task.parent_task_id == "task"
+    assert task.git_base_branch == "feature/workflow"
     assert task.dependency_task_ids == ["workflow-dependency"]
     assert task.integration_boundary is True
     assert task.deliverable_contract is not None

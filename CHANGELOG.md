@@ -13,6 +13,15 @@
   prompts. Active blocked releases remain actionable without duplicating their
   recovery context in runtime attention.
 
+## 2026-08-02 - Per-Task Git Base Snapshots
+
+- Added durable Git base-branch snapshots to Team tasks, releases, and promotion
+  records so work based on `main` and feature branches can proceed concurrently
+  without later project-default changes retargeting preparation or publication.
+- Added task/API/MCP/Admin controls, exact base-commit propagation, mixed-base
+  release rejection, correction/recovery provenance, and SQLite migration for
+  active legacy workstreams.
+
 ## 2026-08-02 - Team Chat Membership Scope
 
 - Restricted agent wake context and outbound Team Chat messages to direct

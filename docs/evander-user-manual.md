@@ -4925,7 +4925,7 @@ A project belongs to one Team and has:
 
 Assignments distinguish <code>project_lead</code> and <code>project_member</code>. Project leadership is stored on the project and its assignment, not encoded by changing the agent's primary Team role or reporting line.
 
-Project Git configuration references a core <code>managed_repo_id</code>. It may also select a base branch and canonical release prefix. The Team Add-on does not accept a host checkout path as repository identity.
+Project Git configuration references a core <code>managed_repo_id</code>. It may also select the default base branch for newly created root tasks and a canonical release prefix. Changing that default does not retarget existing tasks. The Team Add-on does not accept a host checkout path as repository identity.
 
 ## Goals
 
@@ -4946,6 +4946,7 @@ To an operator, a task is the clearest answer to “who owns the next concrete p
 > - parent task;
 > - dependency tasks;
 > - an originating task for provenance;
+> - a durable Git base-branch snapshot;
 > - case;
 > - deliverables;
 > - task kind, outcome contract, and structured completion;
@@ -4980,6 +4981,13 @@ batch mutation. Batch validation happens before commit, so a bad item does not
 leave a half-created plan. The only system-authorized root-creation exception is
 the atomic transition from authenticated human changes-requested feedback to
 same-project correction or triage work.
+
+A Git-backed root snapshots the project default when it is created. An explicit
+task base takes precedence, and a child inherits its parent's snapshot even when
+both are created in one batch. The base can be edited until the first Git work
+context, deliverable, or promotion exists; after that Team returns
+<code>git_base_locked</code>. The task base chooses where work starts, not where
+it is published.
 
 Task graphs cannot contain parent or dependency cycles. Dependencies and parents remain within the project. A deliverable, review, or Git work context cannot silently migrate a task to another project.
 
@@ -6358,6 +6366,10 @@ The branch remains internal evidence at this stage. Review does not publish it t
 > - base branch, base commit, and current verified commit;
 > - status and timestamps.
 >
+> The base branch is copied from the task's durable snapshot and the first
+> preparation pins its exact commit. Later dispatches reuse that commit even if
+> the project default or remote branch advances.
+>
 > An explicitly Git-backed deliverable supplies
 > <code>branch_context_id</code> and <code>git_refs.commit_sha</code>. Unknown Git
 > reference fields are rejected. The server verifies caller, task, dispatch,
@@ -6983,6 +6995,15 @@ The release package is the sealed description of one candidate: what work it con
 
 All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy unless <code>allow_ungated=true</code> was deliberately configured.
 
+Git inputs must also share one authoritative task base branch and exact base
+commit. Team returns <code>mixed_git_base_branches</code> before creating a
+package when they do not. To merge workstreams deliberately, create an explicit
+integration task on the chosen base and release only its accepted integrated
+deliverable. A task based on <code>feature/foo</code> does not publish there by
+implication; updating that pre-existing branch requires an explicit
+<code>canonical_branch="feature/foo"</code> and still uses exact-SHA,
+fast-forward, and destination-lease protections.
+
 This prevents policy drift after request time from silently redefining what was approved.
 
 > <span class="sidebar-kicker">Technical reference</span> **Request authority and frozen manifest**
@@ -6999,6 +7020,7 @@ This prevents policy drift after request time from silently redefining what was 
 > - accepted immutable deliverable reviews;
 > - reviewed change manifests;
 > - candidate commit and tree;
+> - task/release base branch and exact base commit;
 > - scope-validation result;
 > - ordered verification commands;
 > - release-review requirements;
@@ -7271,12 +7293,14 @@ remain the evidence records; they do not become independent merges against
 <code>main</code>.
 
 After that correction aggregate succeeds, Team performs one final release
-promotion from the pinned aggregate onto the then-current configured base
-branch. That main-integration result becomes the candidate before verification
-and review gates begin. A correction-to-correction conflict and a later
-aggregate-to-main conflict are therefore two distinct, serial package-level
-recovery boundaries. Recovery reuses the failed boundary's pinned base and
-never fans the package back out into per-finding promotions.
+promotion using the predecessor candidate workstream recorded on the successor
+release. It never rereads the project's mutable default. That integration result
+becomes the candidate before verification and review gates begin. A
+correction-to-correction conflict and a later aggregate-to-release conflict are
+therefore two distinct, serial package-level recovery boundaries. Recovery
+reuses the failed boundary's pinned branch and commit and never fans the package
+back out into per-finding promotions. The predecessor's explicit canonical
+publication destination is preserved on the successor.
 
 The coordination parent finishes when that successor exists. The new human
 approval must explicitly confirm every carried finding ID. Only then do those

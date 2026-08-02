@@ -524,6 +524,7 @@ const fieldTooltips = {
   "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
+  "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
   "create-task-form:require_git_provenance": "Require the integration deliverable to carry server-verified Git branch and commit provenance.",
@@ -620,6 +621,7 @@ const fieldTooltips = {
   "edit:task:title": "Rename the task without changing its immutable ID.",
   "edit:task:description": "Update the instructions for the owning agent.",
   "edit:task:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
+  "edit:task:git_base_branch": "The task's durable Git starting branch. It locks after Git preparation, deliverable submission, or promotion creation.",
   "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
   "edit:task:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
   "edit:task:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
@@ -642,7 +644,7 @@ const fieldTooltips = {
 
   repo_source: "Transient Git URL or local checkout used to register a managed repository.",
   managed_repo_id: "Stable Evander managed repository ID stored with the project.",
-  base_branch: "Canonical base branch used for agent branches, reviews, and promotions.",
+  base_branch: "Default base branch captured by newly created root tasks. Existing tasks keep their own snapshot when this changes.",
   canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
 };
 
@@ -3382,6 +3384,12 @@ function bindTaskBoardSelectors() {
   projectSelect?.addEventListener("change", updateProject);
 
   document.addEventListener("submit", (event) => {
+    const createForm = event.target?.closest?.("[data-task-board-create-form]");
+    if (createForm) {
+      event.preventDefault();
+      void submitTaskBoardCreateForm(createForm);
+      return;
+    }
     const form = event.target?.closest?.("[data-task-board-search-form]");
     if (!form) {
       return;
@@ -3514,6 +3522,13 @@ function bindTaskBoardSelectors() {
       focusTaskBoardControl(taskId, "[data-task-board-toggle-children-id]");
     }
   });
+}
+
+async function submitTaskBoardCreateForm(form) {
+  const result = await submitCreateForm(form);
+  if (mutationResultSaved(result)) {
+    renderTaskBoard();
+  }
 }
 
 function resetTaskBoardProjectState() {
@@ -8245,7 +8260,7 @@ function renderTeamInlineProjectForm(teamId) {
           ${gitImportControls()}
           <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
           <input type="hidden" name="managed_repo_directory_path" />
-          <label>Base branch <input name="base_branch" placeholder="main" /></label>
+          <label>Default base branch for new tasks <input name="base_branch" placeholder="main" /></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
       </details>
@@ -12254,6 +12269,7 @@ function renderTaskBoard() {
         <strong>${escapeHtml(selectedProject.name || selectedProject.id)}</strong>
         <span>${escapeHtml(selectedTeam.name || selectedTeam.id)} - ${escapeHtml(boardMeta.join(" - "))}</span>
       </div>
+      ${renderTaskBoardCreateForm(selectedProject, projectTasks)}
       ${renderTaskBoardControls(projectTasks, hierarchy, terminalCount)}
       ${renderTaskBoardFocusSummary(focus)}
       ${
@@ -12263,6 +12279,74 @@ function renderTaskBoard() {
       }
     `,
   );
+  document.querySelectorAll("[data-task-board-view]").forEach((target) => {
+    if (!targetIsActive(target)) return;
+    decorateFieldTooltips(target);
+  });
+  applyLockedMutationControls();
+}
+
+function renderTaskBoardCreateForm(project, projectTasks) {
+  const ownerOptions = values(state.agents)
+    .filter(isVisibleAgent)
+    .filter((agent) => agentProjectIds(agent).includes(project.id))
+    .sort(comparePeopleAgents)
+    .map((agent) => [agent.id, agentLabel(agent)]);
+  const caseOptions = values(state.cases)
+    .filter((teamCase) => (
+      text(teamCase.project_id) === text(project.id)
+      || (!text(teamCase.project_id) && text(teamCase.team_id) === text(project.team_id))
+    ))
+    .sort(byId)
+    .map((teamCase) => [teamCase.id, text(teamCase.title) || teamCase.id]);
+  const taskOptions = projectTasks
+    .slice()
+    .sort(compareTaskBoardTasks)
+    .map((task) => [task.id, taskBoardTaskReferenceLabel(task.id)]);
+  return `
+    <details
+      class="task-board-create"
+      ${teamDisclosureAttributes(teamDisclosureKey("task-board", project.id, "create-task"))}
+    >
+      <summary>Create task</summary>
+      <form
+        class="team-inline-create-form task-board-create-form"
+        data-task-board-create-form
+        data-form-id="create-task-form"
+        data-form-draft-scope="${escapeAttr(project.id)}"
+        data-endpoint="/tasks"
+        data-method="POST"
+      >
+        <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
+        <div class="team-inline-create-fields task-board-create-fields">
+          <label>Owner
+            <select name="owner_agent_id" required>${renderSelectOptions(ownerOptions, { placeholder: "Select project agent" })}</select>
+          </label>
+          <label>Case
+            <select name="case_id">${renderSelectOptions(caseOptions, { placeholder: "No case" })}</select>
+          </label>
+          <label>Priority <input name="priority" type="number" min="0" value="0" required /></label>
+          <label>Title <input name="title" required /></label>
+          <label>Description <textarea name="description" rows="3" required></textarea></label>
+          <label>Git base branch
+            <input name="git_base_branch" placeholder="Inherit parent or ${escapeAttr(project.git?.base_branch || "project default")}" />
+          </label>
+          <label>Parent task
+            <select name="parent_task_id">${renderSelectOptions(taskOptions, { placeholder: "No parent" })}</select>
+          </label>
+          <label>Dependency task IDs
+            <textarea name="dependency_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
+          </label>
+          <label class="checkbox-label"><input name="integration_boundary" type="checkbox" /> Integration boundary</label>
+          <label class="checkbox-label"><input name="require_git_provenance" type="checkbox" /> Require Git provenance</label>
+          <label>Required contribution task IDs
+            <textarea name="required_contribution_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
+          </label>
+        </div>
+        <button type="submit" ${lockedAttrs("create tasks")}>Create task</button>
+      </form>
+    </details>
+  `;
 }
 
 function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
@@ -13180,6 +13264,7 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Hierarchy depth", String(taskHierarchyDepth(task))],
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
+    ["Git base branch", text(task.git_base_branch)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Integration boundary", task.integration_boundary ? "Yes" : ""],
     ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
@@ -15926,6 +16011,7 @@ function renderReleaseTechnicalDetails(
     ["Release branch", release.release_branch],
     ["Canonical branch", release.canonical_branch],
     ["Feature branches", release.feature_branches || []],
+    ["Git base branch", release.git_base_branch],
     ["Base commit", release.base_commit_sha],
     ["Candidate commit", release.candidate_commit_sha || manifest.candidate_commit_sha],
     ["Candidate tree", release.candidate_tree_hash || manifest.candidate_tree_hash],
@@ -19419,6 +19505,9 @@ async function submitTaskUpdate(form) {
   if (title) payload.title = title;
   if (description) payload.description = description;
   payload.parent_task_id = parentTaskId || null;
+  if (form.elements.git_base_branch) {
+    payload.git_base_branch = text(data.git_base_branch) || null;
+  }
   payload.dependency_task_ids = splitList(data.dependency_task_ids);
   const integrationBoundary = Boolean(
     form.elements.integration_boundary?.checked,
@@ -21237,6 +21326,9 @@ function payloadForForm(form, data = formData(form)) {
     if (text(data.state)) {
       payload.state = text(data.state);
     }
+    if (text(data.git_base_branch)) {
+      payload.git_base_branch = text(data.git_base_branch);
+    }
     const parentTaskId = text(data.parent_task_id);
     if (parentTaskId) {
       payload.parent_task_id = parentTaskId;
@@ -21997,7 +22089,7 @@ function renderEditFields(type, record) {
         placeholder: "mr_...",
       })}
       <input type="hidden" name="managed_repo_directory_path" value="${escapeAttr(record.git?.directory_path || "root")}" />
-      ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
+      ${textField("Default base branch for new tasks", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
       <p class="subheading">Release gates</p>
       ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
@@ -22055,6 +22147,7 @@ function renderEditFields(type, record) {
     `;
   }
   if (type === "task") {
+    const gitBaseLocked = taskGitBaseBranchLocked(record);
     return `
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
@@ -22064,6 +22157,9 @@ function renderEditFields(type, record) {
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
+      ${gitBaseLocked
+        ? readonlyField("Git base branch (locked)", record.git_base_branch || "Not recorded (legacy task)")
+        : textField("Git base branch", "git_base_branch", record.git_base_branch || "", { placeholder: "Inherit project default" })}
       ${selectField("Parent task", "parent_task_id", "tasks", record.parent_task_id || "", { placeholder: "No parent" })}
       ${textareaField("Dependency tasks", "dependency_task_ids", (record.dependency_task_ids || []).join("\n"), { rows: 2 })}
       ${checkboxField("Integration boundary", "integration_boundary", Boolean(record.integration_boundary))}
@@ -22115,6 +22211,24 @@ function taskEditStateField(task) {
     ${readonlyField("State", taskStateLabel(task))}
     <input type="hidden" name="state" value="${escapeAttr(stateValue)}" />
   `;
+}
+
+function taskGitBaseBranchLocked(task) {
+  const deliverableIds = new Set([
+    ...(task?.deliverable_ids || []).map(text).filter(Boolean),
+    ...Object.values(state.deliverables || {})
+      .filter((deliverable) => text(deliverable.task_id) === text(task?.id))
+      .map((deliverable) => text(deliverable.id))
+      .filter(Boolean),
+  ]);
+  if (deliverableIds.size) return true;
+  if (Object.values(state.git_work_contexts || {}).some((context) => text(context.task_id) === text(task?.id))) {
+    return true;
+  }
+  return Object.values(state.git_promotions || {}).some((promotion) => (
+    text(promotion.task_id) === text(task?.id)
+    || deliverableIds.has(text(promotion.deliverable_id))
+  ));
 }
 
 function renderAvatarEditControls(record) {
@@ -22271,6 +22385,12 @@ function editPayloadForForm(type, form) {
       dependency_task_ids: splitList(data.dependency_task_ids),
     };
     const currentTask = state.tasks?.[text(form.dataset.editId)];
+    if (form.elements.git_base_branch) {
+      const nextGitBaseBranch = text(data.git_base_branch) || null;
+      if (!currentTask || nextGitBaseBranch !== (currentTask.git_base_branch || null)) {
+        payload.git_base_branch = nextGitBaseBranch;
+      }
+    }
     const currentContract = currentTask?.deliverable_contract || null;
     if (
       !currentTask

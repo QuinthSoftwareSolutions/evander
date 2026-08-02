@@ -23,9 +23,10 @@ from evander.worker.models import WorkerFailureCause, WorkerResourceLimits
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
+    validate_branch_name,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -1210,6 +1211,7 @@ class AgentTask(TeamModel):
     created_by_actor: str | None = None
     parent_task_id: str | None = None
     originating_task_id: str | None = None
+    git_base_branch: str | None = None
     cancellation: TaskCancellation | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -1247,6 +1249,12 @@ class AgentTask(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("dependency_task_ids", mode="before")
     @classmethod
@@ -3198,6 +3206,7 @@ class ReleasePackage(TeamModel):
     feature_branches: list[str] = Field(default_factory=list)
     release_branch: str | None = None
     canonical_branch: str | None = None
+    git_base_branch: str | None = None
     published_commit_sha: str | None = None
     base_commit_sha: str | None = None
     candidate_commit_sha: str | None = None
@@ -3254,6 +3263,12 @@ class ReleasePackage(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("manifest", mode="before")
     @classmethod
@@ -3390,6 +3405,8 @@ class GitPromotionRecord(TeamModel):
     task_id: str | None = None
     deliverable_id: str | None = None
     release_package_id: str | None = None
+    git_base_branch: str | None = None
+    base_commit_sha: str | None = None
     state: Literal["pending", "succeeded", "failed", "retired"] = "pending"
     commit_sha: str | None = None
     outputs: dict[str, Any] = Field(default_factory=dict)
@@ -3413,6 +3430,7 @@ class GitPromotionRecord(TeamModel):
         "task_id",
         "deliverable_id",
         "release_package_id",
+        "base_commit_sha",
         "commit_sha",
         "error",
         mode="before",
@@ -3420,6 +3438,12 @@ class GitPromotionRecord(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("outputs", mode="before")
     @classmethod

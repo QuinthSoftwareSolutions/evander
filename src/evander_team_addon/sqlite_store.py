@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 43
+SQLITE_SCHEMA_VERSION = 44
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1037,6 +1037,7 @@ class TeamStateSqliteStore:
                     ("completion_json", "TEXT"),
                     ("originating_task_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
+                    ("git_base_branch", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -1238,6 +1239,12 @@ class TeamStateSqliteStore:
                     column_name="scope_validation_json",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="git_base_branch",
+                    definition="TEXT",
+                )
                 for column_name in (
                     "base_commit_sha",
                     "candidate_commit_sha",
@@ -1309,6 +1316,13 @@ class TeamStateSqliteStore:
                     column_name="sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                for column_name in ("git_base_branch", "base_commit_sha"):
+                    _ensure_column(
+                        connection,
+                        table_name="team_git_promotions",
+                        column_name=column_name,
+                        definition="TEXT",
+                    )
                 _ensure_column(
                     connection,
                     table_name="team_git_work_contexts",
@@ -1343,6 +1357,8 @@ class TeamStateSqliteStore:
                     _migrate_legacy_outcome_kind_definitions(connection)
                 if previous_schema_version < 43:
                     _migrate_worktree_cleanup_evidence(connection)
+                if previous_schema_version < 44:
+                    _migrate_task_git_base_snapshots(connection)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -2367,6 +2383,7 @@ class TeamStateSqliteStore:
                 "created_by_actor": row["created_by_actor"],
                 "parent_task_id": row["parent_task_id"],
                 "originating_task_id": row["originating_task_id"],
+                "git_base_branch": row["git_base_branch"],
                 "cancellation": (
                     _json_loads(row["cancellation_json"])
                     if row["cancellation_json"] is not None
@@ -2386,11 +2403,11 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    originating_task_id, cancellation_json, task_kind,
+                    originating_task_id, git_base_branch, cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2406,6 +2423,7 @@ class TeamStateSqliteStore:
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
                     task.get("originating_task_id"),
+                    task.get("git_base_branch"),
                     (
                         _json_dumps(task.get("cancellation"))
                         if task.get("cancellation") is not None
@@ -3577,6 +3595,7 @@ class TeamStateSqliteStore:
                 "feature_branches": branches.get(row["id"], []),
                 "release_branch": row["release_branch"],
                 "canonical_branch": row["canonical_branch"],
+                "git_base_branch": row["git_base_branch"],
                 "published_commit_sha": row["published_commit_sha"],
                 "base_commit_sha": row["base_commit_sha"],
                 "candidate_commit_sha": row["candidate_commit_sha"],
@@ -3613,7 +3632,8 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_release_packages(
                     id, project_id, owner_agent_id, summary, supersedes_release_package_id,
-                    release_branch, canonical_branch, published_commit_sha,
+                    release_branch, canonical_branch, git_base_branch,
+                    published_commit_sha,
                     base_commit_sha, candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, review_correction_task_id,
                     verification_run_ids_json, review_request_ids_json,
@@ -3621,7 +3641,7 @@ class TeamStateSqliteStore:
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -3631,6 +3651,7 @@ class TeamStateSqliteStore:
                     package.get("supersedes_release_package_id"),
                     package.get("release_branch"),
                     package.get("canonical_branch"),
+                    package.get("git_base_branch"),
                     package.get("published_commit_sha"),
                     package.get("base_commit_sha"),
                     package.get("candidate_commit_sha"),
@@ -4192,6 +4213,8 @@ class TeamStateSqliteStore:
                 "task_id": row["task_id"],
                 "deliverable_id": row["deliverable_id"],
                 "release_package_id": row["release_package_id"],
+                "git_base_branch": row["git_base_branch"],
+                "base_commit_sha": row["base_commit_sha"],
                 "state": row["state"],
                 "commit_sha": row["commit_sha"],
                 "outputs": _json_loads(row["outputs_json"]),
@@ -4208,9 +4231,10 @@ class TeamStateSqliteStore:
                 INSERT INTO team_git_promotions(
                     id, project_id, actor_agent_id, source_branch, sources_json, target_branch,
                     promotion_kind, task_id, deliverable_id, release_package_id, state,
-                    commit_sha, outputs_json, error, created_at, updated_at
+                    git_base_branch, base_commit_sha, commit_sha, outputs_json, error,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     promotion["id"],
@@ -4224,6 +4248,8 @@ class TeamStateSqliteStore:
                     promotion.get("deliverable_id"),
                     promotion.get("release_package_id"),
                     promotion.get("state", "pending"),
+                    promotion.get("git_base_branch"),
+                    promotion.get("base_commit_sha"),
                     promotion.get("commit_sha"),
                     _json_dumps(promotion.get("outputs", {})),
                     promotion.get("error"),
@@ -4833,6 +4859,219 @@ def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
             "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = ?",
             (_json_dumps(payload), row["id"]),
         )
+
+
+def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
+    """Backfill active Git workstreams without inventing ambiguous provenance."""
+
+    project_defaults: dict[str, str | None] = {}
+    for row in connection.execute("SELECT id, git_json FROM team_projects ORDER BY id"):
+        git_payload = _json_loads(row["git_json"]) if row["git_json"] else None
+        project_defaults[row["id"]] = (
+            str(git_payload.get("base_branch") or "").strip() or None
+            if isinstance(git_payload, dict)
+            else None
+        )
+
+    active_task_states = ("pending", "in_progress", "waiting_for_review", "blocked")
+    task_rows = connection.execute(
+        """
+        SELECT id, project_id
+        FROM team_tasks
+        WHERE state IN (?, ?, ?, ?)
+          AND git_base_branch IS NULL
+        ORDER BY id
+        """,
+        active_task_states,
+    ).fetchall()
+    for task in task_rows:
+        context_branches = {
+            str(row["base_branch"]).strip()
+            for row in connection.execute(
+                """
+                SELECT base_branch
+                FROM team_git_work_contexts
+                WHERE task_id = ? AND base_branch IS NOT NULL AND base_branch != ''
+                """,
+                (task["id"],),
+            )
+        }
+        if len(context_branches) == 1:
+            branch = next(iter(context_branches))
+        elif not context_branches:
+            branch = project_defaults.get(task["project_id"])
+        else:
+            branch = None
+        if branch is not None:
+            connection.execute(
+                "UPDATE team_tasks SET git_base_branch = ? WHERE id = ?",
+                (branch, task["id"]),
+            )
+
+    active_release_states = ("pending", "in_progress", "blocked")
+    release_rows = connection.execute(
+        """
+        SELECT id, project_id, base_commit_sha
+        FROM team_release_packages
+        WHERE state IN (?, ?, ?)
+          AND git_base_branch IS NULL
+        ORDER BY id
+        """,
+        active_release_states,
+    ).fetchall()
+    for release in release_rows:
+        deliverables = connection.execute(
+            """
+            SELECT d.*
+            FROM team_release_deliverables AS link
+            JOIN team_deliverables AS d ON d.id = link.deliverable_id
+            WHERE link.package_id = ?
+            ORDER BY link.position
+            """,
+            (release["id"],),
+        ).fetchall()
+        git_deliverables = [
+            row
+            for row in deliverables
+            if any(
+                row[column]
+                for column in (
+                    "branch_context_id",
+                    "agent_branch",
+                    "review_branch",
+                    "feature_branch",
+                    "release_branch",
+                    "commit_sha",
+                )
+            )
+        ]
+        has_git_release = bool(git_deliverables) or connection.execute(
+            """
+            SELECT 1
+            FROM team_release_feature_branches
+            WHERE package_id = ?
+            LIMIT 1
+            """,
+            (release["id"],),
+        ).fetchone() is not None
+        if not has_git_release:
+            continue
+
+        branches: set[str] = set()
+        commits: set[str] = set()
+        unresolved = False
+        for deliverable in git_deliverables:
+            contexts = []
+            if deliverable["branch_context_id"]:
+                contexts = connection.execute(
+                    """
+                    SELECT base_branch, base_commit
+                    FROM team_git_work_contexts
+                    WHERE id = ? AND task_id = ?
+                    """,
+                    (deliverable["branch_context_id"], deliverable["task_id"]),
+                ).fetchall()
+            if not contexts:
+                contexts = connection.execute(
+                    """
+                    SELECT DISTINCT base_branch, base_commit
+                    FROM team_git_work_contexts
+                    WHERE task_id = ?
+                    """,
+                    (deliverable["task_id"],),
+                ).fetchall()
+            if contexts:
+                branches.update(
+                    str(row["base_branch"]).strip()
+                    for row in contexts
+                    if row["base_branch"]
+                )
+                commits.update(
+                    str(row["base_commit"]).strip()
+                    for row in contexts
+                    if row["base_commit"]
+                )
+            else:
+                unresolved = True
+
+        if len(branches) == 1 and len(commits) == 1 and not unresolved:
+            branch = next(iter(branches))
+            commit = next(iter(commits))
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET git_base_branch = ?,
+                    base_commit_sha = COALESCE(base_commit_sha, ?)
+                WHERE id = ?
+                """,
+                (branch, commit, release["id"]),
+            )
+            continue
+        connection.execute(
+            """
+            UPDATE team_release_packages
+            SET state = 'blocked',
+                error = 'mixed_git_base_branches: legacy active release has ambiguous Git base provenance',
+                updated_at = COALESCE(updated_at, created_at)
+            WHERE id = ?
+            """,
+            (release["id"],),
+        )
+
+    promotion_rows = connection.execute(
+        """
+        SELECT id, task_id, release_package_id, outputs_json
+        FROM team_git_promotions
+        WHERE state IN ('pending', 'failed')
+          AND git_base_branch IS NULL
+        ORDER BY id
+        """
+    ).fetchall()
+    for promotion in promotion_rows:
+        branch = None
+        commit = None
+        if promotion["release_package_id"]:
+            release = connection.execute(
+                """
+                SELECT git_base_branch, base_commit_sha
+                FROM team_release_packages
+                WHERE id = ?
+                """,
+                (promotion["release_package_id"],),
+            ).fetchone()
+            if release is not None:
+                branch = release["git_base_branch"]
+                commit = release["base_commit_sha"]
+        if branch is None and promotion["task_id"]:
+            task = connection.execute(
+                "SELECT git_base_branch FROM team_tasks WHERE id = ?",
+                (promotion["task_id"],),
+            ).fetchone()
+            branch = task["git_base_branch"] if task is not None else None
+            context_commits = {
+                str(row["base_commit"]).strip()
+                for row in connection.execute(
+                    """
+                    SELECT base_commit FROM team_git_work_contexts
+                    WHERE task_id = ? AND base_commit IS NOT NULL AND base_commit != ''
+                    """,
+                    (promotion["task_id"],),
+                )
+            }
+            if len(context_commits) == 1:
+                commit = next(iter(context_commits))
+        outputs = _json_loads(promotion["outputs_json"])
+        if commit is None and isinstance(outputs, dict):
+            commit = str(outputs.get("base_commit_sha") or "").strip() or None
+        if branch is not None:
+            connection.execute(
+                """
+                UPDATE team_git_promotions
+                SET git_base_branch = ?, base_commit_sha = ?
+                WHERE id = ?
+                """,
+                (branch, commit, promotion["id"]),
+            )
 
 
 def _backfill_position_values(
@@ -6171,6 +6410,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     created_by_actor TEXT,
     parent_task_id TEXT,
     originating_task_id TEXT,
+    git_base_branch TEXT,
     cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
@@ -6634,6 +6874,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     supersedes_release_package_id TEXT,
     release_branch TEXT,
     canonical_branch TEXT,
+    git_base_branch TEXT,
     published_commit_sha TEXT,
     base_commit_sha TEXT,
     candidate_commit_sha TEXT,
@@ -6930,6 +7171,8 @@ CREATE TABLE IF NOT EXISTS team_git_promotions (
     task_id TEXT,
     deliverable_id TEXT,
     release_package_id TEXT,
+    git_base_branch TEXT,
+    base_commit_sha TEXT,
     state TEXT NOT NULL,
     commit_sha TEXT,
     outputs_json TEXT NOT NULL,

@@ -296,6 +296,9 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     successor_id = first["created_successor_release_package_ids"][0]
     successor = state.release_packages[successor_id]
     assert successor.supersedes_release_package_id == "release-rejected"
+    assert successor.git_base_branch == "team/team/releases/release-rejected"
+    assert successor.base_commit_sha == PREDECESSOR_COMMIT
+    assert successor.canonical_branch == "main"
     assert set(successor.deliverable_ids) == {
         "source-deliverable",
         "correction-deliverable",
@@ -336,7 +339,7 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     ) == 1
 
 
-def test_correction_aggregate_success_queues_one_main_based_release_promotion(
+def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
@@ -381,8 +384,14 @@ def test_correction_aggregate_success_queues_one_main_based_release_promotion(
         for event in result["events"]
         if event["payload"].get("promotion_id") == release_promotion.id
     )
-    assert release_event["payload"]["base_branch"] == "main"
-    assert "base_commit_sha" not in release_event["payload"]
+    assert release_promotion.git_base_branch == (
+        "team/team/releases/release-rejected"
+    )
+    assert release_promotion.base_commit_sha == PREDECESSOR_COMMIT
+    assert release_event["payload"]["base_branch"] == (
+        "team/team/releases/release-rejected"
+    )
+    assert release_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
     assert release_event["payload"]["allowed_changed_paths"] == [
         "M\tsrc/correction.cs"
     ]

@@ -864,6 +864,7 @@ def ensure_human_correction_aggregation(
             ),
             parent_task_id=None,
             originating_task_id=None,
+            git_base_branch=release.release_branch or release.git_base_branch,
             now=effective_now,
         )
         result.setdefault("created_task_ids", []).append(aggregation_task.id)
@@ -1067,6 +1068,7 @@ def report_post_release_feedback(
         description=case.description,
         parent_task_id=None,
         originating_task_id=None,
+        git_base_branch=release.release_branch or release.git_base_branch,
         now=effective_now,
     )
     _ensure_correction_inbox(
@@ -1197,6 +1199,7 @@ def _apply_changes_requested(
             description=text,
             parent_task_id=aggregation_task.id,
             originating_task_id=origin_task_id,
+            git_base_branch=release.release_branch or release.git_base_branch,
             now=now,
         )
         result.setdefault("created_task_ids", []).append(correction_task.id)
@@ -1440,6 +1443,7 @@ def _ensure_system_task(
     description: str,
     parent_task_id: str | None,
     originating_task_id: str | None,
+    git_base_branch: str | None,
     now: datetime,
 ) -> AgentTask:
     existing = state.tasks.get(task_id)
@@ -1460,6 +1464,7 @@ def _ensure_system_task(
         created_by_actor="system:human-review",
         parent_task_id=parent_task_id,
         originating_task_id=originating_task_id,
+        git_base_branch=git_base_branch,
         created_at=now,
         updated_at=now,
         state_entered_at=now,

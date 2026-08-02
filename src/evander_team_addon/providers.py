@@ -1091,6 +1091,16 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional parent task in the same project.",
             ),
             _catalog_field(
+                "git_base_branch",
+                "Git base branch",
+                "string",
+                description=(
+                    "Optional durable task starting branch. Blank inherits the "
+                    "parent snapshot or the project default for a new root task."
+                ),
+                placeholder="main",
+            ),
+            _catalog_field(
                 "dependency_task_ids",
                 "Dependency task IDs",
                 "json",
@@ -3617,6 +3627,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
             "case_id",
             "state",
             "parent_task_id",
+            "git_base_branch",
             "dependency_task_ids",
             "integration_boundary",
             "deliverable_contract",
@@ -3659,6 +3670,11 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 definition_fields=definition_fields,
                 resolved_fields=resolved_fields,
             )
+            git_base_configured = _payload_field_configured(
+                "git_base_branch",
+                definition_fields=definition_fields,
+                resolved_fields=resolved_fields,
+            )
             dependencies_configured = _payload_field_configured(
                 "dependency_task_ids",
                 definition_fields=definition_fields,
@@ -3689,6 +3705,8 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 state=TeamTaskState(_optional_text(payload.get("state")) or "pending"),
                 parent_task_id=_optional_text(payload.get("parent_task_id")),
                 set_parent_task_id=parent_configured,
+                git_base_branch=_optional_text(payload.get("git_base_branch")),
+                set_git_base_branch=git_base_configured,
                 dependency_task_ids=(
                     _string_list(payload.get("dependency_task_ids"), "dependency_task_ids")
                     if dependencies_configured
@@ -7245,7 +7263,9 @@ def _create_project_repo_git_work_contexts(
                 task_id=task_id,
                 managed_repo_id=managed_repo_id,
             )
-            effective_base_branch = base_branch
+            effective_base_branch = (
+                _optional_text(task.get("git_base_branch")) or base_branch
+            )
             pinned_base_commit = None
             pinned_base_tree = None
             composition_git_sources = dependency_git_sources
@@ -7263,6 +7283,7 @@ def _create_project_repo_git_work_contexts(
                     agent_id=agent_id,
                     task_id=task_id,
                     agent_branch=agent_branch,
+                    base_branch=effective_base_branch,
                     dependency_git_sources=dependency_git_sources,
                 )
         except RuntimeError as exc:
@@ -7760,6 +7781,7 @@ def _prior_project_repo_task_base_commit(
     agent_id: str,
     task_id: str,
     agent_branch: str,
+    base_branch: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
 ) -> str | None:
     contexts = getattr(state, "git_work_contexts", {})
@@ -7768,9 +7790,8 @@ def _prior_project_repo_task_base_commit(
     matching_contexts = [
         context_model
         for context_model in contexts.values()
-        if _optional_text(getattr(context_model, "agent_id", None)) == agent_id
-        and _optional_text(getattr(context_model, "task_id", None)) == task_id
-        and _optional_text(getattr(context_model, "agent_branch", None)) == agent_branch
+        if _optional_text(getattr(context_model, "task_id", None)) == task_id
+        and _optional_text(getattr(context_model, "base_branch", None)) == base_branch
     ]
     expected_dependency_sources = [dict(row) for row in dependency_git_sources]
     provenance_matches = [

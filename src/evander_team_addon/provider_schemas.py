@@ -155,6 +155,7 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     case_id: ConfigValue | None = None
     state: ConfigValue | None = None
     parent_task_id: ConfigValue | None = None
+    git_base_branch: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
     integration_boundary: ConfigValue | None = None
     deliverable_contract: ConfigValue | None = None

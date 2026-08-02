@@ -109,6 +109,15 @@ The release package is the sealed description of one candidate: what work it con
 
 All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy unless <code>allow_ungated=true</code> was deliberately configured.
 
+Git inputs must also share one authoritative task base branch and exact base
+commit. Team returns <code>mixed_git_base_branches</code> before creating a
+package when they do not. To merge workstreams deliberately, create an explicit
+integration task on the chosen base and release only its accepted integrated
+deliverable. A task based on <code>feature/foo</code> does not publish there by
+implication; updating that pre-existing branch requires an explicit
+<code>canonical_branch="feature/foo"</code> and still uses exact-SHA,
+fast-forward, and destination-lease protections.
+
 This prevents policy drift after request time from silently redefining what was approved.
 
 > <span class="sidebar-kicker">Technical reference</span> **Request authority and frozen manifest**
@@ -125,6 +134,7 @@ This prevents policy drift after request time from silently redefining what was 
 > - accepted immutable deliverable reviews;
 > - reviewed change manifests;
 > - candidate commit and tree;
+> - task/release base branch and exact base commit;
 > - scope-validation result;
 > - ordered verification commands;
 > - release-review requirements;
@@ -397,12 +407,14 @@ remain the evidence records; they do not become independent merges against
 <code>main</code>.
 
 After that correction aggregate succeeds, Team performs one final release
-promotion from the pinned aggregate onto the then-current configured base
-branch. That main-integration result becomes the candidate before verification
-and review gates begin. A correction-to-correction conflict and a later
-aggregate-to-main conflict are therefore two distinct, serial package-level
-recovery boundaries. Recovery reuses the failed boundary's pinned base and
-never fans the package back out into per-finding promotions.
+promotion using the predecessor candidate workstream recorded on the successor
+release. It never rereads the project's mutable default. That integration result
+becomes the candidate before verification and review gates begin. A
+correction-to-correction conflict and a later aggregate-to-release conflict are
+therefore two distinct, serial package-level recovery boundaries. Recovery
+reuses the failed boundary's pinned branch and commit and never fans the package
+back out into per-finding promotions. The predecessor's explicit canonical
+publication destination is preserved on the successor.
 
 The coordination parent finishes when that successor exists. The new human
 approval must explicitly confirm every carried finding ID. Only then do those
