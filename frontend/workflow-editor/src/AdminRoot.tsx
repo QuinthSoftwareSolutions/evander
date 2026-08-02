@@ -1964,7 +1964,14 @@ export default function AdminRoot() {
   function openUserNotification(notification: UserNotification) {
     void markUserNotificationsRead([notification.id]);
     setUserNotificationsOpen(false);
-    const targetUrl = notification.target_url?.trim();
+    const conversationId =
+      notification.source === "team-chat" &&
+      typeof notification.metadata?.conversation_id === "string"
+        ? notification.metadata.conversation_id.trim()
+        : "";
+    const targetUrl = conversationId
+      ? adminHash("addon:team-addon", { view: "chat", conversation_id: conversationId })
+      : notification.target_url?.trim();
     if (!targetUrl) {
       return;
     }

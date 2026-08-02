@@ -110,6 +110,7 @@ const ADDON_TAB_PATTERN = /^addon:[a-z0-9][a-z0-9._-]{0,127}$/;
 const ADDON_IFRAME_HASH_PARAM_NAMES = [
   "view",
   "human_review_request_id",
+  "conversation_id",
 ] as const;
 
 export function tabsForExecutionBackend(

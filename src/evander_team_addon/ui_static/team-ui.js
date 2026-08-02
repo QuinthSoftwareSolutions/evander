@@ -186,7 +186,6 @@ let timelineState = emptyTimelineState();
 let chatState = emptyChatState();
 let chatRequestId = 0;
 let chatNewPickerOpen = false;
-let selectedChatConversationId = null;
 let selectedChatOperatorUserId = null;
 let chatSending = false;
 const pendingChatAttachments = new Map();
@@ -214,9 +213,14 @@ let costBackfillLoading = false;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
-let activeTeamView = initialHumanReviewDeepLink.enabled
-  ? "delivery"
-  : readStoredTeamView();
+const initialChatDeepLink = readChatDeepLink();
+let selectedChatConversationId = initialChatDeepLink.conversationId || null;
+let activeTeamView =
+  initialHumanReviewDeepLink.enabled
+    ? "delivery"
+    : initialChatDeepLink.enabled
+      ? "chat"
+      : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
@@ -868,7 +872,7 @@ function readStoredTeamView() {
   }
 }
 
-function readHumanReviewDeepLink() {
+function readAddonDeepLinkParams() {
   const params = new URLSearchParams(window.location.search);
   const hash = String(window.location.hash || "");
   const hashQueryIndex = hash.indexOf("?");
@@ -880,11 +884,27 @@ function readHumanReviewDeepLink() {
       }
     });
   }
+  return params;
+}
+
+function readHumanReviewDeepLink() {
+  const params = readAddonDeepLinkParams();
   const enabled = params.get("view") === "my-human-reviews";
   return {
     enabled,
     requestId: enabled
       ? String(params.get("human_review_request_id") || "").trim()
+      : "",
+  };
+}
+
+function readChatDeepLink() {
+  const params = readAddonDeepLinkParams();
+  const enabled = params.get("view") === "chat";
+  return {
+    enabled,
+    conversationId: enabled
+      ? String(params.get("conversation_id") || "").trim()
       : "",
   };
 }
@@ -1642,6 +1662,26 @@ function bindForms() {
     }
     event.preventDefault();
     void submitChatMessage(form);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    const chatComposer = event.target?.closest?.(
+      '[data-chat-message-form] textarea[name="body"]',
+    );
+    if (
+      !(chatComposer instanceof HTMLTextAreaElement) ||
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.isComposing
+    ) {
+      return;
+    }
+    const form = chatComposer.closest("form[data-chat-message-form]");
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    event.preventDefault();
+    form.requestSubmit();
   });
 
   elements.chatAttachmentPolicyForm?.addEventListener("submit", (event) => {
