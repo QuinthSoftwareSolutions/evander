@@ -21,6 +21,9 @@
 - Added task/API/MCP/Admin controls, exact base-commit propagation, mixed-base
   release rejection, correction/recovery provenance, and SQLite migration for
   active legacy workstreams.
+- Pinned verification and release-review correction tasks to the rejected
+  candidate branch, repaired still-unprepared correction tasks created with an
+  upstream base, and invalidated preparation blockers when that base changes.
 
 ## 2026-08-02 - Team Chat Membership Scope
 

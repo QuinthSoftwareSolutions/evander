@@ -32,8 +32,10 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.services.domain.release_gates import (
+    _materialize_candidate_verification_correction,
     begin_release_gates,
     create_release_reviews_or_approve,
+    materialize_release_review_rejection_correction,
     record_release_verification_result,
     retry_release_gate,
 )
@@ -195,6 +197,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
     release, _promotion = _release_and_promotion(verification_commands=[command])
     release.owner_agent_id = "lead"
+    release.git_base_branch = "team/team/releases/previous"
     release.deliverable_ids = ["source-deliverable"]
     assert release.manifest is not None
     release.manifest.deliverables = [
@@ -278,6 +281,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert task.project_id == release.project_id
     assert task.state.value == "pending"
     assert task.created_by_actor == "system:release-verification-correction"
+    assert task.git_base_branch == release.release_branch
     assert task.integration_boundary is False
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
@@ -322,6 +326,20 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     )
     assert wake["payload"]["agent_id"] == "coder"
     assert wake["payload"]["reason"] == "inbox"
+
+    task.git_base_branch = release.git_base_branch
+    repair_result = _result()
+    assert run.finished_at is not None
+    _materialize_candidate_verification_correction(
+        state,
+        release=release,
+        run=run,
+        error="release tests failed",
+        result=repair_result,
+        now=run.finished_at,
+    )
+    assert task.git_base_branch == release.release_branch
+    assert repair_result["updated_task_ids"] == [task.id]
 
 
 def test_candidate_verification_failure_falls_back_to_team_manager() -> None:
@@ -391,6 +409,7 @@ def test_candidate_verification_failure_falls_back_to_team_manager() -> None:
 def test_rejected_release_review_creates_candidate_rooted_correction_task() -> None:
     release, _promotion = _release_and_promotion()
     release.owner_agent_id = "lead"
+    release.git_base_branch = "team/team/releases/previous"
     release.candidate_tree_hash = "d" * 40
     assert release.manifest is not None
     release.manifest.candidate_tree_hash = release.candidate_tree_hash
@@ -459,6 +478,7 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     task = state.tasks[release.review_correction_task_id]
     assert task.owner_agent_id == "lead"
     assert task.created_by_actor == "system:release-review-correction"
+    assert task.git_base_branch == release.release_branch
     assert task.integration_boundary is False
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
@@ -481,6 +501,20 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     )
     assert wake["payload"]["agent_id"] == "lead"
     assert wake["payload"]["reason"] == "inbox"
+
+    task.git_base_branch = release.git_base_branch
+    repair_result = _result()
+    assert review.decision_at is not None
+    materialize_release_review_rejection_correction(
+        state,
+        release=release,
+        review=review,
+        findings=list(review.findings),
+        result=repair_result,
+        now=review.decision_at,
+    )
+    assert task.git_base_branch == release.release_branch
+    assert repair_result["updated_task_ids"] == [task.id]
     with pytest.raises(TaskAssessmentBoundaryError) as raised:
         require_task_can_finish(state, task.id)
     assert raised.value.code == "deliverable_contract_direct_finish_forbidden"

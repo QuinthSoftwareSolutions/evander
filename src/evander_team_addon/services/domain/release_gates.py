@@ -32,6 +32,7 @@ from ...models import (
     agent_has_project_assignment,
     project_lead_agent_id,
 )
+from .case_task import _set_task_git_base_branch
 from .common import _append_unique, _required_text, utc_now
 from .blockers import (
     open_or_get_blocker,
@@ -49,6 +50,43 @@ from .task_assessment import deliverable_source_lineage, require_release_scope
 
 
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
+
+_TERMINAL_CANDIDATE_CORRECTION_TASK_STATES = {
+    TeamTaskState.FINISHED,
+    TeamTaskState.ACCEPTED,
+    TeamTaskState.REJECTED,
+    TeamTaskState.CANCELLED,
+}
+
+
+def _candidate_correction_git_base(release: ReleasePackage) -> str | None:
+    """Return the branch that contains the exact rejected candidate."""
+
+    return release.release_branch or release.git_base_branch
+
+
+def _reconcile_candidate_correction_task_git_base(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    release: ReleasePackage,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Pin an active, unprepared correction task to its rejected candidate."""
+
+    if task.state in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+        return
+    candidate_base = _candidate_correction_git_base(release)
+    if candidate_base is None or task.git_base_branch == candidate_base:
+        return
+    if _set_task_git_base_branch(
+        state,
+        task=task,
+        git_base_branch=candidate_base,
+    ):
+        task.updated_at = now
+        result.setdefault("updated_task_ids", []).append(task.id)
 
 
 def _release_review_scope_error(
@@ -462,7 +500,7 @@ def _materialize_candidate_verification_correction(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
-            git_base_branch=release.release_branch or release.git_base_branch,
+            git_base_branch=_candidate_correction_git_base(release),
             priority=0,
             state=TeamTaskState.PENDING,
             task_kind=TeamTaskKind.SUPPORT,
@@ -486,12 +524,14 @@ def _materialize_candidate_verification_correction(
         raise ValueError(
             f"reserved release verification correction task id {task_id} is already in use"
         )
-    elif task.state not in {
-        TeamTaskState.FINISHED,
-        TeamTaskState.ACCEPTED,
-        TeamTaskState.REJECTED,
-        TeamTaskState.CANCELLED,
-    }:
+    elif task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+        _reconcile_candidate_correction_task_git_base(
+            state,
+            task=task,
+            release=release,
+            result=result,
+            now=now,
+        )
         _require_candidate_correction_deliverable(task, now=now)
     run.correction_task_id = task.id
 
@@ -814,7 +854,7 @@ def materialize_release_review_rejection_correction(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
-            git_base_branch=release.release_branch or release.git_base_branch,
+            git_base_branch=_candidate_correction_git_base(release),
             priority=0,
             state=TeamTaskState.PENDING,
             task_kind=TeamTaskKind.SUPPORT,
@@ -839,12 +879,14 @@ def materialize_release_review_rejection_correction(
             f"reserved release review correction task id {task_id} is already in use"
         )
     else:
-        if task.state not in {
-            TeamTaskState.FINISHED,
-            TeamTaskState.ACCEPTED,
-            TeamTaskState.REJECTED,
-            TeamTaskState.CANCELLED,
-        }:
+        if task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+            _reconcile_candidate_correction_task_git_base(
+                state,
+                task=task,
+                release=release,
+                result=result,
+                now=now,
+            )
             _require_candidate_correction_deliverable(task, now=now)
         task.description = description
         task.updated_at = now
