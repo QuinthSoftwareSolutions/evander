@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -31,12 +32,14 @@ from evander_team_addon.models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    TaskCancellation,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.candidate_correction_reconciliation_service import (
     CandidateCorrectionReconciliationService,
 )
 from evander_team_addon.services.commands import TeamReviewCommandService
+from evander_team_addon.services.domain.review import _cascade_review_decision
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
@@ -110,7 +113,10 @@ def _candidate_correction_state(
         priority=0,
         state=TeamTaskState.FINISHED,
         title="Correct the rejected release candidate",
-        description="Fix the rejected release-gate finding.",
+        description=(
+            "Fix the rejected release-gate finding. "
+            "Release reviews: release-review"
+        ),
         created_by_actor=task_actor,
         git_base_branch=predecessor.release_branch,
         deliverable_ids=["correction-deliverable"],
@@ -172,6 +178,7 @@ def _candidate_correction_state(
             message="Release review rejected the candidate.",
         )
         predecessor.review_correction_task_id = task.id
+        predecessor.review_request_ids = ["release-review"]
         state.review_requests["release-review"] = ReviewRequest(
             id="release-review",
             release_package_id=predecessor.id,
@@ -180,6 +187,8 @@ def _candidate_correction_state(
             reviewer_agent_id="reviewer",
             state=TeamRecordState.REJECTED,
             findings=["Correct the rejected candidate."],
+            created_at=datetime.now(tz=UTC) - timedelta(minutes=2),
+            decision_at=datetime.now(tz=UTC) - timedelta(minutes=1),
         )
 
     state.release_packages[predecessor.id] = predecessor
@@ -229,6 +238,119 @@ def test_resolved_generated_candidate_correction_creates_one_successor(
     assert replay["changed"] is False
     assert len(replayed_state.release_packages) == 2
     assert len(repository.list_outbox_records()) == 1
+
+
+def test_release_review_correction_waits_for_every_current_review(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review")
+    predecessor = seeded.release_packages["release-predecessor"]
+    predecessor.review_request_ids.append("release-review-pending")
+    seeded.review_requests["release-review-pending"] = ReviewRequest(
+        id="release-review-pending",
+        release_package_id=predecessor.id,
+        candidate_commit_sha=CANDIDATE_COMMIT,
+        reviewed_commit_sha=CANDIDATE_COMMIT,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.PENDING,
+        created_at=datetime.now(tz=UTC),
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    pending = CandidateCorrectionReconciliationService(repository).reconcile()
+
+    assert pending["changed"] is False
+    assert len(repository.read().release_packages) == 1
+
+    def _accept_sibling_review(state: TeamState) -> TeamState:
+        state.review_requests["release-review-pending"].state = (
+            TeamRecordState.ACCEPTED
+        )
+        return state
+
+    repository.update(_accept_sibling_review)
+    completed = CandidateCorrectionReconciliationService(repository).reconcile()
+
+    assert completed["changed"] is True
+    assert len(completed["created_successor_release_package_ids"]) == 1
+
+
+def test_cancelled_generated_correction_does_not_reconcile_successor(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    task = seeded.tasks["correction-task"]
+    task.state = TeamTaskState.CANCELLED
+    task.cancellation = TaskCancellation(
+        reason_code="abandoned",
+        reason="The correction was intentionally abandoned.",
+        actor_kind="operator",
+        actor_id="operator",
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+
+    assert result["changed"] is False
+    assert len(state.release_packages) == 1
+    assert state.blockers == {}
+
+
+def test_late_release_review_rejection_reopens_accepted_correction(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review")
+    predecessor = seeded.release_packages["release-predecessor"]
+    task_id = (
+        "release-review-correction-"
+        + sha256(predecessor.id.encode("utf-8")).hexdigest()[:24]
+    )
+    task = seeded.tasks.pop("correction-task")
+    task.id = task_id
+    seeded.tasks[task.id] = task
+    seeded.deliverables["correction-deliverable"].task_id = task.id
+    predecessor.review_correction_task_id = task.id
+    predecessor.review_request_ids.append("release-review-late")
+    late_review = ReviewRequest(
+        id="release-review-late",
+        release_package_id=predecessor.id,
+        candidate_commit_sha=CANDIDATE_COMMIT,
+        reviewed_commit_sha=CANDIDATE_COMMIT,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.PENDING,
+    )
+    seeded.review_requests[late_review.id] = late_review
+    decision_result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "created_inbox_item_ids": [],
+    }
+
+    _cascade_review_decision(
+        seeded,
+        review=late_review,
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Correct the late release-review finding."],
+        projects_to_recalc=set(),
+        result=decision_result,
+    )
+
+    task = seeded.tasks[task_id]
+    deliverable = seeded.deliverables["correction-deliverable"]
+    assert task.state == TeamTaskState.IN_PROGRESS
+    assert deliverable.rework_requested_at is not None
+    late_notice = seeded.inbox[decision_result["created_inbox_item_ids"][0]]
+    assert late_notice.payload["supersedes_deliverable_ids"] == [deliverable.id]
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+
+    assert result["changed"] is False
+    assert len(repository.read().release_packages) == 1
 
 
 def test_invalid_generated_candidate_correction_opens_one_durable_blocker(
@@ -358,3 +480,35 @@ def test_unexpected_successor_packaging_failure_becomes_durable_blocker(
     blocker = next(iter(state.blockers.values()))
     assert blocker.reason_code == "candidate_correction_successor_failed"
     assert "RuntimeError: synthetic packaging failure" in blocker.details
+
+
+def test_unrelated_duplicate_release_is_not_recorded_as_successor(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded.release_packages["release-unrelated"] = ReleasePackage(
+        id="release-unrelated",
+        project_id="project",
+        owner_agent_id="lead",
+        deliverable_ids=["correction-deliverable"],
+        state=TeamRecordState.PENDING,
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+
+    assert result["changed"] is True
+    assert result.get("created_successor_release_package_ids") is None
+    assert not any(
+        release.supersedes_release_package_id == "release-predecessor"
+        for release in state.release_packages.values()
+    )
+    blocker = next(iter(state.blockers.values()))
+    assert blocker.reason_code == "candidate_correction_successor_failed"
+    assert "does not directly supersede" in blocker.details
+    assert not any(
+        item.payload.get("kind") == "candidate_correction_resolution"
+        for item in state.inbox.values()
+    )

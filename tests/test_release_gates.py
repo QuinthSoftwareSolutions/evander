@@ -288,6 +288,8 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert "Candidate commit: candidate-sha" in task.description
     assert "Do not merge or rebase the current project base branch" in task.description
     assert "submit the changed Git work as the correction deliverable" in task.description
+    assert "Team automatically creates the successor release" in task.description
+    assert "create a replacement release" not in task.description
     assert "select reviewers" not in task.description
     assert "workflow policy owns" not in task.description
     assert result["created_task_ids"] == [task.id]
@@ -319,6 +321,8 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     ]
     assert "rooted at candidate_commit_sha" in item.payload["next_action"]
     assert "Do not merge or rebase" in item.payload["next_action"]
+    assert "Team automatically creates the successor release" in item.payload["next_action"]
+    assert "create a replacement release" not in item.payload["next_action"]
     wake = next(
         event
         for event in result["events"]
@@ -486,6 +490,8 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert task.deliverable_contract.require_git_provenance is True
     assert "Release reviews: release-review" in task.description
     assert "PLC device mappings persist opcTagId 0." in task.description
+    assert "Team automatically creates the successor release" in task.description
+    assert "create a replacement release" not in task.description
     assert result["created_task_ids"] == [task.id]
     assert result["release_review_correction_task_id"] == task.id
     assert result["release_review_correction_task_owner_agent_id"] == "lead"
@@ -496,6 +502,8 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert inbox.priority.value == "high"
     assert inbox.payload["kind"] == "release_review_rejection_correction_work"
     assert inbox.payload["review_request_id"] == review.id
+    assert "Team automatically creates the successor release" in inbox.payload["next_action"]
+    assert "create a replacement release" not in inbox.payload["next_action"]
     wake = next(
         event
         for event in result["events"]

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-02 - Rejected-Candidate Reconciliation Follow-ups
+
+- Waited for every current release review before creating an automatic
+  correction successor, excluded cancelled correction tasks, and rejected
+  deduplicated packages that do not directly supersede the failed release.
+- Preserved fresh actionable release notices when an ordinary root deliverable
+  is reopened and reaccepted, while retaining handled automatic-correction
+  history.
+- Aligned verification and agent-review correction task prompts with automatic
+  successor creation.
+
 ## 2026-08-02 - Lossless Retained Team Wake Deduplication
 
 - Removed retained-wake runtime-attention rows only after carrying their scoped

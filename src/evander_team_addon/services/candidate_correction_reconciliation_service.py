@@ -15,6 +15,7 @@ from ..models import (
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TeamTaskState,
     project_lead_agent_id,
     utc_now,
 )
@@ -40,6 +41,10 @@ _CORRECTION_TASK_ACTORS = {
     "system:release-verification-correction",
 }
 _BLOCKER_SOURCE_PREFIX = "candidate-correction-successor:"
+_COMPLETED_RELEASE_REVIEW_STATES = {
+    TeamRecordState.ACCEPTED,
+    TeamRecordState.REJECTED,
+}
 
 
 def is_automatic_candidate_correction_task(task: AgentTask) -> bool:
@@ -127,6 +132,8 @@ def _has_reconciliation_blocker(
 
 
 def _task_is_resolved(state: TeamState, task: AgentTask) -> bool:
+    if task.state == TeamTaskState.CANCELLED:
+        return False
     try:
         require_task_resolved(
             state,
@@ -138,6 +145,74 @@ def _task_is_resolved(state: TeamState, task: AgentTask) -> bool:
     return True
 
 
+def _release_review_correction_is_ready(
+    state: TeamState,
+    predecessor: ReleasePackage,
+    correction_task: AgentTask,
+) -> bool:
+    failure = predecessor.gate_failure
+    if failure is None or failure.stage != "review":
+        return True
+    current_reviews = [
+        state.review_requests[review_id]
+        for review_id in predecessor.review_request_ids
+        if review_id in state.review_requests
+        and state.review_requests[review_id].superseded_by_review_request_id is None
+        and state.review_requests[review_id].retired_at is None
+    ]
+    if not current_reviews or any(
+        review.state not in _COMPLETED_RELEASE_REVIEW_STATES
+        for review in current_reviews
+    ):
+        return False
+
+    rejected_review_ids = {
+        review.id
+        for review in current_reviews
+        if review.state == TeamRecordState.REJECTED
+    }
+    latest_rejection_at = max(
+        (
+            review.decision_at
+            for review in current_reviews
+            if review.state == TeamRecordState.REJECTED
+            and review.decision_at is not None
+        ),
+        default=None,
+    )
+    if latest_rejection_at is not None and any(
+        deliverable.created_at < latest_rejection_at
+        for deliverable in state.deliverables.values()
+        if deliverable.task_id == correction_task.id
+        and deliverable.state == TeamRecordState.ACCEPTED
+        and deliverable.superseded_by_deliverable_id is None
+    ):
+        return False
+    incorporated_review_ids = {
+        review_id
+        for review_id in rejected_review_ids
+        if review_id in correction_task.description
+    }
+    for item in state.inbox.values():
+        if (
+            item.task_id != correction_task.id
+            or item.payload.get("kind")
+            != "release_review_rejection_correction_work"
+        ):
+            continue
+        review_id = item.payload.get("review_request_id")
+        if isinstance(review_id, str):
+            incorporated_review_ids.add(review_id)
+        review_ids = item.payload.get("review_request_ids")
+        if isinstance(review_ids, list):
+            incorporated_review_ids.update(
+                review_id for review_id in review_ids if isinstance(review_id, str)
+            )
+    return bool(rejected_review_ids) and rejected_review_ids.issubset(
+        incorporated_review_ids
+    )
+
+
 def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
     release_ids: list[str] = []
     for predecessor in sorted(
@@ -147,7 +222,11 @@ def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
         if not _is_candidate_correction_predecessor(predecessor):
             continue
         task = _correction_task(state, predecessor)
-        if task is None or not _task_is_resolved(state, task):
+        if (
+            task is None
+            or not _task_is_resolved(state, task)
+            or not _release_review_correction_is_ready(state, predecessor, task)
+        ):
             continue
         successors = _direct_successors(state, predecessor.id)
         has_blocker = _has_reconciliation_blocker(state, predecessor.id)
@@ -319,7 +398,15 @@ def reconcile_candidate_correction_successors(
     changed = False
     for predecessor in predecessors:
         correction_task = _correction_task(state, predecessor)
-        if correction_task is None or not _task_is_resolved(state, correction_task):
+        if (
+            correction_task is None
+            or not _task_is_resolved(state, correction_task)
+            or not _release_review_correction_is_ready(
+                state,
+                predecessor,
+                correction_task,
+            )
+        ):
             continue
         existing_successors = _direct_successors(state, predecessor.id)
         if existing_successors:
@@ -460,14 +547,40 @@ def reconcile_candidate_correction_successors(
             continue
 
         successor = state.release_packages[created_id]
-        result.setdefault("created_successor_release_package_ids", []).append(
-            created_id
-        )
-        result.setdefault("release_package_ids", []).append(created_id)
-        result.setdefault("events", []).extend(package_result.get("events") or [])
-        result.setdefault("git_promotion_event_ids", []).extend(
-            package_result.get("git_promotion_event_ids") or []
-        )
+        if successor.supersedes_release_package_id != predecessor.id:
+            details = (
+                f"release package {successor.id} has the same deliverables but does "
+                f"not directly supersede rejected predecessor {predecessor.id}"
+            )
+            changed = (
+                _open_reconciliation_blocker(
+                    state,
+                    predecessor=predecessor,
+                    correction_task=correction_task,
+                    details=details,
+                    result=result,
+                    now=effective_now,
+                )
+                or changed
+            )
+            result.setdefault("candidate_correction_errors", {})[
+                predecessor.id
+            ] = details
+            continue
+
+        if package_result.get("created"):
+            result.setdefault("created_successor_release_package_ids", []).append(
+                created_id
+            )
+            result.setdefault("release_package_ids", []).append(created_id)
+            result.setdefault("events", []).extend(package_result.get("events") or [])
+            result.setdefault("git_promotion_event_ids", []).extend(
+                package_result.get("git_promotion_event_ids") or []
+            )
+        else:
+            result.setdefault("existing_successor_release_package_ids", []).append(
+                created_id
+            )
         resolve_active_blockers_for_source(
             state,
             source_kind=TeamBlockerSourceKind.EXPLICIT,

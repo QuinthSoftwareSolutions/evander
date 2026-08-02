@@ -33,7 +33,7 @@ from ...models import (
     project_lead_agent_id,
 )
 from .case_task import _set_task_git_base_branch
-from .common import _append_unique, _required_text, utc_now
+from .common import _append_unique, _required_text, _set_task_state, utc_now
 from .blockers import (
     open_or_get_blocker,
     open_release_blocker,
@@ -568,11 +568,11 @@ def _materialize_candidate_verification_correction(
                 "candidate_tree_hash. Do not merge or rebase the current project base "
                 "branch into this correction. Fix the verifier failure and submit the "
                 "changed Git work as the correction deliverable. After that deliverable "
-                "is accepted, use it to "
-                "create a replacement release that supersedes this rejected package. Do "
+                "is accepted and reviewed, Team automatically creates the successor "
+                "release. Do "
                 "not retry or resubmit the unchanged candidate. Do not finish this task "
-                "directly; its accepted Git deliverable is required to continue the release "
-                "loop."
+                "directly or request a release; its accepted reviewed Git deliverable is "
+                "required to continue the automatic release loop."
             ),
         },
         result=result,
@@ -776,11 +776,11 @@ def _candidate_verification_correction_description(
         "The task worktree must be created from the exact candidate commit and tree "
         "above. Do not merge or rebase the current project base branch into this "
         "correction. Make only the correction required by the verifier evidence and "
-        "submit the changed Git work as the correction deliverable. After acceptance, "
-        "create a replacement "
-        "release that supersedes the rejected package. Do not retry or resubmit the "
-        "unchanged candidate. Do not finish this task directly; its accepted Git "
-        "deliverable is required to continue the release loop."
+        "submit the changed Git work as the correction deliverable. After acceptance and "
+        "review, Team automatically creates the successor release. Do not request a "
+        "release, retry or resubmit the unchanged candidate, or finish this task directly; "
+        "its accepted reviewed Git deliverable is required to continue the automatic "
+        "release loop."
     )
 
 
@@ -898,6 +898,36 @@ def materialize_release_review_rejection_correction(
         task.description = description
         task.updated_at = now
 
+    late_rework_deliverable_ids: list[str] = []
+    review_decision_at = review.decision_at or now
+    if task.state in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}:
+        for deliverable_id in task.deliverable_ids:
+            deliverable = state.deliverables.get(deliverable_id)
+            if (
+                deliverable is None
+                or deliverable.state != TeamRecordState.ACCEPTED
+                or deliverable.superseded_by_deliverable_id is not None
+                or deliverable.rework_requested_at is not None
+                or deliverable.created_at >= review_decision_at
+            ):
+                continue
+            deliverable.rework_requested_at = now
+            deliverable.rework_requested_by_agent_id = review.reviewer_agent_id
+            deliverable.rework_reason = (
+                f"Release review {review.id} added a rejected-candidate finding "
+                "after this correction was accepted."
+            )
+            late_rework_deliverable_ids.append(deliverable.id)
+        if late_rework_deliverable_ids:
+            task.completion = None
+            _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+            _require_candidate_correction_deliverable(task, now=now)
+            task.updated_at = now
+            result["updated_task_ids"] = _append_unique(
+                result.setdefault("updated_task_ids", []),
+                task.id,
+            )
+
     release.review_correction_task_id = task.id
     existing_inbox = next(
         (
@@ -940,16 +970,24 @@ def materialize_release_review_rejection_correction(
                 "assignment_reason": assignment_reason,
                 "summary": "Correct the rejected release review on the exact candidate.",
                 "findings": aggregated_findings,
+                "supersedes_deliverable_ids": late_rework_deliverable_ids,
                 "next_action": (
                     "Work only in the task worktree rooted at candidate_commit_sha and "
                     "candidate_tree_hash. Do not merge or rebase the current project base "
                     "branch into this correction. Fix the release-review finding and submit "
-                    "the changed Git work as the correction deliverable. After that "
-                    "deliverable is accepted, use the accepted "
-                    "correction to create a replacement release that supersedes this "
-                    "rejected package. Do not retry or resubmit the unchanged candidate. "
-                    "Do not finish this task directly; its accepted Git deliverable is "
-                    "required to continue the release loop."
+                    "the changed Git work as the correction deliverable"
+                    + (
+                        ", superseding "
+                        + ", ".join(late_rework_deliverable_ids)
+                        if late_rework_deliverable_ids
+                        else ""
+                    )
+                    + ". After that "
+                    "deliverable is accepted and reviewed, Team automatically creates the "
+                    "successor release. Do not request a release, retry or resubmit the "
+                    "unchanged candidate, or finish this task directly; its accepted "
+                    "reviewed Git deliverable is required to continue the automatic "
+                    "release loop."
                 ),
             },
             result=result,
@@ -1036,9 +1074,9 @@ def _release_review_correction_description(
         "The task worktree must be created from the exact candidate commit and tree "
         "above. Do not merge or rebase the current project base branch into this "
         "correction. Make only the correction required by the review evidence and submit "
-        "the changed Git work as the correction deliverable. After acceptance, create a "
-        "replacement release that supersedes the rejected package. Do not retry or "
-        "resubmit the unchanged candidate."
+        "the changed Git work as the correction deliverable. After acceptance and review, "
+        "Team automatically creates the successor release. Do not request a release, retry "
+        "or resubmit the unchanged candidate."
     )
 
 

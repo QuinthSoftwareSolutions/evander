@@ -262,7 +262,11 @@ def queue_root_task_resolution(
         (
             item
             for item in state.inbox.values()
-            if item.recipient_agent_id == project.lead_agent_id
+            if (
+                automatic_candidate_correction
+                or item.state == TeamInboxItemState.PENDING
+            )
+            and item.recipient_agent_id == project.lead_agent_id
             and item.payload.get("kind") == notice_kind
             and item.payload.get("task_id") == task.id
             and item.payload.get("deliverable_id") == deliverable_id
