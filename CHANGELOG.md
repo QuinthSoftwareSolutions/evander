@@ -5,6 +5,8 @@
 - Resolved human-review correction cases when their deterministic successor
   release has been created, including one-time repair of stale active cases
   whose successor and coordination task already exist.
+- Kept correction cases active when successor creation only deduplicates against
+  an active package that does not supersede the rejected predecessor.
 
 ## 2026-08-02 - Terminal Release Attention Cleanup
 

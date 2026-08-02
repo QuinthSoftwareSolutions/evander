@@ -770,6 +770,17 @@ def _reconcile_case(
             now=now,
         )
         return True
+    returned_package = state.release_packages.get(created_id)
+    returned_successor = (
+        returned_package is not None
+        and returned_package.supersedes_release_package_id == predecessor.id
+    )
+    if not package_result["created"] and not returned_successor:
+        result.setdefault("deduplicated_release_package_ids", []).append(
+            created_id
+        )
+        result.setdefault("waiting_case_ids", []).append(case.id)
+        return changed
     for project_id in sorted(projects_to_recalculate):
         _recalculate_project_status(state, project_id)
     _finish_coordination_parent(parent, now=now)
@@ -779,7 +790,12 @@ def _reconcile_case(
         result=result,
         now=now,
     )
-    result.setdefault("created_successor_release_package_ids", []).append(created_id)
+    package_result_key = (
+        "created_successor_release_package_ids"
+        if package_result["created"]
+        else "existing_successor_release_package_ids"
+    )
+    result.setdefault(package_result_key, []).append(created_id)
     result.setdefault("events", []).extend(package_result.get("events") or [])
     result.setdefault("git_promotion_event_ids", []).extend(
         package_result.get("git_promotion_event_ids") or []

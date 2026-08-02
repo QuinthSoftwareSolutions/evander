@@ -339,6 +339,45 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     ) == 1
 
 
+def test_deduplicated_non_successor_release_keeps_correction_case_active(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _seed_active_package(state: TeamState) -> TeamState:
+        state.release_packages["release-existing"] = ReleasePackage(
+            id="release-existing",
+            project_id="project",
+            deliverable_ids=[
+                "source-deliverable",
+                "correction-deliverable",
+            ],
+            state=TeamRecordState.PENDING,
+        )
+        return state
+
+    repo.update(_seed_active_package)
+
+    first = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    assert first["waiting_case_ids"] == ["human-case"]
+    assert first["deduplicated_release_package_ids"] == ["release-existing"]
+    assert "created_successor_release_package_ids" not in first
+    assert state.cases["human-case"].status == TeamCaseStatus.IN_PROGRESS
+    assert state.tasks["human-correction-aggregate"].state == TeamTaskState.PENDING
+    assert not any(
+        release.supersedes_release_package_id == "release-rejected"
+        for release in state.release_packages.values()
+    )
+
+    revision = state.revision
+    replay = HumanCorrectionReconciliationService(repo).reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == revision
+    assert repo.read().cases["human-case"].status == TeamCaseStatus.IN_PROGRESS
+
+
 def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
     tmp_path: Path,
 ) -> None:
