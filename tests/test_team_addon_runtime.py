@@ -1863,6 +1863,81 @@ def test_compact_wake_context_omits_resolved_and_closed_cases() -> None:
     assert context["omitted_counts"]["cases_non_current"] == 2
 
 
+def test_compact_wake_context_keeps_only_references_to_terminal_releases() -> None:
+    rejected_release_ids = [f"release-rejected-{index}" for index in range(6)]
+    lease = {
+        "agent": {"id": "backend"},
+        "reason": "inbox",
+        "dispatch": {
+            "id": "dispatch-terminal-release",
+            "cause_kind": "inbox",
+            "cause_id": "inbox-terminal-release",
+            "inbox_item_ids": ["inbox-terminal-release"],
+            "project_ids": ["project"],
+        },
+        "inbox": [
+            {
+                "id": "inbox-terminal-release",
+                "item_type": "status_request",
+                "state": "pending",
+                "payload": {
+                    "release_package_id": rejected_release_ids[0],
+                    "message": "Inspect the historical release outcome if needed.",
+                },
+            }
+        ],
+        "release_packages": {
+            **{
+                release_id: {
+                    "id": release_id,
+                    "project_id": "project",
+                    "state": "rejected",
+                    "error": "candidate verification failed",
+                    "next_action": "submit_changed_release",
+                    "next_action_hint": "Submit changed reviewed content.",
+                }
+                for release_id in rejected_release_ids
+            },
+            "release-accepted": {
+                "id": "release-accepted",
+                "project_id": "project",
+                "state": "accepted",
+                "error": "stale historical error",
+                "supersedes_release_package_id": rejected_release_ids[-1],
+            },
+        },
+        "runtime_attention": [
+            *[
+                {
+                    "id": release_id,
+                    "kind": "blocked_release_package",
+                    "state": "rejected",
+                    "project_id": "project",
+                    "release_package_id": release_id,
+                    "error": "candidate verification failed",
+                }
+                for release_id in rejected_release_ids
+            ],
+            {
+                "id": "release-accepted",
+                "kind": "blocked_release_package",
+                "state": "accepted",
+                "project_id": "project",
+                "release_package_id": "release-accepted",
+                "error": "stale historical error",
+            },
+        ],
+    }
+
+    context = build_compact_wake_context(lease)
+
+    assert context["release_packages"] == {}
+    assert context["inbox"][0]["payload"]["release_package_id"] == rejected_release_ids[0]
+    assert "runtime_attention" not in context
+    assert context["omitted_counts"]["release_packages_non_current"] == 7
+    assert "Release work is present in this wake" not in _build_prompt(lease)
+
+
 def test_latest_failed_action_feedback_is_leased_once(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     base_time = datetime(2026, 1, 1, tzinfo=UTC)
@@ -4179,11 +4254,10 @@ def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) 
         in context["release_packages"]["rel-1"]["next_action_hint"]
     )
     assert "git_release_recoveries" in context["release_packages"]["rel-1"]["next_action_hint"]
-    assert any(
+    assert not any(
         row["kind"] == "blocked_release_package"
         and row["release_package_id"] == "rel-1"
-        and "promotion target branch team/team/releases/rel-1" in row["next_action_hint"]
-        for row in context["runtime_attention"]
+        for row in context.get("runtime_attention", [])
     )
 
 

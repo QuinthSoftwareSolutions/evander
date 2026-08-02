@@ -240,11 +240,13 @@ def build_compact_wake_context(
         releases,
         omitted_counts,
     )
+    visible_release_ids = set(context["release_packages"])
 
     runtime_attention, hidden_attention_count, out_of_scope_attention_count = (
         _runtime_attention_rows(
             lease.get("runtime_attention"),
             dispatch=dispatch,
+            visible_release_ids=visible_release_ids,
         )
     )
     _add_omitted(omitted_counts, "runtime_attention_hidden_failed_actions", hidden_attention_count)
@@ -1304,9 +1306,7 @@ def _current_release_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
     skipped = 0
     for row in rows:
         state = _optional_text(row.get("state"))
-        if state in {"accepted", "rejected"} and not (
-            row.get("error") or row.get("next_action") or row.get("next_action_hint")
-        ):
+        if state in {"accepted", "rejected"}:
             skipped += 1
             continue
         current.append(row)
@@ -1317,6 +1317,7 @@ def _runtime_attention_rows(
     value: object,
     *,
     dispatch: Mapping[str, Any],
+    visible_release_ids: set[str],
 ) -> tuple[list[Mapping[str, Any]], int, int]:
     rows = _mapping_rows(value)
     visible: list[Mapping[str, Any]] = []
@@ -1326,6 +1327,12 @@ def _runtime_attention_rows(
         if row.get("kind") == "failed_action_record":
             hidden += 1
             continue
+        if row.get("kind") == "blocked_release_package":
+            if _optional_text(row.get("state")) in {"accepted", "rejected"}:
+                continue
+            release_id = _optional_text(row.get("release_package_id"))
+            if release_id in visible_release_ids:
+                continue
         if not _runtime_attention_matches_dispatch(row, dispatch):
             out_of_scope += 1
             continue

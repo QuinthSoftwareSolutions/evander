@@ -7328,6 +7328,11 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     for release in sorted(
         state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)
     ):
+        if release.state in {
+            TeamRecordState.ACCEPTED,
+            TeamRecordState.REJECTED,
+        }:
+            continue
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
         next_action_hint = _release_next_action_hint(state, release)

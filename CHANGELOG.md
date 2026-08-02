@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-02 - Terminal Release Attention Cleanup
+
+- Kept accepted and rejected Team release packages in immutable release history
+  while excluding their stale failures from Workspace attention and agent wake
+  prompts. Active blocked releases remain actionable without duplicating their
+  recovery context in runtime attention.
+
 ## 2026-08-02 - Team Chat Membership Scope
 
 - Restricted agent wake context and outbound Team Chat messages to direct
