@@ -159,6 +159,8 @@ from evander_team_addon.services.commands import (
 )
 from evander_team_addon.services.domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
+    _manager_fallback_review_routing_authorities,
+    _manager_fallback_summary_payload,
 )
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
@@ -4418,6 +4420,75 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
     assert "review-routed-to-luke-again" not in state.review_requests
     assert state.deliverables["deliverable-stalled"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
+def test_manager_fallback_does_not_route_new_review_into_sealed_cohort(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+    sealed_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seal_existing_review(state: TeamState) -> TeamState:
+        deliverable = state.deliverables["deliverable-stalled"]
+        review = state.review_requests["review-manager"]
+        deliverable.review_cohort_id = "review-cohort-deliverable-stalled"
+        deliverable.review_cohort_sealed_at = sealed_at
+        review.review_cohort_id = deliverable.review_cohort_id
+        return state
+
+    state = repo.update(_seal_existing_review)
+    summary = _manager_fallback_summary_payload(
+        state,
+        team=state.teams["team"],
+        manager=state.agents["manager"],
+        now=sealed_at,
+    )
+
+    assert summary["summary_counts"]["pending_review_request_count"] == 1
+    assert summary["routing_gaps"] == []
+    assert _manager_fallback_review_routing_authorities(state, summary=summary) == []
+
+
+def test_manager_fallback_review_authority_fails_closed_after_cohort_seals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo, make_review_non_actionable=True)
+    leased_at = datetime(2026, 1, 1, tzinfo=UTC)
+    lease = _lease_manager_fallback(repo, now=leased_at)
+    assert lease["dispatch"]["review_routing_authorities"]
+
+    def _seal_blocked_review(state: TeamState) -> TeamState:
+        deliverable = state.deliverables["deliverable-stalled"]
+        review = state.review_requests["review-manager"]
+        deliverable.review_cohort_id = "review-cohort-deliverable-stalled"
+        deliverable.review_cohort_sealed_at = leased_at + timedelta(seconds=1)
+        review.review_cohort_id = deliverable.review_cohort_id
+        return state
+
+    repo.update(_seal_blocked_review)
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: leased_at + timedelta(minutes=1),
+    )
+
+    state, result = TeamReviewCommandService(repo).request_review_command(
+        session_id="session-manager",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="luke",
+        id="review-after-cohort-sealed",
+        instructions="Review the stalled backend slice.",
+        request_id="manager-fallback-route-after-cohort-sealed",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "dispatch_scope_stale"
+    assert "belongs to review cohort" in result["errors"][0]["message"]
+    assert "review-after-cohort-sealed" not in state.review_requests
 
 
 def test_manager_fallback_can_consume_multiple_authorities_for_same_reviewer(

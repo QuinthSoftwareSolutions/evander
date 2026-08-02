@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-02 - Team Review Routing
+
+- Prevented manager-fallback routing gaps from minting fresh review-request
+  authority for deliverables that already belong to a review cohort. Sealed
+  cohort reviews now remain with their assigned member, while blocked members
+  continue through the explicit retry/replacement path.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over
