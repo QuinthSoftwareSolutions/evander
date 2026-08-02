@@ -73,7 +73,7 @@ A project belongs to one Team and has:
 
 Assignments distinguish <code>project_lead</code> and <code>project_member</code>. Project leadership is stored on the project and its assignment, not encoded by changing the agent's primary Team role or reporting line.
 
-Project Git configuration references a core <code>managed_repo_id</code>. It may also select a base branch and canonical release prefix. The Team Add-on does not accept a host checkout path as repository identity.
+Project Git configuration references a core <code>managed_repo_id</code>. It may also select the default base branch for newly created root tasks and a canonical release prefix. Changing that default does not retarget existing tasks. The Team Add-on does not accept a host checkout path as repository identity.
 
 ## Goals
 
@@ -94,6 +94,7 @@ To an operator, a task is the clearest answer to “who owns the next concrete p
 > - parent task;
 > - dependency tasks;
 > - an originating task for provenance;
+> - a durable Git base-branch snapshot;
 > - case;
 > - deliverables;
 > - task kind, outcome contract, and structured completion;
@@ -128,6 +129,13 @@ batch mutation. Batch validation happens before commit, so a bad item does not
 leave a half-created plan. The only system-authorized root-creation exception is
 the atomic transition from authenticated human changes-requested feedback to
 same-project correction or triage work.
+
+A Git-backed root snapshots the project default when it is created. An explicit
+task base takes precedence, and a child inherits its parent's snapshot even when
+both are created in one batch. The base can be edited until the first Git work
+context, deliverable, or promotion exists; after that Team returns
+<code>git_base_locked</code>. The task base chooses where work starts, not where
+it is published.
 
 Task graphs cannot contain parent or dependency cycles. Dependencies and parents remain within the project. A deliverable, review, or Git work context cannot silently migrate a task to another project.
 

@@ -55,6 +55,7 @@ from .git_common import (
     _normalize_agent_branch_ref,
     _project_git_or_error,
 )
+from .git_work_contexts import authoritative_deliverable_git_base
 from .release_packages import (
     _queue_release_promotion_if_ready,
     _repair_release_review_manifests_from_promotion_evidence,
@@ -159,6 +160,16 @@ def _apply_ephemeral_git_review_promotion(
         )
         return None
     target_branch = review_branch(actor.team_id, assignment_id)
+    task = state.tasks.get(assignment.task_id)
+    git_base_branch = task.git_base_branch if task is not None else None
+    task_contexts = {
+        context.base_commit
+        for context in state.git_work_contexts.values()
+        if context.task_id == assignment.task_id
+        and context.base_branch == git_base_branch
+        and context.base_commit is not None
+    }
+    base_commit_sha = next(iter(task_contexts)) if len(task_contexts) == 1 else None
     promotion_id = f"promotion-{uuid4().hex}"
     state.git_promotions[promotion_id] = GitPromotionRecord(
         id=promotion_id,
@@ -169,6 +180,8 @@ def _apply_ephemeral_git_review_promotion(
         source_branch=source_branch,
         target_branch=target_branch,
         promotion_kind="review",
+        git_base_branch=git_base_branch,
+        base_commit_sha=base_commit_sha,
         commit_sha=expected_commit_sha,
     )
     payload: dict[str, Any] = {
@@ -180,6 +193,8 @@ def _apply_ephemeral_git_review_promotion(
         "expected_commit_sha": expected_commit_sha,
         "target_branch": target_branch,
         "assignment_id": assignment_id,
+        "base_branch": git_base_branch,
+        "base_commit_sha": base_commit_sha,
     }
     if deliverable_id is not None:
         payload["deliverable_id"] = deliverable_id
@@ -249,6 +264,15 @@ def _apply_persistent_git_review_promotion(
         )
         return None
 
+    try:
+        git_base_branch, base_commit_sha = authoritative_deliverable_git_base(
+            state,
+            deliverable=deliverable,
+        )
+    except ValueError as exc:
+        result["errors"].append(str(exc))
+        return None
+
     target_branch = review_branch(actor.team_id, deliverable_id)
     promotion_id = f"promotion-{uuid4().hex}"
     state.git_promotions[promotion_id] = GitPromotionRecord(
@@ -260,6 +284,8 @@ def _apply_persistent_git_review_promotion(
         source_branch=source_branch,
         target_branch=target_branch,
         promotion_kind="review",
+        git_base_branch=git_base_branch,
+        base_commit_sha=base_commit_sha,
         commit_sha=commit_sha,
     )
     payload: dict[str, Any] = {
@@ -271,6 +297,8 @@ def _apply_persistent_git_review_promotion(
         "expected_commit_sha": commit_sha,
         "target_branch": target_branch,
         "deliverable_id": deliverable_id,
+        "base_branch": git_base_branch,
+        "base_commit_sha": base_commit_sha,
     }
     if source_branch_value is not None:
         payload["source_branch"] = source_branch_value
@@ -325,6 +353,7 @@ def _apply_git_feature_update(
         result["errors"].append(f"git feature update has invalid branch name: {exc}")
         return None
     expected_source_commits: dict[str, str] = {}
+    source_base_snapshots: set[tuple[str | None, str | None]] = set()
     from .release_packages import _reviewed_commit_for_release
 
     for source_branch in source_branches:
@@ -351,6 +380,28 @@ def _apply_git_feature_update(
             result["errors"].append(review_error)
             return None
         expected_source_commits[source_branch] = reviewed_commit_sha
+        try:
+            source_base_snapshots.add(
+                authoritative_deliverable_git_base(
+                    state,
+                    deliverable=matching[0],
+                )
+            )
+        except ValueError as exc:
+            result["errors"].append(str(exc))
+            return None
+    if len(source_base_snapshots) != 1:
+        result["errors"].append(
+            f"git feature update for task {task_id} requires one authoritative "
+            "Git base branch and commit"
+        )
+        return None
+    git_base_branch, base_commit_sha = next(iter(source_base_snapshots))
+    if git_base_branch is None or base_commit_sha is None:
+        result["errors"].append(
+            f"git feature update for task {task_id} has no pinned task base commit"
+        )
+        return None
     promotion_id = f"promotion-{uuid4().hex}"
     state.git_promotions[promotion_id] = GitPromotionRecord(
         id=promotion_id,
@@ -360,13 +411,16 @@ def _apply_git_feature_update(
         source_branch=source_branches[0],
         target_branch=target_branch,
         promotion_kind="feature",
+        git_base_branch=git_base_branch,
+        base_commit_sha=base_commit_sha,
     )
     payload: dict[str, Any] = {
         "promotion_id": promotion_id,
         "promotion_kind": "feature",
         "project_id": project.id,
         **_managed_repo_fields(git),
-        "base_branch": git.base_branch,
+        "base_branch": git_base_branch,
+        "base_commit_sha": base_commit_sha,
         "source_branches": source_branches,
         "expected_source_commits": expected_source_commits,
         "target_branch": target_branch,
@@ -1079,6 +1133,8 @@ def _queue_canonical_push_after_release_success(
             source_branch=source_branch,
             target_branch=target_branch,
             promotion_kind="canonical_push",
+            git_base_branch=release.git_base_branch,
+            base_commit_sha=release.base_commit_sha,
             sources=[
                 {
                     "source_branch": source_branch,
@@ -1102,7 +1158,8 @@ def _queue_canonical_push_after_release_success(
         "project_id": project.id,
         "release_package_id": release.id,
         "managed_repo_id": git.managed_repo_id,
-        "base_branch": git.base_branch,
+        "base_branch": release.git_base_branch,
+        "base_commit_sha": existing.base_commit_sha or release.base_commit_sha,
         "source_branch": existing.source_branch,
         "expected_commit_sha": approved_commit_sha,
         "target_branch": existing.target_branch,
@@ -1285,6 +1342,7 @@ def _materialize_merge_recovery_task(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
+            git_base_branch=release.git_base_branch,
             priority=0,
             state=TeamTaskState.PENDING,
             title=f"Resolve {boundary_label} conflicts for {release.id}",

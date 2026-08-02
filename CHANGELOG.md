@@ -1,5 +1,95 @@
 # Changelog
 
+## 2026-08-02 - Team Dependency-Wait Labels
+
+- Distinguished tasks waiting on unfinished dependencies from tasks carrying
+  assigned blockers in Task board summaries, cards, hierarchy badges, details,
+  and technical metadata.
+- Counted blocked prerequisites individually in mixed dependency waits and
+  suppressed active wait labels once a task is terminal or otherwise resolved.
+
+## 2026-08-02 - Rejected-Candidate Reconciliation Follow-ups
+
+- Waited for every current release review before creating an automatic
+  correction successor, excluded cancelled correction tasks, and rejected
+  deduplicated packages that do not directly supersede the failed release.
+- Preserved fresh actionable release notices when an ordinary root deliverable
+  is reopened and reaccepted, while retaining handled automatic-correction
+  history.
+- Aligned verification and agent-review correction task prompts with automatic
+  successor creation.
+
+## 2026-08-02 - Lossless Retained Team Wake Deduplication
+
+- Removed retained-wake runtime-attention rows only after carrying their scoped
+  project and team associations into the included inbox item, preserving links
+  derived from compacted nested or legacy payloads.
+- Removed only outer Git fields that exactly duplicate a sole active work
+  context; unique repository and dependency context remains in the prompt.
+
+## 2026-08-02 - Automatic Rejected-Candidate Correction Releases
+
+- Created one deterministic successor release atomically when a generated
+  verification or agent-review correction resolves with accepted, reviewed Git
+  content, without requiring a project-lead release request.
+- Added idempotent scheduled and post-dispatch reconciliation for stranded
+  corrections, informational handled manager history, and a durable owner-routed
+  blocker when automatic successor validation or packaging fails.
+- Kept initial releases and post-release-feedback successors explicit while
+  documenting the automatic generated-correction boundary for agents and
+  operators.
+
+## 2026-08-02 - Human Correction Case Reconciliation
+
+- Resolved human-review correction cases when their deterministic successor
+  release has been created, including one-time repair of stale active cases
+  whose successor and coordination task already exist.
+- Kept correction cases active when successor creation only deduplicates against
+  an active package that does not supersede the rejected predecessor.
+
+## 2026-08-02 - Terminal Release Attention Cleanup
+
+- Kept accepted and rejected Team release packages in immutable release history
+  while excluding their stale failures from Workspace attention and agent wake
+  prompts. Active blocked releases remain actionable without duplicating their
+  recovery context in runtime attention.
+
+## 2026-08-02 - Per-Task Git Base Snapshots
+
+- Added durable Git base-branch snapshots to Team tasks, releases, and promotion
+  records so work based on `main` and feature branches can proceed concurrently
+  without later project-default changes retargeting preparation or publication.
+- Added task/API/MCP/Admin controls, exact base-commit propagation, mixed-base
+  release rejection, correction/recovery provenance, and SQLite migration for
+  active legacy workstreams.
+- Pinned verification and release-review correction tasks to the rejected
+  candidate branch, repaired still-unprepared correction tasks created with an
+  upstream base, and invalidated preparation blockers when that base changes.
+- Preferred a legacy release's complete candidate-manifest branch over its
+  upstream Git base when repairing verification and release-review corrections.
+- Preserved manifest-only candidate branches when creating human-review and
+  post-release correction tasks and when building correction successors.
+- Resolved unset project bases through the managed repository default before
+  persisting task snapshots, and hardened the SQLite backfill for correction
+  tasks, correction successors, conflicting legacy contexts, and JSON imports.
+
+## 2026-08-02 - Team Chat Membership Scope
+
+- Restricted agent wake context and outbound Team Chat messages to direct
+  conversations the calling agent already belongs to. Other agents' operator
+  conversations can no longer appear as recipients or be used to create a new
+  direct chat.
+- Made each wake's participant list an explicit complete replacement, including
+  an empty list, so same-context sessions revoke stale recipients without a
+  context rotation.
+
+## 2026-08-02 - Team Review Routing
+
+- Prevented manager-fallback routing gaps from minting fresh review-request
+  authority for deliverables that already belong to a review cohort. Sealed
+  cohort reviews now remain with their assigned member, while blocked members
+  continue through the explicit retry/replacement path.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over

@@ -8,6 +8,7 @@ from ..models import (
     HumanReviewFinding,
     TaskCancellation,
     TeamCase,
+    TeamCaseStatus,
     TeamBlockerSourceKind,
     TeamInboxPriority,
     TeamRecordState,
@@ -50,6 +51,10 @@ _TERMINAL_COORDINATION_PARENT_STATES = {
     TeamTaskState.ACCEPTED,
     TeamTaskState.REJECTED,
     TeamTaskState.CANCELLED,
+}
+_TERMINAL_CORRECTION_CASE_STATUSES = {
+    TeamCaseStatus.RESOLVED,
+    TeamCaseStatus.CLOSED,
 }
 
 
@@ -154,6 +159,24 @@ def _finish_coordination_parent(parent: Any, *, now: datetime) -> bool:
     return True
 
 
+def _resolve_correction_case(
+    state: Any,
+    *,
+    case: TeamCase,
+    result: dict[str, Any],
+    now: datetime,
+) -> bool:
+    if case.status in _TERMINAL_CORRECTION_CASE_STATUSES:
+        return False
+    case.status = TeamCaseStatus.RESOLVED
+    case.closed_at = None
+    case.updated_at = now
+    result.setdefault("resolved_case_ids", []).append(case.id)
+    if case.project_id is not None:
+        _recalculate_project_status(state, case.project_id)
+    return True
+
+
 def _legacy_case_can_convert(state: Any, case: TeamCase, findings: list[Any]) -> bool:
     if _coordination_parent_id(case) is not None or not findings:
         return False
@@ -178,6 +201,8 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
     findings = _case_findings(state, case)
     successors = _successors(state, predecessor.id)
     if successors:
+        if case.status not in _TERMINAL_CORRECTION_CASE_STATUSES:
+            return True
         if any(
             _legacy_successor_needs_migration(
                 state,
@@ -560,10 +585,16 @@ def _reconcile_case(
             if parent is not None
             else False
         )
+        resolved = _resolve_correction_case(
+            state,
+            case=case,
+            result=result,
+            now=now,
+        )
         result.setdefault("existing_successor_release_package_ids", []).extend(
             release.id for release in successors
         )
-        return changed or migrated
+        return changed or migrated or resolved
     before_created = set(result.get("created_task_ids") or [])
     before_reparented = set(result.get("reparented_correction_task_ids") or [])
     try:
@@ -739,10 +770,32 @@ def _reconcile_case(
             now=now,
         )
         return True
+    returned_package = state.release_packages.get(created_id)
+    returned_successor = (
+        returned_package is not None
+        and returned_package.supersedes_release_package_id == predecessor.id
+    )
+    if not package_result["created"] and not returned_successor:
+        result.setdefault("deduplicated_release_package_ids", []).append(
+            created_id
+        )
+        result.setdefault("waiting_case_ids", []).append(case.id)
+        return changed
     for project_id in sorted(projects_to_recalculate):
         _recalculate_project_status(state, project_id)
     _finish_coordination_parent(parent, now=now)
-    result.setdefault("created_successor_release_package_ids", []).append(created_id)
+    _resolve_correction_case(
+        state,
+        case=case,
+        result=result,
+        now=now,
+    )
+    package_result_key = (
+        "created_successor_release_package_ids"
+        if package_result["created"]
+        else "existing_successor_release_package_ids"
+    )
+    result.setdefault(package_result_key, []).append(created_id)
     result.setdefault("events", []).extend(package_result.get("events") or [])
     result.setdefault("git_promotion_event_ids", []).extend(
         package_result.get("git_promotion_event_ids") or []

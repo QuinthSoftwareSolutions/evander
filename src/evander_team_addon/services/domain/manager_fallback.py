@@ -456,6 +456,13 @@ def _manager_fallback_review_routing_authority_error(
             f"reviewer/deliverable pair {pair} is no longer an actionable "
             "manager-fallback routing gap: deliverable no longer needs review"
         )
+    if deliverable.review_cohort_id is not None:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: deliverable belongs to review cohort "
+            f"{deliverable.review_cohort_id}; retry or replace its blocked cohort "
+            "member instead of creating a new review request"
+        )
     if any(
         review.reviewer_agent_id == reviewer.id
         for review in current_reviews
@@ -791,6 +798,11 @@ def _manager_fallback_routing_gaps(
         for deliverable in visible_deliverables
         if (task := tasks_by_id.get(deliverable.task_id)) is not None
         and task.state in _NON_TERMINAL_TASK_STATES
+        # Routing gaps authorize a fresh team_request_review call. Cohort
+        # membership is immutable (sealed or pending recovery), so its review
+        # work must instead proceed through the assigned member or the explicit
+        # blocked-member retry/replacement flow.
+        and deliverable.review_cohort_id is None
         and _manager_fallback_deliverable_needs_review(
             deliverable,
             reviews=reviews_by_deliverable.get(deliverable.id, []),

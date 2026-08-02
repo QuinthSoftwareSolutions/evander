@@ -45,6 +45,9 @@ from evander_team_addon.models import (
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain import human_reviews as human_review_domain
+from evander_team_addon.services.domain.case_task import (
+    _resolve_new_task_git_base_branch,
+)
 from evander_team_addon.services.domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     close_post_release_feedback_case,
@@ -1491,6 +1494,59 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     assert len(state.inbox) == 1
 
 
+def test_manifest_only_candidate_branch_pins_human_correction_graph() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    assert release.manifest is not None
+    candidate_branch = release.manifest.release_branch
+    release.release_branch = None
+    release.git_base_branch = "main"
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="changes-manifest-only-branch",
+        expected_revision=request.revision,
+        checklist_results={"smoke": True},
+        summary="Correct the rejected candidate.",
+        findings=[
+            {
+                "text": "Alarm remains latched after acknowledgement.",
+                "target_deliverable_ids": ["source-deliverable"],
+                "evidence_refs": ["attachment:alarm-video"],
+            }
+        ],
+        result={"events": []},
+    )
+
+    finding = next(iter(state.human_review_findings.values()))
+    correction = state.tasks[finding.correction_task_id]
+    case = state.cases[correction.case_id or ""]
+    aggregation = state.tasks[
+        str(case.metadata["human_correction_aggregation_task_id"])
+    ]
+    assert aggregation.git_base_branch == candidate_branch
+    assert correction.git_base_branch == candidate_branch
+    assert (
+        _resolve_new_task_git_base_branch(
+            state,
+            project_id=release.project_id,
+            explicit_git_base_branch="main",
+            case_id=case.id,
+        )
+        == candidate_branch
+    )
+
+
 def test_specific_finding_routes_to_lead_when_historical_owner_is_detached() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     advance_release_gates(
@@ -2484,6 +2540,42 @@ def test_published_release_successor_requires_explicit_open_feedback_case() -> N
     assert result["post_release_feedback_case_id"] == case.id
     assert predecessor.state == TeamRecordState.ACCEPTED
     assert predecessor.published_commit_sha == predecessor.candidate_commit_sha
+
+
+def test_post_release_feedback_task_uses_manifest_only_candidate_branch() -> None:
+    state, release, _promotion = _human_state(eligible_user_ids=["reviewer"])
+    assert release.manifest is not None
+    candidate_branch = release.manifest.release_branch
+    release.release_branch = None
+    release.git_base_branch = "main"
+    release.state = TeamRecordState.ACCEPTED
+    release.approved_commit_sha = release.candidate_commit_sha
+    release.published_commit_sha = release.candidate_commit_sha
+    release.published_at = datetime.now(tz=UTC)
+    result: dict[str, object] = {"events": []}
+
+    case = report_post_release_feedback(
+        state,
+        release_package_id=release.id,
+        reporter_user_id="reporter",
+        reporter_display_name="Reporter",
+        report="The published alarm acknowledgement regressed.",
+        evidence_refs=["artifact:alarm-regression"],
+        request_id="post-release-manifest-only-branch",
+        result=result,
+    )
+
+    task = state.tasks[str(result["triage_task_id"])]
+    assert task.git_base_branch == candidate_branch
+    assert (
+        _resolve_new_task_git_base_branch(
+            state,
+            project_id=release.project_id,
+            explicit_git_base_branch="main",
+            case_id=case.id,
+        )
+        == candidate_branch
+    )
 
 
 def test_post_release_feedback_rejects_accepted_unpublished_attempt() -> None:

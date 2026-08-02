@@ -29,6 +29,9 @@ from .validators import (
     _require_command_agent_by_id,
     _validate_command_recipient_active,
 )
+from ..candidate_correction_reconciliation_service import (
+    reconcile_candidate_correction_successors,
+)
 from ...models import (
     TeamState,
     _unique_text_list,
@@ -364,6 +367,11 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 )
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(command_state, project_id)
+            reconcile_candidate_correction_successors(
+                command_state,
+                result=decision_result,
+                now=utc_now(),
+            )
             decided_review = command_state.review_requests[decided_id]
             if decided_review.release_package_id is not None:
                 release = command_state.release_packages[decided_review.release_package_id]
@@ -378,6 +386,16 @@ class TeamReviewCommandService(TeamCommandExecutor):
                         "review": decided_review.model_dump(mode="json"),
                         "release_package": release.model_dump(mode="json"),
                         "release_package_id": release.id,
+                        "created_successor_release_package_ids": list(
+                            decision_result.get(
+                                "created_successor_release_package_ids"
+                            )
+                            or []
+                        ),
+                        "candidate_correction_blocker_ids": list(
+                            decision_result.get("candidate_correction_blocker_ids")
+                            or []
+                        ),
                         "events": list(decision_result.get("events") or []),
                         "intent_recorded": True,
                         "async_effect_pending": bool(
@@ -390,6 +408,15 @@ class TeamReviewCommandService(TeamCommandExecutor):
                         decided_id,
                         *list(decision_result.get("created_blocker_ids") or []),
                         *list(decision_result["created_inbox_item_ids"]),
+                        *list(
+                            decision_result.get(
+                                "created_successor_release_package_ids"
+                            )
+                            or []
+                        ),
+                        *list(
+                            decision_result.get("git_promotion_event_ids") or []
+                        ),
                     ],
                 )
             deliverable = command_state.deliverables[decided_review.deliverable_id]
@@ -407,6 +434,14 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "created_blocker_ids": list(
                         decision_result.get("created_blocker_ids") or []
                     ),
+                    "created_successor_release_package_ids": list(
+                        decision_result.get("created_successor_release_package_ids")
+                        or []
+                    ),
+                    "candidate_correction_blocker_ids": list(
+                        decision_result.get("candidate_correction_blocker_ids")
+                        or []
+                    ),
                     "events": list(decision_result.get("events") or []),
                     "intent_recorded": True,
                     "async_effect_pending": bool(
@@ -419,6 +454,11 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     decided_id,
                     *list(decision_result.get("created_blocker_ids") or []),
                     *list(decision_result["created_inbox_item_ids"]),
+                    *list(
+                        decision_result.get("created_successor_release_package_ids")
+                        or []
+                    ),
+                    *list(decision_result.get("git_promotion_event_ids") or []),
                 ],
             )
 

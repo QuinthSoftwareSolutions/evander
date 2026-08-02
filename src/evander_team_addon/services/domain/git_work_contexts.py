@@ -246,6 +246,86 @@ def _referenced_git_work_context_ids(state: TeamState) -> set[str]:
     }
 
 
+def authoritative_deliverable_git_base(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+) -> tuple[str | None, str | None]:
+    """Return the persisted branch/commit snapshot that owns a Git deliverable."""
+
+    task = state.tasks.get(deliverable.task_id)
+    if task is None:
+        raise ValueError(
+            f"deliverable {deliverable.id} references missing task {deliverable.task_id}"
+        )
+    context_id = deliverable.git_refs.branch_context_id
+    if context_id is not None:
+        context = state.git_work_contexts.get(context_id)
+        if context is None:
+            raise ValueError(
+                f"deliverable {deliverable.id} references missing Git work context "
+                f"{context_id}"
+            )
+        if context.task_id != task.id:
+            raise ValueError(
+                f"deliverable {deliverable.id} Git work context {context.id} belongs "
+                f"to task {context.task_id}"
+            )
+        if task.git_base_branch is not None and context.base_branch != task.git_base_branch:
+            raise ValueError(
+                f"deliverable {deliverable.id} Git work context base "
+                f"{context.base_branch!r} does not match task snapshot "
+                f"{task.git_base_branch!r}"
+            )
+        return context.base_branch or task.git_base_branch, context.base_commit
+
+    promotion_snapshots = {
+        (promotion.git_base_branch, promotion.base_commit_sha)
+        for promotion_id in deliverable.git_refs.promotion_record_ids
+        if (promotion := state.git_promotions.get(promotion_id)) is not None
+        and promotion.git_base_branch is not None
+    }
+    if len(promotion_snapshots) > 1:
+        raise ValueError(
+            f"deliverable {deliverable.id} has conflicting Git promotion base snapshots"
+        )
+    if promotion_snapshots:
+        branch, commit = next(iter(promotion_snapshots))
+        if task.git_base_branch is not None and branch != task.git_base_branch:
+            raise ValueError(
+                f"deliverable {deliverable.id} promotion base {branch!r} does not "
+                f"match task snapshot {task.git_base_branch!r}"
+            )
+        return branch, commit
+
+    contexts = {
+        (context.base_branch, context.base_commit)
+        for context in state.git_work_contexts.values()
+        if context.task_id == task.id and context.base_branch is not None
+    }
+    if len(contexts) > 1:
+        raise ValueError(
+            f"task {task.id} has conflicting authoritative Git work contexts"
+        )
+    if contexts:
+        branch, commit = next(iter(contexts))
+        return branch, commit
+    project = state.projects.get(task.project_id)
+    legacy_project_base = (
+        project.git.base_branch
+        if task.git_base_branch is None
+        and project is not None
+        and project.git is not None
+        else None
+    )
+    manifest_base = (
+        deliverable.review_manifest.base_commit_sha
+        if deliverable.review_manifest is not None
+        else None
+    )
+    return task.git_base_branch or legacy_project_base, manifest_base
+
+
 def mark_git_work_context_submitted(
     state: TeamState,
     *,
@@ -783,6 +863,7 @@ def _resolve_git_context_branch_commit(
 __all__ = [
     "GitCandidateCommitResolver",
     "GitWorkContextValidationError",
+    "authoritative_deliverable_git_base",
     "bind_deliverable_git_refs_to_work_context",
     "finalize_active_git_work_contexts_for_dispatch",
     "finalize_active_git_work_contexts_for_task",

@@ -1522,10 +1522,15 @@ def test_runtime_attention_reconciles_pending_inbox_from_its_primary_target() ->
     assert reconciled["reconciliation_required"] is True
 
 
-def test_runtime_operations_ignores_failed_promotion_for_terminal_release() -> None:
+@pytest.mark.parametrize(
+    "terminal_state",
+    [TeamRecordState.ACCEPTED, TeamRecordState.REJECTED],
+)
+def test_runtime_operations_ignores_failed_attention_for_terminal_release(
+    terminal_state: TeamRecordState,
+) -> None:
     state = _state_with_runtime_operations()
-    state.release_packages["release"].state = TeamRecordState.REJECTED
-    state.release_packages["release"].error = None
+    state.release_packages["release"].state = terminal_state
 
     payload = runtime_operations_payload(
         state,

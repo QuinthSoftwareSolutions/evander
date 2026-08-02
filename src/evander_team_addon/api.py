@@ -112,6 +112,8 @@ from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.case_task import TaskGitBaseValidationError
+from .services.domain.release_packages import ReleasePackageValidationError
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
 from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
@@ -2128,6 +2130,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
                 parent_task_id=_optional(payload, "parent_task_id"),
                 originating_task_id=_optional(payload, "originating_task_id"),
+                git_base_branch=_optional(payload, "git_base_branch"),
+                set_git_base_branch="git_base_branch" in payload,
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
                 task_kind=_optional(payload, "task_kind"),
@@ -2170,6 +2174,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 set_case_id="case_id" in payload,
                 parent_task_id=_optional(payload, "parent_task_id"),
                 set_parent_task_id="parent_task_id" in payload,
+                git_base_branch=_optional_present_text(payload, "git_base_branch"),
+                set_git_base_branch="git_base_branch" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
                 integration_boundary=_optional_bool(
                     payload,
@@ -3803,6 +3809,16 @@ def _with_errors(handler):
             )
         except PermissionError as exc:
             return JSONResponse({"error": str(exc)}, status_code=403)
+        except TaskGitBaseValidationError as exc:
+            return JSONResponse(
+                {"error": exc.message, "code": exc.code},
+                status_code=400,
+            )
+        except ReleasePackageValidationError as exc:
+            return JSONResponse(
+                {"error": exc.message, "code": exc.code},
+                status_code=400,
+            )
         except (ValueError, TypeError, ValidationError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
