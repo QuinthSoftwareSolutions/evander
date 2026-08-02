@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-02 - Human Correction Case Reconciliation
+
+- Resolved human-review correction cases when their deterministic successor
+  release has been created, including one-time repair of stale active cases
+  whose successor and coordination task already exist.
+
 ## 2026-08-02 - Terminal Release Attention Cleanup
 
 - Kept accepted and rejected Team release packages in immutable release history

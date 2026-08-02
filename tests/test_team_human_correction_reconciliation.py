@@ -301,6 +301,8 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
         "correction-deliverable",
     }
     assert state.tasks["human-correction-aggregate"].state == TeamTaskState.FINISHED
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+    assert first["resolved_case_ids"] == ["human-case"]
     assert len(successor.git_promotion_record_ids) == 1
     aggregate = state.git_promotions[successor.git_promotion_record_ids[0]]
     assert aggregate.promotion_kind == "correction_aggregate"
@@ -685,6 +687,33 @@ def test_existing_successor_permanently_terminates_reconciliation(
         for release in final.release_packages.values()
         if release.supersedes_release_package_id == "release-rejected"
     ] == [successor_id]
+
+
+def test_existing_successor_resolves_one_stale_active_case_once(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    service = HumanCorrectionReconciliationService(repo)
+    first = service.reconcile()
+    successor_id = first["created_successor_release_package_ids"][0]
+
+    def _restore_stale_case(state: TeamState) -> TeamState:
+        state.cases["human-case"].status = TeamCaseStatus.IN_PROGRESS
+        return state
+
+    repo.update(_restore_stale_case)
+
+    repaired = service.reconcile()
+    state = repo.read()
+
+    assert repaired["changed"] is True
+    assert repaired["resolved_case_ids"] == ["human-case"]
+    assert repaired["existing_successor_release_package_ids"] == [successor_id]
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+
+    replay = service.reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == state.revision
 
 
 def test_reconciliation_preserves_authored_resolution_and_unions_evidence(
