@@ -2,9 +2,9 @@
 
 ## 2026-08-02 - Lossless Retained Team Wake Deduplication
 
-- Removed retained-wake runtime-attention rows only when their included inbox
-  item already carries the same obligation, while preserving all non-duplicate
-  attention and the complete inbox payload.
+- Removed retained-wake runtime-attention rows only after carrying their scoped
+  project and team associations into the included inbox item, preserving links
+  derived from compacted nested or legacy payloads.
 - Removed only outer Git fields that exactly duplicate a sole active work
   context; unique repository and dependency context remains in the prompt.
 

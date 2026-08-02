@@ -180,8 +180,8 @@ def build_compact_wake_context(
         omitted_counts,
         "inbox",
     )
-    included_inbox_item_ids = {
-        inbox_item_id
+    included_inbox_items = {
+        inbox_item_id: row
         for row in context["inbox"]
         if (inbox_item_id := _optional_text(row.get("id"))) is not None
     }
@@ -264,7 +264,7 @@ def build_compact_wake_context(
         runtime_attention, duplicate_inbox_attention_count = (
             _without_inbox_runtime_attention_duplicates(
                 runtime_attention,
-                included_inbox_item_ids=included_inbox_item_ids,
+                included_inbox_items=included_inbox_items,
             )
         )
         _add_omitted(
@@ -1380,21 +1380,40 @@ def _runtime_attention_rows(
 def _without_inbox_runtime_attention_duplicates(
     rows: Sequence[Mapping[str, Any]],
     *,
-    included_inbox_item_ids: set[str],
+    included_inbox_items: Mapping[str, dict[str, Any]],
 ) -> tuple[list[Mapping[str, Any]], int]:
-    """Drop retained-wake attention rows already represented by an inbox item."""
+    """Fold enriched context into included inbox items before dropping mirrors."""
 
-    if not included_inbox_item_ids:
+    if not included_inbox_items:
         return list(rows), 0
     retained: list[Mapping[str, Any]] = []
     duplicates = 0
     for row in rows:
         inbox_item_id = _optional_text(row.get("inbox_item_id"))
-        if inbox_item_id is not None and inbox_item_id in included_inbox_item_ids:
+        inbox_item = included_inbox_items.get(inbox_item_id or "")
+        if inbox_item is not None:
+            _merge_runtime_attention_context_into_inbox(inbox_item, row)
             duplicates += 1
             continue
         retained.append(row)
     return retained, duplicates
+
+
+def _merge_runtime_attention_context_into_inbox(
+    inbox_item: dict[str, Any],
+    attention: Mapping[str, Any],
+) -> None:
+    """Preserve scoped relationship metadata omitted from legacy payload shapes."""
+
+    for key in ("team_id", "project_id"):
+        value = _optional_text(attention.get(key))
+        if value is not None and _optional_text(inbox_item.get(key)) is None:
+            inbox_item[key] = value
+    project_ids = _string_items(attention.get("project_ids"))
+    if project_ids and not _string_items(inbox_item.get("project_ids")):
+        inbox_item["project_ids"] = project_ids[:ID_LIST_LIMIT]
+        if len(project_ids) > ID_LIST_LIMIT:
+            inbox_item["project_ids_omitted_count"] = len(project_ids) - ID_LIST_LIMIT
 
 
 def _runtime_attention_matches_dispatch(

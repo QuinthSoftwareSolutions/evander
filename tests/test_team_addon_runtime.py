@@ -1236,6 +1236,46 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     assert rotated_prompt.count("preserve this exact decision") == 1
 
 
+def test_retained_wake_deduplication_preserves_nested_payload_project_context() -> None:
+    context = build_compact_wake_context(
+        {
+            "agent": {"id": "backend"},
+            "inbox": [
+                {
+                    "id": "inbox-legacy",
+                    "item_type": "status_request",
+                    "state": "pending",
+                    "payload": {
+                        "legacy_context": {
+                            "routing": {"project_id": "project-from-legacy-payload"}
+                        }
+                    },
+                }
+            ],
+            "runtime_attention": [
+                {
+                    "id": "inbox-legacy",
+                    "kind": "pending_inbox_item",
+                    "severity": "warning",
+                    "inbox_item_id": "inbox-legacy",
+                    "team_id": "team",
+                    "project_id": "project-from-legacy-payload",
+                    "project_ids": ["project-from-legacy-payload"],
+                }
+            ],
+        },
+        fresh_context=False,
+    )
+
+    assert "runtime_attention" not in context
+    assert context["omitted_counts"]["runtime_attention_duplicate_inbox"] == 1
+    inbox_item = context["inbox"][0]
+    assert inbox_item["team_id"] == "team"
+    assert inbox_item["project_id"] == "project-from-legacy-payload"
+    assert inbox_item["project_ids"] == ["project-from-legacy-payload"]
+    assert inbox_item["payload"] == {"omitted_payload_keys": ["legacy_context"]}
+
+
 def test_legacy_agent_action_enforces_and_persists_integration_sources(
     tmp_path: Path,
 ) -> None:
