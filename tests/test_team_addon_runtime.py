@@ -1001,15 +1001,27 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
         "project_id": "project",
         "managed_repo_id": "repo",
         "target_dir": "/home/agent/project-control",
+        "base_branch": "main",
+        "branch_context_id": "branch-context",
+        "agent_branch": "agents/session/tasks/task-integration",
         "git_work_contexts": [
             {
                 "id": "branch-context",
                 "branch_context_id": "branch-context",
                 "task_id": "task-integration",
                 "agent_branch": "agents/session/tasks/task-integration",
+                "base_branch": "main",
                 "worktree_path": worktree_path,
                 "dispatch_id": "dispatch-current",
                 "state": "active",
+                "dependency_git_sources": [
+                    {
+                        "task_id": "dependency-task",
+                        "deliverable_id": "dependency-deliverable",
+                        "branch": "agents/dependency",
+                        "commit_sha": "abc123",
+                    }
+                ],
             }
         ],
     }
@@ -1032,8 +1044,19 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
             "cause_kind": "scheduled",
             "cause_id": "cron-42",
             "task_ids": ["task-integration"],
+            "inbox_item_ids": ["inbox-mirror"],
             "project_ids": ["project"],
         },
+        "inbox": [
+            {
+                "id": "inbox-mirror",
+                "item_type": "status_request",
+                "state": "pending",
+                "task_id": "task-integration",
+                "response_requested": True,
+                "payload": {"message": "Complete the integration."},
+            }
+        ],
         "tasks": [
             {
                 "id": "task-integration",
@@ -1080,6 +1103,14 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
                 "task_id": "task-integration",
             },
             {
+                "id": "inbox-mirror",
+                "kind": "pending_inbox_item",
+                "severity": "warning",
+                "inbox_item_id": "inbox-mirror",
+                "task_id": "task-integration",
+                "response_requested": True,
+            },
+            {
                 "id": "unrelated",
                 "kind": "blocked_task",
                 "severity": "warning",
@@ -1102,9 +1133,12 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     }
     assert fresh["operator_chat_participants_replaces_prior"] is True
     assert len(fresh["operator_chat_participants"]) == 15
-    assert [row["id"] for row in fresh["runtime_attention"]] == ["scoped"]
+    assert [row["id"] for row in fresh["runtime_attention"]] == ["scoped", "inbox-mirror"]
     assert "project_repo" not in fresh
     assert len(fresh["project_repos"]) == 1
+    assert fresh["project_repos"][0]["base_branch"] == "main"
+    assert fresh["project_repos"][0]["branch_context_id"] == "branch-context"
+    assert fresh["project_repos"][0]["agent_branch"] == "agents/session/tasks/task-integration"
     assert fresh_prompt.count(worktree_path) == 1
     assert len(fresh_prompt) <= 16_000
 
@@ -1122,8 +1156,52 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     assert (
         retained["tasks"][0]["deliverable_contract"] == (fresh["tasks"][0]["deliverable_contract"])
     )
+    assert [row["id"] for row in retained["inbox"]] == ["inbox-mirror"]
+    assert retained["inbox"][0]["payload"]["message"] == "Complete the integration."
+    assert [row["id"] for row in retained["runtime_attention"]] == ["scoped"]
+    assert retained["omitted_counts"]["runtime_attention_duplicate_inbox"] == 1
+    retained_repo = retained["project_repos"][0]
+    assert "base_branch" not in retained_repo
+    assert "branch_context_id" not in retained_repo
+    assert "agent_branch" not in retained_repo
+    assert retained_repo["managed_repo_id"] == "repo"
+    assert retained_repo["target_dir"] == "/home/agent/project-control"
+    assert retained_repo["git_work_contexts"][0] == {
+        "id": "branch-context",
+        "branch_context_id": "branch-context",
+        "task_id": "task-integration",
+        "agent_branch": "agents/session/tasks/task-integration",
+        "base_branch": "main",
+        "worktree_path": worktree_path,
+        "dispatch_id": "dispatch-current",
+        "state": "active",
+        "dependency_git_sources": [
+            {
+                "task_id": "dependency-task",
+                "deliverable_id": "dependency-deliverable",
+                "branch": "agents/dependency",
+                "commit_sha": "abc123",
+            }
+        ],
+    }
     assert "Task creation mandate for this wake" not in retained_prompt
     assert len(retained_prompt) < len(fresh_prompt)
+
+    distinct_base_repo_context = {
+        **repo_context,
+        "base_branch": "release/unique-base",
+    }
+    distinct_base_context = _team_context_from_prompt(
+        _build_prompt(
+            {
+                **retained_lease,
+                "project_repo": distinct_base_repo_context,
+                "project_repos": [distinct_base_repo_context],
+            },
+            effective_resume_mode="same_context",
+        )
+    )
+    assert distinct_base_context["project_repos"][0]["base_branch"] == "release/unique-base"
 
     revoked_participants_prompt = _build_prompt(
         {

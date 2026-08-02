@@ -180,6 +180,11 @@ def build_compact_wake_context(
         omitted_counts,
         "inbox",
     )
+    included_inbox_item_ids = {
+        inbox_item_id
+        for row in context["inbox"]
+        if (inbox_item_id := _optional_text(row.get("id"))) is not None
+    }
 
     blockers = sorted(
         (_compact_blocker(row) for row in _mapping_rows(lease.get("blockers"))),
@@ -255,6 +260,18 @@ def build_compact_wake_context(
         "runtime_attention_outside_dispatch",
         out_of_scope_attention_count,
     )
+    if not fresh_context:
+        runtime_attention, duplicate_inbox_attention_count = (
+            _without_inbox_runtime_attention_duplicates(
+                runtime_attention,
+                included_inbox_item_ids=included_inbox_item_ids,
+            )
+        )
+        _add_omitted(
+            omitted_counts,
+            "runtime_attention_duplicate_inbox",
+            duplicate_inbox_attention_count,
+        )
     if runtime_attention:
         context["runtime_attention"] = _limited_rows(
             sorted(
@@ -302,7 +319,10 @@ def build_compact_wake_context(
             manager_fallback_summary
         )
 
-    project_repos = _deduplicated_project_repos(lease)
+    project_repos = _deduplicated_project_repos(
+        lease,
+        retained_delta=not fresh_context,
+    )
     if project_repos:
         context["project_repos"] = project_repos
 
@@ -373,14 +393,21 @@ def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _deduplicated_project_repos(lease: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _deduplicated_project_repos(
+    lease: Mapping[str, Any],
+    *,
+    retained_delta: bool = False,
+) -> list[dict[str, Any]]:
     candidates = list(_mapping_rows(lease.get("project_repos")))
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         candidates.append(project_repo)
     result: list[dict[str, Any]] = []
     for candidate in candidates:
-        compact = _compact_project_repo(candidate)
+        compact = _compact_project_repo(
+            candidate,
+            retained_delta=retained_delta,
+        )
         if compact not in result:
             result.append(compact)
     return result
@@ -1070,7 +1097,11 @@ def _compact_routing_gap(item: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
+def _compact_project_repo(
+    repo: Mapping[str, Any],
+    *,
+    retained_delta: bool = False,
+) -> dict[str, Any]:
     row = _compact_fields(
         repo,
         (
@@ -1093,6 +1124,11 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
     ]
     if git_contexts:
         row["git_work_contexts"] = git_contexts
+    if retained_delta and len(git_contexts) == 1 and git_contexts[0].get("state") == "active":
+        active_context = git_contexts[0]
+        for field_name in ("base_branch", "branch_context_id", "agent_branch"):
+            if row.get(field_name) == active_context.get(field_name):
+                row.pop(field_name, None)
     message = _optional_text(repo.get("message"))
     if message is not None:
         row["message"] = _trim_text(message)
@@ -1339,6 +1375,26 @@ def _runtime_attention_rows(
             continue
         visible.append(row)
     return visible, hidden, out_of_scope
+
+
+def _without_inbox_runtime_attention_duplicates(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    included_inbox_item_ids: set[str],
+) -> tuple[list[Mapping[str, Any]], int]:
+    """Drop retained-wake attention rows already represented by an inbox item."""
+
+    if not included_inbox_item_ids:
+        return list(rows), 0
+    retained: list[Mapping[str, Any]] = []
+    duplicates = 0
+    for row in rows:
+        inbox_item_id = _optional_text(row.get("inbox_item_id"))
+        if inbox_item_id is not None and inbox_item_id in included_inbox_item_ids:
+            duplicates += 1
+            continue
+        retained.append(row)
+    return retained, duplicates
 
 
 def _runtime_attention_matches_dispatch(
