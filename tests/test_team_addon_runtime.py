@@ -1100,6 +1100,7 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
         "require_git_provenance": True,
         "required_contribution_task_ids": ["task-a", "task-b"],
     }
+    assert fresh["operator_chat_participants_replaces_prior"] is True
     assert len(fresh["operator_chat_participants"]) == 15
     assert [row["id"] for row in fresh["runtime_attention"]] == ["scoped"]
     assert "project_repo" not in fresh
@@ -1123,6 +1124,22 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     )
     assert "Task creation mandate for this wake" not in retained_prompt
     assert len(retained_prompt) < len(fresh_prompt)
+
+    revoked_participants_prompt = _build_prompt(
+        {
+            **retained_lease,
+            "operator_chat_participants": [],
+        },
+        effective_resume_mode="same_context",
+    )
+    revoked_participants = _team_context_from_prompt(revoked_participants_prompt)
+    assert revoked_participants["context_mode"] == "retained_delta"
+    assert revoked_participants["operator_chat_participants_replaces_prior"] is True
+    assert revoked_participants["operator_chat_participants"] == []
+    assert "replaces every prior wake's list" in revoked_participants_prompt
+    assert "an empty list means no proactive Team Chat recipient is authorized" in (
+        revoked_participants_prompt
+    )
 
     rotated_lease = {
         **retained_lease,

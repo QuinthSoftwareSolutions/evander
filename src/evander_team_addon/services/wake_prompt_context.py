@@ -292,7 +292,8 @@ def build_compact_wake_context(
             _sort_text(row.get("operator_user_id")),
         ),
     )
-    if operator_chat_participants:
+    if "operator_chat_participants" in lease:
+        context["operator_chat_participants_replaces_prior"] = True
         context["operator_chat_participants"] = operator_chat_participants
 
     manager_fallback_summary = lease.get("manager_fallback_summary")

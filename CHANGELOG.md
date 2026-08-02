@@ -13,6 +13,9 @@
   conversations the calling agent already belongs to. Other agents' operator
   conversations can no longer appear as recipients or be used to create a new
   direct chat.
+- Made each wake's participant list an explicit complete replacement, including
+  an empty list, so same-context sessions revoke stale recipients without a
+  context rotation.
 
 ## 2026-08-02 - Team Review Routing
 

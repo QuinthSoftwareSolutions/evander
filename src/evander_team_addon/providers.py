@@ -6240,7 +6240,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Team Chat messages are direct conversations with human operators, not "
         f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
         f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
-        "operators in your own direct Team Chat conversations listed in the current Team context.\n"
+        "operators in your own direct Team Chat conversations listed in the current "
+        "Team context. "
+        "Each wake's operator_chat_participants list replaces every prior wake's list; "
+        "an empty list revokes all proactive Team Chat recipients.\n"
         f"- Use {TEAM_REQUEST_EPHEMERAL_AGENT_TOOL} or "
         f"{TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL} for scoped worker delegation, then "
         f"{TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL} or {TEAM_REJECT_EPHEMERAL_RESULT_TOOL} "
@@ -6441,6 +6444,7 @@ def _build_prompt(
     )
     superior_acceptance_section = _superior_acceptance_guidance(context)
     assigned_review_section = _assigned_deliverable_review_guidance(context)
+    operator_chat_scope_section = _operator_chat_participant_scope_guidance(context)
     context_json = json.dumps(context, sort_keys=True, indent=2)
     mode_section = (
         "This wake starts with a fresh conversation context. The JSON below is "
@@ -6481,6 +6485,7 @@ def _build_prompt(
         f"{blocker_section}"
         f"{superior_acceptance_section}"
         f"{assigned_review_section}"
+        f"{operator_chat_scope_section}"
         f"Team context JSON:\n{context_json}\n\n"
         "MCP action surface:\n"
         "- Use the appropriate Team MCP tool for each state change. A note is "
@@ -6725,8 +6730,11 @@ def _build_team_chat_prompt(
             )
         )
     )
+    operator_chat_scope_guidance = _operator_chat_participant_scope_guidance(
+        ordinary_team_context
+    )
     ordinary_context_section = (
-        f"{context_guidance}Team context JSON:\n"
+        f"{context_guidance}{operator_chat_scope_guidance}Team context JSON:\n"
         f"{json.dumps(ordinary_team_context, sort_keys=True, indent=2)}"
         if ordinary_team_context is not None
         else context_guidance
@@ -6754,6 +6762,24 @@ def _build_team_chat_prompt(
         "Human operator message:\n"
         f"{_object_field(message, 'body') or '(attachment-only message)'}"
         f"{attachment_guidance}"
+    )
+
+
+def _operator_chat_participant_scope_guidance(
+    context: Mapping[str, Any] | None,
+) -> str:
+    if (
+        context is None
+        or context.get("context_mode") != "retained_delta"
+        or context.get("operator_chat_participants_replaces_prior") is not True
+    ):
+        return ""
+    return (
+        "Operator Team Chat membership for this wake:\n"
+        "- operator_chat_participants is the complete current list and replaces every "
+        "prior wake's list, including lists retained in conversation history. Any "
+        "unlisted recipient is revoked; an empty list means no proactive Team Chat "
+        "recipient is authorized.\n\n"
     )
 
 
