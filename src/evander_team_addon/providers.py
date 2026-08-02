@@ -3691,7 +3691,12 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 resolved_fields=resolved_fields,
             )
             state, effective_task_id, created = TeamAdminService(
-                repo
+                repo,
+                managed_git_admin=getattr(
+                    getattr(self.runtime_context, "admin_service", None),
+                    "managed_git_admin",
+                    None,
+                ),
             ).create_or_reprioritize_task_with_result(
                 task_id=task_id,
                 owner_agent_id=normalized_owner_id,
@@ -7118,6 +7123,14 @@ def _prepare_project_repo(
     session_id = _required_text(agent.get("session_id"), "session_id")
     managed_repo_id = _required_text(_value(git, "managed_repo_id"), "project.git.managed_repo_id")
     clone_branch = _optional_text(_value(git, "base_branch"))
+    if clone_branch is None:
+        clone_branch = _managed_repository_default_branch(
+            context,
+            managed_repo_id=managed_repo_id,
+            directory_path=(
+                _optional_text(_value(git, "directory_path")) or "root"
+            ),
+        )
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
         AgentCloneRepoEffectDefinition(
@@ -7168,6 +7181,34 @@ def _prepare_project_repo(
     project_repo.update(commit_diagnostics)
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
     return state, project_repo
+
+
+def _managed_repository_default_branch(
+    context: Any,
+    *,
+    managed_repo_id: str,
+    directory_path: str,
+) -> str:
+    managed_git = getattr(
+        getattr(context, "admin_service", None),
+        "managed_git_admin",
+        None,
+    )
+    get_repository = getattr(managed_git, "get_repository", None)
+    if not callable(get_repository):
+        raise RuntimeError("managed Git default-branch resolution is unavailable")
+    record = get_repository(
+        managed_repo_id,
+        directory_path=directory_path,
+    )
+    if not isinstance(record, Mapping):
+        raise RuntimeError("managed Git repository lookup returned an invalid record")
+    default_branch = _optional_text(record.get("default_branch"))
+    if default_branch is None:
+        raise RuntimeError(
+            f"managed repository {managed_repo_id} has no concrete default branch"
+        )
+    return validate_branch_name(default_branch)
 
 
 def _project_repo_payload(
@@ -7223,7 +7264,14 @@ def _create_project_repo_git_work_contexts(
             },
         )
     rows: list[dict[str, Any]] = []
-    admin = TeamAdminService(repo)
+    admin = TeamAdminService(
+        repo,
+        managed_git_admin=getattr(
+            getattr(context, "admin_service", None),
+            "managed_git_admin",
+            None,
+        ),
+    )
     state_commit_attempt_count = 0
     state_conflict_retry_count = 0
     task_worktree_repo_name = _required_text(

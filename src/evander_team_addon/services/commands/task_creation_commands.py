@@ -140,7 +140,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 ),
                 reserved_task_ids=set(),
             )
-            plan = _resolve_task_creation_plan_git_bases(state, [plan])[0]
+            plan = _resolve_task_creation_plan_git_bases(
+                state,
+                [plan],
+                git_default_branch_resolver=self.git_default_branch_resolver,
+            )[0]
             graph_errors = _task_creation_batch_graph_errors(
                 state,
                 [plan],
@@ -243,7 +247,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 )
                 reserved_task_ids.add(plan.task_id)
                 plans.append(plan)
-            plans = _resolve_task_creation_plan_git_bases(state, plans)
+            plans = _resolve_task_creation_plan_git_bases(
+                state,
+                plans,
+                git_default_branch_resolver=self.git_default_branch_resolver,
+            )
             graph_errors = _task_creation_batch_graph_errors(
                 state,
                 plans,

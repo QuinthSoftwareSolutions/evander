@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 from ...models import (
     AgentTask,
     PersistentAgent,
@@ -85,9 +85,64 @@ class TaskGitBaseValidationError(ValueError):
         self.message = message
 
 
+class TaskGitDefaultBranchResolver(Protocol):
+    def __call__(
+        self,
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> object: ...
+
+
 def _normalized_task_git_base_branch(value: object) -> str | None:
     normalized = _optional_text(value)
     return validate_branch_name(normalized) if normalized is not None else None
+
+
+def _project_default_task_git_base_branch(
+    state: TeamState,
+    *,
+    project_id: str,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None,
+) -> str | None:
+    project = _require_present(state.projects, project_id, "project")
+    if project.git is None:
+        return None
+    configured = _normalized_task_git_base_branch(project.git.base_branch)
+    if configured is not None:
+        return configured
+    if git_default_branch_resolver is None:
+        raise TaskGitBaseValidationError(
+            code="git_base_unavailable",
+            message=(
+                f"project {project.id} does not select a Git base branch and "
+                "managed repository default-branch resolution is unavailable"
+            ),
+        )
+    try:
+        resolved = _normalized_task_git_base_branch(
+            git_default_branch_resolver(
+                managed_repo_id=project.git.managed_repo_id,
+                directory_path=project.git.directory_path,
+            )
+        )
+    except Exception as exc:
+        raise TaskGitBaseValidationError(
+            code="git_base_unavailable",
+            message=(
+                f"could not resolve the default branch for managed repository "
+                f"{project.git.managed_repo_id}: {exc}"
+            ),
+        ) from exc
+    if resolved is None:
+        raise TaskGitBaseValidationError(
+            code="git_base_unavailable",
+            message=(
+                f"managed repository {project.git.managed_repo_id} has no "
+                "concrete default branch"
+            ),
+        )
+    return resolved
 
 
 def _correction_case_git_base_branch(
@@ -139,6 +194,7 @@ def _set_task_git_base_branch(
     *,
     task: AgentTask,
     git_base_branch: object,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
 ) -> bool:
     normalized = _normalized_task_git_base_branch(git_base_branch)
     project = _require_present(state.projects, task.project_id, "project")
@@ -162,10 +218,14 @@ def _set_task_git_base_branch(
             if task.parent_task_id is not None
             else None
         )
-        normalized = _normalized_task_git_base_branch(
-            parent.git_base_branch
+        normalized = (
+            _normalized_task_git_base_branch(parent.git_base_branch)
             if parent is not None and parent.git_base_branch is not None
-            else project.git.base_branch
+            else _project_default_task_git_base_branch(
+                state,
+                project_id=project.id,
+                git_default_branch_resolver=git_default_branch_resolver,
+            )
         )
     if normalized is not None and project.git is None:
         raise TaskGitBaseValidationError(
@@ -196,6 +256,7 @@ def _resolve_new_task_git_base_branch(
     explicit_git_base_branch: object = None,
     parent_task_id: str | None = None,
     case_id: str | None = None,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
 ) -> str | None:
     project = _require_present(state.projects, project_id, "project")
     correction_base = _correction_case_git_base_branch(state, case_id=case_id)
@@ -215,18 +276,34 @@ def _resolve_new_task_git_base_branch(
             raise ValueError(f"task parent {parent.id} belongs to another project")
         if parent.git_base_branch is not None:
             return parent.git_base_branch
-    return project.git.base_branch if project.git is not None else None
+    return _project_default_task_git_base_branch(
+        state,
+        project_id=project.id,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
 
 
 def _resolve_task_creation_plan_git_bases(
     state: TeamState,
     plans: list[_TaskCreationPlan],
+    *,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
 ) -> list[_TaskCreationPlan]:
     """Resolve explicit, parent, then project-default task Git bases atomically."""
 
     plans_by_id = {plan.task_id: plan for plan in plans}
     resolved: dict[str, str | None] = {}
     resolving: set[str] = set()
+    project_defaults: dict[str, str | None] = {}
+
+    def _project_default(project_id: str) -> str | None:
+        if project_id not in project_defaults:
+            project_defaults[project_id] = _project_default_task_git_base_branch(
+                state,
+                project_id=project_id,
+                git_default_branch_resolver=git_default_branch_resolver,
+            )
+        return project_defaults[project_id]
 
     def _resolve(plan: _TaskCreationPlan) -> str | None:
         if plan.task_id in resolved:
@@ -260,9 +337,9 @@ def _resolve_task_creation_plan_git_bases(
                 parent = state.tasks.get(plan.parent_task_id)
                 value = parent.git_base_branch if parent is not None else None
                 if value is None and project.git is not None:
-                    value = project.git.base_branch
+                    value = _project_default(project.id)
         else:
-            value = project.git.base_branch if project.git is not None else None
+            value = _project_default(project.id)
         resolving.remove(plan.task_id)
         resolved[plan.task_id] = _normalized_task_git_base_branch(value)
         return resolved[plan.task_id]
@@ -1431,6 +1508,7 @@ def _apply_goal_update(
 
 __all__ = [
     "_TaskCreationPlan",
+    "TaskGitDefaultBranchResolver",
     "TaskGitBaseValidationError",
     "_validate_case_scope",
     "_case_can_link_task",

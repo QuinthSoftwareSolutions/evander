@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 44
+SQLITE_SCHEMA_VERSION = 45
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1357,7 +1357,7 @@ class TeamStateSqliteStore:
                     _migrate_legacy_outcome_kind_definitions(connection)
                 if previous_schema_version < 43:
                     _migrate_worktree_cleanup_evidence(connection)
-                if previous_schema_version < 44:
+                if previous_schema_version < 45:
                     _migrate_task_git_base_snapshots(connection)
                 connection.execute(
                     """
@@ -1410,6 +1410,11 @@ class TeamStateSqliteStore:
                     _migrate_legacy_json_outcome_kind_records(payload)
                     state = TeamState.model_validate(payload)
                     self._write_state(connection, state)
+                    # Schema creation precedes the supported JSON import, so a
+                    # version-gated data backfill sees an empty database on the
+                    # first open. Backfill the imported rows in the same
+                    # transaction before recording the import as complete.
+                    _migrate_task_git_base_snapshots(connection)
                     now = utc_now().isoformat()
                     connection.executemany(
                         """
@@ -4861,6 +4866,248 @@ def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
         )
 
 
+_LEGACY_MIXED_GIT_BASE_ERROR = (
+    "mixed_git_base_branches: legacy active release has ambiguous Git base provenance"
+)
+
+
+def _legacy_release_candidate_snapshot(
+    release: sqlite3.Row | None,
+) -> tuple[str | None, str | None]:
+    if release is None:
+        return None, None
+    manifest = _json_loads(release["manifest_json"])
+    manifest = manifest if isinstance(manifest, dict) else {}
+    branch = (
+        str(release["release_branch"] or "").strip()
+        or str(manifest.get("release_branch") or "").strip()
+        or None
+    )
+    commit = (
+        str(release["candidate_commit_sha"] or "").strip()
+        or str(manifest.get("candidate_commit_sha") or "").strip()
+        or None
+    )
+    return branch, commit
+
+
+def _legacy_correction_release_ids_by_task(
+    connection: sqlite3.Connection,
+) -> dict[str, set[str]]:
+    release_ids_by_task: dict[str, set[str]] = {}
+
+    def _add(task_id: object, release_id: object) -> None:
+        normalized_task_id = str(task_id or "").strip()
+        normalized_release_id = str(release_id or "").strip()
+        if normalized_task_id and normalized_release_id:
+            release_ids_by_task.setdefault(normalized_task_id, set()).add(
+                normalized_release_id
+            )
+
+    request_release_ids = {
+        str(row["id"]): str(row["release_package_id"])
+        for row in connection.execute(
+            "SELECT id, release_package_id FROM team_human_review_requests"
+        )
+    }
+    for row in connection.execute(
+        """
+        SELECT finding.correction_task_id, request.release_package_id
+        FROM team_human_review_findings AS finding
+        JOIN team_human_review_requests AS request
+          ON request.id = finding.source_human_review_request_id
+        """
+    ):
+        _add(row["correction_task_id"], row["release_package_id"])
+    for row in connection.execute(
+        """
+        SELECT review_correction_task_id, id AS release_package_id
+        FROM team_release_packages
+        WHERE review_correction_task_id IS NOT NULL
+          AND trim(review_correction_task_id) != ''
+        """
+    ):
+        _add(row["review_correction_task_id"], row["release_package_id"])
+    for row in connection.execute(
+        "SELECT payload_json FROM team_release_verification_runs"
+    ):
+        payload = _json_loads(row["payload_json"])
+        if isinstance(payload, dict):
+            _add(payload.get("correction_task_id"), payload.get("release_package_id"))
+    for row in connection.execute(
+        """
+        SELECT task.id AS task_id, case_record.source, case_record.source_ref,
+               case_record.metadata_json
+        FROM team_tasks AS task
+        JOIN team_cases AS case_record ON case_record.id = task.case_id
+        WHERE case_record.source IN ('human_release_review', 'post_release_feedback')
+        """
+    ):
+        if row["source"] == "human_release_review":
+            _add(row["task_id"], request_release_ids.get(str(row["source_ref"] or "")))
+            continue
+        metadata = _json_loads(row["metadata_json"])
+        if isinstance(metadata, dict):
+            _add(row["task_id"], metadata.get("release_package_id"))
+    return release_ids_by_task
+
+
+def _legacy_task_has_authoritative_git_work(
+    connection: sqlite3.Connection,
+    *,
+    task_id: str,
+) -> bool:
+    for statement in (
+        "SELECT 1 FROM team_git_work_contexts WHERE task_id = ? LIMIT 1",
+        "SELECT 1 FROM team_deliverables WHERE task_id = ? LIMIT 1",
+        "SELECT 1 FROM team_git_promotions WHERE task_id = ? LIMIT 1",
+    ):
+        if connection.execute(statement, (task_id,)).fetchone() is not None:
+            return True
+    return False
+
+
+def _block_legacy_task_git_base_conflict(
+    connection: sqlite3.Connection,
+    *,
+    task: sqlite3.Row,
+    details: str,
+) -> None:
+    now = utc_now().isoformat()
+    connection.execute(
+        """
+        UPDATE team_tasks
+        SET state = 'blocked',
+            state_entered_at = CASE
+                WHEN state = 'blocked' THEN state_entered_at
+                ELSE ?
+            END,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (now, now, task["id"]),
+    )
+    project = connection.execute(
+        "SELECT team_id FROM team_projects WHERE id = ?",
+        (task["project_id"],),
+    ).fetchone()
+    if project is None:
+        return
+    token = hashlib.sha256(str(task["id"]).encode("utf-8")).hexdigest()[:20]
+    blocker_id = f"blocker-legacy-git-base-{token}"
+    source_id = f"legacy-git-base-conflict:{task['id']}"
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_blockers(
+            id, team_id, project_id, task_id, source_kind, source_id,
+            reporter_agent_id, reporter_actor, reason_code, owner_agent_id,
+            delegate_agent_id, state, route, summary, details, priority,
+            escalation_depth, active_dispatch_id, follow_up_at, last_progress_at,
+            terminal_reference_ids_json, created_at, updated_at, resolved_at
+        )
+        VALUES (?, ?, ?, ?, 'explicit', ?, NULL, 'system:sqlite-migration',
+                'mixed_git_base_branches', NULL, NULL, 'open', 'operator', ?, ?,
+                'high', 0, NULL, NULL, NULL, '[]', ?, ?, NULL)
+        """,
+        (
+            blocker_id,
+            project["team_id"],
+            task["project_id"],
+            task["id"],
+            source_id,
+            f"Repair ambiguous Git base for task {task['id']}",
+            details,
+            now,
+            now,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_blocker_affected_tasks(
+            blocker_id, position, task_id
+        ) VALUES (?, 0, ?)
+        """,
+        (blocker_id, task["id"]),
+    )
+    event_id = f"blockerevent-legacy-git-base-{token}"
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_blocker_events(
+            id, blocker_id, event_type, actor_agent_id, from_agent_id,
+            to_agent_id, dispatch_id, note, reference_ids_json,
+            metadata_json, created_at
+        ) VALUES (?, ?, 'reported', NULL, NULL, NULL, NULL, ?, '[]', ?, ?)
+        """,
+        (
+            event_id,
+            blocker_id,
+            details,
+            _json_dumps({"sqlite_migration": SQLITE_SCHEMA_VERSION}),
+            now,
+        ),
+    )
+
+
+def _legacy_deliverable_git_snapshots(
+    connection: sqlite3.Connection,
+    deliverables: Sequence[sqlite3.Row],
+) -> tuple[set[tuple[str, str]], bool]:
+    snapshots: set[tuple[str, str]] = set()
+    unresolved = False
+    for deliverable in deliverables:
+        contexts: list[sqlite3.Row] = []
+        if deliverable["branch_context_id"]:
+            contexts = connection.execute(
+                """
+                SELECT base_branch, base_commit
+                FROM team_git_work_contexts
+                WHERE id = ? AND task_id = ?
+                """,
+                (deliverable["branch_context_id"], deliverable["task_id"]),
+            ).fetchall()
+        if not contexts:
+            contexts = connection.execute(
+                """
+                SELECT DISTINCT base_branch, base_commit
+                FROM team_git_work_contexts
+                WHERE task_id = ?
+                """,
+                (deliverable["task_id"],),
+            ).fetchall()
+        if not contexts:
+            unresolved = True
+            continue
+        complete_for_deliverable = False
+        for context in contexts:
+            branch = str(context["base_branch"] or "").strip()
+            commit = str(context["base_commit"] or "").strip()
+            if not branch or not commit:
+                unresolved = True
+                continue
+            complete_for_deliverable = True
+            snapshots.add((branch, commit))
+        if not complete_for_deliverable:
+            unresolved = True
+    return snapshots, unresolved
+
+
+def _block_legacy_release_git_base_conflict(
+    connection: sqlite3.Connection,
+    *,
+    release_id: str,
+) -> None:
+    connection.execute(
+        """
+        UPDATE team_release_packages
+        SET state = 'blocked',
+            error = ?,
+            updated_at = COALESCE(updated_at, created_at)
+        WHERE id = ?
+        """,
+        (_LEGACY_MIXED_GIT_BASE_ERROR, release_id),
+    )
+
+
 def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
     """Backfill active Git workstreams without inventing ambiguous provenance."""
 
@@ -4873,35 +5120,109 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
             else None
         )
 
+    correction_release_ids = _legacy_correction_release_ids_by_task(connection)
     active_task_states = ("pending", "in_progress", "waiting_for_review", "blocked")
     task_rows = connection.execute(
         """
-        SELECT id, project_id
+        SELECT id, project_id, owner_agent_id, state, title, git_base_branch,
+               state_entered_at, created_at, updated_at
         FROM team_tasks
         WHERE state IN (?, ?, ?, ?)
-          AND git_base_branch IS NULL
         ORDER BY id
         """,
         active_task_states,
     ).fetchall()
     for task in task_rows:
+        current_branch = str(task["git_base_branch"] or "").strip() or None
+        linked_release_ids = correction_release_ids.get(str(task["id"]), set())
         context_branches = {
             str(row["base_branch"]).strip()
             for row in connection.execute(
                 """
                 SELECT base_branch
                 FROM team_git_work_contexts
-                WHERE task_id = ? AND base_branch IS NOT NULL AND base_branch != ''
+                WHERE task_id = ? AND base_branch IS NOT NULL AND trim(base_branch) != ''
                 """,
                 (task["id"],),
             )
         }
-        if len(context_branches) == 1:
-            branch = next(iter(context_branches))
-        elif not context_branches:
-            branch = project_defaults.get(task["project_id"])
-        else:
-            branch = None
+
+        if linked_release_ids:
+            if len(linked_release_ids) != 1:
+                _block_legacy_task_git_base_conflict(
+                    connection,
+                    task=task,
+                    details=(
+                        f"Legacy correction task {task['id']} is linked to multiple "
+                        "release candidates and requires an explicit Git-base repair."
+                    ),
+                )
+                continue
+            release_id = next(iter(linked_release_ids))
+            linked_release = connection.execute(
+                """
+                SELECT id, project_id, release_branch, git_base_branch,
+                       candidate_commit_sha, manifest_json
+                FROM team_release_packages
+                WHERE id = ?
+                """,
+                (release_id,),
+            ).fetchone()
+            candidate_branch, _candidate_commit = _legacy_release_candidate_snapshot(
+                linked_release
+            )
+            if (
+                linked_release is None
+                or linked_release["project_id"] != task["project_id"]
+                or candidate_branch is None
+                or len(context_branches) > 1
+                or (context_branches and candidate_branch not in context_branches)
+                or (
+                    current_branch not in {None, candidate_branch}
+                    and _legacy_task_has_authoritative_git_work(
+                        connection,
+                        task_id=str(task["id"]),
+                    )
+                )
+            ):
+                _block_legacy_task_git_base_conflict(
+                    connection,
+                    task=task,
+                    details=(
+                        f"Legacy correction task {task['id']} does not have one "
+                        "unambiguous rejected-candidate Git base and requires "
+                        "explicit repair."
+                    ),
+                )
+                continue
+            if current_branch != candidate_branch:
+                connection.execute(
+                    "UPDATE team_tasks SET git_base_branch = ? WHERE id = ?",
+                    (candidate_branch, task["id"]),
+                )
+            continue
+
+        if len(context_branches) > 1 or (
+            current_branch is not None
+            and context_branches
+            and current_branch not in context_branches
+        ):
+            _block_legacy_task_git_base_conflict(
+                connection,
+                task=task,
+                details=(
+                    f"Legacy task {task['id']} has conflicting persisted Git-base "
+                    "provenance and requires an explicit repair."
+                ),
+            )
+            continue
+        if current_branch is not None:
+            continue
+        branch = (
+            next(iter(context_branches))
+            if context_branches
+            else project_defaults.get(task["project_id"])
+        )
         if branch is not None:
             connection.execute(
                 "UPDATE team_tasks SET git_base_branch = ? WHERE id = ?",
@@ -4911,7 +5232,8 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
     active_release_states = ("pending", "in_progress", "blocked")
     release_rows = connection.execute(
         """
-        SELECT id, project_id, base_commit_sha
+        SELECT id, project_id, supersedes_release_package_id, base_commit_sha,
+               error
         FROM team_release_packages
         WHERE state IN (?, ?, ?)
           AND git_base_branch IS NULL
@@ -4945,58 +5267,123 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 )
             )
         ]
-        has_git_release = bool(git_deliverables) or connection.execute(
-            """
-            SELECT 1
-            FROM team_release_feature_branches
-            WHERE package_id = ?
-            LIMIT 1
-            """,
-            (release["id"],),
-        ).fetchone() is not None
+        predecessor_id = str(release["supersedes_release_package_id"] or "").strip()
+        has_git_release = (
+            bool(git_deliverables)
+            or bool(predecessor_id)
+            or connection.execute(
+                """
+                SELECT 1
+                FROM team_release_feature_branches
+                WHERE package_id = ?
+                LIMIT 1
+                """,
+                (release["id"],),
+            ).fetchone()
+            is not None
+        )
         if not has_git_release:
             continue
 
-        branches: set[str] = set()
-        commits: set[str] = set()
-        unresolved = False
-        for deliverable in git_deliverables:
-            contexts = []
-            if deliverable["branch_context_id"]:
-                contexts = connection.execute(
+        if predecessor_id:
+            predecessor = connection.execute(
+                """
+                SELECT id, project_id, release_branch, git_base_branch,
+                       candidate_commit_sha, manifest_json
+                FROM team_release_packages
+                WHERE id = ?
+                """,
+                (predecessor_id,),
+            ).fetchone()
+            branch, commit = _legacy_release_candidate_snapshot(predecessor)
+            inherited_deliverable_ids = {
+                str(row["deliverable_id"])
+                for row in connection.execute(
                     """
-                    SELECT base_branch, base_commit
-                    FROM team_git_work_contexts
-                    WHERE id = ? AND task_id = ?
+                    SELECT deliverable_id
+                    FROM team_release_deliverables
+                    WHERE package_id = ?
                     """,
-                    (deliverable["branch_context_id"], deliverable["task_id"]),
-                ).fetchall()
-            if not contexts:
-                contexts = connection.execute(
-                    """
-                    SELECT DISTINCT base_branch, base_commit
-                    FROM team_git_work_contexts
-                    WHERE task_id = ?
-                    """,
-                    (deliverable["task_id"],),
-                ).fetchall()
-            if contexts:
-                branches.update(
-                    str(row["base_branch"]).strip()
-                    for row in contexts
-                    if row["base_branch"]
+                    (predecessor_id,),
                 )
-                commits.update(
-                    str(row["base_commit"]).strip()
-                    for row in contexts
-                    if row["base_commit"]
+            }
+            correction_deliverables = [
+                row
+                for row in git_deliverables
+                if str(row["id"]) not in inherited_deliverable_ids
+            ]
+            inferred, unresolved = _legacy_deliverable_git_snapshots(
+                connection,
+                correction_deliverables,
+            )
+            if inferred:
+                if len(inferred) != 1 or unresolved:
+                    _block_legacy_release_git_base_conflict(
+                        connection,
+                        release_id=str(release["id"]),
+                    )
+                    continue
+                inferred_branch, inferred_commit = next(iter(inferred))
+                if (
+                    (branch is not None and branch != inferred_branch)
+                    or (commit is not None and commit != inferred_commit)
+                ):
+                    _block_legacy_release_git_base_conflict(
+                        connection,
+                        release_id=str(release["id"]),
+                    )
+                    continue
+                branch = branch or inferred_branch
+                commit = commit or inferred_commit
+            elif unresolved:
+                _block_legacy_release_git_base_conflict(
+                    connection,
+                    release_id=str(release["id"]),
                 )
-            else:
-                unresolved = True
+                continue
+            if (
+                predecessor is None
+                or predecessor["project_id"] != release["project_id"]
+                or branch is None
+                or commit is None
+            ):
+                _block_legacy_release_git_base_conflict(
+                    connection,
+                    release_id=str(release["id"]),
+                )
+                continue
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET git_base_branch = ?,
+                    base_commit_sha = ?,
+                    state = CASE WHEN error = ? THEN 'pending' ELSE state END,
+                    error = CASE WHEN error = ? THEN NULL ELSE error END
+                WHERE id = ?
+                """,
+                (
+                    branch,
+                    commit,
+                    _LEGACY_MIXED_GIT_BASE_ERROR,
+                    _LEGACY_MIXED_GIT_BASE_ERROR,
+                    release["id"],
+                ),
+            )
+            continue
 
-        if len(branches) == 1 and len(commits) == 1 and not unresolved:
-            branch = next(iter(branches))
-            commit = next(iter(commits))
+        snapshots, unresolved = _legacy_deliverable_git_snapshots(
+            connection,
+            git_deliverables,
+        )
+        if len(snapshots) == 1 and not unresolved:
+            branch, commit = next(iter(snapshots))
+            existing_commit = str(release["base_commit_sha"] or "").strip() or None
+            if existing_commit is not None and existing_commit != commit:
+                _block_legacy_release_git_base_conflict(
+                    connection,
+                    release_id=str(release["id"]),
+                )
+                continue
             connection.execute(
                 """
                 UPDATE team_release_packages
@@ -5007,15 +5394,9 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 (branch, commit, release["id"]),
             )
             continue
-        connection.execute(
-            """
-            UPDATE team_release_packages
-            SET state = 'blocked',
-                error = 'mixed_git_base_branches: legacy active release has ambiguous Git base provenance',
-                updated_at = COALESCE(updated_at, created_at)
-            WHERE id = ?
-            """,
-            (release["id"],),
+        _block_legacy_release_git_base_conflict(
+            connection,
+            release_id=str(release["id"]),
         )
 
     promotion_rows = connection.execute(

@@ -6379,6 +6379,65 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     )
 
 
+def test_wake_due_agents_resolves_and_persists_managed_repository_default(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch=None,
+        )
+        return state
+
+    repo.update(_set_git)
+    lookups: list[tuple[str, str]] = []
+
+    class _ManagedGit:
+        def get_repository(
+            self,
+            managed_repo_id: str,
+            *,
+            directory_path: str,
+        ) -> dict[str, str]:
+            lookups.append((managed_repo_id, directory_path))
+            return {"default_branch": "trunk"}
+
+    repo_cloner = FakeRepoCloner()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+            agent_resumer=FakeResumer(),
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert repo_cloner.calls[0]["clone_branch"] == "trunk"
+    project_repo = result["dispatches"][0]["project_repo"]
+    assert project_repo["base_branch"] == "trunk"
+    assert project_repo["git_work_contexts"][0]["base_branch"] == "trunk"
+    state = repo.read()
+    assert state.tasks["task"].git_base_branch == "trunk"
+    assert state.projects["project"].git is not None
+    assert state.projects["project"].git.base_branch is None
+    assert lookups == [("mr_0123456789abcdefabcd", "root")]
+
+
 def test_successor_context_records_verified_direct_dependency_git(
     tmp_path: Path,
 ) -> None:
@@ -7307,6 +7366,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
         )
         return state
 

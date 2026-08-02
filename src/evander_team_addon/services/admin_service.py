@@ -463,6 +463,26 @@ class TeamAdminService:
             for binding in record.get("bindings") or []
         )
 
+    def _resolve_managed_git_default_branch(
+        self,
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> object:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            raise RuntimeError("managed Git default-branch resolution is unavailable")
+        get_repository = getattr(managed_git, "get_repository", None)
+        if not callable(get_repository):
+            raise RuntimeError("managed Git repository lookup is unavailable")
+        record = get_repository(
+            managed_repo_id,
+            directory_path=directory_path,
+        )
+        if not isinstance(record, Mapping):
+            raise RuntimeError("managed Git repository lookup returned an invalid record")
+        return record.get("default_branch")
+
     def _set_project_repository_binding(
         self,
         managed_repo_id: str,
@@ -1584,6 +1604,9 @@ class TeamAdminService:
                     explicit_git_base_branch=effective_base_branch,
                     parent_task_id=task.parent_task_id,
                     case_id=task.case_id,
+                    git_default_branch_resolver=(
+                        self._resolve_managed_git_default_branch
+                    ),
                 )
             if effective_base_branch is None:
                 effective_base_branch = task.git_base_branch
@@ -2594,6 +2617,9 @@ class TeamAdminService:
                         state_model,
                         task=task,
                         git_base_branch=normalized_git_base_branch,
+                        git_default_branch_resolver=(
+                            self._resolve_managed_git_default_branch
+                        ),
                     )
                 elif (
                     case_link_changed
@@ -2607,6 +2633,9 @@ class TeamAdminService:
                         state_model,
                         task=task,
                         git_base_branch=None,
+                        git_default_branch_resolver=(
+                            self._resolve_managed_git_default_branch
+                        ),
                     )
                 task.updated_at = now
                 if task.state in _NON_TERMINAL_TASK_STATES:
@@ -2693,6 +2722,9 @@ class TeamAdminService:
                     explicit_git_base_branch=normalized_git_base_branch,
                     parent_task_id=normalized_parent_task_id,
                     case_id=normalized_case_id,
+                    git_default_branch_resolver=(
+                        self._resolve_managed_git_default_branch
+                    ),
                 ),
                 dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
@@ -2953,6 +2985,9 @@ class TeamAdminService:
                     state_model,
                     task=task,
                     git_base_branch=normalized_git_base_branch,
+                    git_default_branch_resolver=(
+                        self._resolve_managed_git_default_branch
+                    ),
                 )
             elif (
                 case_link_changed
@@ -2966,6 +3001,9 @@ class TeamAdminService:
                     state_model,
                     task=task,
                     git_base_branch=None,
+                    git_default_branch_resolver=(
+                        self._resolve_managed_git_default_branch
+                    ),
                 )
             task.updated_at = now
             if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
@@ -3995,6 +4033,17 @@ class TeamAdminService:
                 )
                 state.review_profiles[profile.id] = profile
 
+            template_git_base_branch = (
+                _resolve_new_task_git_base_branch(
+                    state,
+                    project_id=project_id,
+                    git_default_branch_resolver=(
+                        self._resolve_managed_git_default_branch
+                    ),
+                )
+                if template.tasks
+                else None
+            )
             for task_template in template.tasks:
                 owner_agent_id = role_agent_ids[task_template.owner_role_key]
                 created_by_agent_id = role_agent_ids[task_template.created_by_role_key]
@@ -4005,7 +4054,7 @@ class TeamAdminService:
                     id=task_ids[task_template.id],
                     owner_agent_id=owner_agent_id,
                     project_id=project_id,
-                    git_base_branch=(git.base_branch if git is not None else None),
+                    git_base_branch=template_git_base_branch,
                     priority=task_template.priority,
                     state=task_template.state,
                     title=task_template.title,

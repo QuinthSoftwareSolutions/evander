@@ -44,6 +44,7 @@ from .domain.case_task import (
     _apply_goal_update,
     _apply_task_creation_plan,
     _plan_task_creation,
+    _resolve_task_creation_plan_git_bases,
     _restore_case_task_state,
     _snapshot_case_task_state,
     _subordinate_task_finish_allowed,
@@ -143,11 +144,13 @@ class TeamAgentActionService:
         repository: TeamStateRepository,
         *,
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+        git_default_branch_resolver: Callable[..., object] | None = None,
     ) -> None:
         self._repository = repository
         self._human_review_eligibility_resolver = (
             human_review_eligibility_resolver
         )
+        self._git_default_branch_resolver = git_default_branch_resolver
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -550,6 +553,18 @@ class TeamAgentActionService:
                     continue
                 reserved_task_ids.add(plan.task_id)
                 task_creation_plans.append(plan)
+
+            try:
+                task_creation_plans = _resolve_task_creation_plan_git_bases(
+                    state_model,
+                    task_creation_plans,
+                    git_default_branch_resolver=(
+                        self._git_default_branch_resolver
+                    ),
+                )
+            except ValueError as exc:
+                result["errors"].append(f"task_creations: {exc}")
+                task_creation_plans = []
 
             graph_errors = _task_creation_batch_graph_errors(
                 state_model,

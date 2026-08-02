@@ -26,6 +26,9 @@
 - Pinned verification and release-review correction tasks to the rejected
   candidate branch, repaired still-unprepared correction tasks created with an
   upstream base, and invalidated preparation blockers when that base changes.
+- Resolved unset project bases through the managed repository default before
+  persisting task snapshots, and hardened the SQLite backfill for correction
+  tasks, correction successors, conflicting legacy contexts, and JSON imports.
 
 ## 2026-08-02 - Team Chat Membership Scope
 

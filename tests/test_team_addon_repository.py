@@ -490,6 +490,7 @@ def _auto_dev_squad_inputs(
     reviewer_agent_id = duplicate_reviewer_id or f"reviewer-{suffix}"
     project_git: dict[str, object] = {
         "managed_repo_id": MANAGED_REPO_ID,
+        "base_branch": "main",
     }
     if bad_git:
         project_git["managed_repo_id"] = "not-a-managed-repository"
@@ -5307,6 +5308,71 @@ def test_task_git_base_snapshots_default_parent_explicit_and_batch_parent(
     assert state.tasks["batch-child"].git_base_branch == "feature/batch"
 
 
+def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _configure_unset_base(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id=MANAGED_REPO_ID,
+            directory_path="root/team-project",
+            base_branch=None,
+        )
+        return state
+
+    repo.update(_configure_unset_base)
+    lookups: list[tuple[str, str]] = []
+
+    class _ManagedGit:
+        def get_repository(
+            self,
+            managed_repo_id: str,
+            *,
+            directory_path: str,
+        ) -> dict[str, str]:
+            lookups.append((managed_repo_id, directory_path))
+            return {"default_branch": "trunk"}
+
+    admin = TeamAdminService(repo, managed_git_admin=_ManagedGit())
+    state = admin.create_or_reprioritize_task(
+        task_id="resolved-admin-default",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Resolve the managed default",
+        description="Persist the actual branch on this task.",
+        created_by_agent_id="lead",
+    )
+    assert state.tasks["resolved-admin-default"].git_base_branch == "trunk"
+    assert state.projects["project"].git is not None
+    assert state.projects["project"].git.base_branch is None
+
+    _lease_agent_dispatch(repo, agent_id="lead")
+    command = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=lambda **kwargs: _ManagedGit().get_repository(
+            **kwargs
+        )["default_branch"],
+    )
+    state, result = command.create_task_command(
+        session_id="session-lead",
+        task_id="resolved-command-default",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Resolve through command service",
+        description="Use the same managed repository authority.",
+        request_id="request-resolve-managed-default",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["resolved-command-default"].git_base_branch == "trunk"
+    assert lookups == [
+        (MANAGED_REPO_ID, "root/team-project"),
+        (MANAGED_REPO_ID, "root/team-project"),
+    ]
+
+
 @pytest.mark.parametrize("lock_kind", ["context", "deliverable", "promotion"])
 def test_task_git_base_edit_locks_after_authoritative_git_work(
     tmp_path: Path,
@@ -6952,6 +7018,198 @@ def test_repository_migrates_task_release_and_promotion_git_base_snapshots(
     assert promotion.base_commit_sha == "base-main"
 
 
+def test_repository_repairs_legacy_correction_base_and_blocks_conflicting_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="legacy-correction-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Correct rejected candidate",
+        description="This pre-v44 task incorrectly inherited main.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="legacy-conflicting-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Conflicting legacy bases",
+        description="Require explicit provenance repair.",
+        created_by_agent_id="lead",
+    )
+
+    release_branch = "team/team/releases/rejected-candidate"
+    now = datetime(2026, 8, 2, tzinfo=UTC)
+
+    def _seed_legacy_links(state):
+        state.release_packages["release-rejected-candidate"] = ReleasePackage(
+            id="release-rejected-candidate",
+            project_id="project",
+            release_branch=release_branch,
+            git_base_branch="main",
+            candidate_commit_sha="c" * 40,
+            candidate_tree_hash="d" * 40,
+            policy_version=2,
+            state=TeamRecordState.REJECTED,
+        )
+        state.human_review_requests["human-review-rejected-candidate"] = (
+            HumanReviewRequest(
+                id="human-review-rejected-candidate",
+                release_package_id="release-rejected-candidate",
+                candidate_commit_sha="c" * 40,
+                candidate_tree_hash="d" * 40,
+                requirement_snapshot=HumanReviewRequirementSnapshot(
+                    directory_path="root",
+                    configured_group_ids=["release-reviewers"],
+                    initially_eligible_user_ids=["reviewer"],
+                ),
+                state="changes_requested",
+                completed_at=now,
+            )
+        )
+        state.human_review_findings["finding-rejected-candidate"] = (
+            HumanReviewFinding(
+                id="finding-rejected-candidate",
+                source_human_review_request_id="human-review-rejected-candidate",
+                text="Repair the rejected candidate.",
+                correction_task_id="legacy-correction-task",
+            )
+        )
+        state.git_work_contexts["ctx-conflict-main"] = GitWorkContext(
+            id="ctx-conflict-main",
+            agent_id="backend",
+            task_id="legacy-conflicting-task",
+            base_branch="main",
+            base_commit="1" * 40,
+            agent_branch="agents/session-backend/conflict-main",
+        )
+        state.git_work_contexts["ctx-conflict-feature"] = GitWorkContext(
+            id="ctx-conflict-feature",
+            agent_id="backend",
+            task_id="legacy-conflicting-task",
+            base_branch="feature/legacy",
+            base_commit="2" * 40,
+            agent_branch="agents/session-backend/conflict-feature",
+        )
+        return state
+
+    repo.update(_seed_legacy_links)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        # Simulate the flawed v44 result plus one preparation attempt: both the
+        # unprepared correction and the conflicting task were assigned main.
+        connection.execute(
+            "UPDATE team_tasks SET git_base_branch = 'main' WHERE id = ?",
+            ("legacy-conflicting-task",),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '44' WHERE key = 'sqlite_schema_version'"
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert migrated.tasks["legacy-correction-task"].git_base_branch == release_branch
+    conflicting = migrated.tasks["legacy-conflicting-task"]
+    assert conflicting.git_base_branch == "main"
+    assert conflicting.state == TeamTaskState.BLOCKED
+    blockers = [
+        blocker
+        for blocker in migrated.blockers.values()
+        if blocker.reason_code == "mixed_git_base_branches"
+        and conflicting.id in blocker.affected_task_ids
+    ]
+    assert len(blockers) == 1
+    assert blockers[0].route == TeamBlockerRoute.OPERATOR
+
+
+def test_repository_migrates_active_correction_successor_from_predecessor_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="legacy-source-task",
+        deliverable_id="legacy-source-deliverable",
+        git_base_branch="main",
+        base_commit_sha="1" * 40,
+        branch_kind="feature",
+    )
+    rejected_branch = "team/team/releases/legacy-rejected"
+    rejected_commit = "2" * 40
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="legacy-correction-input-task",
+        deliverable_id="legacy-correction-deliverable",
+        git_base_branch=rejected_branch,
+        base_commit_sha=rejected_commit,
+        branch_kind="feature",
+    )
+
+    def _seed_successor(state):
+        state.release_packages["legacy-rejected"] = ReleasePackage(
+            id="legacy-rejected",
+            project_id="project",
+            deliverable_ids=["legacy-source-deliverable"],
+            release_branch=rejected_branch,
+            git_base_branch="main",
+            base_commit_sha="1" * 40,
+            candidate_commit_sha=rejected_commit,
+            candidate_tree_hash="3" * 40,
+            policy_version=2,
+            state=TeamRecordState.REJECTED,
+        )
+        state.release_packages["legacy-successor"] = ReleasePackage(
+            id="legacy-successor",
+            project_id="project",
+            supersedes_release_package_id="legacy-rejected",
+            deliverable_ids=[
+                "legacy-source-deliverable",
+                "legacy-correction-deliverable",
+            ],
+            policy_version=2,
+            state=TeamRecordState.PENDING,
+        )
+        return state
+
+    repo.update(_seed_successor)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    migration_error = (
+        "mixed_git_base_branches: legacy active release has ambiguous Git base provenance"
+    )
+    with sqlite3.connect(db_path) as connection:
+        # Simulate v44 having mixed inherited and correction deliverables and
+        # incorrectly blocked the otherwise valid successor.
+        connection.execute(
+            """
+            UPDATE team_release_packages
+            SET git_base_branch = NULL,
+                base_commit_sha = NULL,
+                state = 'blocked',
+                error = ?
+            WHERE id = 'legacy-successor'
+            """,
+            (migration_error,),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '44' WHERE key = 'sqlite_schema_version'"
+        )
+
+    successor = TeamStateRepository(tmp_path).read().release_packages[
+        "legacy-successor"
+    ]
+
+    assert successor.git_base_branch == rejected_branch
+    assert successor.base_commit_sha == rejected_commit
+    assert successor.state == TeamRecordState.PENDING
+    assert successor.error is None
+
+
 def test_repository_migrates_legacy_task_and_deliverable_outcome_kinds(
     tmp_path: Path,
 ) -> None:
@@ -7642,6 +7900,69 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
     assert metadata["state_schema_version"] == str(SCHEMA_VERSION)
+
+
+def test_repository_backfills_git_base_snapshots_after_legacy_json_import(
+    tmp_path: Path,
+) -> None:
+    seed_repo = _seed_hierarchy(tmp_path / "seed")
+    _set_project_git(seed_repo)
+    _seed_context_backed_accepted_git_deliverable(
+        seed_repo,
+        task_id="legacy-json-git-task",
+        deliverable_id="legacy-json-git-deliverable",
+        git_base_branch="main",
+        base_commit_sha="4" * 40,
+        branch_kind="feature",
+    )
+
+    def _seed_release_and_promotion(state):
+        state.release_packages["legacy-json-release"] = ReleasePackage(
+            id="legacy-json-release",
+            project_id="project",
+            deliverable_ids=["legacy-json-git-deliverable"],
+            feature_branches=[
+                "team/team/features/legacy-json-git-task-backend"
+            ],
+            policy_version=2,
+            state=TeamRecordState.PENDING,
+        )
+        state.git_promotions["legacy-json-promotion"] = GitPromotionRecord(
+            id="legacy-json-promotion",
+            project_id="project",
+            release_package_id="legacy-json-release",
+            task_id="legacy-json-git-task",
+            actor_agent_id="lead",
+            source_branch="team/team/features/legacy-json-git-task-backend",
+            target_branch="team/team/releases/legacy-json-release",
+            promotion_kind="release",
+        )
+        return state
+
+    state = seed_repo.update(_seed_release_and_promotion)
+    payload = state.model_dump(mode="json")
+    payload["tasks"]["legacy-json-git-task"]["state"] = "in_progress"
+    payload["tasks"]["legacy-json-git-task"]["git_base_branch"] = None
+    payload["release_packages"]["legacy-json-release"]["git_base_branch"] = None
+    payload["release_packages"]["legacy-json-release"]["base_commit_sha"] = None
+    payload["git_promotions"]["legacy-json-promotion"]["git_base_branch"] = None
+    payload["git_promotions"]["legacy-json-promotion"]["base_commit_sha"] = None
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    imported = TeamStateRepository(tmp_path).read()
+
+    assert imported.tasks["legacy-json-git-task"].git_base_branch == "main"
+    release = imported.release_packages["legacy-json-release"]
+    assert release.git_base_branch == "main"
+    assert release.base_commit_sha == "4" * 40
+    promotion = imported.git_promotions["legacy-json-promotion"]
+    assert promotion.git_base_branch == "main"
+    assert promotion.base_commit_sha == "4" * 40
 
 
 def test_repository_imports_legacy_json_outcome_records_before_validation(
@@ -8887,6 +9208,7 @@ def test_repository_materializes_auto_dev_squad_with_team_project_and_agents_sha
                 "lead_session_id": "session-project-lead-auto-dev-squad",
                 "git": {
                     "managed_repo_id": MANAGED_REPO_ID,
+                    "base_branch": "main",
                 },
             },
             "agents": {

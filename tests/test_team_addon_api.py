@@ -1030,6 +1030,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
+            base_branch="main",
         )
         return state
 

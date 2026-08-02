@@ -398,9 +398,16 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
     blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
-    task_creation_commands = TeamTaskCreationCommandService(repo)
+    git_default_branch_resolver = _team_mcp_git_default_branch_resolver(context)
+    task_creation_commands = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
     outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
-    task_update_commands = TeamTaskUpdateCommandService(repo)
+    task_update_commands = TeamTaskUpdateCommandService(
+        repo,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
     agent_control_commands = TeamAgentControlCommandService(repo)
     governance_commands = TeamGovernanceCommandService(repo)
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
@@ -2666,6 +2673,33 @@ def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
             directory_path=directory_path,
             branch=agent_branch,
         )
+
+    return _resolve
+
+
+def _team_mcp_git_default_branch_resolver(context: AddonContext):
+    managed_git = getattr(context.service, "managed_git_admin", None)
+
+    def _resolve(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> object:
+        nonlocal managed_git
+        if managed_git is None:
+            from evander.admin.composition import build_admin_runtime
+
+            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
+        get_repository = getattr(managed_git, "get_repository", None)
+        if not callable(get_repository):
+            raise RuntimeError("managed Git repository lookup is unavailable")
+        record = get_repository(
+            managed_repo_id,
+            directory_path=directory_path,
+        )
+        if not isinstance(record, Mapping):
+            raise RuntimeError("managed Git repository lookup returned an invalid record")
+        return record.get("default_branch")
 
     return _resolve
 

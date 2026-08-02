@@ -974,6 +974,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         state_model,
                         task=task,
                         git_base_branch=normalized_updates.get("git_base_branch"),
+                        git_default_branch_resolver=self.git_default_branch_resolver,
                     ) or changed
                 except TaskGitBaseValidationError as exc:
                     raise TeamCommandValidationError(
