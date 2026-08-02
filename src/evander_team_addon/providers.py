@@ -250,6 +250,9 @@ from .services.human_review_assignment_service import (
 from .services.human_correction_reconciliation_service import (
     HumanCorrectionReconciliationService,
 )
+from .services.candidate_correction_reconciliation_service import (
+    CandidateCorrectionReconciliationService,
+)
 from .services.release_gate_service import TeamReleaseGateService
 from .services.release_verification_effects import EffectReleaseVerificationExecutor
 from .services.release_verification_runner import (
@@ -276,7 +279,7 @@ from .services.worktree_cleanup_service import (
     team_task_worktree_cleanup_lock,
 )
 
-TEAM_AGENT_GUIDANCE_VERSION = 29
+TEAM_AGENT_GUIDANCE_VERSION = 30
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -2137,6 +2140,26 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             payload.get("run_global_maintenance"),
             default=True,
         )
+        candidate_correction_reconciliation: dict[str, Any] = {}
+        candidate_correction_reconciliation_error: str | None = None
+        if run_global_maintenance:
+            try:
+                candidate_correction_reconciliation = (
+                    CandidateCorrectionReconciliationService(repo).reconcile()
+                )
+                if candidate_correction_reconciliation.get("events"):
+                    candidate_correction_reconciliation["published_event_ids"] = (
+                        _publish_team_events(
+                            context,
+                            candidate_correction_reconciliation["events"],
+                        )
+                    )
+            except Exception as exc:
+                # The durable reconciliation blocker and the next Team cycle
+                # preserve recovery without suppressing unrelated wakes.
+                candidate_correction_reconciliation_error = (
+                    str(exc) or exc.__class__.__name__
+                )
         human_correction_reconciliation: dict[str, Any] = {}
         human_correction_reconciliation_error: str | None = None
         if run_global_maintenance:
@@ -2616,6 +2639,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             ),
             "human_correction_reconciliation": human_correction_reconciliation,
             "human_correction_reconciliation_error": (human_correction_reconciliation_error),
+            "candidate_correction_reconciliation": (
+                candidate_correction_reconciliation
+            ),
+            "candidate_correction_reconciliation_error": (
+                candidate_correction_reconciliation_error
+            ),
             "errors": errors,
         }
 
@@ -4113,6 +4142,18 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if not active_dispatches:
                 break
         if finalized_count:
+            try:
+                candidate_correction_result = (
+                    CandidateCorrectionReconciliationService(repo).reconcile()
+                )
+                _publish_team_events(
+                    context,
+                    candidate_correction_result.get("events"),
+                )
+            except Exception:
+                # The normal Team reconciliation cycle retries durable
+                # candidate-correction release creation.
+                pass
             try:
                 correction_result = HumanCorrectionReconciliationService(repo).reconcile()
                 _publish_team_events(
@@ -6073,7 +6114,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or agent release review are also support-typed but are integration "
         "boundaries: do not finish them directly. Work from the runtime-pinned "
         "candidate, submit an assessable Git deliverable, and use its accepted "
-        "reviewed result to create the successor release.\n"
+        "reviewed result. Team automatically creates the successor release when "
+        "that correction resolves; do not call the release-request tool. If "
+        "automatic creation cannot validate or package the correction, follow "
+        "the durable correction blocker instead.\n"
         f"- For an ambiguous human-review finding, use "
         f"{TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL} to route its existing "
         "correction child without rewriting the finding or task. Use "
@@ -6220,9 +6264,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "promotion, release sequencing, or a superior explicitly asks for one.\n"
         f"- Release requests stand alone. Use {TEAM_REQUEST_RELEASE_TOOL} once "
         "every deliverable is accepted and no release package already exists for "
-        "that release. This excludes the automatic successor of a generated "
-        "human-review correction graph: Team creates that package after the "
-        "finding children are accepted and reviewed. Other release requests can "
+        "that release. This excludes automatic successors of generated rejected-"
+        "candidate correction work from verification, agent release review, or "
+        "human review: Team creates those packages after the correction work is "
+        "accepted and reviewed. Other release requests can "
         "enqueue prerequisite feature promotions from accepted deliverable "
         "git_refs.review_branch or git_refs.agent_branch before continuing to the "
         "release branch.\n"

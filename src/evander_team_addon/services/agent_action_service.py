@@ -19,6 +19,9 @@ from ..models import (
     TeamDispatchStatus,
     TeamTaskState,
 )
+from .candidate_correction_reconciliation_service import (
+    reconcile_candidate_correction_successors,
+)
 from .domain.blockers import (
     open_or_get_blocker,
     reconcile_task_blockers_after_reassignment,
@@ -1183,6 +1186,13 @@ class TeamAgentActionService:
                     _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "ephemeral_acceptances", index, exc)
+
+            if result["decided_review_request_ids"]:
+                reconcile_candidate_correction_successors(
+                    state_model,
+                    result=result,
+                    now=utc_now(),
+                )
 
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, project_id)

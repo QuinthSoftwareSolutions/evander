@@ -2324,6 +2324,7 @@ def test_immediate_wake_can_skip_global_maintenance(
     result = provider.execute()
 
     assert result["success"] is True
+    assert result["candidate_correction_reconciliation"] == {}
     assert result["human_correction_reconciliation"] == {}
     assert result["human_review_assignment_reconciliation"] == {}
     assert result["worktree_cleanup"] == {}
@@ -2429,6 +2430,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "idle profile-eligible reviewer" in guidance
     assert "override_routing_gap_reason" in guidance
     assert "Release requests stand alone" in guidance
+    assert "Team automatically creates the successor release" in guidance
+    assert "do not call the release-request tool" in guidance
     assert "git_refs.review_branch or git_refs.agent_branch" in guidance
     assert "failed feature or release promotion" in guidance
     assert "allowed agents/... ref" in guidance

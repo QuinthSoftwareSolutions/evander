@@ -1732,7 +1732,8 @@ unreferenced Git-context metadata is pruned.
 `effect:team:wake-due-agents` accepts `run_global_maintenance`, defaulting to
 `true` for compatibility. The bundled scheduled wake leaves it enabled. The
 queued-Chat and requested-agent routes set it to `false` so unrelated global
-correction, review-assignment, and worktree-cleanup scans do not delay an
+candidate-correction, human-correction, review-assignment, and worktree-cleanup
+scans do not delay an
 immediate dispatch.
 
 - `review` — `team_publish_review_branch` can promote an ephemeral assignment
@@ -1818,6 +1819,17 @@ session is created, including an authorized retry of the same pinned candidate.
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.
 Creating another release with the same deliverables and failed tree is refused.
+Verification candidate failures and rejected agent release reviews create
+candidate-pinned system correction tasks. When the generated task recursively
+resolves with current accepted, reviewed Git deliverables, Team creates one
+deterministic successor package and correction-aggregate promotion
+automatically; the project lead does not submit another release request. The
+review decision and successor intent are one atomic state transition. Scheduled
+global maintenance performs the same idempotent reconciliation for interrupted
+or older states. A packaging or validation failure opens a durable blocker on
+the correction owner instead of silently returning release responsibility to
+the manager. Initial releases and post-release-feedback successors remain
+explicit requests.
 Only timeouts and infrastructure failures leave verification retryable, and only
 a review recorded as process-blocked may be replaced. Release-review decisions
 are immutable: use `rejected` for a candidate defect and reserve `blocked` for a

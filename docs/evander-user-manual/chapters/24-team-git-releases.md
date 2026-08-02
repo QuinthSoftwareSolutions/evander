@@ -118,6 +118,13 @@ implication; updating that pre-existing branch requires an explicit
 <code>canonical_branch="feature/foo"</code> and still uses exact-SHA,
 fast-forward, and destination-lease protections.
 
+The first release package remains an explicit authorized request. A successor
+for post-release feedback also remains explicit and must name its feedback
+case. The exception is system-generated correction work for a failed candidate
+verification, rejected agent release review, or human
+<code>changes_requested</code>: after its required correction deliverables are
+accepted and reviewed, Team creates the successor automatically.
+
 This prevents policy drift after request time from silently redefining what was approved.
 
 > <span class="sidebar-kicker">Technical reference</span> **Request authority and frozen manifest**
@@ -217,7 +224,14 @@ The practical distinction is **content failure versus process failure**. Content
 
 ### Terminal candidate failures
 
-A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. Repair the content, create and accept new deliverables, and request a new release with a new reviewed tree.
+A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. Team creates candidate-pinned correction work. Repair the content and complete its accepted, reviewed Git deliverables; Team then creates one deterministic successor with the new reviewed tree. The project lead does not make a second release request.
+
+The review acceptance and successor intent are persisted atomically. Scheduled
+maintenance applies the same idempotent reconciliation to interrupted or older
+states and recognizes an existing direct successor instead of duplicating it.
+If Team cannot validate or package the resolved correction, it opens a durable
+blocker for the correction owner rather than waiting for a manager to remember
+the release.
 
 The system refuses a cosmetic new release of the same failed deliverables and tree.
 
@@ -262,9 +276,9 @@ is preparing, pending, blocked, or changes-requested.
 
 | Gate result | What happens to the pinned release attempt |
 |---|---|
-| Verification candidate failure | Terminal rejection; changed, reviewed content is required. |
+| Verification candidate failure | Terminal rejection; generated correction work requires changed, reviewed content, then Team creates its successor automatically. |
 | Verification infrastructure failure or timeout | Same attempt is blocked and may retry the unchanged candidate only after concrete recovery evidence; a failed agent-requested retry requires operator escalation. |
-| Agent review rejection | Terminal candidate failure under existing immutable-review rules. |
+| Agent review rejection | Terminal candidate failure; generated correction work must be accepted and reviewed, then Team creates its successor automatically. |
 | Agent review blocked | Same candidate stays blocked until the typed review recovery runs. |
 | Preview preparation failure or expiry | Same human request and candidate are blocked; preparation can rerun. |
 | Human <code>blocked</code> | Same request and candidate remain recoverable without product changes. |
@@ -536,9 +550,10 @@ to the supported records described in Chapters 18–24.
 | Compare-and-swap target mismatch | Another operation advanced the target. Re-read promotion truth and decide whether a new intent is valid. |
 | Missing release policy | Git publication is blocked unless explicitly ungated. Configure policy; do not bypass the gate. |
 | Unreviewed changed path | Hard scope failure, never waiver-eligible. Rebuild from reviewed content. |
-| Verification command nonzero | Terminal candidate defect. New content and release required. |
+| Verification command nonzero | Terminal candidate defect. Complete the generated candidate-pinned correction with accepted, reviewed Git content; Team creates one successor automatically. |
 | Verification infrastructure error, including structured PID or memory exhaustion | Potentially retryable immutable successor run only after concrete recovery evidence. After an agent-requested retry fails, further agent retry is blocked and operator recovery is required. |
-| Release review rejected | Terminal candidate defect. |
+| Release review rejected | Terminal candidate defect. Complete the generated correction; Team creates the successor automatically without a manager release request. |
+| Resolved generated correction has no successor | Reconciliation must either create or recognize one direct successor. Inspect the durable <code>candidate_correction_successor_failed</code> blocker; do not ask the manager to submit a release request. |
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Human assignment unavailable | Same request and candidate stay blocked. Repair group membership or use audited reassignment; do not skip the gate. |
 | Human preview preparation failed or expired | Same request and candidate stay blocked. Resume to prepare a new generation after fixing the target. |
@@ -559,7 +574,7 @@ correct recovery differs for each.
 
 If the package says accepted but the upstream result looks wrong, do not test or advertise the internal release branch. Hand the package's <code>canonical_branch</code> and <code>published_commit_sha</code>, the canonical-push promotion, and the visible remote mismatch to a release administrator.
 
-Never turn a failed test or rejected review into a retry merely to preserve the same package. New content requires new reviewed deliverables and a new release.
+Never turn a failed test or rejected review into a retry merely to preserve the same package. Complete the generated candidate-pinned correction with new reviewed content and let Team create its successor.
 
 ## Release runbook
 
@@ -585,6 +600,9 @@ During release:
 5. For a blocked human request, recover or reassign the same request; for
    changes requested, follow the generated case and let Team create the changed
    successor after every finding child has accepted, reviewed work.
+6. For failed candidate verification or a rejected agent release review,
+   complete the generated correction task and let Team create its successor;
+   do not hand a release-request obligation to the project lead.
 
 After release:
 

@@ -52,7 +52,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 29
+    assert TEAM_AGENT_GUIDANCE_VERSION == 30
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content
@@ -81,7 +81,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "creates the changed successor release automatically" in content
     assert "Do not submit a coordination-parent deliverable" in content
     assert "produces no deliverable" in content
-    assert "automatic successor of a generated human-review correction graph" in content
+    assert "automatic successors of generated rejected-candidate" in content
 
 
 def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() -> None:

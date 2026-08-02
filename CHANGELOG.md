@@ -8,6 +8,18 @@
 - Removed only outer Git fields that exactly duplicate a sole active work
   context; unique repository and dependency context remains in the prompt.
 
+## 2026-08-02 - Automatic Rejected-Candidate Correction Releases
+
+- Created one deterministic successor release atomically when a generated
+  verification or agent-review correction resolves with accepted, reviewed Git
+  content, without requiring a project-lead release request.
+- Added idempotent scheduled and post-dispatch reconciliation for stranded
+  corrections, informational handled manager history, and a durable owner-routed
+  blocker when automatic successor validation or packaging fails.
+- Kept initial releases and post-release-feedback successors explicit while
+  documenting the automatic generated-correction boundary for agents and
+  operators.
+
 ## 2026-08-02 - Human Correction Case Reconciliation
 
 - Resolved human-review correction cases when their deterministic successor
