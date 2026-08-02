@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-02 - Team Dependency-Wait Labels
+
+- Distinguished tasks waiting on unfinished dependencies from tasks carrying
+  assigned blockers in Task board summaries, cards, hierarchy badges, details,
+  and technical metadata.
+
 ## 2026-08-02 - Rejected-Candidate Reconciliation Follow-ups
 
 - Waited for every current release review before creating an automatic

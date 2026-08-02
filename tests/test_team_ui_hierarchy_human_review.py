@@ -148,6 +148,21 @@ def test_task_ui_renders_self_contained_inherited_blocker_reasons() -> None:
     assert "task-inherited-blocker-card" in source
 
 
+def test_task_board_distinguishes_dependency_waits_from_assigned_blockers() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function taskBoardWaitsOnDependencies(task)" in source
+    assert "function renderTaskBoardDependencyWaitBadge(task)" in source
+    assert "Waiting on dependencies:" in source
+    assert "Waiting on blocked dependencies:" in source
+    assert "Assigned blocker:" in source
+    assert "assigned blocker" in source
+    assert "Unresolved dependency task IDs" in source
+    assert "Blocking task IDs" not in source
+
+
 def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"

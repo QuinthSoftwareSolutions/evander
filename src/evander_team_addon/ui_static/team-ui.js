@@ -12256,11 +12256,13 @@ function renderTaskBoard() {
   const activeCount = projectTasks.filter((task) => !terminalTaskStates.has(text(task.state))).length;
   const terminalCount = projectTasks.length - activeCount;
   const blockedCount = projectTasks.filter(isTaskBoardBlocked).length;
+  const dependencyWaitCount = projectTasks.filter(taskBoardWaitsOnDependencies).length;
   const boardMeta = [
     `${projectTasks.length} task${projectTasks.length === 1 ? "" : "s"}`,
     `${activeCount} active`,
     `${terminalCount} completed`,
     `${blockedCount} blocked`,
+    `${dependencyWaitCount} waiting on dependencies`,
   ];
   renderIntoActiveTargets(
     "[data-task-board-view]",
@@ -12833,6 +12835,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
   const resolution = text(task.resolution_status || assessment.resolution_status) || "unknown";
   const integrationReady = Boolean(task.integration_ready ?? assessment.integration_ready);
   const blockerCount = taskBoardBlockerCount(task);
+  const upstreamBlockerCount = inheritedTaskBlockers(task).length;
   const relation = taskBoardRelationLabel(taskId, focus);
   const relationClasses = taskBoardRelationClasses(taskId, focus);
   const warnings = hierarchy.warnings.get(taskId) || [];
@@ -12871,7 +12874,17 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
           <span class="state-pill neutral">Assignee: ${escapeHtml(assignedTo)}</span>
           <span class="state-pill ${escapeAttr(taskResolutionPill(resolution))}">Resolution: ${escapeHtml(humanizeToken(resolution))}</span>
           <span class="state-pill ${integrationReady ? "accepted" : "neutral"}">Integration: ${integrationReady ? "ready" : "not ready"}</span>
-          ${blockerCount ? `<span class="state-pill blocked">${blockerCount} blocker${blockerCount === 1 ? "" : "s"}</span>` : ""}
+          ${renderTaskBoardDependencyWaitBadge(task)}
+          ${
+            blockerCount
+              ? `<span class="state-pill blocked">${blockerCount} assigned blocker${blockerCount === 1 ? "" : "s"}</span>`
+              : ""
+          }
+          ${
+            upstreamBlockerCount
+              ? `<span class="state-pill warning">${upstreamBlockerCount} upstream blocker${upstreamBlockerCount === 1 ? "" : "s"}</span>`
+              : ""
+          }
           ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
         </div>
         ${warnings.length ? `<div class="task-board-hierarchy-warning">${escapeHtml(warnings.join(" "))}</div>` : ""}
@@ -12911,19 +12924,9 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
 
 function taskBoardBlockerCount(task) {
   const blockerKeys = new Set();
-  (task.blocked_by_task_ids || []).forEach((taskId) => blockerKeys.add(`task:${text(taskId)}`));
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) =>
     blockerKeys.add(`blocker:${text(blocker.id)}`),
   );
-  inheritedTaskBlockers(task).forEach((blocker) =>
-    blockerKeys.add(`blocker:${text(blocker.blocker_id)}`),
-  );
-  if (task.dependency_status === "blocked") {
-    blockerKeys.add("dependency:blocked");
-  }
-  if (text(task.state) === "blocked" && !blockerKeys.size) {
-    blockerKeys.add("state:blocked");
-  }
   return blockerKeys.size;
 }
 
@@ -13168,6 +13171,7 @@ function renderTaskBoardCard(task, focus) {
       </div>
       <div class="task-board-card-badges">
         ${blocked && task.state !== "blocked" ? `<span class="state-pill blocked">Blocked</span>` : ""}
+        ${renderTaskBoardDependencyWaitBadge(task)}
         ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
       </div>
       <div class="task-board-card-meta">Priority ${Number(task.priority ?? 0)}</div>
@@ -13269,7 +13273,7 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Integration boundary", task.integration_boundary ? "Yes" : ""],
     ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
     ["Required contribution task IDs", (task.deliverable_contract?.required_contribution_task_ids || []).map(text).filter(Boolean).join(", ")],
-    ["Blocking task IDs", (task.blocked_by_task_ids || []).map(text).filter(Boolean).join(", ")],
+    ["Unresolved dependency task IDs", taskBoardDependencyWaitIds(task).join(", ")],
     ["Blocker IDs", [...new Set(blockerIds)].join(", ")],
     ["Worktree context IDs", worktreeContextIds.join(", ")],
     ["Unresolved descendant IDs", (unresolvedIds || []).map(text).filter(Boolean).join(", ")],
@@ -13358,26 +13362,60 @@ function renderTaskBoardBrief(task) {
 }
 
 function isTaskBoardBlocked(task) {
+  const readiness = taskBoardReadiness(task);
   return (
     task.state === "blocked" ||
-    task.readiness === "blocked" ||
-    task.readiness === "invalid" ||
-    task.dependency_status === "blocked" ||
-    Boolean((task.blocked_by_task_ids || []).length)
+    readiness === "blocked" ||
+    readiness === "invalid" ||
+    Boolean(activeBlockersForRecord("task", task.id, task.id).length)
   );
+}
+
+function taskBoardDependencyWaitIds(task) {
+  const assessmentIds = task?.assessment?.unsatisfied_dependency_ids || [];
+  const derivedIds = task?.blocked_by_task_ids || [];
+  return [...new Set([...assessmentIds, ...derivedIds].map(text).filter(Boolean))];
+}
+
+function taskBoardWaitsOnDependencies(task) {
+  const readiness = taskBoardReadiness(task);
+  const dependencyStatus = text(task?.dependency_status);
+  return (
+    readiness === "waiting_on_dependencies" ||
+    ((dependencyStatus === "waiting" || dependencyStatus === "blocked") &&
+      taskBoardDependencyWaitIds(task).length > 0)
+  );
+}
+
+function renderTaskBoardDependencyWaitBadge(task) {
+  if (!taskBoardWaitsOnDependencies(task)) {
+    return "";
+  }
+  const count = taskBoardDependencyWaitIds(task).length;
+  const blockedDependency = text(task.dependency_status) === "blocked";
+  const dependencyLabel = count === 1 ? "dependency" : "dependencies";
+  const label = count
+    ? `Waiting on ${count} ${blockedDependency ? "blocked " : ""}${dependencyLabel}`
+    : blockedDependency
+      ? "Waiting on a blocked dependency"
+      : "Waiting on dependencies";
+  return `<span class="state-pill warning">${escapeHtml(label)}</span>`;
 }
 
 function renderTaskBoardBlockerLine(task) {
   const blockers = [];
-  if ((task.blocked_by_task_ids || []).length) {
+  const dependencyWaitIds = taskBoardDependencyWaitIds(task);
+  if (taskBoardWaitsOnDependencies(task)) {
+    const waitLabel = text(task.dependency_status) === "blocked"
+      ? "Waiting on blocked dependencies:"
+      : "Waiting on dependencies:";
     blockers.push(
-      `<span><strong>Blocked by:</strong> ${task.blocked_by_task_ids
-        .map((taskId) => renderTaskBoardTaskLink(taskId, { reveal: true }))
-        .join(", ")}</span>`,
+      dependencyWaitIds.length
+        ? `<span><strong>${waitLabel}</strong> ${dependencyWaitIds
+            .map((taskId) => renderTaskBoardTaskLink(taskId, { reveal: true }))
+            .join(", ")}</span>`
+        : `<span><strong>${waitLabel}</strong> Prerequisite work is not yet resolved.</span>`,
     );
-  }
-  if (task.dependency_status === "blocked") {
-    blockers.push(`<span><strong>Dependency status:</strong> Blocked</span>`);
   }
   const routedBlockers = activeBlockersForRecord("task", task.id, task.id);
   routedBlockers.forEach((blocker) => {
@@ -13387,14 +13425,14 @@ function renderTaskBoardBlockerLine(task) {
     const owner = state.agents[text(blocker.owner_agent_id)] || null;
     const ownerLabel = owner ? agentLabel(owner) : "";
     blockers.push(
-      `<span><strong>${escapeHtml(summary)}</strong>${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
+      `<span><strong>Assigned blocker:</strong> ${escapeHtml(summary)}${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
     );
   });
   inheritedTaskBlockers(task).forEach((blocker) => {
     const relationship = humanizeToken(blocker.relationship || "upstream");
     const reason = text(blocker.reason || blocker.summary) || "No reason supplied";
     blockers.push(
-      `<span><strong>${escapeHtml(relationship)}:</strong> ${renderTaskBoardTaskLink(
+      `<span><strong>Blocker on ${escapeHtml(relationship.toLocaleLowerCase())}:</strong> ${renderTaskBoardTaskLink(
         blocker.upstream_task_id,
         { reveal: true },
       )} <span aria-hidden="true">—</span> <span class="task-board-blocker-reason">${escapeHtml(reason)}</span></span>`,
@@ -14395,8 +14433,9 @@ function renderTaskGraph(task) {
   if ((task.dependency_task_ids || []).length) {
     lines.push(`depends on ${task.dependency_task_ids.join(", ")}`);
   }
-  if ((task.blocked_by_task_ids || []).length) {
-    lines.push(`blocked by ${task.blocked_by_task_ids.join(", ")}`);
+  const dependencyWaitIds = taskBoardDependencyWaitIds(task);
+  if (dependencyWaitIds.length) {
+    lines.push(`waiting on dependencies ${dependencyWaitIds.join(", ")}`);
   }
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) => {
     lines.push(blockerRoutingLabel(blocker));

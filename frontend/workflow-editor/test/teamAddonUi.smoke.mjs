@@ -10147,7 +10147,6 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     readiness: "blocked",
     resolution_status: "unresolved",
     integration_ready: false,
-    blocked_by_task_ids: [waiting.id],
     assessment: {
       readiness: "blocked",
       resolution_status: "unresolved",
@@ -10156,6 +10155,20 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
       unresolved_descendant_ids: [waiting.id],
     },
   });
+  initialState.blockers = {
+    "blocker-task-pending": {
+      id: "blocker-task-pending",
+      state: "open",
+      source_kind: "task",
+      source_id: pending.id,
+      task_id: pending.id,
+      reason_code: "test_environment_unavailable",
+      summary: "The task test environment is unavailable.",
+      owner_agent_id: "alpha-lead",
+      route: "owned",
+      escalation_depth: 0,
+    },
+  };
   Object.assign(activeSibling, {
     parent_task_id: planned.id,
     owner_agent_id: "alpha-manager",
@@ -10193,9 +10206,20 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     state: "pending",
     state_entered_at: "2026-06-10T08:00:00Z",
     title: "Independent active root",
-    description: "A separate hierarchy used to exercise root filtering.",
+    description: "A separate hierarchy waiting for prerequisite work.",
     created_by_agent_id: "alpha-manager",
-    readiness: "actionable",
+    dependency_task_ids: [activeSibling.id],
+    dependency_status: "waiting",
+    blocked_by_task_ids: [activeSibling.id],
+    readiness: "waiting_on_dependencies",
+    resolution_status: "unresolved",
+    assessment: {
+      readiness: "waiting_on_dependencies",
+      resolution_status: "unresolved",
+      unsatisfied_dependency_ids: [activeSibling.id],
+      direct_child_ids: [],
+      unresolved_descendant_ids: [],
+    },
     created_at: "2026-06-10T08:00:00Z",
     updated_at: "2026-06-10T08:00:00Z",
   };
@@ -10246,6 +10270,24 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   );
   await boardPanel.getByText("25 completed tasks hidden.").waitFor({ state: "visible" });
   assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 0);
+  await boardPanel
+    .locator(".task-board-context")
+    .getByText(/1 waiting on dependencies/)
+    .waitFor({ state: "visible" });
+  const dependencyWaitCard = boardPanel.locator(
+    '.task-board-card[data-task-board-task-id="task-independent"]',
+  );
+  await dependencyWaitCard.getByText("Waiting on 1 dependency", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await dependencyWaitCard.getByText("Waiting on dependencies:", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await dependencyWaitCard.evaluate((element) => element.classList.contains("task-board-card-blocked")),
+    false,
+  );
+  assert.equal(await dependencyWaitCard.getByText("Blocked", { exact: true }).count(), 0);
 
   await boardPanel.getByRole("button", { name: "Show completed" }).click();
   assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 20);
@@ -10381,8 +10423,10 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const pendingNodeCard = pendingNode.locator(":scope > .task-board-hierarchy-node");
   await pendingNodeCard.getByText("Readiness: Blocked").waitFor({ state: "visible" });
   await pendingNodeCard.getByText("Assignee: Grace Lead").waitFor({ state: "visible" });
-  await pendingNodeCard.getByText(/1 blocker/).waitFor({ state: "visible" });
-  await pendingNodeCard.getByRole("button", { name: "Await review", exact: true }).waitFor({ state: "visible" });
+  await pendingNodeCard.getByText(/1 assigned blocker/).waitFor({ state: "visible" });
+  await pendingNodeCard.getByText("Assigned blocker:", { exact: true }).waitFor({
+    state: "visible",
+  });
 
   await acceptedNode.getByRole("button", { name: "Ship accepted delivery", exact: true }).click();
   await boardPanel.getByRole("tab", { name: "Board" }).click();
@@ -10757,8 +10801,19 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await childCard
     .getByText("Worktree: /home/agent/worktrees/task-pending")
     .waitFor({ state: "visible" });
+  await childCard.getByText("Waiting on 1 blocked dependency", { exact: true }).waitFor({
+    state: "visible",
+  });
   const childBlockers = childCard.locator(".task-board-card-blockers");
-  await childBlockers.getByText("Dependency:", { exact: true }).waitFor({ state: "visible" });
+  await childBlockers.getByText("Waiting on blocked dependencies:", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await childBlockers.getByText("Assigned blocker:", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await childBlockers.getByText("Blocker on dependency:", { exact: true }).waitFor({
+    state: "visible",
+  });
   await childBlockers.getByRole("button", { name: "Await review" }).first().waitFor({ state: "visible" });
   await childBlockers
     .getByText("The upstream runtime contract is not signed.", { exact: true })
