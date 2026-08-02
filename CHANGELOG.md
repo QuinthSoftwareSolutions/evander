@@ -28,6 +28,8 @@
   upstream base, and invalidated preparation blockers when that base changes.
 - Preferred a legacy release's complete candidate-manifest branch over its
   upstream Git base when repairing verification and release-review corrections.
+- Preserved manifest-only candidate branches when creating human-review and
+  post-release correction tasks and when building correction successors.
 - Resolved unset project bases through the managed repository default before
   persisting task snapshots, and hardened the SQLite backfill for correction
   tasks, correction successors, conflicting legacy contexts, and JSON imports.

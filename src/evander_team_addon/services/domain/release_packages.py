@@ -36,6 +36,7 @@ from .agent_access import (
 from .common import (
     _append_unique,
     _optional_text,
+    _release_candidate_branch,
     _required_text,
     _string_list,
     utc_now,
@@ -531,6 +532,12 @@ def _build_release_package(
     else:
         deliverable_ids = requested_deliverable_ids
 
+    predecessor_candidate_branch = (
+        _release_candidate_branch(predecessor)
+        if predecessor is not None
+        else None
+    )
+
     def _release_input_git_base(
         deliverable: Deliverable,
     ) -> tuple[str | None, str | None]:
@@ -540,7 +547,7 @@ def _build_release_package(
         )
         if predecessor is None:
             return branch, commit
-        expected_branch = predecessor.release_branch
+        expected_branch = predecessor_candidate_branch
         expected_commit = predecessor.candidate_commit_sha
         if expected_branch is None or expected_commit is None:
             raise ValueError(
@@ -981,7 +988,7 @@ def _build_release_package(
         release_branch=target_release_branch,
         canonical_branch=target_canonical_branch,
         git_base_branch=(
-            predecessor.release_branch
+            predecessor_candidate_branch
             if predecessor is not None
             else release_git_base_branch
         ),

@@ -37,6 +37,7 @@ from .common import (
     _generated_id,
     _mapping,
     _optional_text,
+    _release_candidate_branch,
     _require_absent,
     _require_present,
     _required_text,
@@ -161,7 +162,7 @@ def _correction_case_git_base_branch(
         release_id = _optional_text(case.metadata.get("release_package_id"))
     release = state.release_packages.get(release_id) if release_id is not None else None
     return (
-        release.release_branch or release.git_base_branch
+        _release_candidate_branch(release) or release.git_base_branch
         if release is not None
         else None
     )

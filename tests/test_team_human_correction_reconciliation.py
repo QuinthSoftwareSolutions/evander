@@ -339,6 +339,37 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     ) == 1
 
 
+def test_reconciliation_carries_manifest_only_candidate_branch_into_successor(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _retain_candidate_branch_only_in_manifest(state: TeamState) -> TeamState:
+        predecessor = state.release_packages["release-rejected"]
+        assert predecessor.manifest is not None
+        candidate_branch = predecessor.manifest.release_branch
+        predecessor.release_branch = None
+        predecessor.git_base_branch = "main"
+        state.tasks["human-correction-aggregate"].git_base_branch = candidate_branch
+        state.tasks["human-correction-child"].git_base_branch = candidate_branch
+        return state
+
+    repo.update(_retain_candidate_branch_only_in_manifest)
+    predecessor = repo.read().release_packages["release-rejected"]
+    assert predecessor.manifest is not None
+    candidate_branch = predecessor.manifest.release_branch
+    assert predecessor.release_branch is None
+
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    successor_id = result["created_successor_release_package_ids"][0]
+    successor = state.release_packages[successor_id]
+    assert successor.supersedes_release_package_id == predecessor.id
+    assert successor.git_base_branch == candidate_branch
+    assert successor.base_commit_sha == PREDECESSOR_COMMIT
+
+
 def test_deduplicated_non_successor_release_keeps_correction_case_active(
     tmp_path: Path,
 ) -> None:
