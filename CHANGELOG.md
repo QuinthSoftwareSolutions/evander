@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-02 - Team Chat Membership Scope
+
+- Restricted agent wake context and outbound Team Chat messages to direct
+  conversations the calling agent already belongs to. Other agents' operator
+  conversations can no longer appear as recipients or be used to create a new
+  direct chat.
+
 ## 2026-08-02 - Team Review Routing
 
 - Prevented manager-fallback routing gaps from minting fresh review-request

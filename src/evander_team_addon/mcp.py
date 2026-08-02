@@ -1086,7 +1086,8 @@ def _register_slice5_tools(
         team_send_operator_chat_message,
         name=TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         description=(
-            "Send a Team Chat message to a known operator participant. Requires "
+            "Send a Team Chat message to an operator in the caller's existing direct "
+            "conversation. Requires "
             "recipient_operator_user_id, body, and request_id."
         ),
     )

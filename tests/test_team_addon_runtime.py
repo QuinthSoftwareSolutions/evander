@@ -1617,6 +1617,50 @@ def test_agent_lease_and_wake_context_include_effective_outcome_catalog(
     ]
 
 
+def test_agent_lease_scopes_operator_chat_participants_to_the_agent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    chat = _team_chat_service(repo)
+    state, alice, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, bob, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        expected_revision=state.revision,
+    )
+    state, _other, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="other@example.com",
+        operator_display_name="Other",
+        expected_revision=state.revision,
+    )
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["agent"]["id"] == "backend"
+    assert leases[0]["operator_chat_participants"] == [
+        {
+            "operator_user_id": "alice@example.com",
+            "operator_display_name": "Alice",
+            "conversation_ids": [alice.id],
+        },
+        {
+            "operator_user_id": "bob@example.com",
+            "operator_display_name": "Bob",
+            "conversation_ids": [bob.id],
+        },
+    ]
+
+
 def test_manager_fallback_not_leased_while_team_member_is_awake(
     tmp_path: Path,
 ) -> None:

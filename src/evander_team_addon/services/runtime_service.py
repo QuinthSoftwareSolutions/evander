@@ -923,7 +923,8 @@ class TeamRuntimeService:
                         ),
                         "recent_action_feedback": action_feedback,
                         "operator_chat_participants": _operator_chat_participant_payloads(
-                            state_model
+                            state_model,
+                            agent_id=agent.id,
                         ),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
@@ -1104,7 +1105,8 @@ class TeamRuntimeService:
                         ),
                         "manager_fallback_summary": manager_fallback_summary,
                         "operator_chat_participants": _operator_chat_participant_payloads(
-                            state_model
+                            state_model,
+                            agent_id=manager.id,
                         ),
                         "superior_agent_id": manager.reports_to_agent_id,
                         "subordinate_agent_ids": list(manager.subordinate_agent_ids),

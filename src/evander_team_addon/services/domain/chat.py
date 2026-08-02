@@ -21,9 +21,7 @@ from ...models import (
 
 from .common import (
     _ensure_utc,
-    _generated_id,
     _normalize_operator_user_id,
-    _operator_display_name_for_user,
     _optional_text,
     _require_present,
     _required_text,
@@ -236,15 +234,6 @@ def _apply_operator_chat_message(
     recipient_operator_user_id = _normalize_operator_user_id(
         message.get("recipient_operator_user_id")
     )
-    known_display_name = _operator_display_name_for_user(
-        state,
-        recipient_operator_user_id,
-    )
-    known_operator_ids = {
-        conversation.operator_user_id for conversation in state.conversations.values()
-    }
-    if recipient_operator_user_id not in known_operator_ids:
-        raise ValueError(f"unknown operator {recipient_operator_user_id}")
     conversation = next(
         (
             item
@@ -253,25 +242,13 @@ def _apply_operator_chat_message(
         ),
         None,
     )
-    now = utc_now()
     if conversation is None:
-        conversation_id = _generated_id(
-            prefix="conversation",
-            labels=[actor.id, recipient_operator_user_id],
-            existing_ids=state.conversations,
+        raise ValueError(
+            f"agent {actor.id} is not a member of an operator chat with "
+            f"{recipient_operator_user_id}"
         )
-        conversation = TeamConversation(
-            id=conversation_id,
-            agent_id=actor.id,
-            operator_user_id=recipient_operator_user_id,
-            operator_display_name=known_display_name,
-            created_by=f"agent:{actor.id}",
-            last_message_preview="",
-            created_at=now,
-            updated_at=now,
-            last_interaction_at=now,
-        )
-        state.conversations[conversation.id] = conversation
+    now = utc_now()
+    known_display_name = conversation.operator_display_name
     body = _required_text(message.get("body"), "body")
     summary = _optional_text(message.get("summary"))
     message_id = f"chatmsg-{uuid4().hex}"

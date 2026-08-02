@@ -2847,7 +2847,10 @@ def _team_chat_wake_lease(
             session_records=session_records,
             agent_ids=_prompt_session_health_agent_ids(state, agent_payload),
         ),
-        "operator_chat_participants": _operator_chat_participant_payloads(state),
+        "operator_chat_participants": _operator_chat_participant_payloads(
+            state,
+            agent_id=agent.id,
+        ),
         "superior_agent_id": agent.reports_to_agent_id,
         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
         "subordinates": _subordinate_agent_payloads(state, agent),
@@ -6237,7 +6240,7 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Team Chat messages are direct conversations with human operators, not "
         f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
         f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
-        "human operators listed in the current Team context as operator chat participants.\n"
+        "operators in your own direct Team Chat conversations listed in the current Team context.\n"
         f"- Use {TEAM_REQUEST_EPHEMERAL_AGENT_TOOL} or "
         f"{TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL} for scoped worker delegation, then "
         f"{TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL} or {TEAM_REJECT_EPHEMERAL_RESULT_TOOL} "

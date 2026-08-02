@@ -1855,13 +1855,13 @@ def test_external_chat_reply_creates_delivery_event_and_records_failure(
     ]["state"] == "failed"
 
 
-def test_repository_send_operator_chat_message_command_creates_conversation_and_replays(
+def test_repository_send_operator_chat_message_command_uses_existing_conversation_and_replays(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-chat")
     _team_chat_service(repo).create_or_get_conversation(
-        agent_id="manager",
+        agent_id="backend",
         operator_user_id="operator-alice",
         operator_display_name="Operator Alice",
         expected_revision=repo.read().revision,
@@ -1891,7 +1891,7 @@ def test_repository_send_operator_chat_message_command_creates_conversation_and_
     assert replay == first
     assert conflict["success"] is False
     assert conflict["errors"][0]["code"] == "idempotency_conflict"
-    assert first["conversation_created"] is True
+    assert first["conversation_created"] is False
     conversation = state.conversations[first["conversation_id"]]
     message = state.conversation_messages[first["chat_message_id"]]
     assert conversation.agent_id == "backend"
@@ -1913,7 +1913,32 @@ def test_repository_send_operator_chat_message_rejects_unknown_operator(
     )
 
     assert result["success"] is False
-    assert result["errors"][0]["code"] == "unknown_operator_participant"
+    assert result["errors"][0]["code"] == "operator_chat_not_member"
+    assert state.conversation_messages == {}
+
+
+def test_repository_send_operator_chat_message_rejects_other_agents_operator(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-chat")
+    _team_chat_service(repo).create_or_get_conversation(
+        agent_id="manager",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        expected_revision=repo.read().revision,
+    )
+
+    state, result = _command_service(repo).send_operator_chat_message_command(
+        session_id="session-backend",
+        recipient_operator_user_id="operator-alice",
+        body="This should fail.",
+        request_id="request-operator-chat-other-agent",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "operator_chat_not_member"
+    assert result["errors"][0]["correction_context"]["operator_user_ids"] == []
     assert state.conversation_messages == {}
 
 
@@ -6390,7 +6415,7 @@ def test_repository_agent_action_sends_chat_message_to_known_operator(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     state, _conversation, _created = _team_chat_service(repo).create_or_get_conversation(
-        agent_id="lead",
+        agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
@@ -6419,6 +6444,36 @@ def test_repository_agent_action_sends_chat_message_to_known_operator(
     assert message.sender == "agent"
     assert message.body == "I found the issue."
     assert message.metadata["recipient_operator_user_id"] == "alice@example.com"
+
+
+def test_repository_agent_action_rejects_other_agents_operator_chat_recipient(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, _conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "operator_chat_messages": [
+                {
+                    "recipient_operator_user_id": "alice@example.com",
+                    "body": "This should fail.",
+                }
+            ],
+        },
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is False
+    assert result["created_operator_chat_message_ids"] == []
+    assert "not a member" in result["errors"][0]
+    assert state.conversation_messages == {}
 
 
 def test_repository_agent_action_rejects_unknown_operator_chat_recipient(
