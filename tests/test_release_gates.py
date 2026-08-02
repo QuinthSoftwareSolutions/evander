@@ -328,6 +328,8 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert wake["payload"]["reason"] == "inbox"
 
     task.git_base_branch = release.git_base_branch
+    manifest_release_branch = release.manifest.release_branch
+    release.release_branch = None
     repair_result = _result()
     assert run.finished_at is not None
     _materialize_candidate_verification_correction(
@@ -338,7 +340,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
         result=repair_result,
         now=run.finished_at,
     )
-    assert task.git_base_branch == release.release_branch
+    assert task.git_base_branch == manifest_release_branch
     assert repair_result["updated_task_ids"] == [task.id]
 
 
@@ -503,6 +505,8 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert wake["payload"]["reason"] == "inbox"
 
     task.git_base_branch = release.git_base_branch
+    manifest_release_branch = release.manifest.release_branch
+    release.release_branch = None
     repair_result = _result()
     assert review.decision_at is not None
     materialize_release_review_rejection_correction(
@@ -513,7 +517,7 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
         result=repair_result,
         now=review.decision_at,
     )
-    assert task.git_base_branch == release.release_branch
+    assert task.git_base_branch == manifest_release_branch
     assert repair_result["updated_task_ids"] == [task.id]
     with pytest.raises(TaskAssessmentBoundaryError) as raised:
         require_task_can_finish(state, task.id)

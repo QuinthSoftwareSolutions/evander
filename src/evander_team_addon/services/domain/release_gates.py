@@ -62,7 +62,14 @@ _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES = {
 def _candidate_correction_git_base(release: ReleasePackage) -> str | None:
     """Return the branch that contains the exact rejected candidate."""
 
-    return release.release_branch or release.git_base_branch
+    manifest_release_branch = (
+        release.manifest.release_branch if release.manifest is not None else None
+    )
+    return (
+        release.release_branch
+        or manifest_release_branch
+        or release.git_base_branch
+    )
 
 
 def _reconcile_candidate_correction_task_git_base(
