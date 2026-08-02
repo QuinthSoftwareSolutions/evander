@@ -5,6 +5,8 @@
 - Distinguished tasks waiting on unfinished dependencies from tasks carrying
   assigned blockers in Task board summaries, cards, hierarchy badges, details,
   and technical metadata.
+- Counted blocked prerequisites individually in mixed dependency waits and
+  suppressed active wait labels once a task is terminal or otherwise resolved.
 
 ## 2026-08-02 - Rejected-Candidate Reconciliation Follow-ups
 

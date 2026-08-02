@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from evander_team_addon.api import (
     TEAM_STATE_COLLECTION_KEYS,
@@ -154,13 +158,98 @@ def test_task_board_distinguishes_dependency_waits_from_assigned_blockers() -> N
     ).read_text(encoding="utf-8")
 
     assert "function taskBoardWaitsOnDependencies(task)" in source
+    assert "function taskBoardBlockedDependencyIds(task)" in source
     assert "function renderTaskBoardDependencyWaitBadge(task)" in source
     assert "Waiting on dependencies:" in source
-    assert "Waiting on blocked dependencies:" in source
+    assert "Waiting on blocked dependencies:" not in source
+    assert "at least one blocked" in source
     assert "Assigned blocker:" in source
     assert "assigned blocker" in source
     assert "Unresolved dependency task IDs" in source
     assert "Blocking task IDs" not in source
+    assert "if (taskBoardWaitsOnDependencies(task) && dependencyWaitIds.length)" in source
+
+
+def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    helper_source = source[
+        source.index("function taskBoardDependencyWaitIds(task)") : source.index(
+            "function renderTaskBoardBlockerLine(task)"
+        )
+    ]
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for Team UI dependency-label tests")
+    script = f"""
+      const assert = require("node:assert/strict");
+      const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
+      const state = {{
+        tasks: {{
+          blocked: {{ state: "blocked" }},
+          pending: {{ state: "pending" }},
+        }},
+      }};
+      const text = (value) => String(value ?? "").trim();
+      const escapeHtml = (value) => text(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+      const taskBoardReadiness = (task) =>
+        text(task?.readiness || task?.assessment?.readiness) || "unknown";
+      {helper_source}
+
+      const mixed = {{
+        state: "pending",
+        readiness: "waiting_on_dependencies",
+        resolution_status: "unresolved",
+        dependency_status: "blocked",
+        blocked_by_task_ids: ["blocked", "pending"],
+      }};
+      assert.equal(taskBoardWaitsOnDependencies(mixed), true);
+      assert.deepEqual(taskBoardBlockedDependencyIds(mixed), ["blocked"]);
+      assert.equal(
+        renderTaskBoardDependencyWaitBadge(mixed),
+        '<span class="state-pill warning">Waiting on 2 dependencies; 1 blocked</span>',
+      );
+
+      const cancelled = {{
+        ...mixed,
+        state: "cancelled",
+        resolution_status: "resolved",
+        dependency_status: "waiting",
+      }};
+      assert.equal(taskBoardWaitsOnDependencies(cancelled), false);
+      assert.equal(renderTaskBoardDependencyWaitBadge(cancelled), "");
+      assert.equal(
+        taskBoardWaitsOnDependencies({{ ...mixed, state: "rejected" }}),
+        false,
+      );
+      assert.equal(
+        taskBoardWaitsOnDependencies({{ ...mixed, resolution_status: "resolved" }}),
+        false,
+      );
+
+      const scoped = {{
+        ...mixed,
+        blocked_by_task_ids: ["unavailable", "pending"],
+      }};
+      assert.equal(
+        renderTaskBoardDependencyWaitBadge(scoped),
+        '<span class="state-pill warning">Waiting on 2 dependencies; at least one blocked</span>',
+      );
+    """
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:

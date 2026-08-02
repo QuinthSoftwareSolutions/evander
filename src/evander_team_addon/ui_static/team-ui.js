@@ -13377,9 +13377,19 @@ function taskBoardDependencyWaitIds(task) {
   return [...new Set([...assessmentIds, ...derivedIds].map(text).filter(Boolean))];
 }
 
+function taskBoardBlockedDependencyIds(task) {
+  return taskBoardDependencyWaitIds(task).filter((taskId) =>
+    ["blocked", "rejected"].includes(text(state.tasks[taskId]?.state)),
+  );
+}
+
 function taskBoardWaitsOnDependencies(task) {
   const readiness = taskBoardReadiness(task);
   const dependencyStatus = text(task?.dependency_status);
+  const resolution = text(task?.resolution_status || task?.assessment?.resolution_status);
+  if (terminalTaskStates.has(text(task?.state)) || resolution === "resolved") {
+    return false;
+  }
   return (
     readiness === "waiting_on_dependencies" ||
     ((dependencyStatus === "waiting" || dependencyStatus === "blocked") &&
@@ -13392,13 +13402,16 @@ function renderTaskBoardDependencyWaitBadge(task) {
     return "";
   }
   const count = taskBoardDependencyWaitIds(task).length;
-  const blockedDependency = text(task.dependency_status) === "blocked";
   const dependencyLabel = count === 1 ? "dependency" : "dependencies";
-  const label = count
-    ? `Waiting on ${count} ${blockedDependency ? "blocked " : ""}${dependencyLabel}`
-    : blockedDependency
-      ? "Waiting on a blocked dependency"
-      : "Waiting on dependencies";
+  const blockedCount = taskBoardBlockedDependencyIds(task).length;
+  const blockedDetail = blockedCount
+    ? `${blockedCount} blocked`
+    : text(task.dependency_status) === "blocked"
+      ? "at least one blocked"
+      : "";
+  const label = `${count ? `Waiting on ${count} ${dependencyLabel}` : "Waiting on dependencies"}${
+    blockedDetail ? `; ${blockedDetail}` : ""
+  }`;
   return `<span class="state-pill warning">${escapeHtml(label)}</span>`;
 }
 
@@ -13406,9 +13419,7 @@ function renderTaskBoardBlockerLine(task) {
   const blockers = [];
   const dependencyWaitIds = taskBoardDependencyWaitIds(task);
   if (taskBoardWaitsOnDependencies(task)) {
-    const waitLabel = text(task.dependency_status) === "blocked"
-      ? "Waiting on blocked dependencies:"
-      : "Waiting on dependencies:";
+    const waitLabel = "Waiting on dependencies:";
     blockers.push(
       dependencyWaitIds.length
         ? `<span><strong>${waitLabel}</strong> ${dependencyWaitIds
@@ -14434,7 +14445,7 @@ function renderTaskGraph(task) {
     lines.push(`depends on ${task.dependency_task_ids.join(", ")}`);
   }
   const dependencyWaitIds = taskBoardDependencyWaitIds(task);
-  if (dependencyWaitIds.length) {
+  if (taskBoardWaitsOnDependencies(task) && dependencyWaitIds.length) {
     lines.push(`waiting on dependencies ${dependencyWaitIds.join(", ")}`);
   }
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) => {
