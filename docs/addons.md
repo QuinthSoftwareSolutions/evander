@@ -1944,8 +1944,13 @@ aborting and failing on conflict — never auto-resolving). The central managed
 Git service applies the configured host commit identity, compare-and-swap
 updates the Team target ref, and removes the temporary worktree and operation
 ref on every exit. The core `effect:git:push-branch` effect performs an
-expected-commit and destination-lease preflight for canonical publication and
-refuses to publish anything except the approved candidate.
+expected-commit and destination-lease preflight. Its optional
+`expected_destination_commit_sha` input additionally requires the upstream
+destination to be at an exact reviewed base before publication. The Team
+canonical-push route always supplies the release package's immutable base
+commit, so publication refuses both a different destination base and anything
+except the approved candidate. Existing non-Team workflow definitions that omit
+the optional input retain their previous push behavior.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
 remain only in the project's managed bare repository. The **only** branch pushed

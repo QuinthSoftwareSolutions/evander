@@ -1236,6 +1236,7 @@ class GitPushBranchEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
     source_ref: ConfigValue
     expected_commit_sha: ConfigValue
+    expected_destination_commit_sha: ConfigValue | None = None
     destination_branch: ConfigValue
 
 

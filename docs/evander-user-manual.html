@@ -13853,8 +13853,12 @@ the publication truth.</p>
 <strong>Publishing the exact candidate</strong></p>
 <p>Only after every gate passes does the workflow create the
 canonical-push promotion. Core <code>effect:git:push-branch</code>
-performs expected-commit and destination-lease preflight, then pushes
-the approved release commit to the canonical branch.
+verifies the exact approved commit, requires the canonical destination
+to still equal the release&#39;s immutable reviewed base commit, and applies
+a destination lease before pushing. A release based on another branch
+cannot carry that branch&#39;s pre-existing changes to this destination;
+deliberate cross-base work must be reviewed through an integration task
+based on the destination.
 <code>effect:team:mark-release-published</code> records canonical
 branch, published commit, timestamp, and accepted package state.</p>
 </blockquote>

@@ -1706,6 +1706,7 @@ class ManagedGitAdminService:
         destination_branch: str,
         directory_path: str,
         *,
+        expected_destination_commit_sha: str | None = None,
         _target_lock_held: bool = False,
     ) -> dict[str, Any]:
         normalized_source = _normalize_ref(source_ref, field_name="source_ref")
@@ -1715,6 +1716,14 @@ class ManagedGitAdminService:
         if destination.split("/", 1)[0] in _RESERVED_BRANCH_ROOTS:
             raise ValueError("destination_branch cannot use an Evander-reserved namespace")
         expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+        expected_destination = (
+            _normalize_object_id(
+                expected_destination_commit_sha,
+                field_name="expected_destination_commit_sha",
+            )
+            if expected_destination_commit_sha is not None
+            else None
+        )
         record = self._require_scoped_record(managed_repo_id, directory_path)
         bare_path = self._bare_path(record)
         destination_ref = f"refs/heads/{destination}"
@@ -1786,6 +1795,24 @@ class ManagedGitAdminService:
                     advertised = self._ls_remote_branch(remote_url, destination_ref, env=auth_env)
                     if advertised is not None:
                         self._raise_git_failure(fetch)
+                if expected_destination is not None and destination_commit != expected_destination:
+                    return {
+                        "success": False,
+                        "preflight_success": False,
+                        "reason": "destination_base_mismatch",
+                        "message": (
+                            f"Destination branch {destination} is not at the release base "
+                            "commit reviewed for canonical publication."
+                        ),
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_source,
+                        "destination_branch": destination,
+                        "destination_ref": destination_ref,
+                        "expected_commit_sha": expected,
+                        "expected_destination_commit_sha": expected_destination,
+                        "destination_commit": destination_commit,
+                        "local_commit": expected,
+                    }
                 if destination_commit and not self._is_ancestor(
                     bare_path, destination_commit, expected
                 ):
@@ -1849,14 +1876,18 @@ class ManagedGitAdminService:
                 if destination_commit:
                     self._delete_ref_cas(bare_path, destination_operation_ref, destination_commit)
                 self._delete_ref_cas(bare_path, source_operation_ref, expected)
-        return {
+        result = {
             "success": True,
             "managed_repo_id": managed_repo_id,
             "source_ref": normalized_source,
             "destination_ref": destination_ref,
             "previous_commit_sha": destination_commit,
+            "destination_commit": destination_commit,
             "commit_sha": expected,
         }
+        if expected_destination is not None:
+            result["expected_destination_commit_sha"] = expected_destination
+        return result
 
     def pr_create(
         self,

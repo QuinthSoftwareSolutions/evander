@@ -1094,6 +1094,20 @@ def _queue_canonical_push_after_release_success(
             result=result,
         )
         return
+    release_base_commit_sha = _optional_text(release.base_commit_sha)
+    if release_base_commit_sha is None:
+        release.state = TeamRecordState.BLOCKED
+        release.error = "release has no immutable Git base commit for canonical publication"
+        result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Canonical release push blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=release_promotion.actor_agent_id,
+            result=result,
+        )
+        return
     project = state.projects.get(release_promotion.project_id)
     git = project.git if project is not None else None
     if project is None or git is None:
@@ -1134,7 +1148,7 @@ def _queue_canonical_push_after_release_success(
             target_branch=target_branch,
             promotion_kind="canonical_push",
             git_base_branch=release.git_base_branch,
-            base_commit_sha=release.base_commit_sha,
+            base_commit_sha=release_base_commit_sha,
             sources=[
                 {
                     "source_branch": source_branch,
@@ -1147,6 +1161,24 @@ def _queue_canonical_push_after_release_success(
             release.git_promotion_record_ids,
             existing.id,
         )
+    existing_base_commit_sha = _optional_text(existing.base_commit_sha)
+    if existing_base_commit_sha is not None and existing_base_commit_sha != release_base_commit_sha:
+        release.state = TeamRecordState.BLOCKED
+        release.error = (
+            f"canonical promotion base {existing_base_commit_sha} does not match "
+            f"release base {release_base_commit_sha}"
+        )
+        result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Canonical release push blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=release_promotion.actor_agent_id,
+            result=result,
+        )
+        return
+    existing.base_commit_sha = release_base_commit_sha
     release.canonical_branch = target_branch
 
     if existing.state != "pending":
@@ -1159,7 +1191,7 @@ def _queue_canonical_push_after_release_success(
         "release_package_id": release.id,
         "managed_repo_id": git.managed_repo_id,
         "base_branch": release.git_base_branch,
-        "base_commit_sha": existing.base_commit_sha or release.base_commit_sha,
+        "base_commit_sha": release_base_commit_sha,
         "source_branch": existing.source_branch,
         "expected_commit_sha": approved_commit_sha,
         "target_branch": existing.target_branch,

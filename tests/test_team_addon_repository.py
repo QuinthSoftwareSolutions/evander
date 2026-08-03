@@ -18098,6 +18098,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
     assert "canonical_push" not in payloads
 
+    expected_release_base = release.base_commit_sha
     release_promotion_id = release.git_promotion_record_ids[0]
     state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
@@ -18121,9 +18122,119 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
     assert payloads["canonical_push"]["managed_repo_id"] == MANAGED_REPO_ID
+    assert payloads["canonical_push"]["base_commit_sha"] == expected_release_base
     assert "canonical_origin_url" not in payloads["canonical_push"]
     assert "provider" not in payloads["canonical_push"]
     assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_canonical_push_requires_immutable_release_base_commit(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-missing-base",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release_promotion_id = requested["git_promotion_event_ids"][0]
+
+    def _remove_base_provenance(current: TeamState) -> TeamState:
+        current.release_packages["release-missing-base"].base_commit_sha = None
+        current.git_promotions[release_promotion_id].base_commit_sha = None
+        return current
+
+    repo.update(_remove_base_provenance)
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="candidate-without-base",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages["release-missing-base"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.error == "release has no immutable Git base commit for canonical publication"
+    assert result["git_promotion_event_ids"] == []
+    assert not any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
+
+
+def test_canonical_push_rejects_inconsistent_promotion_base(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-inconsistent-base",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release_promotion_id = requested["git_promotion_event_ids"][0]
+
+    def _add_inconsistent_canonical_promotion(current: TeamState) -> TeamState:
+        release = current.release_packages["release-inconsistent-base"]
+        promotion = GitPromotionRecord(
+            id="promotion-inconsistent-base",
+            project_id="project",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch=release.release_branch or "team/team/releases/release-inconsistent-base",
+            target_branch=release.canonical_branch or "releases/project/release-inconsistent-base",
+            promotion_kind="canonical_push",
+            git_base_branch=release.git_base_branch,
+            base_commit_sha="different-base",
+            sources=[
+                {
+                    "source_branch": release.release_branch
+                    or "team/team/releases/release-inconsistent-base",
+                    "expected_commit_sha": "candidate-sha",
+                }
+            ],
+        )
+        current.git_promotions[promotion.id] = promotion
+        release.git_promotion_record_ids.append(promotion.id)
+        return current
+
+    repo.update(_add_inconsistent_canonical_promotion)
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="candidate-sha",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages["release-inconsistent-base"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert "canonical promotion base different-base does not match release base" in (
+        release.error or ""
+    )
+    assert result["git_promotion_event_ids"] == []
 
 
 def test_partial_verification_release_requires_audited_lead_waiver(

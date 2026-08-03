@@ -6983,7 +6983,15 @@ The internal release branch is not the published branch operators should test or
 
 > <span class="sidebar-kicker">Technical detail</span> **Publishing the exact candidate**
 >
-> Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
+> Only after every gate passes does the workflow create the canonical-push
+> promotion. Core <code>effect:git:push-branch</code> verifies the exact approved
+> commit, requires the canonical destination to still equal the release's
+> immutable reviewed base commit, and applies a destination lease before
+> pushing. A release based on another branch cannot carry that branch's
+> pre-existing changes to this destination; deliberate cross-base work must be
+> reviewed through an integration task based on the destination.
+> <code>effect:team:mark-release-published</code> records canonical branch,
+> published commit, timestamp, and accepted package state.
 
 ![Pinned Team Git promotion and release-gate flow](assets/evander-user-manual/diagrams/16-team-release.svg)
 

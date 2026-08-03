@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-03 - Team Canonical Publication Base Pinning
+
+- Bound Team canonical publication to the immutable release base commit so a
+  release reviewed relative to an alternate task base cannot carry that base's
+  pre-existing changes onto a different canonical destination.
+- Kept `effect:git:push-branch` backward compatible for existing workflows by
+  making destination-base verification additive, while requiring the packaged
+  Team canonical-push route to supply the release base commit.
+
 ## 2026-08-03 - Azure DevOps Organization Identity Hardening
 
 - Restored per-node Azure DevOps `project` overrides for pull-request update and tag effects,
