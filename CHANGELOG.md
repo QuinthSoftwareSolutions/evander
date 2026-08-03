@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-02 - PR Preflight Provider Target Hardening
+
+- Removed request-level Azure DevOps organization and project overrides from the Admin Web PR
+  integration preflight, ensuring directory-scoped PATs are sent only to directory-configured
+  provider endpoints.
+
 ## 2026-08-03 - Workflow PR Provider Target Hardening
 
 - Prevented pull-request update and tag effects from combining workflow-controlled Azure DevOps
