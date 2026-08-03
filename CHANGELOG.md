@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-03 - Operator Revocation of Agent-Issued Stand-downs
+
+- Allowed human operators to revoke a direct Team agent-issued stand-down from
+  the existing Admin control, while retaining agent-to-agent ownership limits
+  and root-only revocation for inherited subtree holds.
+
 ## 2026-08-03 - Scrollable Team Chat Recent Conversations
 
 - Kept the recent-conversation sidebar within its available panel height so long chat lists scroll independently without overflowing the page.

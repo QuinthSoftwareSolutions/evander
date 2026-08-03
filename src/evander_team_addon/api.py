@@ -2027,7 +2027,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = request.path_params["agent_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: runtime_service.revoke_operator_stand_downs(
+            lambda expected_revision: runtime_service.revoke_stand_downs(
                 agent_id=agent_id,
                 revoked_by=_optional(payload, "revoked_by")
                 or _operator_actor_from_request(context.auth, request),

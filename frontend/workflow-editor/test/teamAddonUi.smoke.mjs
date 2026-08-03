@@ -4388,7 +4388,7 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
-test("team add-on keeps unavailable stand-down revocation visible with an explanation", async (t) => {
+test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.lead.display_name = "Project Lead";
   const standDown = {
@@ -4418,7 +4418,7 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   const { port, requests } = await createTeamAddonServer(t, {
     initialState,
   });
-  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=true");
 
   await waitForRevision(page, 8);
   await openTeams(page);
@@ -4434,28 +4434,30 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   await detail.waitFor({ state: "visible" });
   const revokeButton = detail.getByRole("button", { name: "Revoke stand-down" });
   await revokeButton.waitFor({ state: "visible" });
-  await revokeButton.hover();
-  assert.equal(await revokeButton.isDisabled(), true);
-  assert.equal(await revokeButton.getAttribute("aria-disabled"), "true");
-  assert.equal(
-    await revokeButton.getAttribute("title"),
-    "Only Project Lead can revoke this superior-issued stand-down.",
-  );
+  assert.equal(await revokeButton.isDisabled(), false);
+  assert.equal(await revokeButton.getAttribute("aria-disabled"), null);
 
   const revokeRequestCountBeforeClick = requests.filter(
     (request) =>
       request.method === "POST"
       && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
   ).length;
-  await revokeButton.dispatchEvent("click");
-  await page.waitForTimeout(100);
+  await revokeButton.click();
+  await waitForCondition(
+    () => requests.filter(
+      (request) =>
+        request.method === "POST"
+        && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+    ).length === revokeRequestCountBeforeClick + 1,
+    "expected an operator revocation request for the direct agent-issued hold",
+  );
   assert.equal(
     requests.filter(
       (request) =>
         request.method === "POST"
         && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
     ).length,
-    revokeRequestCountBeforeClick,
+    revokeRequestCountBeforeClick + 1,
   );
 
   await teamGroup.locator('[data-select-agent-id="worker"]').click();
@@ -4467,7 +4469,7 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   assert.equal(await inheritedRevokeButton.isDisabled(), true);
   assert.equal(
     await inheritedRevokeButton.getAttribute("title"),
-    "This stand-down is inherited from Backend Worker. Only Project Lead can revoke it.",
+    "This stand-down is inherited from Backend Worker. Revoke it on Backend Worker.",
   );
 });
 

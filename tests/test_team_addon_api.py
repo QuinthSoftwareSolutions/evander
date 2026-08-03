@@ -42,6 +42,7 @@ from evander_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
+    AgentStandDownSource,
     AgentTask,
     AgentStatus,
     AgentVoiceProfile,
@@ -6421,15 +6422,40 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
         reports_to_agent_id="lead",
     )
 
+    state = _team_runtime_service(repo).stand_down_agent(
+        agent_id="backend",
+        reason="Wait for the lead to finish upstream work.",
+        set_by="lead",
+        source=AgentStandDownSource.SUPERIOR,
+        scope="agent",
+        expected_revision=4,
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/stand-down/revoke",
+        json={"expected_revision": state.revision},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    agent_stand_down = next(iter(body["stand_downs"].values()))
+    assert agent_stand_down["source"] == "superior"
+    assert agent_stand_down["cleared_at"] is not None
+    assert body["agents"]["backend"]["stand_down_active"] is False
+
     response = client.post(
         "/api/addons/team-addon/agents/lead/stand-down",
-        json={"reason": "Await operator follow-up.", "expected_revision": 4},
+        json={"reason": "Await operator follow-up.", "expected_revision": 6},
     )
 
     assert response.status_code == 201
     body = response.json()
-    assert len(body["stand_downs"]) == 1
-    stand_down = next(iter(body["stand_downs"].values()))
+    assert len(body["stand_downs"]) == 2
+    stand_down = next(
+        item
+        for item in body["stand_downs"].values()
+        if item["agent_id"] == "lead" and item["cleared_at"] is None
+    )
     assert stand_down["agent_id"] == "lead"
     assert stand_down["scope"] == "subtree"
     assert stand_down["source"] == "operator"
@@ -6439,12 +6465,14 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
 
     response = client.post(
         "/api/addons/team-addon/agents/lead/stand-down/revoke",
-        json={"expected_revision": 5},
+        json={"expected_revision": 7},
     )
 
     assert response.status_code == 200
     body = response.json()
-    stand_down = next(iter(body["stand_downs"].values()))
+    stand_down = next(
+        item for item in body["stand_downs"].values() if item["agent_id"] == "lead"
+    )
     assert stand_down["cleared_at"] is not None
     assert body["agents"]["lead"]["stand_down_active"] is False
     assert body["agents"]["backend"]["stand_down_active"] is False
@@ -6454,7 +6482,7 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
         json={
             "reason": "Pause only the lead.",
             "scope": "agent",
-            "expected_revision": 6,
+            "expected_revision": 8,
         },
     )
 
