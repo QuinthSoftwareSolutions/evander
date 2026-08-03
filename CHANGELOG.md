@@ -6,6 +6,11 @@
   integration preflight, ensuring directory-scoped PATs are sent only to directory-configured
   provider endpoints.
 
+## 2026-08-03 - Workflow PR Provider Target Hardening
+
+- Prevented pull-request update and tag effects from combining workflow-controlled Azure DevOps
+  targets or out-of-scope directories with directory-scoped PAT credentials.
+
 ## 2026-08-03 - Container Worker Git Grant Preservation
 
 - Preserved session-scoped SSH alias blocks when refreshing the host-only worker

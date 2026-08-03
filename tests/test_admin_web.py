@@ -837,8 +837,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "repo",
         "pr_id",
         "directory_path",
-        "organization_url",
-        "project",
         "title",
         "description",
         "status",
@@ -855,8 +853,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "pr_id",
         "tag",
         "directory_path",
-        "organization_url",
-        "project",
     ]
     pr_remove_tag = next(
         node
@@ -869,8 +865,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "pr_id",
         "tag",
         "directory_path",
-        "organization_url",
-        "project",
     ]
     event_emit = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:event:emit"

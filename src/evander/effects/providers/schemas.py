@@ -993,8 +993,6 @@ class PullRequestAddTagEffectDefinition(EffectDefinition):
     pr_id: ConfigValue
     tag: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
-    project: ConfigValue | None = None
 
     @field_validator("provider")
     @classmethod
@@ -1009,8 +1007,6 @@ class PullRequestRemoveTagEffectDefinition(EffectDefinition):
     pr_id: ConfigValue
     tag: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
-    project: ConfigValue | None = None
 
     @field_validator("provider")
     @classmethod
@@ -1024,8 +1020,6 @@ class PullRequestUpdateEffectDefinition(EffectDefinition):
     repo: ConfigValue
     pr_id: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
-    project: ConfigValue | None = None
     title: ConfigValue | None = None
     description: ConfigValue | None = None
     status: ConfigValue | None = None

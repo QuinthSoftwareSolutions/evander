@@ -2074,8 +2074,9 @@ Use `trigger:cron` with `query:pull-request:list` when a workflow needs one-shot
 query control over open pull requests by provider state, branch, time window, or
 review labels, then use `effect:pull-request:update` to claim or release work by
 changing PR tags or metadata. For Azure DevOps, set `provider` to
-`azure_devops` or `ado`; the node uses the directory-scoped ADO organization,
-project, and PAT unless `organization_url` or `project` is supplied on the node.
+`azure_devops` or `ado`; the node always uses the directory-scoped ADO organization,
+project, and PAT. Provider target overrides are rejected so a workflow cannot redirect
+directory credentials to another endpoint.
 
 Use `trigger:pull-request:new-feedback` or `trigger:pull-request:completed`
 with `provider=ado` and `repo` when the Azure DevOps PR worker should own
