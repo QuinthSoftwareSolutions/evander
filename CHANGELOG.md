@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-08-03 - Azure DevOps Organization Identity Hardening
+
+- Restored per-node Azure DevOps `project` overrides for pull-request update and tag effects,
+  while replacing caller-controlled provider URLs with `ado_organization` identifiers that always
+  construct a trusted `https://dev.azure.com/<org>` origin before a PAT-bearing request.
+- Preserved safe legacy configuration and persisted workflow compatibility by migrating only
+  public Azure DevOps organization URLs; arbitrary origins are rejected across PR queries,
+  workflow effects, Azure DevOps feedback/completion polling, and Azure Pipelines completion
+  polling.
+
+## 2026-08-02 - PR Preflight Provider Target Hardening
+
+- Removed request-level Azure DevOps organization and project overrides from the Admin Web PR
+  integration preflight, ensuring directory-scoped PATs are sent only to directory-configured
+  provider endpoints.
+
+## 2026-08-03 - Workflow PR Provider Target Hardening
+
+- Prevented pull-request update and tag effects from combining workflow-controlled Azure DevOps
+  targets or out-of-scope directories with directory-scoped PAT credentials.
+
+## 2026-08-03 - Container Worker Git Grant Preservation
+
+- Preserved session-scoped SSH alias blocks when refreshing the host-only worker
+  Git credential, and reserved the legacy `evander-git` filename so new grants
+  cannot be mistaken for migrated broad credentials.
+
+## 2026-08-02 - Container Worker Git Credential Isolation
+
+- Kept the same-host worker's broad Git SSH credential in a host-only session
+  directory so container jobs cannot read it through the agent-home mount.
+
 ## 2026-08-02 - Team Chat Notification Deep Links
 
 - Open notification clicks directly in Team Chat with the specific conversation

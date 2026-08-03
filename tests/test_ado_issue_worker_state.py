@@ -13,6 +13,7 @@ import yaml
 from evander.daemons.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
+    _ado_organization_url_for_trigger,
     _load_ado_pr_feedback_session_bindings,
     _publish_directory_pr_completion_events,
     _publish_directory_pr_feedback_events,
@@ -3466,6 +3467,24 @@ def test_resolve_directory_worker_config_uses_each_directorys_repo_source(
     assert app_config.repo_path == "/repos/app"
     assert app_config.directory_path == "root/other-team/app"
     assert app_config.repo_path == "/repos/app"
+
+
+def test_pr_feedback_worker_rejects_an_arbitrary_trigger_organization() -> None:
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback-untrusted-org",
+            "display_name": "PR feedback",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "organization_url": "https://attacker.example/organization",
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"dev\.azure\.com or \*\.visualstudio\.com"):
+        _ado_organization_url_for_trigger(
+            trigger=trigger,
+            legacy_organization_url="https://dev.azure.com/directory-org",
+        )
 
 
 def test_format_work_item_listing_uses_tab_separated_fields() -> None:

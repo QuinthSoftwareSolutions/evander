@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.models import PrFeedbackItem
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import PullRequestNewFeedbackTriggerDefinition
@@ -188,8 +189,13 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             pat_env_name = self.runtime_context.resolved_config.azure_devops_pr_pat_env
             pat = self.runtime_context.env.get(pat_env_name, "").strip()
             return AzureDevOpsFeedbackAdapter(
-                organization_url=trigger.organization_url
-                or self.runtime_context.resolved_config.azure_devops_organization_url,
+                organization_url=resolve_azure_devops_organization_url(
+                    ado_organization=trigger.ado_organization,
+                    legacy_organization_url=(
+                        self.runtime_context.resolved_config.azure_devops_organization_url
+                    ),
+                    node_type=trigger.type,
+                ),
                 project=trigger.project
                 or self.runtime_context.resolved_config.azure_devops_project,
                 pat=pat,

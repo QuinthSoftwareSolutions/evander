@@ -118,7 +118,7 @@ _AGENT_PROMPT_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "agent_context_retry_target_chars"),
 )
 _AZURE_DEVOPS_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
-    ("providers", "azure_devops_organization_url"),
+    ("providers", "ado_organization"),
     ("providers", "azure_devops_pat_env"),
     ("providers", "azure_devops_pr_pat_env"),
     ("providers", "azure_devops_project"),
