@@ -78,6 +78,7 @@ class VoiceSessionRecord(BaseModel):
     summary: str | None = None
     decisions: list[str] = Field(default_factory=list)
     action_items: list[str] = Field(default_factory=list)
+    reconciliation_context: dict[str, Any] = Field(default_factory=dict)
     reconciliation_status: VoiceSessionReconciliationStatus = "not_requested"
     reconciliation_request_id: str | None = None
     reconciliation_prompt: str | None = None
@@ -360,6 +361,7 @@ class VoiceSessionStore:
         summary: str | None = None,
         decisions: list[str] | None = None,
         action_items: list[str] | None = None,
+        reconciliation_context: Mapping[str, Any] | None = None,
         error: str | None = None,
     ) -> VoiceSessionRecord:
         if status not in {"ended", "failed"}:
@@ -382,6 +384,10 @@ class VoiceSessionStore:
                     for item in action_items
                     if _normalize_list_text(item)
                 ]
+            if reconciliation_context is not None:
+                record.reconciliation_context = sanitize_voice_metadata(
+                    reconciliation_context
+                )
             if error is not None:
                 record.error = _optional_text(error)
             now = datetime.now(UTC)
@@ -1517,6 +1523,12 @@ def build_reconciliation_prompt(
     decisions = "\n".join(f"- {item}" for item in record.decisions) or "- <none>"
     action_items = "\n".join(f"- {item}" for item in record.action_items) or "- <none>"
     delegated_queries = build_delegated_query_reconciliation_text(queries or [])
+    context_section = (
+        "\n\nCurrent Team context JSON:\n"
+        f"{json.dumps(record.reconciliation_context, sort_keys=True, indent=2)}"
+        if record.reconciliation_context
+        else ""
+    )
     return (
         "A live voice session that was projected from this Truman agent has ended. "
         "Incorporate the call or meeting into your current context, honor any explicit "
@@ -1529,6 +1541,7 @@ def build_reconciliation_prompt(
         f"Action items:\n{action_items}\n\n"
         f"Delegated origin-agent queries:\n{delegated_queries}\n\n"
         f"Transcript:\n{transcript}"
+        f"{context_section}"
     )
 
 

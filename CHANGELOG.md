@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-03 - Browser Voice Reconciliation Context
+
+- Bound browser voice sessions to the authenticated operator, identify transcript
+  turns by the operator's display name and user ID, and reject another operator's
+  event, query, or end request for that call.
+- Added the current compact Team working set to the agent's terminal browser-voice
+  reconciliation wake.
+
 ## 2026-08-03 - Stand-down Revocation Conflict Safety
 
 - Included direct stand-down lifecycle in Team agent resource tokens so a stale

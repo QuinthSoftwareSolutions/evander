@@ -4294,6 +4294,15 @@ def test_agent_voice_session_create_query_and_end(
         "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
+    operator_identity = {
+        "user_id": "jonathan",
+        "display_name": "Jonathan",
+        "actor": "operator:jonathan",
+    }
+    monkeypatch.setattr(
+        "evander_team_addon.api._operator_identity_from_request",
+        lambda _auth, _request: dict(operator_identity),
+    )
     client = TestClient(create_app(service))
     _unlock_privileged_operations(client)
 
@@ -4328,6 +4337,8 @@ def test_agent_voice_session_create_query_and_end(
     assert record.caller_metadata["voice_profile"]["speaking_style"] == (
         "Calm, concise, and lightly upbeat."
     )
+    assert record.caller_metadata["operator_user_id"] == "jonathan"
+    assert record.caller_metadata["operator_display_name"] == "Jonathan"
 
     event_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
@@ -4340,6 +4351,25 @@ def test_agent_voice_session_create_query_and_end(
     )
     assert event_response.status_code == 200
     assert event_response.json()["transcript_events"][0]["text"] == "What is blocked?"
+    assert event_response.json()["transcript_events"][0]["speaker"] == "Jonathan (jonathan)"
+    assert event_response.json()["transcript_events"][0]["metadata"]["speaker_role"] == "operator"
+
+    operator_identity.update(
+        user_id="ada",
+        display_name="Ada",
+        actor="operator:ada",
+    )
+    foreign_event = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
+        json={"status": "active", "text": "Can you hear me?", "speaker": "operator"},
+    )
+    assert foreign_event.status_code == 403
+    assert foreign_event.json()["error"] == "voice session belongs to a different operator"
+    operator_identity.update(
+        user_id="jonathan",
+        display_name="Jonathan",
+        actor="operator:jonathan",
+    )
 
     query_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/queries",
@@ -4352,22 +4382,39 @@ def test_agent_voice_session_create_query_and_end(
     assert query_response.status_code == 201
     query = query_response.json()
     assert query["status"] == "pending"
+    assert query["transcript_excerpt"] == "Jonathan (jonathan): Which files changed?"
     assert service.runtime.wake_store.get_request(f"voice-query:{query['query_id']}") is not None
 
     end_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
-        json={"status": "ended", "summary": "Operator asked about blockers."},
+        json={
+            "status": "ended",
+            "summary": "Operator asked about blockers.",
+            "transcript": "operator: What is blocked?\nagent: The task is blocked.",
+        },
     )
     assert end_response.status_code == 200
     ended = end_response.json()
     assert ended["status"] == "ended"
     assert ended["reconciliation_status"] == "scheduled"
-    assert (
-        service.runtime.wake_store.get_request(
-            f"voice-session-reconcile:{payload['voice_session_id']}"
-        )
-        is not None
+    completed_record = service.runtime.voice_session_store.get_by_voice_session_id(
+        payload["voice_session_id"]
     )
+    assert completed_record is not None
+    assert completed_record.transcript == (
+        "Jonathan (jonathan): What is blocked?\nbackend: The task is blocked."
+    )
+    assert completed_record.reconciliation_context["reason"] == "voice_session_reconciliation"
+    assert completed_record.reconciliation_context["tasks"][0]["title"] == "Blocked task"
+    wake = service.runtime.wake_store.get_request(
+        f"voice-session-reconcile:{payload['voice_session_id']}"
+    )
+    assert wake is not None
+    assert completed_record.reconciliation_prompt is not None
+    assert "Current Team context JSON:" in completed_record.reconciliation_prompt
+    assert '"reason": "voice_session_reconciliation"' in completed_record.reconciliation_prompt
+    assert "Blocked task" in completed_record.reconciliation_prompt
+    assert wake.resume_prompt.prompt == completed_record.reconciliation_prompt
 
 
 def test_agent_voice_session_records_chat_conversation_message(

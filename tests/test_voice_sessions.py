@@ -25,6 +25,7 @@ from evander.voice_sessions import (
     VoiceQueryDelegator,
     VoiceSessionReconciler,
     VoiceSessionStore,
+    build_reconciliation_prompt,
     disable_pending_voice_query_wake,
     realtime_browser_session_config,
     voice_query_payload,
@@ -201,11 +202,22 @@ def test_voice_session_store_supports_browser_agent_call(tmp_path: Path) -> None
         text="What is blocked?",
         speaker="operator",
     )
-    ended = store.complete_session(record.voice_session_id, status="ended")
+    ended = store.complete_session(
+        record.voice_session_id,
+        status="ended",
+        reconciliation_context={
+            "reason": "voice_session_reconciliation",
+            "tasks": [{"id": "backend-task", "title": "Review blockers"}],
+        },
+    )
 
     assert ended.status == "ended"
     assert ended.transcript == "operator: What is blocked?"
     assert ended.contact_id == "backend"
+    assert ended.reconciliation_context["tasks"][0]["id"] == "backend-task"
+    prompt = build_reconciliation_prompt(ended)
+    assert "Current Team context JSON:" in prompt
+    assert '"voice_session_reconciliation"' in prompt
 
 
 def make_context(tmp_path: Path, **kwargs: object):
