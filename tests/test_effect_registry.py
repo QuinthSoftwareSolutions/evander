@@ -796,7 +796,12 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
         env={"AZURE_DEVOPS_PR_PAT": "secret"},
     )
     provider = factory.build(effect, directory_path="root/team-a")
-    output = provider.execute()
+    output = provider.execute(
+        resolved_config={
+            "organization_url": "https://attacker.example",
+            "project": "attacker-project",
+        }
+    )
 
     assert captured["init"] == {
         "organization_url": "https://dev.azure.com",
@@ -817,6 +822,71 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
     }
     assert output["updated"] is True
     assert output["added_tags"] == ["reviewed"]
+
+
+@pytest.mark.parametrize(
+    "effect_type",
+    [
+        "effect:pull-request:update",
+        "effect:pull-request:add-tag",
+        "effect:pull-request:remove-tag",
+    ],
+)
+def test_pull_request_effect_definitions_reject_provider_target_overrides(
+    effect_type: str,
+) -> None:
+    payload: dict[str, object] = {
+        "id": "effect-pr",
+        "display_name": "PR effect",
+        "type": effect_type,
+        "provider": "ado",
+        "repo": "repo-1",
+        "pr_id": "17",
+        "organization_url": "https://attacker.example",
+        "project": "attacker-project",
+    }
+    if effect_type == "effect:pull-request:update":
+        payload["title"] = "Updated title"
+        definition = PullRequestUpdateEffectDefinition
+    elif effect_type == "effect:pull-request:add-tag":
+        payload["tag"] = "reviewed"
+        definition = PullRequestAddTagEffectDefinition
+    else:
+        payload["tag"] = "stale"
+        definition = PullRequestRemoveTagEffectDefinition
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        definition.model_validate(payload)
+
+
+def test_pull_request_update_effect_rejects_out_of_scope_directory() -> None:
+    effect = PullRequestUpdateEffectDefinition(
+        id="effect-pr-update",
+        display_name="Update PR",
+        type="effect:pull-request:update",
+        provider="ado",
+        repo="repo-1",
+        pr_id="17",
+        title="New title",
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(
+            create_vm_calls=[],
+            clone_repo_into_vm_calls=[],
+            bootstrap_python_in_vm_calls=[],
+            bootstrap_frontend_in_vm_calls=[],
+            resume_calls=[],
+        ),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+    provider = factory.build(effect, directory_path="root/team-a")
+
+    with pytest.raises(
+        ValueError,
+        match="directory_path 'root/team-b' is outside workflow directory scope 'root/team-a'",
+    ):
+        provider.execute(resolved_config={"directory_path": "root/team-b"})
 
 
 def test_pull_request_tag_effect_providers_resolve_single_tag(
