@@ -133,12 +133,14 @@ obligations. A failure in any part rolls the transition back; Team never leaves
 a recorded human veto without actionable correction work, or correction work
 without the veto that authorized it.
 
-The affected-deliverable list is optional. A sole reviewed candidate
-deliverable is inferred. With several candidate contributions, the human can
-choose named work in the form; an omitted selection routes directly only when
-all applicable work has one active owner. Otherwise the distinct finding child
-stays with the project lead until
-<code>team_route_human_finding_correction</code> assigns its owner.
+Every new finding must select its affected work explicitly: either the entire
+release candidate or one or more named candidate deliverables. A
+single-owner deliverable selection routes to that current owner. The entire
+candidate, a multi-owner selection, or a selection whose historical owner is
+unavailable routes to the project lead and does not require a second routing
+step. Scope-less legacy findings remain readable; only those old records can
+retain ambiguous-routing metadata and require
+<code>team_route_human_finding_correction</code> recovery.
 
 The system may create this narrowly scoped graph because the authenticated
 request and target release already authorize the same-team, same-project

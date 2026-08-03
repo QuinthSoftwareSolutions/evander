@@ -27,8 +27,6 @@ class PrIntegrationPreflightRequest(BaseModel):
     pr_ids: list[str] = Field(default_factory=list)
     mode: MergePreflightMode
     directory_path: str = "root"
-    organization_url: str | None = None
-    project: str | None = None
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -62,11 +60,6 @@ class PrIntegrationPreflightRequest(BaseModel):
         if normalized not in {"single", "pairwise", "ordered"}:
             raise ValueError("mode must be single, pairwise, or ordered")
         return normalized  # type: ignore[return-value]
-
-    @field_validator("organization_url", "project", mode="before")
-    @classmethod
-    def _normalize_optional_text_field(cls, value: object) -> str | None:
-        return cls._normalize_optional_text(value)
 
     @field_validator("pr_ids", mode="before")
     @classmethod
@@ -160,8 +153,6 @@ def pr_integration_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -
                 mode=payload.mode,
                 directory_path=payload.directory_path,
                 managed_repo_id=payload.managed_repo_id,
-                organization_url=payload.organization_url,
-                project=payload.project,
             )
         except ValueError as exc:
             return json_error(str(exc))

@@ -1030,6 +1030,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
+            base_branch="main",
         )
         return state
 
@@ -1523,12 +1524,33 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
         "findings": [
             {
                 "text": "Correct the release-wide workflow failure.",
+                "target_scope": "release_candidate",
                 "evidence_refs": ["artifact-space:reports/release-failure.txt"],
             }
         ],
         "expected_revision": 0,
         "request_id": "changes-requested-1",
     }
+
+    missing_scope = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={
+            **payload,
+            "request_id": "changes-requested-missing-scope",
+            "findings": [
+                {
+                    "text": "Correct the release-wide workflow failure.",
+                    "evidence_refs": [
+                        "artifact-space:reports/release-failure.txt"
+                    ],
+                }
+            ],
+        },
+    )
+    assert missing_scope.status_code == 400
+    assert "must select the entire release candidate" in missing_scope.json()[
+        "error"
+    ]
 
     decided = client.post(
         "/human-review-requests/human-review-1/decisions",
@@ -1549,7 +1571,7 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     ]
     assert len(wake_events) == 1
     assert wake_events[0].event_id == decided_payload["published_event_ids"][0]
-    assert wake_events[0].payload["agent_id"] == "backend"
+    assert wake_events[0].payload["agent_id"] == "lead"
     assert wake_events[0].payload["reason"] == "inbox"
 
     replay = client.post(
@@ -2034,6 +2056,7 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert correction_root.parent_task_id is None
     assert correction_root.originating_task_id == triage_task.id
     assert correction_root.case_id == feedback_case.id
+    assert correction_root.git_base_branch == published_before.release_branch
     assert correction_root.id in final_state.cases[feedback_case.id].task_ids
 
     published_after = final_state.release_packages["release-1"]
@@ -3310,6 +3333,7 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     now = datetime(2026, 1, 2, tzinfo=UTC)
 
     def _mutate(state):
+        state.release_packages["release-1"].state = TeamRecordState.REJECTED
         state.inbox["handled-inbox"] = AgentInboxItem(
             id="handled-inbox",
             recipient_agent_id="backend",
@@ -3366,7 +3390,12 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     assert operations.status_code == 200
     operations_state = operations.json()["data"]["state"]
     assert {"inbox-1", "escalation-1"}.issubset(operations_state["inbox"])
+    assert set(operations_state["release_packages"]) == {"release-1"}
     assert set(operations_state["action_records"]) == {"action-1"}
+    assert not any(
+        row["kind"] in {"blocked_release_package", "failed_git_promotion"}
+        for row in operations_state["runtime_operations"]["attention"]
+    )
     assert set(operations_state["resource_tokens"]["inbox"]) == set(
         operations_state["inbox"]
     )
@@ -4668,6 +4697,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Review ID <input" not in ui.text
     assert 'id="edit-modal"' in ui.text
     assert 'id="edit-record-form"' in ui.text
+    assert "Default base branch for new tasks" in ui.text
 
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
@@ -4740,6 +4770,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text
     assert "create-task-form:created_by_agent_id" in script.text
+    assert "create-task-form:git_base_branch" in script.text
+    assert "data-task-board-create-form" in script.text
+    assert 'readonlyField("Git base branch (locked)"' in script.text
+    assert '["Git base branch", text(task.git_base_branch)]' in script.text
+    assert '["Git base branch", release.git_base_branch]' in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
     assert "data-resume-release-recovery-blocker-id" in script.text
@@ -6682,6 +6717,32 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     }
 
     response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "lead",
+            "project_id": "project",
+            "priority": 1,
+            "title": "Snapshot the default",
+            "description": "Exercise task Git-base API projection.",
+            "created_by_agent_id": "lead",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["tasks"]["task"]["git_base_branch"] == "develop"
+
+    response = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={
+            "git_base_branch": "feature/foo",
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["tasks"]["task"]["git_base_branch"] == "feature/foo"
+
+    response = client.post(
         "/api/addons/team-addon/projects",
         json={
             "id": "project-2",
@@ -6692,7 +6753,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "git": {
                 "managed_repo_id": "legacy-repo",
             },
-            "expected_revision": 5,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 400

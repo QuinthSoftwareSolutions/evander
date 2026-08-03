@@ -224,10 +224,31 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
         "pr_ids": ["17", "18", "19"],
         "mode": "ordered",
         "directory_path": "root/team-a",
-        "organization_url": None,
-        "project": None,
         "managed_repo_id": "mr_0123456789abcdefabcd",
     }
+
+
+def test_admin_web_pr_integration_preflight_rejects_provider_target_overrides(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/pr-integration-preflight",
+        json={
+            "provider": "ado",
+            "repo": "repo-1",
+            "pr_ids": ["17"],
+            "mode": "single",
+            "directory_path": "root",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "organization_url": "https://attacker.example",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Extra inputs are not permitted" in response.json()["error"]
 
 
 @pytest.mark.parametrize(

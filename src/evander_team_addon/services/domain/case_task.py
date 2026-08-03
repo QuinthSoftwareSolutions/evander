@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 from ...models import (
     AgentTask,
     PersistentAgent,
@@ -21,6 +21,7 @@ from ...models import (
     _unique_text_list,
     agent_has_project_assignment,
 )
+from ...git_naming import validate_branch_name
 
 from .agent_access import (
     _agent_has_role_permission_for_project,
@@ -36,6 +37,7 @@ from .common import (
     _generated_id,
     _mapping,
     _optional_text,
+    _release_candidate_branch,
     _require_absent,
     _require_present,
     _required_text,
@@ -66,6 +68,7 @@ class _TaskCreationPlan:
     task_state: TeamTaskState
     parent_task_id: str | None
     originating_task_id: str | None
+    git_base_branch: str | None
     dependency_task_ids: list[str]
     priority: int
     title: str
@@ -74,6 +77,275 @@ class _TaskCreationPlan:
     outcome_contract: TaskOutcomeContract | None
     integration_boundary: bool
     deliverable_contract: TaskDeliverableContract | None
+
+
+class TaskGitBaseValidationError(ValueError):
+    def __init__(self, *, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class TaskGitDefaultBranchResolver(Protocol):
+    def __call__(
+        self,
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> object: ...
+
+
+def _normalized_task_git_base_branch(value: object) -> str | None:
+    normalized = _optional_text(value)
+    return validate_branch_name(normalized) if normalized is not None else None
+
+
+def _project_default_task_git_base_branch(
+    state: TeamState,
+    *,
+    project_id: str,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None,
+) -> str | None:
+    project = _require_present(state.projects, project_id, "project")
+    if project.git is None:
+        return None
+    configured = _normalized_task_git_base_branch(project.git.base_branch)
+    if configured is not None:
+        return configured
+    if git_default_branch_resolver is None:
+        raise TaskGitBaseValidationError(
+            code="git_base_unavailable",
+            message=(
+                f"project {project.id} does not select a Git base branch and "
+                "managed repository default-branch resolution is unavailable"
+            ),
+        )
+    try:
+        resolved = _normalized_task_git_base_branch(
+            git_default_branch_resolver(
+                managed_repo_id=project.git.managed_repo_id,
+                directory_path=project.git.directory_path,
+            )
+        )
+    except Exception as exc:
+        raise TaskGitBaseValidationError(
+            code="git_base_unavailable",
+            message=(
+                f"could not resolve the default branch for managed repository "
+                f"{project.git.managed_repo_id}: {exc}"
+            ),
+        ) from exc
+    if resolved is None:
+        raise TaskGitBaseValidationError(
+            code="git_base_unavailable",
+            message=(
+                f"managed repository {project.git.managed_repo_id} has no "
+                "concrete default branch"
+            ),
+        )
+    return resolved
+
+
+def _correction_case_git_base_branch(
+    state: TeamState,
+    *,
+    case_id: str | None,
+) -> str | None:
+    case = state.cases.get(case_id) if case_id is not None else None
+    if case is None:
+        return None
+    release_id: str | None = None
+    if case.source == "human_release_review" and case.source_ref is not None:
+        request = state.human_review_requests.get(case.source_ref)
+        release_id = request.release_package_id if request is not None else None
+    elif case.source == "post_release_feedback":
+        release_id = _optional_text(case.metadata.get("release_package_id"))
+    release = state.release_packages.get(release_id) if release_id is not None else None
+    return (
+        _release_candidate_branch(release) or release.git_base_branch
+        if release is not None
+        else None
+    )
+
+
+def _task_git_base_branch_locked(state: TeamState, *, task: AgentTask) -> bool:
+    if task.deliverable_ids:
+        return True
+    if any(context.task_id == task.id for context in state.git_work_contexts.values()):
+        return True
+    deliverable_ids = {
+        deliverable.id
+        for deliverable in state.deliverables.values()
+        if deliverable.task_id == task.id
+    }
+    if deliverable_ids:
+        return True
+    return any(
+        promotion.task_id == task.id
+        or (
+            promotion.deliverable_id is not None
+            and promotion.deliverable_id in deliverable_ids
+        )
+        for promotion in state.git_promotions.values()
+    )
+
+
+def _set_task_git_base_branch(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    git_base_branch: object,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
+) -> bool:
+    normalized = _normalized_task_git_base_branch(git_base_branch)
+    project = _require_present(state.projects, task.project_id, "project")
+    correction_base = _correction_case_git_base_branch(
+        state,
+        case_id=task.case_id,
+    )
+    if correction_base is not None:
+        if normalized is not None and normalized != correction_base:
+            raise TaskGitBaseValidationError(
+                code="git_base_invalid",
+                message=(
+                    f"correction task {task.id} must remain based on rejected "
+                    f"candidate branch {correction_base}"
+                ),
+            )
+        normalized = correction_base
+    elif normalized is None and project.git is not None:
+        parent = (
+            state.tasks.get(task.parent_task_id)
+            if task.parent_task_id is not None
+            else None
+        )
+        normalized = (
+            _normalized_task_git_base_branch(parent.git_base_branch)
+            if parent is not None and parent.git_base_branch is not None
+            else _project_default_task_git_base_branch(
+                state,
+                project_id=project.id,
+                git_default_branch_resolver=git_default_branch_resolver,
+            )
+        )
+    if normalized is not None and project.git is None:
+        raise TaskGitBaseValidationError(
+            code="git_base_invalid",
+            message=(
+                f"task {task.id} cannot select git_base_branch because project "
+                f"{project.id} has no Git configuration"
+            ),
+        )
+    if normalized == task.git_base_branch:
+        return False
+    if _task_git_base_branch_locked(state, task=task):
+        raise TaskGitBaseValidationError(
+            code="git_base_locked",
+            message=(
+                f"task {task.id} git_base_branch is locked after Git preparation, "
+                "deliverable submission, or promotion creation"
+            ),
+        )
+    task.git_base_branch = normalized
+    return True
+
+
+def _resolve_new_task_git_base_branch(
+    state: TeamState,
+    *,
+    project_id: str,
+    explicit_git_base_branch: object = None,
+    parent_task_id: str | None = None,
+    case_id: str | None = None,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
+) -> str | None:
+    project = _require_present(state.projects, project_id, "project")
+    correction_base = _correction_case_git_base_branch(state, case_id=case_id)
+    if correction_base is not None:
+        return correction_base
+    explicit = _normalized_task_git_base_branch(explicit_git_base_branch)
+    if explicit is not None:
+        if project.git is None:
+            raise ValueError(
+                f"task cannot select git_base_branch because project {project.id} "
+                "has no Git configuration"
+            )
+        return explicit
+    if parent_task_id is not None:
+        parent = _require_present(state.tasks, parent_task_id, "task parent")
+        if parent.project_id != project_id:
+            raise ValueError(f"task parent {parent.id} belongs to another project")
+        if parent.git_base_branch is not None:
+            return parent.git_base_branch
+    return _project_default_task_git_base_branch(
+        state,
+        project_id=project.id,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
+
+
+def _resolve_task_creation_plan_git_bases(
+    state: TeamState,
+    plans: list[_TaskCreationPlan],
+    *,
+    git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
+) -> list[_TaskCreationPlan]:
+    """Resolve explicit, parent, then project-default task Git bases atomically."""
+
+    plans_by_id = {plan.task_id: plan for plan in plans}
+    resolved: dict[str, str | None] = {}
+    resolving: set[str] = set()
+    project_defaults: dict[str, str | None] = {}
+
+    def _project_default(project_id: str) -> str | None:
+        if project_id not in project_defaults:
+            project_defaults[project_id] = _project_default_task_git_base_branch(
+                state,
+                project_id=project_id,
+                git_default_branch_resolver=git_default_branch_resolver,
+            )
+        return project_defaults[project_id]
+
+    def _resolve(plan: _TaskCreationPlan) -> str | None:
+        if plan.task_id in resolved:
+            return resolved[plan.task_id]
+        if plan.task_id in resolving:
+            raise ValueError(f"task parent cycle includes {plan.task_id}")
+        resolving.add(plan.task_id)
+        project = _require_present(state.projects, plan.project_id, "project")
+        correction_base = _correction_case_git_base_branch(
+            state,
+            case_id=plan.case_id,
+        )
+        if correction_base is not None:
+            value = correction_base
+        elif plan.git_base_branch is not None:
+            if project.git is None:
+                raise ValueError(
+                    f"task {plan.task_id} cannot select git_base_branch because "
+                    f"project {project.id} has no Git configuration"
+                )
+            value = _normalized_task_git_base_branch(plan.git_base_branch)
+        elif plan.parent_task_id is not None:
+            planned_parent = plans_by_id.get(plan.parent_task_id)
+            if planned_parent is not None:
+                if planned_parent.project_id != plan.project_id:
+                    raise ValueError(
+                        f"task parent {planned_parent.task_id} belongs to another project"
+                    )
+                value = _resolve(planned_parent)
+            else:
+                parent = state.tasks.get(plan.parent_task_id)
+                value = parent.git_base_branch if parent is not None else None
+                if value is None and project.git is not None:
+                    value = _project_default(project.id)
+        else:
+            value = _project_default(project.id)
+        resolving.remove(plan.task_id)
+        resolved[plan.task_id] = _normalized_task_git_base_branch(value)
+        return resolved[plan.task_id]
+
+    return [replace(plan, git_base_branch=_resolve(plan)) for plan in plans]
 
 
 def _validate_case_status_transition(
@@ -585,6 +857,13 @@ def _plan_task_creation(
         result["errors"].append(f"task {task_id} already exists")
         return None
     parent_task_id = _optional_text(creation.get("parent_task_id"))
+    try:
+        git_base_branch = _normalized_task_git_base_branch(
+            creation.get("git_base_branch")
+        )
+    except ValueError as exc:
+        result["errors"].append(f"task creation has invalid git_base_branch: {exc}")
+        return None
     originating_task_id = _optional_text(creation.get("originating_task_id"))
     if originating_task_id is not None:
         origin = state.tasks.get(originating_task_id)
@@ -696,6 +975,7 @@ def _plan_task_creation(
         task_state=task_state,
         parent_task_id=parent_task_id,
         originating_task_id=originating_task_id,
+        git_base_branch=git_base_branch,
         dependency_task_ids=dependency_task_ids,
         priority=int(priority) if priority is not None else 0,
         title=_required_text(creation.get("title"), "title"),
@@ -730,6 +1010,7 @@ def _apply_task_creation_plan(
         created_by_agent_id=actor.id,
         parent_task_id=plan.parent_task_id,
         originating_task_id=plan.originating_task_id,
+        git_base_branch=plan.git_base_branch,
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,
         updated_at=now,
@@ -1228,6 +1509,8 @@ def _apply_goal_update(
 
 __all__ = [
     "_TaskCreationPlan",
+    "TaskGitDefaultBranchResolver",
+    "TaskGitBaseValidationError",
     "_validate_case_scope",
     "_case_can_link_task",
     "_link_task_to_case",
@@ -1241,6 +1524,10 @@ __all__ = [
     "_upward_recipient_error",
     "_plan_task_creation",
     "_apply_task_creation_plan",
+    "_resolve_task_creation_plan_git_bases",
+    "_resolve_new_task_git_base_branch",
+    "_set_task_git_base_branch",
+    "_task_git_base_branch_locked",
     "_task_owner_reassignment_error",
     "_subordinate_task_finish_allowed",
     "_task_creation_batch_graph_errors",

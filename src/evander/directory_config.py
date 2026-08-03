@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from evander.azure_devops import ado_organization_from_legacy_url
 from evander.config import GatewayConfig
 from evander.connectors.models import (
     ConnectorDirectoryConfig,
@@ -99,6 +100,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     ),
     "providers": frozenset(
         {
+            "ado_organization",
             "azure_devops_organization_url",
             "azure_devops_pat_env",
             "azure_devops_pr_pat_env",
@@ -787,6 +789,12 @@ class DirectoryConfigStore:
         if "openai_provider_mode" in normalized:
             normalized.setdefault("model_provider_mode", normalized["openai_provider_mode"])
             normalized.pop("openai_provider_mode", None)
+        if "azure_devops_organization_url" in normalized:
+            legacy_organization = ado_organization_from_legacy_url(
+                normalized["azure_devops_organization_url"]
+            )
+            normalized.setdefault("ado_organization", legacy_organization)
+            normalized.pop("azure_devops_organization_url", None)
         return normalized
 
     @classmethod

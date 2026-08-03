@@ -830,7 +830,8 @@ Optional inputs are:
 
 - `team.operator_communication_target_id`
 - `project.git.managed_repo_id`
-- `project.git.base_branch` and `project.git.canonical_release_branch_prefix`
+- `project.git.base_branch` (the default for newly created root tasks) and
+  `project.git.canonical_release_branch_prefix`
 
 The Team Add-on setup, project-create, and project-edit forms include an
 `Import Git repo` action beside the Git fields. It accepts a local checkout or
@@ -1596,11 +1597,23 @@ checkout as a control checkout. If any preparation fails, the complete dispatch
 fails, created contexts are finalized, and the runtime reservation is released;
 Team never silently drops one scoped task.
 
-On first creation of an ordinary task worktree, Team fetches the configured
-base branch from the managed remote before recording its immutable base commit.
-The managed remote refreshes from canonical upstream before serving that fetch,
-so a new no-predecessor task begins at the current configured base at
-preparation time. Reused worktrees retain their original pinned base.
+Every new Git-backed root task snapshots the project's then-current default base
+branch. An explicit task base overrides that default, while children inherit the
+parent snapshot; batch creation resolves those parent links before committing.
+The snapshot can be edited only before any Git work context, deliverable, or
+promotion exists. On first worktree creation Team fetches that task snapshot
+from the managed remote and records the exact base commit. Reused worktrees and
+later dispatches retain both values even if the remote branch or project default
+moves.
+
+Accepted Git deliverables in one release must share one authoritative task base
+branch and commit. Incompatible workstreams fail with
+`mixed_git_base_branches`; a deliberate cross-base merge is represented by an
+explicit integration task on the selected base, and only its accepted integrated
+deliverable enters the release. A task base is not a publication destination:
+updating a pre-existing branch such as `feature/foo` still requires an explicit
+release `canonical_branch`, with the existing exact-SHA and destination-lease
+checks.
 
 Preparation failures are durable and target-specific so the cron loop does not
 repeat the same failing setup before inference:
@@ -1673,7 +1686,8 @@ tools record intent; the packaged pack routes each event on its
 
 Git work contexts are optional Team state records for coding worktrees. They are
 created only by host/runtime setup for tasks that actually involve Git, and they
-bind an agent, task, optional dispatch, worktree path, base branch/base commit,
+bind an agent, task, optional dispatch, worktree path, the task's snapshotted
+base branch/base commit,
 expected agent branch, exact dependency Git sources, and last verified commit.
 Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
@@ -1718,7 +1732,8 @@ unreferenced Git-context metadata is pruned.
 `effect:team:wake-due-agents` accepts `run_global_maintenance`, defaulting to
 `true` for compatibility. The bundled scheduled wake leaves it enabled. The
 queued-Chat and requested-agent routes set it to `false` so unrelated global
-correction, review-assignment, and worktree-cleanup scans do not delay an
+candidate-correction, human-correction, review-assignment, and worktree-cleanup
+scans do not delay an
 immediate dispatch.
 
 - `review` — `team_publish_review_branch` can promote an ephemeral assignment
@@ -1804,6 +1819,17 @@ session is created, including an authorized retry of the same pinned candidate.
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.
 Creating another release with the same deliverables and failed tree is refused.
+Verification candidate failures and rejected agent release reviews create
+candidate-pinned system correction tasks. When the generated task recursively
+resolves with current accepted, reviewed Git deliverables, Team creates one
+deterministic successor package and correction-aggregate promotion
+automatically; the project lead does not submit another release request. The
+review decision and successor intent are one atomic state transition. Scheduled
+global maintenance performs the same idempotent reconciliation for interrupted
+or older states. A packaging or validation failure opens a durable blocker on
+the correction owner instead of silently returning release responsibility to
+the manager. Initial releases and post-release-feedback successors remain
+explicit requests.
 Only timeouts and infrastructure failures leave verification retryable, and only
 a review recorded as process-blocked may be replaced. Release-review decisions
 are immutable: use `rejected` for a candidate defect and reserve `blocked` for a
@@ -1876,11 +1902,16 @@ release ref that no longer matches the recorded candidate commit and tree.
 `changes_requested` atomically records the decision and findings, ends the
 immutable attempt without publication, and creates or reuses one correction
 `TeamCase` with a coordination-only parent and one immutable-text child per
-finding. Directly attributable findings route to their current owner; only an
-ambiguous finding waits for project-lead routing. The finding child starts from
-the verified rejected candidate and must produce one accepted, reviewed
-correction deliverable. Accepted historical tasks, deliverables, reviews, and
-candidates are never reopened.
+finding. Every new finding must select either `release_candidate` or one or
+more named candidate deliverables as its affected work. A single-owner
+deliverable selection routes to that owner; the entire candidate, a
+multi-owner selection, or a selection whose historical owner is unavailable
+routes to the project lead without an additional routing step. The
+`legacy_unspecified` scope and ambiguous-routing metadata remain readable only
+for recovery of findings created before explicit scope was required. The
+finding child starts from the verified rejected candidate and must produce one
+accepted, reviewed correction deliverable. Accepted historical tasks,
+deliverables, reviews, and candidates are never reopened.
 
 After every finding child has exactly one current accepted, reviewed correction
 deliverable, Team derives each proposed resolution and evidence and
@@ -1918,8 +1949,17 @@ aborting and failing on conflict — never auto-resolving). The central managed
 Git service applies the configured host commit identity, compare-and-swap
 updates the Team target ref, and removes the temporary worktree and operation
 ref on every exit. The core `effect:git:push-branch` effect performs an
-expected-commit and destination-lease preflight for canonical publication and
-refuses to publish anything except the approved candidate.
+expected-commit and destination-lease preflight. Its optional
+`expected_destination_commit_sha` input additionally requires the upstream
+destination to be at an exact reviewed base before publication. If a generated
+destination does not exist yet, the pinned base must be an ancestor of the
+approved candidate and an empty-ref lease rejects concurrent branch creation.
+The Team canonical-push route always supplies the release package's immutable
+`canonical_base_commit_sha`. Initial attempts set it to the release base;
+correction successors retain the predecessor's canonical destination base while
+using the rejected candidate as their separate correction merge base. Existing
+non-Team workflow definitions that omit the optional input retain their previous
+push behavior.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
 remain only in the project's managed bare repository. The **only** branch pushed

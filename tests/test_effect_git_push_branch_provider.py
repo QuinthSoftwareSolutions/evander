@@ -73,6 +73,20 @@ def test_git_push_branch_provider_calls_admin_service_with_pinned_contract() -> 
     assert result["destination_branch"] == "feature/topic"
 
 
+def test_git_push_branch_provider_forwards_optional_destination_base() -> None:
+    admin_service = _AdminServiceStub(result={"success": True})
+    provider = GitPushBranchEffectProvider()
+    provider.initialize(
+        _definition(expected_destination_commit_sha=f" {'b' * 40} "),
+        EffectRuntimeContext(admin_service=admin_service, env={}),
+    )
+
+    result = provider.execute()
+
+    assert admin_service.calls[0]["expected_destination_commit_sha"] == "b" * 40
+    assert result["expected_destination_commit_sha"] == "b" * 40
+
+
 def test_git_push_branch_provider_uses_failure_message_as_error() -> None:
     admin_service = _AdminServiceStub(
         result={

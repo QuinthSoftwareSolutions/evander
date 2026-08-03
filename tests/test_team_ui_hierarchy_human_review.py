@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from evander_team_addon.api import (
     TEAM_STATE_COLLECTION_KEYS,
@@ -52,7 +56,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 29
+    assert TEAM_AGENT_GUIDANCE_VERSION == 30
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content
@@ -81,7 +85,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "creates the changed successor release automatically" in content
     assert "Do not submit a coordination-parent deliverable" in content
     assert "produces no deliverable" in content
-    assert "automatic successor of a generated human-review correction graph" in content
+    assert "automatic successors of generated rejected-candidate" in content
 
 
 def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() -> None:
@@ -148,6 +152,134 @@ def test_task_ui_renders_self_contained_inherited_blocker_reasons() -> None:
     assert "task-inherited-blocker-card" in source
 
 
+def test_task_board_distinguishes_dependency_waits_from_assigned_blockers() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function taskBoardWaitsOnDependencies(task)" in source
+    assert "function taskBoardBlockedDependencyIds(task)" in source
+    assert "function renderTaskBoardDependencyWaitBadge(task)" in source
+    assert "Waiting on dependencies:" in source
+    assert "Waiting on blocked dependencies:" not in source
+    assert "at least one blocked" in source
+    assert "Assigned blocker:" in source
+    assert "assigned blocker" in source
+    assert "Unresolved dependency task IDs" in source
+    assert "Blocking task IDs" not in source
+    assert "if (taskBoardWaitsOnDependencies(task) && dependencyWaitIds.length)" in source
+
+
+def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    helper_source = source[
+        source.index("function taskBoardDependencyWaitIds(task)") : source.index(
+            "function renderTaskBoardBlockerLine(task)"
+        )
+    ]
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for Team UI dependency-label tests")
+    script = f"""
+      const assert = require("node:assert/strict");
+      const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
+      const state = {{
+        tasks: {{
+          blocked: {{ state: "blocked" }},
+          pending: {{ state: "pending" }},
+        }},
+      }};
+      const text = (value) => String(value ?? "").trim();
+      const escapeHtml = (value) => text(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+      const taskBoardReadiness = (task) =>
+        text(task?.readiness || task?.assessment?.readiness) || "unknown";
+      {helper_source}
+
+      const mixed = {{
+        state: "pending",
+        readiness: "waiting_on_dependencies",
+        resolution_status: "unresolved",
+        dependency_status: "blocked",
+        blocked_by_task_ids: ["blocked", "pending"],
+      }};
+      assert.equal(taskBoardWaitsOnDependencies(mixed), true);
+      assert.deepEqual(taskBoardBlockedDependencyIds(mixed), ["blocked"]);
+      assert.equal(
+        renderTaskBoardDependencyWaitBadge(mixed),
+        '<span class="state-pill warning">Waiting on 2 dependencies; 1 blocked</span>',
+      );
+
+      const cancelled = {{
+        ...mixed,
+        state: "cancelled",
+        resolution_status: "resolved",
+        dependency_status: "waiting",
+      }};
+      assert.equal(taskBoardWaitsOnDependencies(cancelled), false);
+      assert.equal(renderTaskBoardDependencyWaitBadge(cancelled), "");
+      assert.equal(
+        taskBoardWaitsOnDependencies({{ ...mixed, state: "rejected" }}),
+        false,
+      );
+      assert.equal(
+        taskBoardWaitsOnDependencies({{ ...mixed, resolution_status: "resolved" }}),
+        false,
+      );
+
+      const scoped = {{
+        ...mixed,
+        blocked_by_task_ids: ["unavailable", "pending"],
+      }};
+      assert.equal(
+        renderTaskBoardDependencyWaitBadge(scoped),
+        '<span class="state-pill warning">Waiting on 2 dependencies; at least one blocked</span>',
+      );
+    """
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_human_review_findings_require_explicit_release_or_deliverable_scope() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    selector_source = source[
+        source.index("function renderHumanReviewTargetSelector(") : source.index(
+            "function renderHumanReviewFindingRow("
+        )
+    ]
+    form_source = source[
+        source.index("function humanReviewFindingFromRow(") : source.index(
+            "function humanReviewFindingDraftFromRow("
+        )
+    ]
+
+    assert "Entire release candidate" in selector_source
+    assert "human_finding_target_release_candidate" in selector_source
+    assert "human_finding_target_deliverable_ids" in selector_source
+    assert "(optional)" not in selector_source
+    assert 'target_scope: targetsEntireRelease' in form_source
+    assert '"release_candidate"' in form_source
+    assert '"deliverables"' in form_source
+    assert (
+        "Select the entire release candidate or at least one affected deliverable."
+        in form_source
+    )
+
+
 def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
@@ -163,6 +295,9 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
     ).read_text(encoding="utf-8")
+    approval_click_source = source[
+        source.index("const humanReviewApprove") : source.index("const findingAdd")
+    ]
 
     assert 'data-human-review-decision="approved">Approve</button>' in source
     assert (
@@ -172,6 +307,8 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     assert (
         'data-human-review-decision="blocked" formnovalidate>Blocked</button>'
     ) in source
+    assert 'name="human_finding_text"' in approval_click_source
+    assert 'name="human_finding_target_release_candidate"' in approval_click_source
 
 
 def test_human_review_card_offers_a_pinned_source_bundle_download() -> None:
