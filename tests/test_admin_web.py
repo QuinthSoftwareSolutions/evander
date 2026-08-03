@@ -14050,6 +14050,59 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     assert root_response.json()["items"] == []
 
 
+def test_admin_web_agent_detail_reads_require_owner_for_agent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.directory_admin.create_child(parent="root", name="team-b")
+    for session_id, directory_path in (
+        ("owned-session", "root/team-a"),
+        ("victim-session", "root/team-b"),
+    ):
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_provider="container_worker_vm",
+                vm_provider_id=f"target-{session_id}",
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                metadata={"execution_backend": "container_worker_vm"},
+            )
+        )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for session_id, directory_path in (
+        ("owned-session", "root/team-a"),
+        ("victim-session", "root/team-b"),
+    ):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-{session_id}",
+                session_id=session_id,
+                worker_job_id=f"job-{session_id}",
+                worker_url="http://worker.test",
+                target_name=f"target-{session_id}",
+                last_status="removed",
+                directory_path=directory_path,
+            )
+        )
+
+    client = _scoped_owner_admin_web_client(monkeypatch, service, directory_path="root/team-a")
+
+    for suffix in ("", "/executions"):
+        allowed = client.get(f"/api/admin/agents/owned-session{suffix}?directory_path=root/team-a")
+        forbidden = client.get(
+            f"/api/admin/agents/victim-session{suffix}?directory_path=root/team-b"
+        )
+
+        assert allowed.status_code == 200
+        assert forbidden.status_code == 403
+        assert forbidden.json() == {"error": "Permission required: admin.owner"}
+
+
 def test_admin_web_agents_summary_reads_use_dashboard_cache(
     tmp_path: Path,
     monkeypatch,

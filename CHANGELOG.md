@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-02 - Agent Detail Directory Authorization
+
+- Required directory-scoped owner authorization before returning sensitive agent
+  detail records or container execution history from the Admin Web API.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over

@@ -295,6 +295,17 @@ def agent_routes(
                 return error_response
         return None
 
+    def require_owner_read(request: Request, *, directory_path: str) -> JSONResponse | None:
+        try:
+            _auth.require_permission(
+                request,
+                ADMIN_OWNER_PERMISSION,
+                directory_path=directory_path,
+            )
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return None
+
     async def list_agents(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
@@ -351,11 +362,17 @@ def agent_routes(
 
     async def get_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
+        backend = _string_query(request, "backend")
         try:
+            directory_path = await run_in_threadpool(
+                agent_directory_path, agent_id, backend=backend
+            )
+            if error_response := require_owner_read(request, directory_path=directory_path):
+                return error_response
             record = await run_in_threadpool(
                 service.vm_agent_admin.get_agent,
                 agent_id,
-                backend=_string_query(request, "backend"),
+                backend=backend,
                 directory_path=_string_query(request, "directory_path"),
                 reconcile_containers=_bool_query(request, "reconcile_containers", default=False),
                 omit_vm_state=_bool_query(request, "omit_vm_state", default=True),
@@ -369,6 +386,13 @@ def agent_routes(
     async def get_agent_executions(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         try:
+            directory_path = await run_in_threadpool(
+                agent_directory_path,
+                agent_id,
+                backend="container_worker_vm",
+            )
+            if error_response := require_owner_read(request, directory_path=directory_path):
+                return error_response
             limit = min(
                 AGENT_EXECUTION_HISTORY_MAX_LIMIT,
                 max(
