@@ -7297,6 +7297,36 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
   );
 });
 
+test("team add-on Chat opens the conversation from a deep link", async (t) => {
+  const { port, chatRequests } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+  });
+  const page = await openBrowserPage(
+    t,
+    port,
+    { viewport: { width: 1280, height: 720 } },
+    "/addons/team-addon/?view=chat&conversation_id=conversation-beta-lead",
+  );
+
+  await waitForRevision(page, 9);
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+  assert.equal(
+    await page
+      .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  assert.ok(
+    chatRequests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/views/chat" &&
+        String(request.search || "").includes("selected_conversation_id=conversation-beta-lead"),
+    ),
+    "expected the chat deep link to select its conversation in the initial request",
+  );
+});
+
 test("team add-on Chat preserves a reader position across a state-stream refresh", async (t) => {
   const { port, state, chatRequests, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
@@ -7448,6 +7478,44 @@ test("team add-on Chat send keeps the selected message list anchored during send
     samples.some((sample) => sample.sameNode === false),
     false,
     `expected selected chat message list node to be reused: ${JSON.stringify(samples)}`,
+  );
+});
+
+test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const composer = page.locator('.chat-composer textarea[name="body"]');
+  await composer.waitFor({ state: "visible" });
+  await composer.fill("First line");
+  await composer.press("Shift+Enter");
+  await composer.type("Second line");
+
+  assert.equal(await composer.inputValue(), "First line\nSecond line");
+  assert.equal(
+    requests.some(
+      (request) =>
+        request.method === "POST" &&
+        request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages",
+    ),
+    false,
+  );
+
+  await composer.press("Enter");
+  await page.locator(".chat-message").getByText("First line").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
+          request.payload?.body === "First line\nSecond line",
+      ),
+    "expected plain Enter to submit the complete chat message",
   );
 });
 

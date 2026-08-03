@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from evander.admin.composition import build_admin_runtime
+from evander.admin.user_notifications import AdminUserNotificationStore
 from evander.config import GatewayConfig
 from evander.directories import DirectoryStore
 from evander.artifact_spaces import ArtifactSpaceStore
@@ -132,7 +133,10 @@ from evander_team_addon.providers import (
     _record_wake_failure,
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
-from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from evander_team_addon.services.domain.chat import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    _publish_admin_chat_notification,
+)
 from evander_team_addon.services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _case_payloads_for_agent,
@@ -9883,3 +9887,33 @@ def _multi_team_state() -> TeamState:
             ),
         },
     )
+
+
+def test_team_chat_admin_notification_deep_links_to_conversation(tmp_path: Path) -> None:
+    state = _multi_team_state()
+    state.agents["alpha-dev"].display_name = "Alpha Developer"
+    state.conversation_messages["message-alpha-reply"] = TeamConversationMessage(
+        id="message-alpha-reply",
+        conversation_id="conversation-alpha",
+        sender="agent",
+        body="The review is ready.",
+    )
+
+    _publish_admin_chat_notification(
+        runtime_dir=tmp_path,
+        state=state,
+        message_id="message-alpha-reply",
+    )
+
+    notifications, unread_count = AdminUserNotificationStore(tmp_path).list_unread(
+        user_id="alice@example.com",
+    )
+    assert unread_count == 1
+    assert notifications[0]["target_url"] == (
+        "#addon:team-addon?view=chat&conversation_id=conversation-alpha"
+    )
+    assert notifications[0]["metadata"] == {
+        "conversation_id": "conversation-alpha",
+        "message_id": "message-alpha-reply",
+        "agent_id": "alpha-dev",
+    }

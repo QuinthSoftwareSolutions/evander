@@ -6,6 +6,27 @@
   integration preflight, ensuring directory-scoped PATs are sent only to directory-configured
   provider endpoints.
 
+## 2026-08-03 - Container Worker Git Grant Preservation
+
+- Preserved session-scoped SSH alias blocks when refreshing the host-only worker
+  Git credential, and reserved the legacy `evander-git` filename so new grants
+  cannot be mistaken for migrated broad credentials.
+
+## 2026-08-02 - Container Worker Git Credential Isolation
+
+- Kept the same-host worker's broad Git SSH credential in a host-only session
+  directory so container jobs cannot read it through the agent-home mount.
+
+## 2026-08-02 - Team Chat Notification Deep Links
+
+- Open notification clicks directly in Team Chat with the specific conversation
+  that produced the message.
+
+## 2026-08-02 - Team Chat Keyboard Sending
+
+- Send Team Chat messages with Enter while preserving Shift+Enter for multiline
+  messages.
+
 ## 2026-08-02 - Team Dependency-Wait Labels
 
 - Distinguished tasks waiting on unfinished dependencies from tasks carrying

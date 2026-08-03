@@ -91,7 +91,9 @@ def _publish_admin_chat_notification(
             body=f"{agent_label}: {_chat_preview(message.body, limit=140)}",
             source="team-chat",
             source_id=message.id,
-            target_url="#addon:team-addon",
+            target_url=(
+                f"#addon:team-addon?view=chat&conversation_id={conversation.id}"
+            ),
             metadata={
                 "conversation_id": conversation.id,
                 "message_id": message.id,
