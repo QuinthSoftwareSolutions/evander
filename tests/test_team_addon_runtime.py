@@ -48,6 +48,7 @@ from evander_team_addon.models import (
     AgentInboxItem,
     AgentProjectAssignment,
     AgentRuntime,
+    AgentStandDownSource,
     AgentStatus,
     AgentTask,
     AgentVoiceProfile,
@@ -729,8 +730,9 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
     )
     state = runtime.stand_down_agent(
         agent_id="backend",
-        reason="Keep the backend agent paused independently.",
-        set_by="operator:test",
+        reason="Keep the backend agent paused independently until the lead resumes it.",
+        set_by="lead",
+        source=AgentStandDownSource.SUPERIOR,
         scope="agent",
         expected_revision=state.revision,
     )
@@ -797,7 +799,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
     assert len(published) == 2
     assert {event.payload["agent_id"] for event in published} == {"lead", "backend"}
 
-    with pytest.raises(ValueError, match="has no active operator stand-down"):
+    with pytest.raises(ValueError, match="has no active direct stand-down"):
         runtime.revoke_operator_stand_downs(
             agent_id="backend",
             revoked_by="operator:test",
