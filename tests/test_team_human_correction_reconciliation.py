@@ -339,6 +339,59 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     ) == 1
 
 
+def test_reconciliation_self_heals_completed_ambiguous_finding(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _retain_stale_ambiguity(state: TeamState) -> TeamState:
+        state.cases["human-case"].metadata[
+            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+        ] = ["finding"]
+        return state
+
+    repo.update(_retain_stale_ambiguity)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    assert result["implicitly_routed_human_review_finding_ids"] == ["finding"]
+    assert result["created_successor_release_package_ids"]
+    assert state.cases["human-case"].metadata[
+        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == []
+    assert state.tasks["human-correction-aggregate"].state == (
+        TeamTaskState.FINISHED
+    )
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+
+
+def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _restore_unresolved_ambiguity(state: TeamState) -> TeamState:
+        state.cases["human-case"].metadata[
+            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+        ] = ["finding"]
+        state.tasks["human-correction-child"].state = TeamTaskState.IN_PROGRESS
+        return state
+
+    state = repo.update(_restore_unresolved_ambiguity)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+
+    assert result["changed"] is False
+    assert result["revision"] == state.revision
+    final = repo.read()
+    assert final.cases["human-case"].metadata[
+        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == ["finding"]
+    assert not any(
+        release.supersedes_release_package_id == "release-rejected"
+        for release in final.release_packages.values()
+    )
+
+
 def test_reconciliation_carries_manifest_only_candidate_branch_into_successor(
     tmp_path: Path,
 ) -> None:

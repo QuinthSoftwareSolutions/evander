@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-08-03 - Explicit Human Review Finding Scope
+
+- Required every new human-review change finding to select either the entire
+  release candidate or one or more named affected deliverables, with a
+  multi-select UI and matching server-side validation.
+- Routed whole-candidate, multi-owner, and unavailable-owner findings directly
+  to the project lead without ambiguous-routing stalls; retained the ambiguous
+  flag only for recovery of legacy scope-less findings.
+
+## 2026-08-03 - Completed Human Correction Reconciliation
+
+- Reconciled stale ambiguous-routing metadata once its generated correction
+  task is resolved with exactly one accepted, review-ready deliverable, allowing
+  Team to create the required human-review successor release automatically.
+- Preserved explicit routing for ambiguous corrections that are unresolved,
+  unaccepted, or not review-ready.
+
 ## 2026-08-03 - Team Canonical Publication Base Pinning
 
 - Bound Team canonical publication to the immutable release base commit so a

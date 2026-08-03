@@ -13,6 +13,7 @@ from ...models import (
     HumanReviewAssignment,
     HumanReviewDecision,
     HumanReviewFinding,
+    HumanReviewFindingTargetScope,
     HumanReviewRequest,
     ReleaseGateFailure,
     ReleasePackage,
@@ -61,6 +62,8 @@ HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY = (
 HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = (
     "human_correction_aggregation_task_id"
 )
+# Compatibility-only recovery state for findings written before target_scope.
+# New validated findings never add an ID to this collection.
 HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY = (
     "human_correction_ambiguous_finding_ids"
 )
@@ -643,7 +646,7 @@ def route_human_finding_correction(
     target_deliverable_ids: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> AgentTask:
-    """Route an existing ambiguous finding child without recreating its task."""
+    """Route a legacy ambiguous finding child without recreating its task."""
 
     normalized_finding_id = str(finding_id or "").strip()
     finding = state.human_review_findings.get(normalized_finding_id)
@@ -709,7 +712,9 @@ def route_human_finding_correction(
         if str(value).strip()
     }
     if finding.id not in ambiguous_finding_ids and not legacy_conversion:
-        raise ValueError("only an ambiguous human-review finding can be routed")
+        raise ValueError(
+            "only a legacy ambiguous human-review finding can be routed"
+        )
 
     project = state.projects.get(release.project_id)
     owner = state.agents.get(str(owner_agent_id or "").strip())
@@ -734,9 +739,24 @@ def route_human_finding_correction(
         )
         _validate_human_finding_targets(
             release,
-            [{"text": finding.text, "target_deliverable_ids": normalized_target_ids}],
+            [
+                {
+                    "text": finding.text,
+                    "target_scope": (
+                        HumanReviewFindingTargetScope.DELIVERABLES.value
+                        if normalized_target_ids
+                        else HumanReviewFindingTargetScope.RELEASE_CANDIDATE.value
+                    ),
+                    "target_deliverable_ids": normalized_target_ids,
+                }
+            ],
         )
         finding.target_deliverable_ids = normalized_target_ids
+    finding.target_scope = (
+        HumanReviewFindingTargetScope.DELIVERABLES
+        if finding.target_deliverable_ids
+        else HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+    )
 
     effective_now = now or utc_now()
     previous_owner_id = current_task.owner_agent_id
@@ -1183,6 +1203,10 @@ def _apply_changes_requested(
                 if str(value).strip()
             }
         )
+        target_scope = _human_finding_target_scope(
+            raw,
+            target_deliverable_ids=target_ids,
+        )
         (
             target_ids,
             origin_task_id,
@@ -1191,6 +1215,7 @@ def _apply_changes_requested(
         ) = _human_finding_route(
             state,
             release=release,
+            target_scope=target_scope,
             target_deliverable_ids=target_ids,
         )
         finding_id = f"human-finding-{_stable_token(request.id, str(position), text, length=24)}"
@@ -1218,6 +1243,7 @@ def _apply_changes_requested(
                 id=finding_id,
                 source_human_review_request_id=request.id,
                 text=text,
+                target_scope=target_scope,
                 target_deliverable_ids=target_ids,
                 evidence_refs=evidence_refs,
                 correction_task_id=correction_task.id,
@@ -1292,6 +1318,31 @@ def _validate_human_finding_targets(
             for value in raw_target_ids
             if str(value).strip()
         }
+        target_scope = _human_finding_target_scope(
+            raw,
+            target_deliverable_ids=sorted(target_ids),
+        )
+        if target_scope == HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED:
+            raise ValueError(
+                f"human finding {position + 1} must select the entire release "
+                "candidate or at least one affected deliverable"
+            )
+        if (
+            target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and target_ids
+        ):
+            raise ValueError(
+                f"human finding {position + 1} cannot select both the entire "
+                "release candidate and specific deliverables"
+            )
+        if (
+            target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not target_ids
+        ):
+            raise ValueError(
+                f"human finding {position + 1} deliverable scope requires at "
+                "least one affected deliverable"
+            )
         invalid_target_ids = sorted(target_ids - candidate_deliverable_ids)
         if invalid_target_ids:
             raise ValueError(
@@ -1375,10 +1426,31 @@ def _reviewed_candidate_deliverable_ids(
     return candidate_ids
 
 
+def _human_finding_target_scope(
+    raw: Mapping[str, Any],
+    *,
+    target_deliverable_ids: Sequence[str],
+) -> HumanReviewFindingTargetScope:
+    raw_scope = str(raw.get("target_scope") or "").strip()
+    if not raw_scope:
+        return (
+            HumanReviewFindingTargetScope.DELIVERABLES
+            if target_deliverable_ids
+            else HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+        )
+    try:
+        return HumanReviewFindingTargetScope(raw_scope)
+    except ValueError as exc:
+        raise ValueError(
+            "human finding target_scope must be release_candidate or deliverables"
+        ) from exc
+
+
 def _human_finding_route(
     state: TeamState,
     *,
     release: ReleasePackage,
+    target_scope: HumanReviewFindingTargetScope,
     target_deliverable_ids: Sequence[str],
 ) -> tuple[list[str], str | None, str, bool]:
     project = state.projects[release.project_id]
@@ -1390,6 +1462,8 @@ def _human_finding_route(
             if str(value).strip()
         }
     )
+    if target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE:
+        return [], None, lead_id, False
     manifest = release.manifest
     if (
         not normalized_target_ids
@@ -1404,7 +1478,12 @@ def _human_finding_route(
         else sorted(_reviewed_candidate_deliverable_ids(release))
     )
     if not route_deliverable_ids:
-        return normalized_target_ids, None, lead_id, True
+        return (
+            normalized_target_ids,
+            None,
+            lead_id,
+            target_scope == HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED,
+        )
     tasks: list[AgentTask] = []
     for deliverable_id in route_deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
@@ -1418,7 +1497,13 @@ def _human_finding_route(
             or task is None
             or task.project_id != release.project_id
         ):
-            return normalized_target_ids, None, lead_id, True
+            return (
+                normalized_target_ids,
+                None,
+                lead_id,
+                target_scope
+                == HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED,
+            )
         tasks.append(task)
     owner_ids = {task.owner_agent_id for task in tasks}
     origin_task_ids = {task.id for task in tasks}
@@ -1426,7 +1511,12 @@ def _human_finding_route(
         next(iter(origin_task_ids)) if len(origin_task_ids) == 1 else None
     )
     if len(owner_ids) != 1:
-        return normalized_target_ids, origin_task_id, lead_id, True
+        return (
+            normalized_target_ids,
+            origin_task_id,
+            lead_id,
+            target_scope == HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED,
+        )
     owner_id = next(iter(owner_ids))
     owner = state.agents.get(owner_id)
     if (
@@ -1435,7 +1525,12 @@ def _human_finding_route(
         or owner.team_id != project.team_id
         or not agent_has_project_assignment(state, owner.id, project.id)
     ):
-        return normalized_target_ids, origin_task_id, lead_id, True
+        return (
+            normalized_target_ids,
+            origin_task_id,
+            lead_id,
+            target_scope == HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED,
+        )
     return normalized_target_ids, origin_task_id, owner.id, False
 
 

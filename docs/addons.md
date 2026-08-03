@@ -1902,11 +1902,16 @@ release ref that no longer matches the recorded candidate commit and tree.
 `changes_requested` atomically records the decision and findings, ends the
 immutable attempt without publication, and creates or reuses one correction
 `TeamCase` with a coordination-only parent and one immutable-text child per
-finding. Directly attributable findings route to their current owner; only an
-ambiguous finding waits for project-lead routing. The finding child starts from
-the verified rejected candidate and must produce one accepted, reviewed
-correction deliverable. Accepted historical tasks, deliverables, reviews, and
-candidates are never reopened.
+finding. Every new finding must select either `release_candidate` or one or
+more named candidate deliverables as its affected work. A single-owner
+deliverable selection routes to that owner; the entire candidate, a
+multi-owner selection, or a selection whose historical owner is unavailable
+routes to the project lead without an additional routing step. The
+`legacy_unspecified` scope and ambiguous-routing metadata remain readable only
+for recovery of findings created before explicit scope was required. The
+finding child starts from the verified rejected candidate and must produce one
+accepted, reviewed correction deliverable. Accepted historical tasks,
+deliverables, reviews, and candidates are never reopened.
 
 After every finding child has exactly one current accepted, reviewed correction
 deliverable, Team derives each proposed resolution and evidence and

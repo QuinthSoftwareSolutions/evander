@@ -400,11 +400,15 @@ child task per finding, links each finding to its child, and creates
 deduplicated inbox/wake obligations.
 
 Accepted historical tasks, deliverables, reviews, and candidate content are not
-reopened. A finding that clearly targets one deliverable routes to that task's
-current owner and records the original task as provenance. A finding without a
-deterministic owner remains with the project lead until that lead routes its
-existing child. The coordination parent groups the response but has no combined
-deliverable or agent-authored integration branch of its own.
+reopened. Each new finding explicitly selects either the entire release
+candidate or one or more named candidate deliverables. A single-owner
+deliverable selection routes to that task's current owner and records the
+original task as provenance. The entire candidate, a multi-owner selection, or
+a selection whose historical owner is unavailable routes directly to the
+project lead without waiting for a second routing decision. Only scope-less
+legacy findings can retain ambiguous-routing metadata. The coordination parent
+groups the response but has no combined deliverable or agent-authored
+integration branch of its own.
 
 Each finding child starts from the verified rejected candidate and must produce
 exactly one current accepted correction deliverable with required review

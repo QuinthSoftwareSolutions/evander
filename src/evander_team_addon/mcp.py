@@ -1344,8 +1344,9 @@ def _register_slice6_tools(
         team_route_human_finding_correction,
         name=TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
         description=(
-            "Route the existing correction child for an ambiguous human-review "
-            "finding to a project assignee, optionally recording affected "
+            "Recover an existing correction child for a legacy human-review "
+            "finding that still carries ambiguous-routing metadata by assigning "
+            "it to a project assignee and optionally recording affected "
             "deliverables. This does not create or rewrite the task."
         ),
     )

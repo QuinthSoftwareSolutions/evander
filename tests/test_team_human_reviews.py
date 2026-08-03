@@ -16,6 +16,7 @@ from evander_team_addon.models import (
     DeliverableVerification,
     GitPromotionRecord,
     HumanReviewChecklistItem,
+    HumanReviewFindingTargetScope,
     HumanReviewRequirement,
     HumanReviewRequirementSnapshot,
     HumanReviewTestTarget,
@@ -687,6 +688,7 @@ def test_changes_requested_rejects_squatted_system_record_ids(
             findings=[
                 {
                     "text": "Correct the release-wide recovery path.",
+                    "target_scope": "release_candidate",
                 }
             ],
         )
@@ -755,6 +757,192 @@ def test_changes_requested_routes_recursive_contribution_finding_to_owner() -> N
     assert finding.target_deliverable_ids == ["child-deliverable"]
     assert correction_task.originating_task_id == "child-task"
     assert correction_task.owner_agent_id == "owner"
+
+
+def test_release_candidate_finding_routes_to_lead_without_ambiguity() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="release-candidate-finding",
+        expected_revision=request.revision,
+        checklist_results={"smoke": False},
+        findings=[
+            {
+                "text": "Correct the integrated release behavior.",
+                "target_scope": "release_candidate",
+                "target_deliverable_ids": [],
+            }
+        ],
+        result={"events": []},
+    )
+
+    finding = next(iter(state.human_review_findings.values()))
+    correction = state.tasks[finding.correction_task_id]
+    case = state.cases[correction.case_id or ""]
+    assert finding.target_scope == (
+        HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+    )
+    assert finding.target_deliverable_ids == []
+    assert correction.owner_agent_id == "lead"
+    assert correction.originating_task_id is None
+    assert case.metadata["human_correction_ambiguous_finding_ids"] == []
+
+
+def test_explicit_multi_deliverable_finding_routes_to_lead_without_ambiguity() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.tasks["lead-source-task"] = AgentTask(
+        id="lead-source-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        state=TeamTaskState.FINISHED,
+        title="Lead-owned source work",
+        description="A second accepted candidate contribution.",
+        created_by_agent_id="lead",
+        deliverable_ids=["lead-source-deliverable"],
+    )
+    state.deliverables["lead-source-deliverable"] = Deliverable(
+        id="lead-source-deliverable",
+        task_id="lead-source-task",
+        producer_agent_id="lead",
+        summary="Lead-owned source contribution",
+        state=TeamRecordState.ACCEPTED,
+    )
+    release.deliverable_ids.append("lead-source-deliverable")
+    assert release.manifest is not None
+    release.manifest.deliverables.append(
+        ReleaseCandidateDeliverableEvidence(
+            deliverable_id="lead-source-deliverable",
+        )
+    )
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="multi-deliverable-finding",
+        expected_revision=request.revision,
+        checklist_results={"smoke": False},
+        findings=[
+            {
+                "text": "Correct the behavior spanning both contributions.",
+                "target_scope": "deliverables",
+                "target_deliverable_ids": [
+                    "source-deliverable",
+                    "lead-source-deliverable",
+                ],
+            }
+        ],
+        result={"events": []},
+    )
+
+    finding = next(iter(state.human_review_findings.values()))
+    correction = state.tasks[finding.correction_task_id]
+    case = state.cases[correction.case_id or ""]
+    assert finding.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+    assert finding.target_deliverable_ids == [
+        "lead-source-deliverable",
+        "source-deliverable",
+    ]
+    assert correction.owner_agent_id == "lead"
+    assert correction.originating_task_id is None
+    assert case.metadata["human_correction_ambiguous_finding_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("finding", "message"),
+    [
+        (
+            {
+                "text": "Conflicting release scope.",
+                "target_scope": "release_candidate",
+                "target_deliverable_ids": ["source-deliverable"],
+            },
+            "cannot select both the entire release candidate",
+        ),
+        (
+            {
+                "text": "Missing deliverable selection.",
+                "target_scope": "deliverables",
+                "target_deliverable_ids": [],
+            },
+            "deliverable scope requires at least one affected deliverable",
+        ),
+        (
+            {
+                "text": "Missing target scope.",
+                "target_deliverable_ids": [],
+            },
+            "must select the entire release candidate",
+        ),
+        (
+            {
+                "text": "Legacy target scope on a new finding.",
+                "target_scope": "legacy_unspecified",
+                "target_deliverable_ids": [],
+            },
+            "must select the entire release candidate",
+        ),
+        (
+            {
+                "text": "Unknown target scope.",
+                "target_scope": "everything",
+                "target_deliverable_ids": [],
+            },
+            "target_scope must be release_candidate or deliverables",
+        ),
+    ],
+)
+def test_changes_requested_validates_explicit_finding_scope(
+    finding: dict[str, object],
+    message: str,
+) -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+
+    with pytest.raises(ValueError, match=message):
+        record_human_review_decision(
+            state,
+            human_review_request_id=request.id,
+            reviewer_user_id="reviewer",
+            reviewer_display_name="Reviewer",
+            decision="changes_requested",
+            request_id="invalid-explicit-finding-scope",
+            expected_revision=request.revision,
+            checklist_results={"smoke": False},
+            findings=[finding],
+            result={"events": []},
+        )
+
+    assert request.state == "pending"
+    assert state.human_review_findings == {}
 
 
 def test_changes_requested_rejects_deliverables_outside_reviewed_candidate() -> None:
@@ -1166,6 +1354,7 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
             },
             {
                 "text": "The release-wide recovery path is unclear.",
+                "target_scope": "release_candidate",
                 "evidence_refs": ["artifact:recovery"],
             },
         ],
@@ -1205,18 +1394,18 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
     assert aggregation_task_id not in {
         item.task_id for item in correction_inbox
     }
-    assert set(first_state.agent_runtimes) == {"owner"}
+    assert set(first_state.agent_runtimes) == {"lead", "owner"}
     assert all(
         first_state.agent_runtimes[agent_id].next_wake_at is None
-        for agent_id in ("owner",)
+        for agent_id in ("lead", "owner")
     )
     wake_records = repository.list_outbox_records(
         intent_type="team.agent.wake_requested"
     )
-    assert len(wake_records) == 1
+    assert len(wake_records) == 2
     assert {
         record.payload["payload"]["agent_id"] for record in wake_records
-    } == {"owner"}
+    } == {"lead", "owner"}
     assert not any(
         record.promotion_kind == "canonical_push"
         for record in first_state.git_promotions.values()
@@ -1582,8 +1771,10 @@ def test_specific_finding_routes_to_lead_when_historical_owner_is_detached() -> 
 
     finding = next(iter(state.human_review_findings.values()))
     correction = state.tasks[finding.correction_task_id]
+    case = state.cases[correction.case_id or ""]
     assert correction.originating_task_id == "source-task"
     assert correction.owner_agent_id == "lead"
+    assert case.metadata["human_correction_ambiguous_finding_ids"] == []
     TeamState.model_validate(state.model_dump(mode="json"))
 
 
@@ -1613,6 +1804,7 @@ def test_routed_ambiguous_finding_rejects_artifact_only_successor() -> None:
         findings=[
             {
                 "text": "The release-wide recovery behavior needs correction.",
+                "target_scope": "release_candidate",
                 "evidence_refs": ["attachment:recovery-video"],
             }
         ],
@@ -1621,6 +1813,11 @@ def test_routed_ambiguous_finding_rejects_artifact_only_successor() -> None:
     finding = next(iter(state.human_review_findings.values()))
     correction_task_id = finding.correction_task_id
     case_id = state.tasks[correction_task_id].case_id
+    finding.target_scope = HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    state.tasks[correction_task_id].originating_task_id = "source-task"
+    state.cases[case_id or ""].metadata[
+        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] = [finding.id]
     state.agents["owner"].status = AgentStatus.ACTIVE
     result: dict[str, object] = {"events": []}
 
@@ -1715,8 +1912,14 @@ def test_routes_every_ambiguous_finding_after_legacy_graph_conversion() -> None:
         expected_revision=request.revision,
         checklist_results={"smoke": True},
         findings=[
-            {"text": "Correct the first release-wide behavior."},
-            {"text": "Correct the second release-wide behavior."},
+            {
+                "text": "Correct the first release-wide behavior.",
+                "target_scope": "release_candidate",
+            },
+            {
+                "text": "Correct the second release-wide behavior.",
+                "target_scope": "release_candidate",
+            },
         ],
         result={"events": []},
     )
@@ -2131,6 +2334,9 @@ def test_changes_requested_successor_inherits_review_for_open_findings() -> None
     )
 
     assert len(correction_manifest.carried_human_findings) == 1
+    assert correction_manifest.carried_human_findings[0].target_scope == (
+        HumanReviewFindingTargetScope.DELIVERABLES
+    )
     assert correction_manifest.human_review_requirement == (
         predecessor.manifest.human_review_requirement
     )

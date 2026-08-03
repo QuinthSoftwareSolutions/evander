@@ -7574,6 +7574,9 @@ def test_human_finding_and_post_release_case_commands_are_supported(
         state.human_review_findings["human-finding"].correction_task_id
         == correction_task_id
     )
+    assert state.human_review_findings["human-finding"].target_scope.value == (
+        "release_candidate"
+    )
 
     replay_state, replay = (
         service.route_human_finding_correction_command(

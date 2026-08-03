@@ -1524,12 +1524,33 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
         "findings": [
             {
                 "text": "Correct the release-wide workflow failure.",
+                "target_scope": "release_candidate",
                 "evidence_refs": ["artifact-space:reports/release-failure.txt"],
             }
         ],
         "expected_revision": 0,
         "request_id": "changes-requested-1",
     }
+
+    missing_scope = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={
+            **payload,
+            "request_id": "changes-requested-missing-scope",
+            "findings": [
+                {
+                    "text": "Correct the release-wide workflow failure.",
+                    "evidence_refs": [
+                        "artifact-space:reports/release-failure.txt"
+                    ],
+                }
+            ],
+        },
+    )
+    assert missing_scope.status_code == 400
+    assert "must select the entire release candidate" in missing_scope.json()[
+        "error"
+    ]
 
     decided = client.post(
         "/human-review-requests/human-review-1/decisions",
@@ -1550,7 +1571,7 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     ]
     assert len(wake_events) == 1
     assert wake_events[0].event_id == decided_payload["published_event_ids"][0]
-    assert wake_events[0].payload["agent_id"] == "backend"
+    assert wake_events[0].payload["agent_id"] == "lead"
     assert wake_events[0].payload["reason"] == "inbox"
 
     replay = client.post(

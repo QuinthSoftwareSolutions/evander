@@ -1580,6 +1580,7 @@ def _candidate_manifest(
         HumanReviewFindingSnapshot(
             finding_id=finding.id,
             text=finding.text,
+            target_scope=finding.target_scope,
             target_deliverable_ids=list(finding.target_deliverable_ids),
             correction_task_id=finding.correction_task_id,
             proposed_resolution=finding.proposed_resolution,

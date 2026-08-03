@@ -103,6 +103,12 @@ class TeamRecordState(str, Enum):
     BLOCKED = "blocked"
 
 
+class HumanReviewFindingTargetScope(str, Enum):
+    LEGACY_UNSPECIFIED = "legacy_unspecified"
+    RELEASE_CANDIDATE = "release_candidate"
+    DELIVERABLES = "deliverables"
+
+
 class ReviewBlockKind(str, Enum):
     DEPENDENCY = "dependency"
     INPUT_UNAVAILABLE = "input_unavailable"
@@ -2984,6 +2990,9 @@ class HumanReviewTestTarget(TeamModel):
 class HumanReviewFindingSnapshot(TeamModel):
     finding_id: str
     text: str
+    target_scope: HumanReviewFindingTargetScope = (
+        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    )
     target_deliverable_ids: list[str] = Field(default_factory=list)
     correction_task_id: str | None = None
     proposed_resolution: str | None = None
@@ -3009,6 +3018,36 @@ class HumanReviewFindingSnapshot(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_target_scope(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("target_scope") is not None:
+            return value
+        normalized = dict(value)
+        if normalized.get("target_deliverable_ids"):
+            normalized["target_scope"] = (
+                HumanReviewFindingTargetScope.DELIVERABLES
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _target_scope_matches_ids(self) -> "HumanReviewFindingSnapshot":
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "release-candidate human findings cannot target deliverables"
+            )
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "deliverable-scoped human findings require target deliverables"
+            )
+        return self
 
 
 class HumanReviewRequest(TeamModel):
@@ -3096,6 +3135,9 @@ class HumanReviewFinding(TeamModel):
     id: str
     source_human_review_request_id: str
     text: str
+    target_scope: HumanReviewFindingTargetScope = (
+        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    )
     target_deliverable_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     correction_task_id: str
@@ -3137,6 +3179,36 @@ class HumanReviewFinding(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_target_scope(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("target_scope") is not None:
+            return value
+        normalized = dict(value)
+        if normalized.get("target_deliverable_ids"):
+            normalized["target_scope"] = (
+                HumanReviewFindingTargetScope.DELIVERABLES
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _target_scope_matches_ids(self) -> "HumanReviewFinding":
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "release-candidate human findings cannot target deliverables"
+            )
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "deliverable-scoped human findings require target deliverables"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_resolution(self) -> "HumanReviewFinding":
