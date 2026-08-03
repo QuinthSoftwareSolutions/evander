@@ -13,6 +13,12 @@
 - Included direct stand-down lifecycle in Team agent resource tokens so a stale
   operator request cannot revoke an unseen new hold or enqueue a resulting wake.
 
+## 2026-08-03 - Session Contact Allowlist Editor
+
+- Added nullable contact-access controls to the Admin Sessions policy editor so
+  operators can retain all directory contacts, deny every contact, or persist
+  an explicit contact-ID allowlist without editing session manifests directly.
+
 ## 2026-08-03 - Operator Revocation of Agent-Issued Stand-downs
 
 - Allowed human operators to revoke a direct Team agent-issued stand-down from
