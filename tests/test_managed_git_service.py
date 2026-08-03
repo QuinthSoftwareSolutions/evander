@@ -1981,7 +1981,7 @@ def test_push_branch_rejects_destination_that_predates_reviewed_base(tmp_path: P
     assert _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/main") == canonical_commit
 
 
-def test_push_branch_rejects_missing_destination_when_base_is_required(tmp_path: Path) -> None:
+def test_push_branch_creates_missing_destination_from_reviewed_base(tmp_path: Path) -> None:
     source, upstream, reviewed_base = _source_repository(tmp_path)
     service = _service(tmp_path)
     record = service.register_repository("root", str(source))
@@ -1997,6 +1997,50 @@ def test_push_branch_rejects_missing_destination_when_base_is_required(tmp_path:
         "new-release",
         "root",
         expected_destination_commit_sha=reviewed_base,
+    )
+
+    assert result["success"] is True
+    assert result["previous_commit_sha"] is None
+    assert result["expected_destination_commit_sha"] == reviewed_base
+    assert _run(
+        "git",
+        f"--git-dir={upstream}",
+        "rev-parse",
+        "refs/heads/new-release",
+    ) == approved
+
+
+def test_push_branch_rejects_missing_destination_with_unrelated_reviewed_base(
+    tmp_path: Path,
+) -> None:
+    source, upstream, _reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    incompatible_base = _commit(
+        source,
+        "later.txt",
+        "later\n",
+        "not an ancestor of the approved commit",
+    )
+    _run(
+        "git",
+        f"--git-dir={bare}",
+        "fetch",
+        str(source),
+        f"{approved}:refs/heads/review/topic",
+        f"{incompatible_base}:refs/heads/test/incompatible-base",
+    )
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "new-release",
+        "root",
+        expected_destination_commit_sha=incompatible_base,
     )
 
     assert result["success"] is False

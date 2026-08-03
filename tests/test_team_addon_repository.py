@@ -7157,6 +7157,7 @@ def test_repository_migrates_active_correction_successor_from_predecessor_candid
             project_id="project",
             deliverable_ids=["legacy-source-deliverable"],
             release_branch=rejected_branch,
+            canonical_branch="main",
             git_base_branch="main",
             base_commit_sha="1" * 40,
             candidate_commit_sha=rejected_commit,
@@ -7168,6 +7169,7 @@ def test_repository_migrates_active_correction_successor_from_predecessor_candid
             id="legacy-successor",
             project_id="project",
             supersedes_release_package_id="legacy-rejected",
+            canonical_branch="main",
             deliverable_ids=[
                 "legacy-source-deliverable",
                 "legacy-correction-deliverable",
@@ -7175,6 +7177,19 @@ def test_repository_migrates_active_correction_successor_from_predecessor_candid
             policy_version=2,
             state=TeamRecordState.PENDING,
         )
+        state.git_promotions["legacy-canonical-push"] = GitPromotionRecord(
+            id="legacy-canonical-push",
+            project_id="project",
+            release_package_id="legacy-successor",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/legacy-successor",
+            target_branch="main",
+            promotion_kind="canonical_push",
+            base_commit_sha=rejected_commit,
+        )
+        state.release_packages["legacy-successor"].git_promotion_record_ids = [
+            "legacy-canonical-push"
+        ]
         return state
 
     repo.update(_seed_successor)
@@ -7190,6 +7205,7 @@ def test_repository_migrates_active_correction_successor_from_predecessor_candid
             UPDATE team_release_packages
             SET git_base_branch = NULL,
                 base_commit_sha = NULL,
+                canonical_base_commit_sha = NULL,
                 state = 'blocked',
                 error = ?
             WHERE id = 'legacy-successor'
@@ -7197,17 +7213,27 @@ def test_repository_migrates_active_correction_successor_from_predecessor_candid
             (migration_error,),
         )
         connection.execute(
+            """
+            UPDATE team_release_packages
+            SET canonical_base_commit_sha = NULL
+            WHERE id = 'legacy-rejected'
+            """
+        )
+        connection.execute(
             "UPDATE team_state_metadata SET value = '44' WHERE key = 'sqlite_schema_version'"
         )
 
-    successor = TeamStateRepository(tmp_path).read().release_packages[
-        "legacy-successor"
-    ]
+    migrated = TeamStateRepository(tmp_path).read()
+    successor = migrated.release_packages["legacy-successor"]
 
     assert successor.git_base_branch == rejected_branch
     assert successor.base_commit_sha == rejected_commit
+    assert successor.canonical_base_commit_sha == "1" * 40
     assert successor.state == TeamRecordState.PENDING
     assert successor.error is None
+    assert migrated.git_promotions["legacy-canonical-push"].base_commit_sha == (
+        "1" * 40
+    )
 
 
 def test_repository_migrates_legacy_task_and_deliverable_outcome_kinds(
@@ -18086,6 +18112,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert release.feature_branches == ["team/team/features/task-backend"]
     assert release.release_branch == "team/team/releases/rel-1"
     assert release.canonical_branch == "releases/project/rel-1"
+    assert release.canonical_base_commit_sha == release.base_commit_sha
     assert len(release.git_promotion_record_ids) == 1
     kinds = sorted(
         state.git_promotions[pid].promotion_kind for pid in release.git_promotion_record_ids
@@ -18101,7 +18128,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
     assert "canonical_push" not in payloads
 
-    expected_release_base = release.base_commit_sha
+    expected_canonical_base = release.canonical_base_commit_sha
     release_promotion_id = release.git_promotion_record_ids[0]
     state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
@@ -18125,13 +18152,13 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
     assert payloads["canonical_push"]["managed_repo_id"] == MANAGED_REPO_ID
-    assert payloads["canonical_push"]["base_commit_sha"] == expected_release_base
+    assert payloads["canonical_push"]["base_commit_sha"] == expected_canonical_base
     assert "canonical_origin_url" not in payloads["canonical_push"]
     assert "provider" not in payloads["canonical_push"]
     assert state.projects["project"].status == ProjectStatus.ACTIVE
 
 
-def test_canonical_push_requires_immutable_release_base_commit(tmp_path: Path) -> None:
+def test_canonical_push_requires_immutable_canonical_base_commit(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_accepted_feature_deliverable(
@@ -18155,7 +18182,9 @@ def test_canonical_push_requires_immutable_release_base_commit(tmp_path: Path) -
     release_promotion_id = requested["git_promotion_event_ids"][0]
 
     def _remove_base_provenance(current: TeamState) -> TeamState:
-        current.release_packages["release-missing-base"].base_commit_sha = None
+        release = current.release_packages["release-missing-base"]
+        release.base_commit_sha = None
+        release.canonical_base_commit_sha = None
         current.git_promotions[release_promotion_id].base_commit_sha = None
         return current
 
@@ -18169,7 +18198,9 @@ def test_canonical_push_requires_immutable_release_base_commit(tmp_path: Path) -
 
     release = state.release_packages["release-missing-base"]
     assert release.state == TeamRecordState.BLOCKED
-    assert release.error == "release has no immutable Git base commit for canonical publication"
+    assert release.error == (
+        "release has no immutable canonical destination base commit for publication"
+    )
     assert result["git_promotion_event_ids"] == []
     assert not any(
         promotion.promotion_kind == "canonical_push"
@@ -18234,8 +18265,11 @@ def test_canonical_push_rejects_inconsistent_promotion_base(tmp_path: Path) -> N
 
     release = state.release_packages["release-inconsistent-base"]
     assert release.state == TeamRecordState.BLOCKED
-    assert "canonical promotion base different-base does not match release base" in (
+    assert (
+        "canonical promotion base different-base does not match canonical destination base"
+        in (
         release.error or ""
+        )
     )
     assert result["git_promotion_event_ids"] == []
 

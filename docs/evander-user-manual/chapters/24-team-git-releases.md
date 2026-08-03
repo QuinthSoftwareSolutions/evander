@@ -99,11 +99,14 @@ The internal release branch is not the published branch operators should test or
 >
 > Only after every gate passes does the workflow create the canonical-push
 > promotion. Core <code>effect:git:push-branch</code> verifies the exact approved
-> commit, requires the canonical destination to still equal the release's
-> immutable reviewed base commit, and applies a destination lease before
-> pushing. A release based on another branch cannot carry that branch's
-> pre-existing changes to this destination; deliberate cross-base work must be
-> reviewed through an integration task based on the destination.
+> commit, requires an existing canonical destination to still equal the
+> release's immutable canonical base commit, and applies a destination lease
+> before pushing. A generated destination that does not exist yet is created
+> only when that pinned base is an ancestor of the approved candidate, under an
+> empty-ref lease. Correction successors keep this canonical base separate from
+> their rejected-candidate merge base. A release based on another branch cannot
+> carry that branch's pre-existing changes to this destination; deliberate
+> cross-base work must be reviewed through an integration task based on the destination.
 > <code>effect:team:mark-release-published</code> records canonical branch,
 > published commit, timestamp, and accepted package state.
 

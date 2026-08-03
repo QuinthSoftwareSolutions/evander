@@ -1951,11 +1951,15 @@ updates the Team target ref, and removes the temporary worktree and operation
 ref on every exit. The core `effect:git:push-branch` effect performs an
 expected-commit and destination-lease preflight. Its optional
 `expected_destination_commit_sha` input additionally requires the upstream
-destination to be at an exact reviewed base before publication. The Team
-canonical-push route always supplies the release package's immutable base
-commit, so publication refuses both a different destination base and anything
-except the approved candidate. Existing non-Team workflow definitions that omit
-the optional input retain their previous push behavior.
+destination to be at an exact reviewed base before publication. If a generated
+destination does not exist yet, the pinned base must be an ancestor of the
+approved candidate and an empty-ref lease rejects concurrent branch creation.
+The Team canonical-push route always supplies the release package's immutable
+`canonical_base_commit_sha`. Initial attempts set it to the release base;
+correction successors retain the predecessor's canonical destination base while
+using the rejected candidate as their separate correction merge base. Existing
+non-Team workflow definitions that omit the optional input retain their previous
+push behavior.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
 remain only in the project's managed bare repository. The **only** branch pushed

@@ -3281,6 +3281,7 @@ class ReleasePackage(TeamModel):
     git_base_branch: str | None = None
     published_commit_sha: str | None = None
     base_commit_sha: str | None = None
+    canonical_base_commit_sha: str | None = None
     candidate_commit_sha: str | None = None
     candidate_tree_hash: str | None = None
     approved_commit_sha: str | None = None
@@ -3298,6 +3299,21 @@ class ReleasePackage(TeamModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_initial_canonical_base(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        if (
+            value.get("canonical_base_commit_sha") is not None
+            or value.get("supersedes_release_package_id") is not None
+            or value.get("base_commit_sha") is None
+        ):
+            return value
+        normalized = dict(value)
+        normalized["canonical_base_commit_sha"] = value.get("base_commit_sha")
+        return normalized
 
     @field_validator("id", "project_id", mode="before")
     @classmethod
@@ -3324,6 +3340,7 @@ class ReleasePackage(TeamModel):
         "supersedes_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
+        "canonical_base_commit_sha",
         "candidate_commit_sha",
         "candidate_tree_hash",
         "approved_commit_sha",

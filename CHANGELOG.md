@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-03 - Canonical Publication Lineage Repair
+
+- Persisted the canonical destination's pre-release commit separately from a
+  correction successor's rejected-candidate merge base, so reviewed correction
+  releases publish against the unchanged canonical branch.
+- Allowed a missing generated canonical branch to be created directly at the
+  approved commit only when the pinned destination base is its ancestor, using
+  an empty-ref lease to reject concurrent branch creation.
+
 ## 2026-08-03 - Explicit Human Review Finding Scope
 
 - Required every new human-review change finding to select either the entire

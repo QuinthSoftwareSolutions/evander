@@ -1795,24 +1795,49 @@ class ManagedGitAdminService:
                     advertised = self._ls_remote_branch(remote_url, destination_ref, env=auth_env)
                     if advertised is not None:
                         self._raise_git_failure(fetch)
-                if expected_destination is not None and destination_commit != expected_destination:
-                    return {
-                        "success": False,
-                        "preflight_success": False,
-                        "reason": "destination_base_mismatch",
-                        "message": (
-                            f"Destination branch {destination} is not at the release base "
-                            "commit reviewed for canonical publication."
-                        ),
-                        "managed_repo_id": managed_repo_id,
-                        "source_ref": normalized_source,
-                        "destination_branch": destination,
-                        "destination_ref": destination_ref,
-                        "expected_commit_sha": expected,
-                        "expected_destination_commit_sha": expected_destination,
-                        "destination_commit": destination_commit,
-                        "local_commit": expected,
-                    }
+                if expected_destination is not None:
+                    if destination_commit is None:
+                        self._require_commit(bare_path, expected_destination)
+                        if not self._is_ancestor(
+                            bare_path,
+                            expected_destination,
+                            expected,
+                        ):
+                            return {
+                                "success": False,
+                                "preflight_success": False,
+                                "reason": "destination_base_mismatch",
+                                "message": (
+                                    f"Approved commit does not contain the reviewed base "
+                                    f"required to create destination branch {destination}."
+                                ),
+                                "managed_repo_id": managed_repo_id,
+                                "source_ref": normalized_source,
+                                "destination_branch": destination,
+                                "destination_ref": destination_ref,
+                                "expected_commit_sha": expected,
+                                "expected_destination_commit_sha": expected_destination,
+                                "destination_commit": None,
+                                "local_commit": expected,
+                            }
+                    elif destination_commit != expected_destination:
+                        return {
+                            "success": False,
+                            "preflight_success": False,
+                            "reason": "destination_base_mismatch",
+                            "message": (
+                                f"Destination branch {destination} is not at the release base "
+                                "commit reviewed for canonical publication."
+                            ),
+                            "managed_repo_id": managed_repo_id,
+                            "source_ref": normalized_source,
+                            "destination_branch": destination,
+                            "destination_ref": destination_ref,
+                            "expected_commit_sha": expected,
+                            "expected_destination_commit_sha": expected_destination,
+                            "destination_commit": destination_commit,
+                            "local_commit": expected,
+                        }
                 if destination_commit and not self._is_ancestor(
                     bare_path, destination_commit, expected
                 ):

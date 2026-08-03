@@ -16133,6 +16133,7 @@ function renderReleaseTechnicalDetails(
     ["Feature branches", release.feature_branches || []],
     ["Git base branch", release.git_base_branch],
     ["Base commit", release.base_commit_sha],
+    ["Canonical destination base", release.canonical_base_commit_sha],
     ["Candidate commit", release.candidate_commit_sha || manifest.candidate_commit_sha],
     ["Candidate tree", release.candidate_tree_hash || manifest.candidate_tree_hash],
     ["Approved commit", release.approved_commit_sha],
