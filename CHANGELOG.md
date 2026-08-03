@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-03 - Scrollable Team Chat Recent Conversations
+
+- Kept the recent-conversation sidebar within its available panel height so long chat lists scroll independently without overflowing the page.
+
 ## 2026-08-03 - Exact Agent Detail Authorization
 
 - Authorized Admin Web agent detail responses against the exact backend record
