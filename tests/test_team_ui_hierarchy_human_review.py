@@ -295,6 +295,9 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
     ).read_text(encoding="utf-8")
+    approval_click_source = source[
+        source.index("const humanReviewApprove") : source.index("const findingAdd")
+    ]
 
     assert 'data-human-review-decision="approved">Approve</button>' in source
     assert (
@@ -304,6 +307,8 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     assert (
         'data-human-review-decision="blocked" formnovalidate>Blocked</button>'
     ) in source
+    assert 'name="human_finding_text"' in approval_click_source
+    assert 'name="human_finding_target_release_candidate"' in approval_click_source
 
 
 def test_human_review_card_offers_a_pinned_source_bundle_download() -> None:

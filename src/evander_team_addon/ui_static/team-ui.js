@@ -1838,7 +1838,9 @@ function bindForms() {
     if (humanReviewApprove) {
       humanReviewApprove
         .closest("[data-human-review-decision-form]")
-        ?.querySelectorAll?.('[name="human_finding_text"]')
+        ?.querySelectorAll?.(
+          '[name="human_finding_text"], [name="human_finding_target_release_candidate"]',
+        )
         .forEach((field) => field.setCustomValidity(""));
     }
 

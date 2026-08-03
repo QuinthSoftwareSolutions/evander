@@ -5,6 +5,8 @@
 - Required every new human-review change finding to select either the entire
   release candidate or one or more named affected deliverables, with a
   multi-select UI and matching server-side validation.
+- Cleared stale affected-work validation when a reviewer switches from an
+  invalid request-changes attempt to approval.
 - Routed whole-candidate, multi-owner, and unavailable-owner findings directly
   to the project lead without ambiguous-routing stalls; retained the ambiguous
   flag only for recovery of legacy scope-less findings.
