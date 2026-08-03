@@ -215,7 +215,7 @@ class PrIntegrationPreflightAdminService:
             directory_path=directory_path,
             # Admin preflight credentials may only be sent to the directory's
             # trusted provider endpoint, never to request-supplied targets.
-            organization_url=None,
+            ado_organization=None,
             project=None,
             node_type=self.NODE_TYPE,
         )

@@ -837,6 +837,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "repo",
         "pr_id",
         "directory_path",
+        "ado_organization",
+        "project",
         "title",
         "description",
         "status",
@@ -853,6 +855,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "pr_id",
         "tag",
         "directory_path",
+        "ado_organization",
+        "project",
     ]
     pr_remove_tag = next(
         node
@@ -865,6 +869,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "pr_id",
         "tag",
         "directory_path",
+        "ado_organization",
+        "project",
     ]
     event_emit = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:event:emit"
@@ -1214,7 +1220,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "provider",
         "repo",
         "directory_path",
-        "organization_url",
+        "ado_organization",
         "project",
         "status",
         "creator_id",
@@ -1263,7 +1269,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "provider",
         "repo",
         "workflow",
-        "organization_url",
+        "ado_organization",
         "project",
         "pipeline_id",
         "pipeline_name",
@@ -1536,7 +1542,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "provider",
         "repo",
         "directory_path",
-        "organization_url",
+        "ado_organization",
         "project",
         "status",
         "creator_id",
@@ -1563,7 +1569,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "repo",
         "pr_id",
         "directory_path",
-        "organization_url",
+        "ado_organization",
         "project",
         "include_reviewers",
         "include_commits",
@@ -1682,7 +1688,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "repo",
         "pr_id",
         "directory_path",
-        "organization_url",
+        "ado_organization",
         "project",
         "cursor",
     ]

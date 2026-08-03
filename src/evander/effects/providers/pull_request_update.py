@@ -33,10 +33,8 @@ class PullRequestUpdateEffectProvider(EffectProviderBase):
             context=self._context(),
             provider=provider_name,
             directory_path=directory_path,
-            # Directory credentials may only be sent to that directory's trusted
-            # provider target, never to workflow- or expression-supplied URLs.
-            organization_url=None,
-            project=None,
+            ado_organization=self._normalize_optional_string(payload.get("ado_organization")),
+            project=self._normalize_optional_string(payload.get("project")),
             node_type=self.NODE_TYPE,
         )
         response = provider.update_pull_request(
@@ -60,6 +58,8 @@ class PullRequestUpdateEffectProvider(EffectProviderBase):
             "repo",
             "pr_id",
             "directory_path",
+            "ado_organization",
+            "project",
             "title",
             "description",
             "status",
@@ -137,6 +137,8 @@ class PullRequestTagEffectProvider(PullRequestUpdateEffectProvider):
             "pr_id",
             "tag",
             "directory_path",
+            "ado_organization",
+            "project",
         ):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)

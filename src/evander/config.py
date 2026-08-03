@@ -25,6 +25,11 @@ from pydantic import (
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
+from evander.azure_devops import (
+    ado_organization_from_legacy_url,
+    azure_devops_organization_url,
+    normalize_ado_organization,
+)
 from evander.addons import AddonLoaderConfig
 from evander.models import (
     DirectoryPath,
@@ -488,6 +493,7 @@ class GatewayConfig(BaseModel):
     agent_context_retry_target_chars: int = Field(default=16_000, ge=4_000)
     azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
     azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
+    ado_organization: str | None = None
     azure_devops_organization_url: str = "https://dev.azure.com"
     azure_devops_project: str = "default"
     ado_area_filters: list[str] = Field(default_factory=list)
@@ -566,6 +572,32 @@ class GatewayConfig(BaseModel):
             "connectionString",
         }
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_azure_devops_organization(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        migrated_organization = None
+        if "azure_devops_organization_url" in payload:
+            migrated_organization = ado_organization_from_legacy_url(
+                payload.get("azure_devops_organization_url")
+            )
+        explicit_organization = normalize_ado_organization(payload.get("ado_organization"))
+        if explicit_organization is not None:
+            payload["ado_organization"] = explicit_organization
+            payload["azure_devops_organization_url"] = azure_devops_organization_url(
+                explicit_organization
+            )
+            return payload
+
+        if migrated_organization is not None:
+            payload["ado_organization"] = migrated_organization
+            payload["azure_devops_organization_url"] = azure_devops_organization_url(
+                migrated_organization
+            )
+        return payload
 
     @field_validator(
         "gateway_url",
