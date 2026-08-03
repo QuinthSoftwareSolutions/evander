@@ -182,6 +182,7 @@ def test_openai_realtime_client_secret_service_posts_browser_session_config(
 
 def test_voice_session_store_supports_browser_agent_call(tmp_path: Path) -> None:
     store = VoiceSessionStore(tmp_path / "voice-sessions.json")
+    context_timestamp = "2026-08-03T15:04:05.123456+00:00"
 
     record, created = store.prepare_session(
         origin_session_id="session-backend",
@@ -207,7 +208,18 @@ def test_voice_session_store_supports_browser_agent_call(tmp_path: Path) -> None
         status="ended",
         reconciliation_context={
             "reason": "voice_session_reconciliation",
-            "tasks": [{"id": "backend-task", "title": "Review blockers"}],
+            "tasks": [
+                {
+                    "id": "backend-task",
+                    "title": "Review blockers",
+                    "created_at": context_timestamp,
+                    "note": (
+                        "Created at 2026-08-03T15:04:05.123456+00:00; "
+                        "call +46 70 123 45 67"
+                    ),
+                    "authorization": "Bearer sensitive-value",
+                }
+            ],
         },
     )
 
@@ -215,6 +227,10 @@ def test_voice_session_store_supports_browser_agent_call(tmp_path: Path) -> None
     assert ended.transcript == "operator: What is blocked?"
     assert ended.contact_id == "backend"
     assert ended.reconciliation_context["tasks"][0]["id"] == "backend-task"
+    assert ended.reconciliation_context["tasks"][0]["created_at"] == context_timestamp
+    assert context_timestamp in ended.reconciliation_context["tasks"][0]["note"]
+    assert "<redacted-phone>" in ended.reconciliation_context["tasks"][0]["note"]
+    assert ended.reconciliation_context["tasks"][0]["authorization"] == "<redacted>"
     prompt = build_reconciliation_prompt(ended)
     assert "Current Team context JSON:" in prompt
     assert '"voice_session_reconciliation"' in prompt

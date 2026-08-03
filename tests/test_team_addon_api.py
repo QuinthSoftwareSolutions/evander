@@ -82,7 +82,10 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
-from evander_team_addon.providers import _filtered_team_state_payload
+from evander_team_addon.providers import (
+    _filtered_team_state_payload,
+    build_voice_reconciliation_context,
+)
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from evander_team_addon.services.domain.human_reviews import (
@@ -4385,6 +4388,12 @@ def test_agent_voice_session_create_query_and_end(
     assert query["transcript_excerpt"] == "Jonathan (jonathan): Which files changed?"
     assert service.runtime.wake_store.get_request(f"voice-query:{query['query_id']}") is not None
 
+    def _clear_backend_runtime(state):
+        state.agent_runtimes.pop("backend", None)
+        return state
+
+    repo.update(_clear_backend_runtime)
+
     end_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
         json={
@@ -4415,6 +4424,82 @@ def test_agent_voice_session_create_query_and_end(
     assert '"reason": "voice_session_reconciliation"' in completed_record.reconciliation_prompt
     assert "Blocked task" in completed_record.reconciliation_prompt
     assert wake.resume_prompt.prompt == completed_record.reconciliation_prompt
+
+
+def test_voice_reconciliation_context_keeps_actionable_blockers_and_reviews(
+    tmp_path: Path,
+) -> None:
+    state = _seed_runtime_operations_state(tmp_path / "runtime").read()
+    state.agent_runtimes.pop("backend", None)
+    oldest = datetime(2026, 7, 1, tzinfo=UTC)
+
+    for index in range(8):
+        created_at = oldest + timedelta(minutes=index)
+        state.blockers[f"resolved-blocker-{index}"] = TeamBlocker(
+            id=f"resolved-blocker-{index}",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id=f"resolved-source-{index}",
+            state=TeamBlockerState.RESOLVED,
+            route=TeamBlockerRoute.RESOLVED,
+            summary=f"Resolved blocker {index}",
+            created_at=created_at,
+            updated_at=created_at,
+            resolved_at=created_at,
+        )
+        state.review_requests[f"terminal-review-{index}"] = ReviewRequest(
+            id=f"terminal-review-{index}",
+            deliverable_id="deliverable",
+            reviewer_agent_id="backend",
+            state=(
+                TeamRecordState.ACCEPTED
+                if index % 2 == 0
+                else TeamRecordState.REJECTED
+            ),
+            created_at=created_at,
+        )
+
+    current_at = oldest + timedelta(days=1)
+    state.blockers["open-blocker"] = TeamBlocker(
+        id="open-blocker",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id="open-source",
+        owner_agent_id="backend",
+        summary="Current open blocker",
+        created_at=current_at,
+        updated_at=current_at,
+    )
+    for review_id, review_state in (
+        ("pending-review", TeamRecordState.PENDING),
+        ("blocked-review", TeamRecordState.BLOCKED),
+    ):
+        state.review_requests[review_id] = ReviewRequest(
+            id=review_id,
+            deliverable_id="deliverable",
+            reviewer_agent_id="backend",
+            state=review_state,
+            created_at=current_at,
+        )
+
+    context = build_voice_reconciliation_context(
+        state,
+        agent_id="backend",
+        session_records={},
+    )
+
+    blocker_ids = {blocker["id"] for blocker in context["blockers"]}
+    assert "open-blocker" in blocker_ids
+    assert blocker_ids.isdisjoint(
+        {f"resolved-blocker-{index}" for index in range(8)}
+    )
+    assert {blocker["state"] for blocker in context["blockers"]} == {"open"}
+    assert {review["id"] for review in context["reviews"]} == {
+        "pending-review",
+        "blocked-review",
+    }
 
 
 def test_agent_voice_session_records_chat_conversation_message(

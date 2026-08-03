@@ -142,6 +142,7 @@ from .models import (
     TeamMemoryRecord,
     TeamMemoryScope,
     TeamMemoryStatus,
+    TeamBlockerState,
     TeamRecordState,
     TeamDispatchStatus,
     TeamState,
@@ -2935,9 +2936,10 @@ def build_voice_reconciliation_context(
         for project_id in project_ids
         if project_id in state.projects
     ]
+    runtime = state.agent_runtimes.get(agent.id)
     lease = {
         "agent": _agent_payload(state, agent),
-        "runtime": state.agent_runtimes[agent.id].model_dump(mode="json"),
+        "runtime": runtime.model_dump(mode="json") if runtime is not None else {},
         "reason": "voice_session_reconciliation",
         "tasks": [task_payload_with_assessment(state, task) for task in tasks],
         "projects": projects,
@@ -2966,14 +2968,19 @@ def build_voice_reconciliation_context(
         "blockers": [
             blocker.model_dump(mode="json")
             for blocker in state.blockers.values()
-            if blocker.owner_agent_id == agent.id
-            or blocker.task_id in task_ids
-            or blocker.project_id in project_ids
+            if blocker.state == TeamBlockerState.OPEN
+            and (
+                blocker.owner_agent_id == agent.id
+                or blocker.task_id in task_ids
+                or blocker.project_id in project_ids
+            )
         ],
         "reviews": [
             review.model_dump(mode="json")
             for review in state.review_requests.values()
             if review.reviewer_agent_id == agent.id
+            and review.state
+            not in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
         ],
         "release_packages": _release_package_payloads_for_agent(state, agent),
         "runtime_attention": _runtime_attention_payloads_for_agent(state, agent),

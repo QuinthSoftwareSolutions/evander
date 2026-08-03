@@ -7,6 +7,9 @@
   event, query, or end request for that call.
 - Added the current compact Team working set to the agent's terminal browser-voice
   reconciliation wake.
+- Kept terminal voice reconciliation reliable for agents without runtime rows,
+  prioritized open blockers and actionable reviews before context caps, and
+  preserved ISO timestamps while redacting sensitive context values.
 
 ## 2026-08-03 - Stand-down Revocation Conflict Safety
 

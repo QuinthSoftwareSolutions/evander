@@ -40,6 +40,12 @@ VoiceSessionStatus = Literal["created", "connecting", "active", "ended", "failed
 VoiceSessionReconciliationStatus = Literal["not_requested", "scheduled", "failed"]
 VoiceQueryStatus = Literal["pending", "answered", "failed", "timeout"]
 
+_ISO_DATE_OR_DATETIME_RE = re.compile(
+    r"(?<!\d)\d{4}-\d{2}-\d{2}"
+    r"(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?"
+    r"(?!\d)"
+)
+
 
 class VoiceTranscriptEvent(BaseModel):
     sequence: int = Field(ge=1)
@@ -385,8 +391,8 @@ class VoiceSessionStore:
                     if _normalize_list_text(item)
                 ]
             if reconciliation_context is not None:
-                record.reconciliation_context = sanitize_voice_metadata(
-                    reconciliation_context
+                record.reconciliation_context = sanitize_voice_reconciliation_context(
+                    dict(reconciliation_context)
                 )
             if error is not None:
                 record.error = _optional_text(error)
@@ -1598,6 +1604,35 @@ def sanitize_voice_metadata(value: Any) -> Any:
     return sanitize_retell_metadata(_redact_voice_value(value))
 
 
+def sanitize_voice_reconciliation_context(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Redact voice context without treating ISO timestamps as phone numbers."""
+
+    redacted = _redact_voice_value(dict(value))
+    sanitized = _sanitize_voice_reconciliation_value(redacted)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _sanitize_voice_reconciliation_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_voice_reconciliation_value(raw_value)
+            for key, raw_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_voice_reconciliation_value(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    sanitized_parts: list[str] = []
+    cursor = 0
+    for match in _ISO_DATE_OR_DATETIME_RE.finditer(value):
+        sanitized_parts.append(sanitize_retell_metadata(value[cursor : match.start()]))
+        sanitized_parts.append(match.group(0))
+        cursor = match.end()
+    sanitized_parts.append(sanitize_retell_metadata(value[cursor:]))
+    return "".join(sanitized_parts)
+
+
 def normalize_voice_session_status(
     value: object,
     *,
@@ -1741,7 +1776,15 @@ def _redact_voice_value(value: Any) -> Any:
             normalized = key.lower()
             if any(
                 marker in normalized
-                for marker in ("phone", "number", "token", "authorization", "secret", "api_key")
+                for marker in (
+                    "phone",
+                    "number",
+                    "token",
+                    "authorization",
+                    "secret",
+                    "api_key",
+                    "password",
+                )
             ):
                 redacted[key] = "<redacted>"
             else:
