@@ -28,6 +28,7 @@ from evander.codex_auth import CodexTurnSpec
 from evander.managed_sections import normalize_managed_section_id
 
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
+LEGACY_WORKER_GIT_KEY_NAME = "evander-git"
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 SAFE_ID_ALLOWED_DESCRIPTION = "letters, numbers, dots, underscores, or dashes"
 
@@ -525,7 +526,12 @@ class WorkerGitWriteKeyRequest(BaseModel):
     @field_validator("key_name", mode="before")
     @classmethod
     def normalize_key_name(cls, value: object) -> str:
-        return str(validate_worker_component_id(value, field_name="key_name"))
+        key_name = str(validate_worker_component_id(value, field_name="key_name"))
+        if key_name == LEGACY_WORKER_GIT_KEY_NAME:
+            raise ValueError(
+                f"key_name {LEGACY_WORKER_GIT_KEY_NAME!r} is reserved for the worker Git credential"
+            )
+        return key_name
 
 
 class WorkerGitWriteKeyRecord(BaseModel):

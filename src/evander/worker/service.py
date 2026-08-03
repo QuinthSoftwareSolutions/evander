@@ -56,6 +56,7 @@ from .codex_subscription import (
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .models import (
     DEFAULT_WORKER_ROOT,
+    LEGACY_WORKER_GIT_KEY_NAME,
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
     WorkerFailureCause,
@@ -1608,6 +1609,10 @@ class WorkerDaemon:
         session_id: str,
         request: WorkerGitWriteKeyRequest,
     ) -> WorkerGitWriteKeyRecord:
+        if request.key_name == LEGACY_WORKER_GIT_KEY_NAME:
+            raise ValueError(
+                f"key_name {LEGACY_WORKER_GIT_KEY_NAME!r} is reserved for the worker Git credential"
+            )
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
         ssh_dir = paths.agent_home / ".ssh"
         self._ensure_managed_ssh_dir(ssh_dir)
@@ -2854,6 +2859,17 @@ class WorkerDaemon:
                 )
             return
         self._ensure_managed_ssh_dir(target_dir)
+        existing_config = (
+            self._read_managed_text_file_no_follow(
+                target_dir / "config",
+                label="SSH config",
+            )
+            if self._managed_regular_file_exists_no_follow(
+                target_dir / "config",
+                label="SSH config",
+            )
+            else ""
+        )
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
             source = source_dir / name
             if not source.is_file():
@@ -2865,6 +2881,10 @@ class WorkerDaemon:
                 config = config.replace(
                     "~/.ssh/evander-git", str(target_dir / "evander-git")
                 ).replace(str(source_dir / "evander-git"), str(target_dir / "evander-git"))
+                config = self._merge_provisioned_git_ssh_config(
+                    refreshed_config=config,
+                    existing_config=existing_config,
+                )
                 contents = config.encode("utf-8")
             self._write_managed_bytes_file_no_follow(
                 destination,
@@ -3199,6 +3219,55 @@ class WorkerDaemon:
             mode=0o600,
             label="SSH config",
         )
+
+    @classmethod
+    def _merge_provisioned_git_ssh_config(
+        cls,
+        *,
+        refreshed_config: str,
+        existing_config: str,
+    ) -> str:
+        refreshed_base, _ = cls._split_provisioned_git_ssh_config(refreshed_config)
+        _, provisioned_blocks = cls._split_provisioned_git_ssh_config(existing_config)
+        parts = [*provisioned_blocks]
+        if refreshed_base:
+            parts.append(refreshed_base)
+        return "\n\n".join(parts).rstrip() + "\n" if parts else ""
+
+    @staticmethod
+    def _split_provisioned_git_ssh_config(text: str) -> tuple[str, list[str]]:
+        lines = str(text or "").splitlines()
+        base_lines: list[str] = []
+        blocks: list[str] = []
+        index = 0
+        while index < len(lines):
+            begin = lines[index]
+            if begin == "# BEGIN evander git write host":
+                end = "# END evander git write host"
+            elif begin.startswith("# BEGIN evander git grant "):
+                key_name = begin.removeprefix("# BEGIN evander git grant ")
+                try:
+                    validate_worker_component_id(key_name, field_name="key_name")
+                except (TypeError, ValueError):
+                    base_lines.append(begin)
+                    index += 1
+                    continue
+                end = f"# END evander git grant {key_name}"
+            else:
+                base_lines.append(begin)
+                index += 1
+                continue
+
+            try:
+                stop = lines.index(end, index + 1)
+            except ValueError:
+                base_lines.append(begin)
+                index += 1
+                continue
+            blocks.append("\n".join(lines[index : stop + 1]))
+            index = stop + 1
+
+        return "\n".join(base_lines).strip(), blocks
 
     @classmethod
     def _remove_git_grant_ssh_config(cls, *, config_path: Path, key_name: str) -> bool:

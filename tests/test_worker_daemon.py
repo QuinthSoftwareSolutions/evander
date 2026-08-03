@@ -2191,6 +2191,11 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     )
 
     assert (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8") == config_text
+    refreshed_host_config = (paths.root / "host-ssh" / "config").read_text(encoding="utf-8")
+    assert "Host evander-git-host-write" in refreshed_host_config
+    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in (
+        refreshed_host_config
+    )
 
 
 def test_worker_rejects_symlinked_git_write_ssh_directory(tmp_path: Path) -> None:
@@ -2304,6 +2309,53 @@ def test_worker_api_provisions_session_git_write_key(
     assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
 
 
+def test_worker_api_rejects_legacy_worker_git_key_name(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/git/write-key",
+        headers=_auth(),
+        json={
+            "git_host": "10.2.0.4",
+            "git_user": "agent",
+            "git_ssh_alias": "evander-git-host",
+            "key_name": "evander-git",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "reserved for the worker Git credential" in response.json()["error"]
+    assert not (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / ".ssh"
+        / "evander-git"
+    ).exists()
+
+
+def test_worker_service_rejects_legacy_worker_git_key_name(tmp_path: Path) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    request = WorkerGitWriteKeyRequest.model_construct(
+        git_host="10.2.0.4",
+        git_user="agent",
+        git_ssh_alias="evander-git-host",
+        key_name="evander-git",
+    )
+
+    with pytest.raises(ValueError, match="reserved for the worker Git credential"):
+        daemon.provision_git_write_key("session-1", request)
+
+    assert not (tmp_path / "worker-root" / "sessions" / "session-1").exists()
+
+
 def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2351,12 +2403,28 @@ def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
 
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
     config_path = paths.agent_home / ".ssh" / "config"
+    host_config_path = paths.root / "host-ssh" / "config"
     assert "Host git-one" in config_path.read_text(encoding="utf-8")
     assert "Host git-two" in config_path.read_text(encoding="utf-8")
+    assert "Host git-one" in host_config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in host_config_path.read_text(encoding="utf-8")
 
     daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
     assert "Host git-one" in config_path.read_text(encoding="utf-8")
     assert "Host git-two" in config_path.read_text(encoding="utf-8")
+    assert "Host git-one" in host_config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in host_config_path.read_text(encoding="utf-8")
+
+    daemon.start_job(
+        WorkerJobRequest(
+            session_id="session-1",
+            job_id="job-1",
+            image="runner:latest",
+            command=["true"],
+        )
+    )
+    assert "Host git-one" in host_config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in host_config_path.read_text(encoding="utf-8")
 
     result = daemon.revoke_git_key("session-1", "evander-git-one")
 
