@@ -966,6 +966,18 @@ test("Team add-on session navigation opens the selected session", async (t) => {
 
 test("admin shell shows unread user notifications from the header", async (t) => {
   const { address, page } = await createAdminPage(t, {
+    addons: [
+      {
+        addon_id: "team-addon",
+        display_name: "Team Add-on",
+        tab_key: "addon:team-addon",
+        label: "Teams",
+        short_label: "Teams",
+        description: "Team-oriented add-on surface.",
+        api_base_path: "/api/addons/team-addon",
+        ui_path: "/addons/team-addon/",
+      },
+    ],
     notifications: {
       user_id: "admin",
       unread_count: 2,
@@ -977,7 +989,7 @@ test("admin shell shows unread user notifications from the header", async (t) =>
           source: "team-chat",
           source_id: "chatmsg-1",
           target_url: "#addon:team-addon",
-          metadata: {},
+          metadata: { conversation_id: "conversation-1" },
           created_at: "2026-06-26T10:00:00Z",
           read_at: null,
         },
@@ -994,6 +1006,10 @@ test("admin shell shows unread user notifications from the header", async (t) =>
   await notificationButton.click();
   await assert.doesNotReject(() => page.getByRole("menuitem", { name: /New Team chat message/ }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Miranda: Review is ready").waitFor({ state: "visible" }));
+  await page.getByRole("menuitem", { name: /New Team chat message/ }).click();
+  await page.waitForFunction(
+    () => window.location.hash === "#addon:team-addon?view=chat&conversation_id=conversation-1",
+  );
 });
 
 test("admin shell keeps mobile section access and dashboard content in the first viewport", async (t) => {
