@@ -700,9 +700,9 @@ Type-specific keys:
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
-| `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `organization_url`, `project`, `outputs` |
-| `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `organization_url`, `project`, `outputs` |
-| `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
+| `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `outputs` |
+| `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `outputs` |
+| `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
