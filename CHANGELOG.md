@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-03 - Exact Agent Detail Authorization
+
+- Authorized Admin Web agent detail responses against the exact backend record
+  returned, including every directory associated with a shared VM.
+
 ## 2026-08-02 - Agent Detail Directory Authorization
 
 - Required directory-scoped owner authorization before returning sensitive agent

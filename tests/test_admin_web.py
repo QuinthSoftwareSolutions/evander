@@ -14103,6 +14103,74 @@ def test_admin_web_agent_detail_reads_require_owner_for_agent_directory(
         assert forbidden.json() == {"error": "Permission required: admin.owner"}
 
 
+def test_admin_web_agent_detail_authorizes_exact_backend_record_and_all_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.directory_admin.create_child(parent="root", name="team-b")
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="collision-agent",
+            vm_provider="container_worker_vm",
+            vm_provider_id="owned-container",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    summaries = [
+        VmSummary(
+            vm_name="owned-vm",
+            session_ids=[],
+            directory_paths=["root/team-a"],
+            libvirt_state="stopped",
+            agent_state="idle",
+        ),
+        VmSummary(
+            vm_name="collision-agent",
+            session_ids=[],
+            directory_paths=["root/team-b"],
+            libvirt_state="stopped",
+            agent_state="idle",
+        ),
+        VmSummary(
+            vm_name="shared-vm",
+            session_ids=[],
+            directory_paths=["root/team-a", "root/team-b"],
+            libvirt_state="stopped",
+            agent_state="idle",
+        ),
+    ]
+
+    def list_vms(self, **kwargs):
+        del self
+        directory_path = kwargs.get("directory_path")
+        if directory_path is None:
+            return summaries
+        return [summary for summary in summaries if directory_path in summary.directory_paths]
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(list_vms, service.vm_agent_admin),
+    )
+    client = _scoped_owner_admin_web_client(monkeypatch, service, directory_path="root/team-a")
+
+    allowed = client.get("/api/admin/agents/owned-vm?backend=libvirt_vm&directory_path=root/team-a")
+    collision = client.get(
+        "/api/admin/agents/collision-agent?backend=libvirt_vm&directory_path=root/team-b"
+    )
+    shared = client.get("/api/admin/agents/shared-vm?backend=libvirt_vm&directory_path=root/team-a")
+
+    assert allowed.status_code == 200
+    assert allowed.json()["agent_id"] == "owned-vm"
+    for forbidden in (collision, shared):
+        assert forbidden.status_code == 403
+        assert forbidden.json() == {"error": "Permission required: admin.owner"}
+
+
 def test_admin_web_agents_summary_reads_use_dashboard_cache(
     tmp_path: Path,
     monkeypatch,
