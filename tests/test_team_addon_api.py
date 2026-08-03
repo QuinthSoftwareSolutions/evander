@@ -8026,6 +8026,72 @@ def test_team_addon_admin_api_rejects_stale_agent_patch_when_runtime_changed(
     assert response.json()["current_revision"] == changed.json()["revision"]
 
 
+def test_team_addon_admin_api_rejects_stale_stand_down_revoke_when_hold_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    seeded = _seed_rebase_backend_agent(client)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="backend-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Backend work",
+        description="Ready work must remain held after a stale revoke.",
+        created_by_agent_id="lead",
+        expected_revision=seeded["revision"],
+    )
+    runtime = _team_runtime_service(repo)
+    runtime.stand_down_agent(
+        agent_id="backend",
+        reason="Operator investigation.",
+        set_by="operator:admin",
+        source=AgentStandDownSource.OPERATOR,
+        scope="agent",
+        expected_revision=repo.read().revision,
+    )
+    snapshot = client.get("/api/addons/team-addon/state").json()
+    stale_revision = snapshot["revision"]
+    base_token = snapshot["resource_tokens"]["agents"]["backend"]
+
+    changed = runtime.stand_down_agent(
+        agent_id="backend",
+        reason="New superior safety hold.",
+        set_by="lead",
+        source=AgentStandDownSource.SUPERIOR,
+        scope="agent",
+        expected_revision=stale_revision,
+    )
+    current = client.get("/api/addons/team-addon/state").json()
+    assert current["resource_tokens"]["agents"]["backend"] != base_token
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/stand-down/revoke",
+        json={
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.revision
+    active_holds = [
+        stand_down
+        for stand_down in repo.read().stand_downs.values()
+        if stand_down.agent_id == "backend" and stand_down.active
+    ]
+    assert len(active_holds) == 2
+    assert {stand_down.source for stand_down in active_holds} == {
+        AgentStandDownSource.OPERATOR,
+        AgentStandDownSource.SUPERIOR,
+    }
+    assert repo.list_outbox_records() == []
+    assert InternalEventBus(internal_event_store_path(runtime_dir)).list_events() == []
+
+
 def test_team_addon_admin_api_requires_expected_revision(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

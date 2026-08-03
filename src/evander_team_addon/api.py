@@ -4780,6 +4780,17 @@ def _team_resource_value_for_token(
             assignment.model_dump(mode="json")
             for assignment in project_assignments_for_agent(state, item_id)
         ],
+        "direct_stand_downs": [
+            stand_down.model_dump(mode="json")
+            for stand_down in sorted(
+                (
+                    stand_down
+                    for stand_down in state.stand_downs.values()
+                    if stand_down.agent_id == item_id
+                ),
+                key=lambda stand_down: stand_down.id,
+            )
+        ],
         "runtime": (
             {
                 "context_clearing_policy": getattr(

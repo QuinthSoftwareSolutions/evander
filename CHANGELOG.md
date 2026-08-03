@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-03 - Stand-down Revocation Conflict Safety
+
+- Included direct stand-down lifecycle in Team agent resource tokens so a stale
+  operator request cannot revoke an unseen new hold or enqueue a resulting wake.
+
 ## 2026-08-03 - Operator Revocation of Agent-Issued Stand-downs
 
 - Allowed human operators to revoke a direct Team agent-issued stand-down from
