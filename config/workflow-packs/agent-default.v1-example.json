@@ -271,7 +271,7 @@
       },
       {
         "config": {
-          "organization_url": "https://dev.azure.com/exampleindustry",
+          "ado_organization": "exampleindustry",
           "project": "Example Industry APP",
           "provider": "ado"
         },

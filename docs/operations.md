@@ -1561,7 +1561,7 @@ Audit/result behavior:
 ### Required provider config and environment
 
 - Configure Azure DevOps work-item connectivity in effective provider config:
-  - `azure_devops_organization_url` (for example: `https://dev.azure.com/example-org`)
+  - `ado_organization` (for example: `example-org`)
   - `azure_devops_project` (default project when per-call/project-level values are not overridden)
   - `azure_devops_pat_env` (environment variable name that stores the PAT)
 - Export the PAT only on the host (for example `export AZURE_DEVOPS_PAT=...`) and
@@ -2074,9 +2074,10 @@ Use `trigger:cron` with `query:pull-request:list` when a workflow needs one-shot
 query control over open pull requests by provider state, branch, time window, or
 review labels, then use `effect:pull-request:update` to claim or release work by
 changing PR tags or metadata. For Azure DevOps, set `provider` to
-`azure_devops` or `ado`; the node always uses the directory-scoped ADO organization,
-project, and PAT. Provider target overrides are rejected so a workflow cannot redirect
-directory credentials to another endpoint.
+`azure_devops` or `ado`; the node uses the directory-scoped ADO project and PAT unless
+`project` is supplied, and it always constructs the provider target from the configured
+or supplied `ado_organization`. Provider URL overrides are rejected so a workflow cannot
+redirect directory credentials to another endpoint.
 
 Use `trigger:pull-request:new-feedback` or `trigger:pull-request:completed`
 with `provider=ado` and `repo` when the Azure DevOps PR worker should own
@@ -2088,8 +2089,9 @@ Use `query:pull-request:get` when a workflow needs a single normalized snapshot
 of a specific pull request. The node accepts Azure DevOps `provider` values
 `azure_devops`, `azure-devops`, and `ado`, plus GitHub `provider` `github`, and
 it does not store cursor or workflow state. For Azure DevOps, it uses the
-directory-scoped organization, project, and PAT unless `organization_url` or
-`project` is supplied on the node. For GitHub, it uses the directory-scoped
+directory-scoped organization, project, and PAT unless `ado_organization` or
+`project` is supplied on the node. The organization identifier is always
+constructed into the trusted `https://dev.azure.com/<org>` origin. For GitHub, it uses the directory-scoped
 `github_token_env` when configured and can fetch public data without a token.
 Set `include_commits=true` to fetch commit details and `include_reviewers=true`
 to fetch review API data; `include_reviewers=false` returns an empty reviewer
@@ -2124,7 +2126,8 @@ Request body fields:
 - `pr_ids`: an array of PR ids, or a comma/newline-delimited string in the UI.
 - `directory_path`: defaults to `root`.
 - `managed_repo_id`: required; it must be visible inside `directory_path`.
-- `organization_url` and `project`: optional Azure DevOps overrides.
+- The endpoint uses the directory-configured Azure DevOps organization and project;
+  it does not accept provider-target overrides.
 
 The service refreshes the managed repository and performs the simulation in a unique detached
 operation worktree. That worktree is removed on every exit and is never returned in the report.
@@ -2849,7 +2852,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    guest-managed bearer tokens/cookies through that relay path.
 5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
-   `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
+   `ado_organization`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
 6. Start and inspect services:
 
 ```bash

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-03 - Azure DevOps Organization Identity Hardening
+
+- Restored per-node Azure DevOps `project` overrides for pull-request update and tag effects,
+  while replacing caller-controlled provider URLs with `ado_organization` identifiers that always
+  construct a trusted `https://dev.azure.com/<org>` origin before a PAT-bearing request.
+- Preserved safe legacy configuration and persisted workflow compatibility by migrating only
+  public Azure DevOps organization URLs; arbitrary origins are rejected across PR queries,
+  workflow effects, Azure DevOps feedback/completion polling, and Azure Pipelines completion
+  polling.
+
 ## 2026-08-02 - PR Preflight Provider Target Hardening
 
 - Removed request-level Azure DevOps organization and project overrides from the Admin Web PR

@@ -95,7 +95,7 @@ def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
         provider_config_resolver=_Resolver(
             GatewayConfig(
                 runtime_dir=tmp_path,
-                azure_devops_organization_url="https://dev.azure.test/org",
+                azure_devops_organization_url="https://dev.azure.com/configured-org",
                 azure_devops_project="Configured Project",
                 azure_devops_pr_pat_env="TEAM_ADO_PAT",
             )
@@ -110,7 +110,7 @@ def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
         provider="ado",
         repo="repo-1",
         pr_id="17",
-        organization_url="https://dev.azure.test/override",
+        organization_url="https://dev.azure.com/override-org",
         project="Explicit Project",
         include_reviewers="false",
         include_commits="true",
@@ -121,7 +121,7 @@ def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
 
     assert captured["build"]["provider"] == "azure_devops"
     assert captured["build"]["directory_path"] == "root"
-    assert captured["build"]["organization_url"] == "https://dev.azure.test/override"
+    assert captured["build"]["ado_organization"] == "https://dev.azure.com/override-org"
     assert captured["build"]["project"] == "Explicit Project"
     assert captured["get"] == {
         "repo": "repo-1",

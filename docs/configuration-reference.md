@@ -323,9 +323,9 @@ Type-specific keys:
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `mailbox_ids` | `folder` |
 | `trigger:host-directory:file-added` | `directory_id` | `path`, `recursive`, `include_globs`, `exclude_globs`, `settle_seconds` |
-| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
-| `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
-| `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
+| `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `ado_organization`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
 | `trigger:approval:pending-created` | — | `directory_path`, `action_types`, `tool_names` |
 | `trigger:git:push` | exactly one of `managed_repo_id`, `managed_repo_id_glob` | — |
@@ -360,7 +360,7 @@ Explicit-mode events include normalized `pr` plus feedback/completion payloads a
 `trigger:ci:run:completed` is the polling-only CI completion trigger. It accepts canonical
 providers `github_actions` and `ado_pipelines`, plus aliases such as `github`, `github-actions`,
 `github_actions`, `ado`, `azure_devops`, `azure-devops`, `ado_pipelines`, and `azure-pipelines`.
-GitHub Actions configs require `repo`; Azure DevOps configs may omit `organization_url` and
+GitHub Actions configs require `repo`; Azure DevOps configs may omit `ado_organization` and
 `project` when directory provider config can resolve them. Blank strings normalize to `null`,
 branch selectors are stored as plain branch names, and conclusions normalize to
 `success`, `failure`, `cancelled`, `timed_out`, and `skipped` with provider-specific spellings
@@ -700,9 +700,9 @@ Type-specific keys:
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
-| `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `outputs` |
-| `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `outputs` |
-| `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
+| `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
+| `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
+| `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `ado_organization`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
@@ -954,10 +954,10 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:git:pr-note` | `managed_repo_id`, `commit_sha`, `notes_ref` | `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
-| `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `include_reviewers`, `include_commits`, `outputs` |
-| `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
+| `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `ado_organization`, `project`, `include_reviewers`, `include_commits`, `outputs` |
+| `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `ado_organization`, `project`, `cursor`, `outputs` |
 | `query:communication:messages` | `communication_target_id` | `directory_path`, `limit`, `cursor`, `before_cursor`, `thread_id`, `outputs` |
-| `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
+| `query:pull-request:list` | `provider`, `repo` | `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
@@ -999,9 +999,11 @@ GitHub `provider` as `github`. It returns normalized pull request metadata and
 does not store cursor or workflow state. For Azure DevOps, `project` can be
 explicit, read from directory provider config, or derived from a composite repo
 slug such as `organization/project/repo`. For `query:pull-request:get`,
-Azure DevOps uses the directory-scoped `azure_devops_organization_url`,
-`azure_devops_project`, and `azure_devops_pr_pat_env` unless `organization_url`
-or `project` is supplied on the node. GitHub uses directory-scoped
+Azure DevOps uses the directory-scoped `ado_organization`, `azure_devops_project`,
+and `azure_devops_pr_pat_env` unless `ado_organization` or `project` is supplied
+on the node. `ado_organization` is converted to `https://dev.azure.com/<org>`;
+legacy `organization_url` node values remain compatible only when they are valid
+public Azure DevOps URLs and are migrated to that identifier. GitHub uses directory-scoped
 `github_token_env` when configured and can fetch public data without a token.
 Set `include_commits=true` to fetch commit details and `include_reviewers=true`
 to fetch review API data; `include_reviewers=false` returns an empty reviewer
@@ -1709,7 +1711,8 @@ aliases for the same provisioned environment.
 | `pr_reply_require_approval` | legacy gateway YAML | `src/evander/gateway.py` PR-reply approval gate. |
 | `github_token_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
 | `azure_devops_pr_pat_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/reviews/request_service.py`, and PR feedback/completion trigger providers. |
-| `azure_devops_organization_url` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
+| `ado_organization` | directory provider config | Azure DevOps organization identifier used to construct the trusted `https://dev.azure.com/<org>` origin for credentialed provider clients. |
+| `azure_devops_organization_url` | legacy gateway YAML / directory provider config | Legacy input migrated only from `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`; arbitrary origins are rejected. |
 | `azure_devops_project` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
 | `pr_feedback_resume_prompt` | legacy gateway YAML / directory wake config | Prompt used when resuming for unread PR feedback. |
 | `discord_resume_prompt` | legacy gateway YAML | `src/evander/messaging/discord_wake.py`. |

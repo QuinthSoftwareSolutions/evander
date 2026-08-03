@@ -17,6 +17,7 @@ import yaml
 
 from evander.bootstrap import load_runtime_gateway_config, resolve_project_dir
 from evander.audit import AuditEventType, AuditLogger
+from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.directories import DirectoryService, DirectoryStore
 from evander.directory_config import (
@@ -1676,6 +1677,18 @@ def _trigger_effective_directory_path(
     )
 
 
+def _ado_organization_url_for_trigger(
+    *,
+    trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
+    legacy_organization_url: str | None,
+) -> str:
+    return resolve_azure_devops_organization_url(
+        ado_organization=trigger.ado_organization,
+        legacy_organization_url=legacy_organization_url,
+        node_type=trigger.type,
+    )
+
+
 def _list_explicit_ado_trigger_pull_requests(
     *,
     trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
@@ -1703,6 +1716,13 @@ def _list_explicit_ado_trigger_pull_requests(
     directory_config = _resolve_directory_worker_config(
         config, runtime_gateway_config, effective_directory_path
     )
+    organization_url = _ado_organization_url_for_trigger(
+        trigger=trigger,
+        legacy_organization_url=(
+            _normalize_optional_text(directory_config.organization_url)
+            or _normalize_optional_text(config.organization_url)
+        ),
+    )
     pat_env_name = runtime_gateway_config.azure_devops_pr_pat_env
     pat = os.environ.get(pat_env_name, "").strip()
     if not pat:
@@ -1725,18 +1745,13 @@ def _list_explicit_ado_trigger_pull_requests(
             pull_requests=[],
         )
 
-    organization_url = (
-        _normalize_optional_text(trigger.organization_url)
-        or _normalize_optional_text(directory_config.organization_url)
-        or _normalize_optional_text(config.organization_url)
-    )
     project = (
         _normalize_optional_text(trigger.project)
         or _normalize_optional_text(directory_config.project)
         or _normalize_optional_text(config.project)
     )
     provider = AzureDevOpsPrQueryProvider(
-        organization_url=organization_url or "",
+        organization_url=organization_url,
         project=project or "",
         pat=pat,
         timeout_seconds=30.0,
@@ -1768,7 +1783,7 @@ def _list_explicit_ado_trigger_pull_requests(
                 pull_request
             )
     return _ExplicitAdoPrCandidates(
-        organization_url=organization_url or "",
+        organization_url=organization_url,
         project=project or "",
         pull_requests=list(pull_requests_by_key.values()),
     )
@@ -1934,11 +1949,15 @@ def _publish_directory_pr_feedback_events(
                 for candidate in explicit_candidates.pull_requests
             ]
         else:
+            organization_url = _ado_organization_url_for_trigger(
+                trigger=trigger,
+                legacy_organization_url=config.organization_url,
+            )
             streams = [
                 (
                     {"provider": "azure_devops", "repo": repo, "pr_id": pr_id},
                     legacy_bindings.get((repo, pr_id), {}),
-                    trigger.organization_url or config.organization_url,
+                    organization_url,
                     _ado_project_for_feedback_stream(
                         repo=repo,
                         binding=legacy_bindings.get((repo, pr_id), {}),
@@ -2118,6 +2137,7 @@ def _publish_directory_pr_completion_events(
 
     for trigger in triggers:
         explicit_pr_criteria = _trigger_has_explicit_pr_criteria(trigger)
+        legacy_organization_url = ""
         completed_streams: dict[str, Any] = {}
         if explicit_pr_criteria and completion_cursor_store is not None:
             state = completion_cursor_store.get(trigger.id)
@@ -2135,6 +2155,10 @@ def _publish_directory_pr_completion_events(
             candidates = explicit_candidates.pull_requests
         else:
             explicit_candidates = None
+            legacy_organization_url = _ado_organization_url_for_trigger(
+                trigger=trigger,
+                legacy_organization_url=config.organization_url,
+            )
             candidates = [
                 PullRequestItem(provider="azure_devops", repo=repo, pr_id=pr_id)
                 for repo, pr_id in sorted(legacy_bindings.keys())
@@ -2151,7 +2175,7 @@ def _publish_directory_pr_completion_events(
                 organization_url=(
                     explicit_candidates.organization_url
                     if explicit_candidates is not None
-                    else trigger.organization_url or config.organization_url
+                    else legacy_organization_url
                 ),
                 project=(
                     explicit_candidates.project
