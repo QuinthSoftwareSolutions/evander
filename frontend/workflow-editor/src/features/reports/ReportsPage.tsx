@@ -241,8 +241,6 @@ export function ReportsPage() {
   const [prIntegrationRepo, setPrIntegrationRepo] = useState("");
   const [prIntegrationDirectoryPath, setPrIntegrationDirectoryPath] = useState("root");
   const [prIntegrationManagedRepoId, setPrIntegrationManagedRepoId] = useState("");
-  const [prIntegrationOrganizationUrl, setPrIntegrationOrganizationUrl] = useState("");
-  const [prIntegrationProject, setPrIntegrationProject] = useState("");
   const [prIntegrationMode, setPrIntegrationMode] = useState<MergePreflightMode>("single");
   const [prIntegrationPrIds, setPrIntegrationPrIds] = useState("");
   const [prIntegrationReport, setPrIntegrationReport] =
@@ -510,8 +508,6 @@ export function ReportsPage() {
             pr_ids: prIds,
             mode: prIntegrationMode,
             directory_path: prIntegrationDirectoryPath,
-            organization_url: normalizeOptionalText(prIntegrationOrganizationUrl),
-            project: normalizeOptionalText(prIntegrationProject),
           }),
         },
       );
@@ -1521,24 +1517,6 @@ export function ReportsPage() {
                     onChange={(event) => setPrIntegrationManagedRepoId(event.target.value)}
                     placeholder="mr_0123456789abcdef0123"
                     required
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Organization URL</span>
-                  <input
-                    type="text"
-                    value={prIntegrationOrganizationUrl}
-                    onChange={(event) => setPrIntegrationOrganizationUrl(event.target.value)}
-                    placeholder="https://dev.azure.com/org"
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Project</span>
-                  <input
-                    type="text"
-                    value={prIntegrationProject}
-                    onChange={(event) => setPrIntegrationProject(event.target.value)}
-                    placeholder="project"
                   />
                 </label>
                 <label className="field-stack field-span-2">
