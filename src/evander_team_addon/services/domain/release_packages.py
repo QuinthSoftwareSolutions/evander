@@ -936,6 +936,19 @@ def _build_release_package(
             or (predecessor.canonical_branch if predecessor is not None else None)
             or canonical_release_branch(project, release_id)
         )
+    canonical_base_commit_sha = release_base_commit_sha
+    if predecessor is not None and target_canonical_branch == predecessor.canonical_branch:
+        if predecessor.state == TeamRecordState.ACCEPTED:
+            canonical_base_commit_sha = (
+                predecessor.published_commit_sha
+                or predecessor.approved_commit_sha
+                or predecessor.candidate_commit_sha
+            )
+        else:
+            canonical_base_commit_sha = (
+                predecessor.canonical_base_commit_sha
+                or predecessor.base_commit_sha
+            )
     promotion_ids: list[str] = []
     now = utc_now()
     is_candidate_correction_successor = (
@@ -997,6 +1010,7 @@ def _build_release_package(
             if predecessor is not None
             else release_base_commit_sha
         ),
+        canonical_base_commit_sha=canonical_base_commit_sha,
         git_promotion_record_ids=promotion_ids,
         policy_version=2,
         verification_waivers=verification_waivers,

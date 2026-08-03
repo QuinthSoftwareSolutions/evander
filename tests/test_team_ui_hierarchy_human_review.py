@@ -252,6 +252,34 @@ def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> 
     assert result.returncode == 0, result.stderr
 
 
+def test_human_review_findings_require_explicit_release_or_deliverable_scope() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    selector_source = source[
+        source.index("function renderHumanReviewTargetSelector(") : source.index(
+            "function renderHumanReviewFindingRow("
+        )
+    ]
+    form_source = source[
+        source.index("function humanReviewFindingFromRow(") : source.index(
+            "function humanReviewFindingDraftFromRow("
+        )
+    ]
+
+    assert "Entire release candidate" in selector_source
+    assert "human_finding_target_release_candidate" in selector_source
+    assert "human_finding_target_deliverable_ids" in selector_source
+    assert "(optional)" not in selector_source
+    assert 'target_scope: targetsEntireRelease' in form_source
+    assert '"release_candidate"' in form_source
+    assert '"deliverables"' in form_source
+    assert (
+        "Select the entire release candidate or at least one affected deliverable."
+        in form_source
+    )
+
+
 def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
@@ -267,6 +295,9 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
     ).read_text(encoding="utf-8")
+    approval_click_source = source[
+        source.index("const humanReviewApprove") : source.index("const findingAdd")
+    ]
 
     assert 'data-human-review-decision="approved">Approve</button>' in source
     assert (
@@ -276,6 +307,8 @@ def test_human_review_non_approval_actions_bypass_required_checklist_validation(
     assert (
         'data-human-review-decision="blocked" formnovalidate>Blocked</button>'
     ) in source
+    assert 'name="human_finding_text"' in approval_click_source
+    assert 'name="human_finding_target_release_candidate"' in approval_click_source
 
 
 def test_human_review_card_offers_a_pinned_source_bundle_download() -> None:

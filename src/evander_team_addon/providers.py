@@ -6118,7 +6118,8 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "that correction resolves; do not call the release-request tool. If "
         "automatic creation cannot validate or package the correction, follow "
         "the durable correction blocker instead.\n"
-        f"- For an ambiguous human-review finding, use "
+        f"- For a legacy human-review finding that still carries ambiguous "
+        "routing metadata, use "
         f"{TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL} to route its existing "
         "correction child without rewriting the finding or task. Use "
         f"{TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL} only when the current "
@@ -6916,8 +6917,8 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
             "Git content, also include the earlier task in dependency_task_ids so "
             "the assignee receives its verified commit instead of a base-branch-only "
             "worktree. This does not apply to generated human-review correction "
-            "findings: use their system-created child and route an ambiguous finding "
-            "instead of creating a replacement root. You may also create child tasks with "
+            "findings: use their system-created child and route a legacy ambiguous "
+            "finding instead of creating a replacement root. You may also create child tasks with "
             "parent_task_id.\n\n"
         )
     return (

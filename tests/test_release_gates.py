@@ -77,6 +77,7 @@ def _release_and_promotion(
     manifest = ReleaseCandidateManifest(
         project_id="project",
         release_package_id="release",
+        base_commit_sha="base-sha",
         candidate_commit_sha="candidate-sha",
         release_branch="team/team/releases/release",
         verification_commands=verification_commands or [],
@@ -97,6 +98,7 @@ def _release_and_promotion(
         id="release",
         project_id="project",
         release_branch="team/team/releases/release",
+        base_commit_sha="base-sha",
         candidate_commit_sha="candidate-sha",
         manifest=manifest,
         git_promotion_record_ids=[promotion.id],

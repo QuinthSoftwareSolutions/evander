@@ -97,7 +97,18 @@ The internal release branch is not the published branch operators should test or
 
 > <span class="sidebar-kicker">Technical detail</span> **Publishing the exact candidate**
 >
-> Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
+> Only after every gate passes does the workflow create the canonical-push
+> promotion. Core <code>effect:git:push-branch</code> verifies the exact approved
+> commit, requires an existing canonical destination to still equal the
+> release's immutable canonical base commit, and applies a destination lease
+> before pushing. A generated destination that does not exist yet is created
+> only when that pinned base is an ancestor of the approved candidate, under an
+> empty-ref lease. Correction successors keep this canonical base separate from
+> their rejected-candidate merge base. A release based on another branch cannot
+> carry that branch's pre-existing changes to this destination; deliberate
+> cross-base work must be reviewed through an integration task based on the destination.
+> <code>effect:team:mark-release-published</code> records canonical branch,
+> published commit, timestamp, and accepted package state.
 
 ![Pinned Team Git promotion and release-gate flow](../../assets/evander-user-manual/diagrams/16-team-release.svg)
 
@@ -392,11 +403,15 @@ child task per finding, links each finding to its child, and creates
 deduplicated inbox/wake obligations.
 
 Accepted historical tasks, deliverables, reviews, and candidate content are not
-reopened. A finding that clearly targets one deliverable routes to that task's
-current owner and records the original task as provenance. A finding without a
-deterministic owner remains with the project lead until that lead routes its
-existing child. The coordination parent groups the response but has no combined
-deliverable or agent-authored integration branch of its own.
+reopened. Each new finding explicitly selects either the entire release
+candidate or one or more named candidate deliverables. A single-owner
+deliverable selection routes to that task's current owner and records the
+original task as provenance. The entire candidate, a multi-owner selection, or
+a selection whose historical owner is unavailable routes directly to the
+project lead without waiting for a second routing decision. Only scope-less
+legacy findings can retain ambiguous-routing metadata. The coordination parent
+groups the response but has no combined deliverable or agent-authored
+integration branch of its own.
 
 Each finding child starts from the verified rejected candidate and must produce
 exactly one current accepted correction deliverable with required review

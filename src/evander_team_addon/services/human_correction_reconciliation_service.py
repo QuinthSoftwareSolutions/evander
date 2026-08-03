@@ -37,6 +37,10 @@ from .domain.release_packages import (
     _reviewed_commit_for_release,
     _successor_release_request_error,
 )
+from .domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_task_resolved,
+)
 
 
 HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY = (
@@ -109,6 +113,37 @@ def _current_accepted_deliverables(state: Any, finding: HumanReviewFinding) -> l
         ),
         key=lambda deliverable: deliverable.id,
     )
+
+
+def _completed_ambiguous_finding_ids(
+    state: Any,
+    findings: list[HumanReviewFinding],
+    ambiguous_finding_ids: set[str],
+) -> set[str]:
+    """Treat completed reviewed work as an implicit durable routing decision."""
+
+    completed: set[str] = set()
+    for finding in findings:
+        if finding.id not in ambiguous_finding_ids:
+            continue
+        task = state.tasks.get(finding.correction_task_id)
+        accepted = _current_accepted_deliverables(state, finding)
+        if task is None or len(accepted) != 1:
+            continue
+        try:
+            require_task_resolved(
+                state,
+                task.id,
+                boundary=(
+                    "reconciling completed ambiguous human-review correction "
+                    f"{finding.id}"
+                ),
+            )
+        except TaskAssessmentBoundaryError:
+            continue
+        if _reviews_ready(state, accepted[0])[0]:
+            completed.add(finding.id)
+    return completed
 
 
 def _deliverable_resolution_evidence(deliverable: Any) -> list[str]:
@@ -245,7 +280,13 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
     if configured_ambiguous_finding_ids - current_finding_ids:
         return True
     if configured_ambiguous_finding_ids:
-        return False
+        return bool(
+            _completed_ambiguous_finding_ids(
+                state,
+                findings,
+                configured_ambiguous_finding_ids,
+            )
+        )
     if _legacy_case_can_convert(state, case, findings):
         return True
     for finding in findings:
@@ -637,12 +678,23 @@ def _reconcile_case(
     ambiguous_finding_ids = (
         configured_ambiguous_finding_ids & current_finding_ids
     )
+    completed_ambiguous_finding_ids = _completed_ambiguous_finding_ids(
+        state,
+        findings,
+        ambiguous_finding_ids,
+    )
+    ambiguous_finding_ids -= completed_ambiguous_finding_ids
     if ambiguous_finding_ids != configured_ambiguous_finding_ids:
         case.metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = sorted(
             ambiguous_finding_ids
         )
         case.updated_at = now
         changed = True
+    if completed_ambiguous_finding_ids:
+        result.setdefault(
+            "implicitly_routed_human_review_finding_ids",
+            [],
+        ).extend(sorted(completed_ambiguous_finding_ids))
     if ambiguous_finding_ids:
         result.setdefault("waiting_ambiguous_finding_ids", []).extend(
             sorted(ambiguous_finding_ids)

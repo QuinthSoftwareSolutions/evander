@@ -43,6 +43,9 @@ from evander_team_addon.services.domain.human_reviews import (
     HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY,
     route_human_finding_correction,
 )
+from evander_team_addon.services.domain.git_promotion import (
+    _queue_canonical_push_after_release_success,
+)
 from evander_team_addon.services.domain.release_packages import (
     _apply_git_release_recovery,
 )
@@ -54,6 +57,7 @@ from evander_team_addon.services.git_release_service import TeamGitReleaseServic
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
+CANONICAL_BASE_COMMIT = "0" * 40
 PREDECESSOR_COMMIT = "a" * 40
 PREDECESSOR_TREE = "b" * 40
 CORRECTION_COMMIT = "c" * 40
@@ -162,6 +166,8 @@ def _reconciliation_state(*, include_parent: bool = True) -> TeamState:
         deliverable_ids=["source-deliverable"],
         release_branch=manifest.release_branch,
         canonical_branch="main",
+        base_commit_sha=CANONICAL_BASE_COMMIT,
+        canonical_base_commit_sha=CANONICAL_BASE_COMMIT,
         candidate_commit_sha=PREDECESSOR_COMMIT,
         candidate_tree_hash=PREDECESSOR_TREE,
         manifest=manifest,
@@ -298,6 +304,7 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     assert successor.supersedes_release_package_id == "release-rejected"
     assert successor.git_base_branch == "team/team/releases/release-rejected"
     assert successor.base_commit_sha == PREDECESSOR_COMMIT
+    assert successor.canonical_base_commit_sha == CANONICAL_BASE_COMMIT
     assert successor.canonical_branch == "main"
     assert set(successor.deliverable_ids) == {
         "source-deliverable",
@@ -337,6 +344,59 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
             if release.supersedes_release_package_id == "release-rejected"
         ]
     ) == 1
+
+
+def test_reconciliation_self_heals_completed_ambiguous_finding(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _retain_stale_ambiguity(state: TeamState) -> TeamState:
+        state.cases["human-case"].metadata[
+            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+        ] = ["finding"]
+        return state
+
+    repo.update(_retain_stale_ambiguity)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    assert result["implicitly_routed_human_review_finding_ids"] == ["finding"]
+    assert result["created_successor_release_package_ids"]
+    assert state.cases["human-case"].metadata[
+        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == []
+    assert state.tasks["human-correction-aggregate"].state == (
+        TeamTaskState.FINISHED
+    )
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+
+
+def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _restore_unresolved_ambiguity(state: TeamState) -> TeamState:
+        state.cases["human-case"].metadata[
+            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+        ] = ["finding"]
+        state.tasks["human-correction-child"].state = TeamTaskState.IN_PROGRESS
+        return state
+
+    state = repo.update(_restore_unresolved_ambiguity)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+
+    assert result["changed"] is False
+    assert result["revision"] == state.revision
+    final = repo.read()
+    assert final.cases["human-case"].metadata[
+        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == ["finding"]
+    assert not any(
+        release.supersedes_release_package_id == "release-rejected"
+        for release in final.release_packages.values()
+    )
 
 
 def test_reconciliation_carries_manifest_only_candidate_branch_into_successor(
@@ -468,6 +528,31 @@ def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
     assert state.deliverables[
         "correction-deliverable"
     ].review_manifest.base_commit_sha == PREDECESSOR_COMMIT
+
+    successor.candidate_commit_sha = "e" * 40
+    successor.approved_commit_sha = "e" * 40
+    assert successor.scope_validation is not None
+    successor.scope_validation.state = "passed"
+    release_promotion.commit_sha = "e" * 40
+    publication = {"events": [], "git_promotion_event_ids": []}
+    _queue_canonical_push_after_release_success(
+        state,
+        release=successor,
+        release_promotion=release_promotion,
+        result=publication,
+    )
+    canonical = next(
+        state.git_promotions[promotion_id]
+        for promotion_id in state.release_packages[successor_id].git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "canonical_push"
+    )
+    canonical_event = next(
+        event
+        for event in publication["events"]
+        if event["payload"].get("promotion_id") == canonical.id
+    )
+    assert canonical.base_commit_sha == CANONICAL_BASE_COMMIT
+    assert canonical_event["payload"]["base_commit_sha"] == CANONICAL_BASE_COMMIT
 
 
 def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(

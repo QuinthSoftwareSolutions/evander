@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 45
+SQLITE_SCHEMA_VERSION = 46
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1247,6 +1247,7 @@ class TeamStateSqliteStore:
                 )
                 for column_name in (
                     "base_commit_sha",
+                    "canonical_base_commit_sha",
                     "candidate_commit_sha",
                     "candidate_tree_hash",
                     "approved_commit_sha",
@@ -1359,6 +1360,8 @@ class TeamStateSqliteStore:
                     _migrate_worktree_cleanup_evidence(connection)
                 if previous_schema_version < 45:
                     _migrate_task_git_base_snapshots(connection)
+                if previous_schema_version < 46:
+                    _migrate_release_canonical_base_snapshots(connection)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -1415,6 +1418,7 @@ class TeamStateSqliteStore:
                     # first open. Backfill the imported rows in the same
                     # transaction before recording the import as complete.
                     _migrate_task_git_base_snapshots(connection)
+                    _migrate_release_canonical_base_snapshots(connection)
                     now = utc_now().isoformat()
                     connection.executemany(
                         """
@@ -3603,6 +3607,7 @@ class TeamStateSqliteStore:
                 "git_base_branch": row["git_base_branch"],
                 "published_commit_sha": row["published_commit_sha"],
                 "base_commit_sha": row["base_commit_sha"],
+                "canonical_base_commit_sha": row["canonical_base_commit_sha"],
                 "candidate_commit_sha": row["candidate_commit_sha"],
                 "candidate_tree_hash": row["candidate_tree_hash"],
                 "approved_commit_sha": row["approved_commit_sha"],
@@ -3639,14 +3644,15 @@ class TeamStateSqliteStore:
                     id, project_id, owner_agent_id, summary, supersedes_release_package_id,
                     release_branch, canonical_branch, git_base_branch,
                     published_commit_sha,
-                    base_commit_sha, candidate_commit_sha, candidate_tree_hash,
+                    base_commit_sha, canonical_base_commit_sha,
+                    candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, review_correction_task_id,
                     verification_run_ids_json, review_request_ids_json,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -3659,6 +3665,7 @@ class TeamStateSqliteStore:
                     package.get("git_base_branch"),
                     package.get("published_commit_sha"),
                     package.get("base_commit_sha"),
+                    package.get("canonical_base_commit_sha"),
                     package.get("candidate_commit_sha"),
                     package.get("candidate_tree_hash"),
                     package.get("approved_commit_sha"),
@@ -5453,6 +5460,89 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 """,
                 (branch, commit, promotion["id"]),
             )
+
+
+def _migrate_release_canonical_base_snapshots(
+    connection: sqlite3.Connection,
+) -> None:
+    """Backfill the immutable pre-publication SHA for each release lineage."""
+
+    connection.execute(
+        """
+        UPDATE team_release_packages
+        SET canonical_base_commit_sha = base_commit_sha
+        WHERE canonical_base_commit_sha IS NULL
+          AND supersedes_release_package_id IS NULL
+          AND base_commit_sha IS NOT NULL
+        """
+    )
+    while True:
+        changed = 0
+        rows = connection.execute(
+            """
+            SELECT child.id,
+                   child.canonical_branch,
+                   child.base_commit_sha,
+                   predecessor.canonical_branch AS predecessor_canonical_branch,
+                   predecessor.canonical_base_commit_sha AS predecessor_canonical_base,
+                   predecessor.base_commit_sha AS predecessor_base,
+                   predecessor.published_commit_sha AS predecessor_published,
+                   predecessor.approved_commit_sha AS predecessor_approved,
+                   predecessor.candidate_commit_sha AS predecessor_candidate,
+                   predecessor.state AS predecessor_state
+            FROM team_release_packages AS child
+            JOIN team_release_packages AS predecessor
+              ON predecessor.id = child.supersedes_release_package_id
+            WHERE child.canonical_base_commit_sha IS NULL
+            ORDER BY child.created_at, child.id
+            """
+        ).fetchall()
+        for row in rows:
+            if row["canonical_branch"] == row["predecessor_canonical_branch"]:
+                if row["predecessor_state"] == "accepted":
+                    canonical_base = (
+                        row["predecessor_published"]
+                        or row["predecessor_approved"]
+                        or row["predecessor_candidate"]
+                    )
+                else:
+                    canonical_base = (
+                        row["predecessor_canonical_base"]
+                        or row["predecessor_base"]
+                    )
+            else:
+                canonical_base = row["base_commit_sha"]
+            if not canonical_base:
+                continue
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET canonical_base_commit_sha = ?
+                WHERE id = ? AND canonical_base_commit_sha IS NULL
+                """,
+                (canonical_base, row["id"]),
+            )
+            changed += 1
+        if changed == 0:
+            break
+    connection.execute(
+        """
+        UPDATE team_git_promotions
+        SET base_commit_sha = (
+            SELECT release.canonical_base_commit_sha
+            FROM team_release_packages AS release
+            WHERE release.id = team_git_promotions.release_package_id
+        )
+        WHERE promotion_kind = 'canonical_push'
+          AND state IN ('pending', 'failed')
+          AND EXISTS (
+              SELECT 1
+              FROM team_release_packages AS release
+              WHERE release.id = team_git_promotions.release_package_id
+                AND release.canonical_base_commit_sha IS NOT NULL
+          )
+        """
+    )
 
 
 def _backfill_position_values(
@@ -7258,6 +7348,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     git_base_branch TEXT,
     published_commit_sha TEXT,
     base_commit_sha TEXT,
+    canonical_base_commit_sha TEXT,
     candidate_commit_sha TEXT,
     candidate_tree_hash TEXT,
     approved_commit_sha TEXT,

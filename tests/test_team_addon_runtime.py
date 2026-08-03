@@ -9459,6 +9459,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert push["expected_commit_sha"] == (
         "${{team-git-promotion-requested.payload.expected_commit_sha}}"
     )
+    assert push["expected_destination_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.base_commit_sha}}"
+    )
     assert push["destination_branch"] == ("${{team-git-promotion-requested.payload.target_branch}}")
     record_canonical = effects["team-record-canonical-promotion"]
     assert record_canonical["type"] == "effect:team:record-git-promotion"
@@ -9470,6 +9473,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert record_canonical["result_outputs"]["error_code"] == (
         "${{team-push-canonical-branch.reason ?? null}}"
     )
+    assert record_canonical["result_outputs"]["expected_destination_commit_sha"] == (
+        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+    )
+    assert record_canonical["result_outputs"]["destination_commit"] == (
+        "${{team-push-canonical-branch.destination_commit ?? null}}"
+    )
     assert effects["team-mark-release-published"]["type"] == ("effect:team:mark-release-published")
     assert effects["team-mark-release-published"]["release_package_id"] == (
         "${{team-git-promotion-requested.payload.release_package_id}}"
@@ -9480,6 +9489,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-mark-release-published"]["result_outputs"]["error_code"] == (
         "${{team-push-canonical-branch.reason ?? null}}"
     )
+    assert effects["team-mark-release-published"]["result_outputs"][
+        "expected_destination_commit_sha"
+    ] == "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+    assert effects["team-mark-release-published"]["result_outputs"][
+        "destination_commit"
+    ] == "${{team-push-canonical-branch.destination_commit ?? null}}"
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
     assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
     assert (
@@ -9507,6 +9522,9 @@ def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
     assert push["expected_commit_sha"] == (
         "${{team-git-promotion-requested.payload.expected_commit_sha}}"
+    )
+    assert push["expected_destination_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.base_commit_sha}}"
     )
     assert push["destination_branch"] == ("${{team-git-promotion-requested.payload.target_branch}}")
 
