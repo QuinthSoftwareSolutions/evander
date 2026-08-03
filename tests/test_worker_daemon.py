@@ -603,7 +603,7 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
         f"ssh://{_TEST_MANAGED_GIT_ALIAS}/runtime/managed-git/{_TEST_MANAGED_REPO_ID}.git",
     ],
 )
-def test_worker_clone_repo_uses_session_home_for_git_ssh(
+def test_worker_clone_repo_uses_host_only_git_ssh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     repo_source: str,
@@ -639,12 +639,12 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     )
 
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
-    assert (paths.agent_home / ".ssh" / "config").is_file()
+    assert not (paths.agent_home / ".ssh" / "evander-git").exists()
+    host_ssh = paths.root / "host-ssh"
+    assert (host_ssh / "evander-git").is_file()
     clone_call = next(call for call in calls if call["args"][:2] == ["git", "clone"])
     assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
-    assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
-        f"ssh -F {paths.agent_home / '.ssh' / 'config'}"
-    )
+    assert clone_call["env"]["GIT_SSH_COMMAND"] == f"ssh -F {host_ssh / 'config'}"  # type: ignore[index]
 
 
 def test_worker_reconciles_existing_checkout_remote_without_recloning(
@@ -2175,7 +2175,7 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     assert "IdentityFile ~/.ssh/evander-git" in config_text
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
     host_config_text = (paths.root / "host-ssh" / "config").read_text(encoding="utf-8")
-    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git'}" in host_config_text
+    assert f"IdentityFile {paths.root / 'host-ssh' / 'evander-git'}" in host_config_text
     assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
     assert _git_subprocess_env(paths.agent_home)["GIT_SSH_COMMAND"] == (
         f"ssh -F {paths.root / 'host-ssh' / 'config'}"
@@ -2800,7 +2800,7 @@ def test_session_artifact_text_endpoint_does_not_follow_leaf_symlink_swapped_at_
     assert outside.read_text(encoding="utf-8") == "host secret\n"
 
 
-def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Path) -> None:
+def test_session_prepare_keeps_git_ssh_outside_agent_home(tmp_path: Path) -> None:
     ssh_source = tmp_path / "worker-ssh"
     ssh_source.mkdir()
     (ssh_source / "evander-git").write_text("private-key\n", encoding="utf-8")
@@ -2808,6 +2808,9 @@ def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Pat
     (ssh_source / "config").write_text("Host evander-git-host\n", encoding="utf-8")
     (ssh_source / "known_hosts").write_text("known-host\n", encoding="utf-8")
     client = _client(tmp_path, git_ssh_source_dir=ssh_source)
+    exposed_dir = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh"
+    exposed_dir.mkdir(parents=True)
+    (exposed_dir / "evander-git").write_text("legacy-private-key\n", encoding="utf-8")
 
     response = client.post(
         "/v1/sessions",
@@ -2816,7 +2819,9 @@ def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Pat
     )
 
     assert response.status_code == 201
-    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh"
+    session_root = tmp_path / "worker-root" / "sessions" / "session-1"
+    assert not (session_root / "agent_home" / ".ssh" / "evander-git").exists()
+    target = session_root / "host-ssh"
     assert (target / "evander-git").read_text(encoding="utf-8") == "private-key\n"
     assert (target / "config").read_text(encoding="utf-8") == "Host evander-git-host\n"
     assert oct((target / "evander-git").stat().st_mode & 0o777) == "0o600"

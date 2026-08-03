@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-02 - Container Worker Git Credential Isolation
+
+- Kept the same-host worker's broad Git SSH credential in a host-only session
+  directory so container jobs cannot read it through the agent-home mount.
+
 ## 2026-08-02 - Team Dependency-Wait Labels
 
 - Distinguished tasks waiting on unfinished dependencies from tasks carrying

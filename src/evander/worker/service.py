@@ -1674,7 +1674,7 @@ class WorkerDaemon:
                 write_git_ssh_alias=write_git_ssh_alias,
                 git_host=request.git_host,
                 git_user=request.git_user,
-                read_identity_file=str(ssh_dir / "evander-git"),
+                read_identity_file=str(paths.root / "host-ssh" / "evander-git"),
                 identity_file=str(key_path),
             )
         metadata = self._read_session_metadata(paths)
@@ -2818,8 +2818,15 @@ class WorkerDaemon:
         *,
         required: bool,
     ) -> None:
-        target_dir = paths.agent_home / ".ssh"
-        preserve_config = self._has_provisioned_git_key(paths, target_dir=target_dir)
+        # The source credential is only for host-side repository operations.  The
+        # agent home is mounted into the untrusted job container, so never stage
+        # this broad read credential there.
+        exposed_dir = paths.agent_home / ".ssh"
+        for name in ("evander-git", "evander-git.pub"):
+            exposed_key = exposed_dir / name
+            if self._managed_regular_file_exists_no_follow(exposed_key, label="Git key"):
+                exposed_key.unlink()
+        target_dir = paths.root / "host-ssh"
         existing_read_key = required and self._managed_regular_file_exists_no_follow(
             target_dir / "evander-git", label="Git key"
         )
@@ -2829,7 +2836,7 @@ class WorkerDaemon:
                 target_dir / "config",
                 label="SSH config",
             )
-            and (preserve_config or existing_read_key)
+            and existing_read_key
         ):
             return
         if self.git_ssh_source_dir is None:
@@ -2848,15 +2855,20 @@ class WorkerDaemon:
             return
         self._ensure_managed_ssh_dir(target_dir)
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
-            if name == "config" and preserve_config:
-                continue
             source = source_dir / name
             if not source.is_file():
                 continue
             destination = target_dir / name
+            contents = source.read_bytes()
+            if name == "config":
+                config = contents.decode("utf-8")
+                config = config.replace(
+                    "~/.ssh/evander-git", str(target_dir / "evander-git")
+                ).replace(str(source_dir / "evander-git"), str(target_dir / "evander-git"))
+                contents = config.encode("utf-8")
             self._write_managed_bytes_file_no_follow(
                 destination,
-                source.read_bytes(),
+                contents,
                 mode=0o644 if name.endswith(".pub") else 0o600,
                 label=f"SSH {name}",
             )
