@@ -154,9 +154,40 @@ def _message_team_chat_mutation_authorization(
         return None
 
 
-def team_chat_mutation_allowed(message: TeamConversationMessage) -> bool:
+def _matching_team_chat_dispatch(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
+    return (
+        dispatch.cause_kind == "team_chat"
+        and dispatch.cause_id == message.id
+    )
+
+
+def team_chat_mutation_allowed(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
     authorization = _message_team_chat_mutation_authorization(message)
-    return authorization is not None and authorization.mode == "project_scoped"
+    return (
+        authorization is not None
+        and authorization.mode == "project_scoped"
+        and _matching_team_chat_dispatch(message, dispatch)
+        and bool(dispatch.project_ids)
+    )
+
+
+def team_chat_mutation_scope_lost(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
+    authorization = _message_team_chat_mutation_authorization(message)
+    return (
+        authorization is not None
+        and authorization.mode == "project_scoped"
+        and _matching_team_chat_dispatch(message, dispatch)
+        and not dispatch.project_ids
+    )
 
 
 def _operator_chat_dispatch_scope(

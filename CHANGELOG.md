@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-04 - Fail-closed Team Chat Authorization
+
+- Failed mutation-authorized Chat messages before agent resume when their
+  snapshotted project scope narrows to empty at lease time, revoked stale Team
+  tool grants, and rejected empty-scope targetless mutations at command
+  validation.
+- Made reply-only Chat text-only: attachment staging and previously staged file
+  sends now require a non-empty project-scoped Chat dispatch.
+
 ## 2026-08-04 - Focused Workspace Delivery
 
 - Removed the redundant Workspace detailed-tab shortcut grid and placed the

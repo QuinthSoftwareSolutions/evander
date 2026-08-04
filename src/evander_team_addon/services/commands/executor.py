@@ -326,6 +326,17 @@ class TeamCommandExecutor:
             # Context resolution produces the stable missing-dispatch error before
             # command validation. This guard keeps governance/assignment paths inert.
             return
+        if (
+            dispatch.cause_kind == "team_chat"
+            and not dispatch.project_ids
+            and resolved.context.tool_name != "team_reply_to_chat"
+        ):
+            raise _dispatch_scope_error(
+                dispatch,
+                scope_kind="Team mutation tool",
+                requested_ids=[resolved.context.tool_name],
+                allowed_ids=[],
+            )
         targets = _command_dispatch_scope_targets(
             state,
             tool_name=resolved.context.tool_name,

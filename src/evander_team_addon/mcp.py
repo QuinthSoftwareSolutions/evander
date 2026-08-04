@@ -366,7 +366,8 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
     ),
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL: (
         "Stage one regular file from the current agent workspace for a Team Chat reply "
-        "or proactive operator message. Returns a session-owned attachment_id."
+        "or proactive operator message. Reply-only Chat dispatches are text-only. "
+        "Returns a session-owned attachment_id."
     ),
     TEAM_IMPORT_ARTIFACT_TOOL: (
         "Permission-check and import the latest published version of an artifact-space "
@@ -946,7 +947,8 @@ def _register_slice5_tools(
         name=TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
         description=(
             "Stage one regular file under /home/agent for an attachment-enabled Team Chat "
-            "message. The returned attachment id is bound to the current session and expires."
+            "message. Reply-only Chat dispatches cannot stage files. The returned attachment "
+            "id is bound to the current session and expires."
         ),
     )
 
@@ -967,6 +969,11 @@ def _register_slice5_tools(
             tool_name=TEAM_REPLY_TO_CHAT_TOOL,
         )
         normalized_attachment_ids = list(attachment_ids or [])
+        if normalized_attachment_ids:
+            resolver.require_chat_attachment_context(
+                session_id=caller.session_id,
+                tool_name=TEAM_REPLY_TO_CHAT_TOOL,
+            )
         prepared_attachments = _prepare_team_chat_agent_attachments(
             context,
             storage=attachment_storage,
@@ -1021,7 +1028,8 @@ def _register_slice5_tools(
         description=(
             "Reply to a human Team Chat operator message for the current chat "
             "dispatch. Requires conversation_id, message_id, request_id, and either body "
-            "or staged attachment_ids. Agent file sends may require exact approval."
+            "or staged attachment_ids. Reply-only dispatches accept text only; agent file "
+            "sends may require exact approval."
         ),
     )
 

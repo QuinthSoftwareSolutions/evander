@@ -84,7 +84,6 @@ from .git_naming import validate_branch_name
 from .costs import TeamCostService
 from .chat_attachments import TeamChatAttachmentPolicyService, TeamChatAttachmentStorage
 from .mcp import (
-    CHAT_TEAM_MCP_TOOL_NAMES,
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -145,6 +144,7 @@ from .models import (
     TeamMemoryStatus,
     TeamBlockerState,
     TeamRecordState,
+    TeamDispatch,
     TeamDispatchStatus,
     TeamConversationMessage,
     TeamState,
@@ -197,6 +197,7 @@ from .services.chat_service import (
     project_scoped_team_chat_authorization,
     reply_only_team_chat_authorization,
     team_chat_mutation_allowed,
+    team_chat_mutation_scope_lost,
 )
 from .services.domain.agent_access import (
     _agent_payload,
@@ -2680,6 +2681,35 @@ def _dispatch_queued_team_chat_messages(
         conversation = state.conversations[conversation_id]
         try:
             agent_payload = agent.model_dump(mode="json")
+            dispatch = state.dispatches[dispatch_id]
+            if _team_chat_mutation_scope_lost(message, dispatch):
+                error = (
+                    "Team Chat authorization changed before dispatch; "
+                    "no authorized projects remain"
+                )
+                tool_grant_result = _set_session_team_mcp_tools(
+                    context,
+                    session_id=agent.session_id,
+                    tool_names=[],
+                    dispatch_id=dispatch_id,
+                )
+                state, _message = TeamChatService(repo).mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+                dispatches.append(
+                    {
+                        "agent_id": agent_id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation_id,
+                        "message_id": message_id,
+                        "dispatch_id": dispatch_id,
+                        "authorization_denied": True,
+                        "error": error,
+                        "team_chat_mcp_tools": tool_grant_result,
+                    }
+                )
+                continue
             attachment_paths = _copy_team_chat_attachments_for_dispatch(
                 context,
                 repo=repo,
@@ -2687,9 +2717,10 @@ def _dispatch_queued_team_chat_messages(
                 agent=agent,
                 message=message,
             )
-            mutation_allowed = _team_chat_mutation_allowed(message)
-            chat_tool_names = list(CHAT_TEAM_MCP_TOOL_NAMES)
+            mutation_allowed = _team_chat_mutation_allowed(message, dispatch)
+            chat_tool_names = [TEAM_REPLY_TO_CHAT_TOOL]
             if mutation_allowed:
+                chat_tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
                 chat_tool_names.extend(_ordinary_team_tools_for_agent(agent_payload))
             tool_grant_result = _set_session_team_mcp_tools(
                 context,
@@ -6944,7 +6975,8 @@ def _build_team_chat_prompt(
         "acknowledgement, or no-op reply.\n\n"
         if mutation_allowed
         else "This chat wake is reply-only. Do not mutate Team state; use only "
-        f"{TEAM_REPLY_TO_CHAT_TOOL} and {TEAM_STAGE_CHAT_ATTACHMENT_TOOL}. If the operator "
+        f"{TEAM_REPLY_TO_CHAT_TOOL}. File attachments are unavailable in reply-only "
+        "chat. If the operator "
         "asks you to create, assign, "
         "request review, mark, or otherwise change Team state, state clearly that "
         "no Team state change was performed in this dispatch and that the request "
@@ -9074,8 +9106,20 @@ def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     return [*ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES]
 
 
-def _team_chat_mutation_allowed(message: object) -> bool:
-    return isinstance(message, TeamConversationMessage) and team_chat_mutation_allowed(message)
+def _team_chat_mutation_allowed(message: object, dispatch: object) -> bool:
+    return (
+        isinstance(message, TeamConversationMessage)
+        and isinstance(dispatch, TeamDispatch)
+        and team_chat_mutation_allowed(message, dispatch)
+    )
+
+
+def _team_chat_mutation_scope_lost(message: object, dispatch: object) -> bool:
+    return (
+        isinstance(message, TeamConversationMessage)
+        and isinstance(dispatch, TeamDispatch)
+        and team_chat_mutation_scope_lost(message, dispatch)
+    )
 
 
 def _team_session_has_active_prompt(context: Any, *, session_id: str) -> bool:
@@ -9178,7 +9222,10 @@ def _active_team_mcp_tools_for_other_dispatches(
         if agent is None or getattr(agent, "session_id", None) != session_id:
             continue
         if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
-            tool_names.extend(CHAT_TEAM_MCP_TOOL_NAMES)
+            tool_names.append(TEAM_REPLY_TO_CHAT_TOOL)
+            active_dispatch = state.dispatches.get(active_dispatch_id)
+            if active_dispatch is not None and active_dispatch.project_ids:
+                tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
         else:
             tool_names.extend(
                 _ordinary_team_tools_for_agent({"team_id": getattr(agent, "team_id", None)})

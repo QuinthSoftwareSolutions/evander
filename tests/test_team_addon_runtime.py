@@ -3883,25 +3883,96 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
 
     assert result["success"] is True
     chat_tools = result["chat_dispatches"][0]["team_chat_mcp_tools"]
-    assert chat_tools["requested_tools"] == [
-        TEAM_REPLY_TO_CHAT_TOOL,
-        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
-    ]
-    assert chat_tools["already_allowed_tools"] == [TEAM_STAGE_CHAT_ATTACHMENT_TOOL]
+    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["already_allowed_tools"] == []
     assert chat_tools["granted_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
-    assert chat_tools["removed_tools"] == [
-        tool for tool in ORDINARY_TEAM_MCP_TOOL_NAMES if tool != TEAM_STAGE_CHAT_ATTACHMENT_TOOL
-    ]
-    assert session_store.sessions["session-backend"].allowed_tools == [
-        TEAM_REPLY_TO_CHAT_TOOL,
-        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
-    ]
+    assert chat_tools["removed_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert session_store.sessions["session-backend"].allowed_tools == [TEAM_REPLY_TO_CHAT_TOOL]
     prompt = str(resumer.calls[0]["prompt"])
     assert "reply-only" in prompt
+    assert "File attachments are unavailable" in prompt
     assert "no Team state change was performed in this dispatch" in prompt
     assert "Do not promise to make the change later" in prompt
     assert "Current dispatch Team state mutation: allowed" not in prompt
     assert "ordinary Team MCP tools granted to this chat wake" not in prompt
+
+
+def test_wake_due_agents_fails_closed_when_authorized_chat_scope_becomes_empty(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Stand down the agent after returning its project report.",
+        created_by="operator:alice@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+
+    def _remove_project_access(team_state: TeamState) -> TeamState:
+        team_state.project_assignments = {
+            assignment_id: assignment
+            for assignment_id, assignment in team_state.project_assignments.items()
+            if assignment.agent_id != "backend"
+        }
+        team_state.agents["backend"].role_id = next(
+            role.id
+            for role in team_state.roles.values()
+            if role.team_id == "team" and role.project_id is None
+        )
+        return team_state
+
+    repo.update(_remove_project_access)
+    dispatch_id = f"team-chat:{message.id}"
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+    )
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].allowed_tools = list(
+        ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls == []
+    assert session_store.sessions["session-backend"].allowed_tools == []
+    assert result["chat_dispatches"][0]["authorization_denied"] is True
+    assert result["chat_dispatches"][0]["team_chat_mcp_tools"]["requested_tools"] == []
+    reread = repo.read()
+    assert reread.dispatches[dispatch_id].status == TeamDispatchStatus.FAILED
+    assert reread.dispatches[dispatch_id].project_ids == []
+    assert reread.conversation_messages[message.id].status == "failed"
+    assert "no authorized projects remain" in str(
+        reread.conversation_messages[message.id].error
+    )
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
 
 
 def test_wake_due_agents_leaves_reply_only_chat_queued_while_agent_prompt_is_active(

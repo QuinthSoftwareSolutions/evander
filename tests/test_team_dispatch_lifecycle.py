@@ -30,6 +30,7 @@ from evander_team_addon.services.chat_service import (
     project_scoped_team_chat_authorization,
 )
 from evander_team_addon.services.commands import (
+    TeamAgentControlCommandService,
     TeamBlockerCommandService,
     TeamDeliverableSubmissionCommandService,
     TeamMemoryCommandService,
@@ -623,6 +624,45 @@ def test_operator_chat_ignores_legacy_mutation_flags_without_server_grant(
     dispatch = state.dispatches[f"team-chat:{message.id}"]
     assert dispatch.project_ids == []
     assert dispatch.managed_repo_ids == []
+
+
+def test_empty_scope_chat_dispatch_rejects_targetless_team_mutation(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="viewer@example.com",
+        created_by="operator:viewer@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Stand down the worker despite this reply-only dispatch.",
+        created_by="operator:viewer@example.com",
+        expected_revision=state.revision,
+    )
+    state, _ = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    assert state.dispatches[f"team-chat:{message.id}"].project_ids == []
+
+    state, result = TeamAgentControlCommandService(repository).stand_down_agent_command(
+        session_id="session-lead",
+        agent_id="worker",
+        reason="Unauthorized targetless mutation.",
+        scope="agent",
+        request_id="empty-chat-scope-stand-down",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert not any(
+        stand_down.agent_id == "worker" and stand_down.active
+        for stand_down in state.stand_downs.values()
+    )
 
 
 def test_operator_chat_send_time_scope_does_not_expand_before_lease(

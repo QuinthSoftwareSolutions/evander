@@ -559,7 +559,9 @@ the recipient agent and the included projects. The server snapshots the
 intersection of that authority and the agent's visible projects when accepting
 the message; managed repositories are derived from those projects. Missing or
 legacy mutation metadata is reply-only. Built-in Owners and Operators receive
-`team_chats.mutate`; other users can still send reply-only messages.
+`team_chats.mutate`; other users can still send reply-only messages. A
+mutation-authorized message whose project intersection becomes empty before
+lease fails without resuming the agent.
 
 Chat refreshes and live snapshots preserve reader position when the operator is
 scrolled up, while a reader already near the bottom remains pinned to new
@@ -609,7 +611,9 @@ and the UI renders permitted raster images inline.
 
 Agent-originated files use `team_stage_chat_attachment` first, then pass the
 returned attachment IDs to `team_reply_to_chat` or
-`team_send_operator_chat_message`. Staging accepts only regular files under
+`team_send_operator_chat_message`. Reply-only Chat is text-only; staging and
+attaching agent-originated files to a Chat reply require a non-empty
+project-scoped Chat dispatch. Staging accepts only regular files under
 `/home/agent`, is bound to the calling session, and expires after 24 hours. The
 root policy enables both directions, allows five common document/image files up
 to 10 MiB each, and requires exact approval for an agent send. Configure inherited
@@ -1134,9 +1138,10 @@ Tool visibility is scoped by wake class:
 - `context_handoff` preparation wakes get only
   `team_record_context_handoff`; even ordinary Team read/action tools are
   withheld for that bounded advisory turn.
-- Team Chat wakes get the chat-class tool `team_reply_to_chat` and the attachment-staging tool
-  `team_stage_chat_attachment`, plus ordinary tools only when that chat dispatch may mutate Team
-  state.
+- Team Chat wakes get the chat-class tool `team_reply_to_chat`. Reply-only Chat
+  gets no other Team tool; mutation-enabled Chat also gets
+  `team_stage_chat_attachment` and the ordinary Team tools authorized by the
+  dispatch's non-empty project scope.
 - Governance wakes get governance tools only.
 - Ephemeral worker wakes get `team_report_ephemeral_result` only.
 - Inactive or teamless sessions get no ordinary Team action tools, except
