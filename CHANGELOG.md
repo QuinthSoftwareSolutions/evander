@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-02 - Team Review Cohort Authorization
+
+- Scoped review-cohort creation by team managers to deliverables belonging to
+  their own team's projects, preventing cross-team cohort mutation and review
+  context disclosure.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over
