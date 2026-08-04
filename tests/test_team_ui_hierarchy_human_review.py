@@ -78,6 +78,23 @@ def test_workspace_attention_has_pagination_controls() -> None:
     assert ".workspace-attention-pagination" in stylesheet
 
 
+def test_workspace_places_delivery_under_current_workload_without_tab_shortcuts() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    dashboard_source = source[
+        source.index("function renderWorkspaceDashboard()") : source.index(
+            "function renderWorkspaceTarget("
+        )
+    ]
+
+    assert "renderWorkspaceAttentionPanel(model)," in dashboard_source
+    assert "renderWorkspaceWorkStatusPanel(model)," in dashboard_source
+    assert "renderWorkspaceDeliveryPanel(model)," in dashboard_source
+    assert "renderWorkspaceNavigationPanel" not in source
+    assert "Detailed tabs" not in source
+
+
 def test_attention_excludes_retired_or_superseded_delivery_lineage() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"

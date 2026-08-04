@@ -5263,10 +5263,7 @@ function renderWorkspaceDashboard() {
   renderWorkspaceTarget(
     panel,
     "[data-workspace-attention-column]",
-    [
-      renderWorkspaceAttentionPanel(model),
-      renderWorkspaceDeliveryPanel(model),
-    ].join(""),
+    renderWorkspaceAttentionPanel(model),
   );
   renderWorkspaceTarget(
     panel,
@@ -5274,7 +5271,7 @@ function renderWorkspaceDashboard() {
     [
       renderWorkspaceTeamStatusPanel(model),
       renderWorkspaceWorkStatusPanel(model),
-      renderWorkspaceNavigationPanel(),
+      renderWorkspaceDeliveryPanel(model),
     ].join(""),
   );
 }
@@ -5615,38 +5612,6 @@ function renderWorkspaceWorkStatusPanel(model) {
         ${renderWorkspaceStatusCount("Open cases", openCases.length, openCases.length ? "warning" : "info")}
         ${renderWorkspaceStatusCount("Inbox", model.pendingInbox.length, model.pendingInbox.length ? "warning" : "info")}
         ${renderWorkspaceStatusCount("Governance", pendingGovernance, pendingGovernance ? "warning" : "info")}
-      </div>
-    </section>
-  `;
-}
-
-function renderWorkspaceNavigationPanel() {
-  const links = [
-    ["projects", "Projects", "Project catalog and review profiles"],
-    ["task-board", "Task board", "Project work by lane"],
-    ["cases", "Cases", "Intake and ticket context"],
-    ["governance", "Governance", "Groups, agenda, and oversight"],
-    ["mail", "Agent Mail", "Internal messages and historical correspondence"],
-    ["timeline", "Activity timeline", "Retained-record activity history"],
-    ["org", "Org chart", "Team graph"],
-  ];
-  return `
-    <section class="workspace-dashboard-panel" aria-labelledby="workspace-navigation-heading">
-      <div class="workspace-panel-header">
-        <div>
-          <p class="section-label">Drill down</p>
-          <h3 id="workspace-navigation-heading">Detailed tabs</h3>
-        </div>
-      </div>
-      <div class="workspace-link-grid">
-        ${links
-          .map(([view, label, detail]) => `
-            <button type="button" class="workspace-link-card" data-team-link-view="${escapeAttr(view)}">
-              <strong>${escapeHtml(label)}</strong>
-              <span>${escapeHtml(detail)}</span>
-            </button>
-          `)
-          .join("")}
       </div>
     </section>
   `;

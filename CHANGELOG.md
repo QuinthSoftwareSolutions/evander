@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-04 - Focused Workspace Delivery
+
+- Removed the redundant Workspace detailed-tab shortcut grid and placed the
+  Delivery summary directly below Current workload in the status column.
+
 ## 2026-08-04 - Workspace Attention Pagination
 
 - Added Previous and Next controls to the Team Workspace attention list, with a
