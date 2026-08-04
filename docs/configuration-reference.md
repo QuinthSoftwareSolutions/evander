@@ -241,7 +241,8 @@ Set `allow_team_mutations=false` unless the workflow also contains a fixed
 `authorized_author_ids` allowlist and the incoming authenticated
 `source_author_id` matches it. For a Discord channel, also set the trigger's
 `author_ids` filter and exclude the Evander bot; the effect-side allowlist stays
-the authority check.
+required. Mutation-enabled ingress additionally requires the recipient agent
+and every included project to be within the workflow effect's directory scope.
 
 The bundled Team runtime pack consumes
 `team.chat.external_reply_requested` after `team_reply_to_chat`, sends the

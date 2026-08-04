@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-08-04 - Fail-closed Team Chat Authorization
+
+- Failed mutation-authorized Chat messages before agent resume when their
+  snapshotted project scope narrows to empty at lease time, revoked stale Team
+  tool grants, and rejected empty-scope targetless mutations at command
+  validation.
+- Made reply-only Chat text-only: attachment staging and previously staged file
+  sends now require a non-empty project-scoped Chat dispatch.
+
+## 2026-08-04 - Focused Workspace Delivery
+
+- Removed the redundant Workspace detailed-tab shortcut grid and placed the
+  Delivery summary directly below Current workload in the status column.
+
+## 2026-08-04 - Workspace Attention Pagination
+
+- Added Previous and Next controls to the Team Workspace attention list, with a
+  visible item range and current-page indicator.
+
+## 2026-08-04 - RBAC-scoped Team Chat Mutations
+
+- Preserved broad project and managed-repository scopes for mutation-enabled
+  Team Chat while requiring the human sender to hold the new directory-scoped
+  `team_chats.mutate` permission over both the recipient agent and included
+  projects; built-in Owners and Operators retain this capability.
+- Snapshotted server-derived chat mutation grants at send time, made missing or
+  legacy mutation metadata reply-only, bounded external bridges to their
+  workflow directory, and exposed reply-only versus mutation-enabled mode in
+  the Chat UI.
+
+## 2026-08-04 - Current Delivery Attention
+
+- Excluded retired and superseded review requests, and superseded deliverables,
+  from Workspace and Delivery attention while retaining their audit history.
+
+## 2026-08-04 - Focused Team Workspace Attention
+
+- Removed operator and governance directives from the Team Workspace attention
+  dashboard while retaining them in its neutral inbox totals and the receiving
+  agent and team detail views.
+
+## 2026-08-02 - Team Review Cohort Authorization
+
+- Scoped review-cohort creation by team managers to deliverables belonging to
+  their own team's projects, preventing cross-team cohort mutation and review
+  context disclosure.
+
 ## 2026-08-03 - Browser Voice Reconciliation Context
 
 - Bound browser voice sessions to the authenticated operator, identify transcript

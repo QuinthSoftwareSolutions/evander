@@ -423,6 +423,49 @@ def test_create_review_cohort_effect_seals_all_reviewers_atomically(
     assert len(repo.read().review_requests) == 2
 
 
+def test_create_review_cohort_effect_rejects_cross_team_manager(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _admin(repo).create_team(
+        team_id="other-team",
+        name="Other Team",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    _record_deliverable(repo, "deliverable")
+    provider = TeamCreateReviewCohortEffectProvider()
+    provider.initialize(
+        TeamCreateReviewCohortEffectDefinition(
+            id="cross-team-review-cohort",
+            display_name="Cross-team review cohort",
+            type="effect:team:create-review-cohort",
+            actor_agent_id="other-manager",
+            deliverable_id="deliverable",
+            reviews=[
+                {
+                    "reviewer_agent_id": "reviewer",
+                    "review_profile_id": "code-review",
+                }
+            ],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["error"] == (
+        "agent other-manager is not permitted to request review of deliverable deliverable"
+    )
+    deliverable = repo.read().deliverables["deliverable"]
+    assert deliverable.review_cohort_id is None
+    assert deliverable.review_cohort_sealed_at is None
+    assert repo.read().review_requests == {}
+
+
 def test_create_review_cohort_effect_reopens_completed_project(
     tmp_path: Path,
 ) -> None:

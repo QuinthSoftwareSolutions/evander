@@ -1314,6 +1314,7 @@ function chatConversationPayload(state, conversation, { includeMessages = false,
     agent_id: conversation.agent_id,
     agent: chatAgentPayload(state, conversation.agent_id),
     created_by: conversation.created_by || null,
+    mutation_mode: conversation.mutation_mode || "reply_only",
     last_message_preview: conversation.last_message_preview || "",
     created_at: conversation.created_at || null,
     updated_at: conversation.updated_at || null,
@@ -7706,6 +7707,7 @@ test("team add-on Chat remains usable while privileged operations are locked", a
   await waitForRevision(page, 9);
   await page.locator("#team-view-chat-tab").click();
   await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+  await page.locator(".chat-composer .chat-mutation-mode.is-reply-only").getByText("Reply only").waitFor({ state: "visible" });
 
   const newChatButton = page.getByRole("button", { name: "New chat" });
   assert.equal(await newChatButton.isDisabled(), false);
@@ -7741,6 +7743,19 @@ test("team add-on Chat remains usable while privileged operations are locked", a
       request.payload?.body === body,
   );
   assert.equal(sendRequest?.payload?.expected_revision, undefined);
+});
+
+test("team add-on Chat shows mutation-enabled server authority", async (t) => {
+  const initialState = seededLongChatState();
+  initialState.conversations["conversation-alpha-lead"].mutation_mode = "project_scoped";
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-composer .chat-mutation-mode.is-enabled")
+    .getByText("Mutation enabled")
+    .waitFor({ state: "visible" });
 });
 
 test("team add-on Chat notification sound is gated by focus and sender", async (t) => {

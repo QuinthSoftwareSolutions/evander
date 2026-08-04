@@ -97,6 +97,7 @@ from evander_team_addon.services.domain.human_reviews import (
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.commands import TeamTaskUpdateCommandService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 
 
@@ -757,6 +758,7 @@ class _HumanApiAuthStub:
         group_assignments: list[object] | None = None,
         known_users: list[str] | None = None,
         permission_users: list[str] | None = None,
+        team_chat_mutation_directories: set[str] | None = None,
     ) -> None:
         self.config = SimpleNamespace(auth_mode=auth_mode)
         self.login = login
@@ -764,6 +766,7 @@ class _HumanApiAuthStub:
         self.privileged = privileged
         self.allow_decide = allow_decide
         self.permission_calls: list[tuple[str, str | None]] = []
+        self.team_chat_mutation_directories = set(team_chat_mutation_directories or ())
         known = {
             value.casefold()
             for value in (known_users or [login])
@@ -807,8 +810,12 @@ class _HumanApiAuthStub:
         permission: str,
         directory_path: str | None = None,
     ) -> bool:
-        del directory_path
-        return self.owner and permission == "admin.owner"
+        if self.owner:
+            return True
+        return (
+            permission == "team_chats.mutate"
+            and directory_path in self.team_chat_mutation_directories
+        )
 
     def require_permission(
         self,
@@ -2942,6 +2949,128 @@ def test_team_addon_admin_api_allows_locked_chat_as_reply_only(tmp_path: Path) -
     reread = TeamStateRepository(tmp_path / "runtime").read()
     stored_message = reread.conversation_messages[message["id"]]
     assert stored_message.metadata["allow_team_mutations"] is False
+
+
+def test_team_chat_mutation_scope_requires_operator_rbac_and_snapshots_projects(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _team_admin_service(repo).create_project(
+        project_id="other-project",
+        team_id="team",
+        name="Other Project",
+        lead_agent_id="lead",
+        lead_session_id=None,
+    )
+
+    def _bind_project_directory(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-a",
+        )
+        state.projects["other-project"].git = ProjectGitConfig(
+            managed_repo_id="mr_11111111111111111111",
+            directory_path="root/team-b",
+        )
+        return state
+
+    repo.update(_bind_project_directory)
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-lead",
+            vm_id="vm-lead",
+            directory_path="root/team-a",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    service = SimpleNamespace(runtime=SimpleNamespace(session_repository=session_repo))
+
+    viewer_auth = _HumanApiAuthStub(login="viewer@example.com", privileged=True)
+    viewer_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=viewer_auth,
+                    service=service,
+                )
+            )
+        )
+    )
+    viewer_conversation = viewer_client.post(
+        "/conversations",
+        json={"agent_id": "lead"},
+    ).json()["conversations"][0]
+    viewer_send = viewer_client.post(
+        f"/conversations/{viewer_conversation['id']}/messages",
+        json={"body": "Cancel the worker task."},
+    )
+
+    assert viewer_send.status_code == 202, viewer_send.text
+    viewer_message = viewer_send.json()["message"]
+    viewer_authorization = viewer_message["metadata"]["team_mutation_authorization"]
+    assert viewer_authorization["mode"] == "reply_only"
+    assert viewer_authorization["reason"] == "permission_denied"
+    state, _ = TeamChatService(repo).begin_chat_message_dispatch(
+        message_id=viewer_message["id"],
+        dispatch_id=viewer_message["dispatch_id"],
+    )
+    viewer_dispatch = state.dispatches[viewer_message["dispatch_id"]]
+    assert viewer_dispatch.project_ids == []
+    assert viewer_dispatch.managed_repo_ids == []
+    state, denied_cancellation = TeamTaskUpdateCommandService(repo).cancel_task_command(
+        session_id="session-lead",
+        task_id="dependency-task",
+        reason_code="superseded",
+        reason="Attempted through an unlocked Viewer-owned Team chat.",
+        request_id="viewer-team-chat-cancellation",
+    )
+    assert denied_cancellation["success"] is False
+    assert denied_cancellation["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.tasks["dependency-task"].state == TeamTaskState.PENDING
+
+    operator_auth = _HumanApiAuthStub(
+        login="operator@example.com",
+        privileged=True,
+        team_chat_mutation_directories={"root/team-a"},
+    )
+    operator_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=operator_auth,
+                    service=service,
+                )
+            )
+        )
+    )
+    operator_conversation = operator_client.post(
+        "/conversations",
+        json={"agent_id": "lead"},
+    ).json()["conversations"][0]
+    operator_send = operator_client.post(
+        f"/conversations/{operator_conversation['id']}/messages",
+        json={"body": "Please handle the project task."},
+    )
+
+    assert operator_send.status_code == 202, operator_send.text
+    operator_authorization = operator_send.json()["message"]["metadata"][
+        "team_mutation_authorization"
+    ]
+    assert operator_authorization["mode"] == "project_scoped"
+    assert operator_authorization["project_ids"] == ["project"]
+    assert operator_authorization["managed_repo_ids"] == [
+        "mr_0123456789abcdefabcd"
+    ]
 
 
 def test_team_addon_chat_ignores_stale_global_state_revision(tmp_path: Path) -> None:
