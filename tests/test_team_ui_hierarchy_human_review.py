@@ -61,6 +61,20 @@ def test_workspace_excludes_operator_directives_from_attention() -> None:
     assert "function pendingInboxForAgent(agentId)" in source
 
 
+def test_attention_excludes_retired_or_superseded_delivery_lineage() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function isCurrentDeliverable(deliverable)" in source
+    assert 'return !text(deliverable?.superseded_by_deliverable_id);' in source
+    assert "function isCurrentReviewRequest(review)" in source
+    assert 'return !review?.retired_at && !text(review?.superseded_by_review_request_id);' in source
+    assert ".filter(workspaceReviewNeedsAttention)" in source
+    assert "if (!isCurrentDeliverable(row.deliverable))" in source
+    assert "const currentReviews = reviews.filter(isCurrentReviewRequest);" in source
+
+
 def test_planning_view_receives_formal_review_status_collection() -> None:
     assert "review_requests" in TEAM_VIEW_COLLECTIONS["planning"]
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-04 - Current Delivery Attention
+
+- Excluded retired and superseded review requests, and superseded deliverables,
+  from Workspace and Delivery attention while retaining their audit history.
+
 ## 2026-08-04 - Focused Team Workspace Attention
 
 - Removed operator and governance directives from the Team Workspace attention

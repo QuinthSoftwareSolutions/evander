@@ -5030,7 +5030,7 @@ function renderReviewDeliveryWorkspace() {
 }
 
 function deliveryRowNeedsAttention(row) {
-  if (text(row.deliverable.superseded_by_deliverable_id)) {
+  if (!isCurrentDeliverable(row.deliverable)) {
     return false;
   }
   if (
@@ -5298,6 +5298,7 @@ function buildWorkspaceDashboardModel() {
   const attentionInbox = pendingInbox.filter(workspaceInboxItemNeedsAttention);
   const pendingReviews = values(state.review_requests)
     .filter((review) => !terminalRecordStates.has(review.state))
+    .filter(workspaceReviewNeedsAttention)
     .filter((review) => workspaceReviewIsVisible(review, visibleProjectIds))
     .sort(compareWorkspaceReviews);
   const pendingGovernanceAgenda = values(state.governance_agenda)
@@ -5640,6 +5641,19 @@ function workspaceReviewIsVisible(review, visibleProjectIds) {
   const deliverable = state.deliverables[text(review.deliverable_id)];
   const task = deliverable ? state.tasks[text(deliverable.task_id)] : null;
   return !task || workspaceTaskIsVisible(task, visibleProjectIds);
+}
+
+function isCurrentDeliverable(deliverable) {
+  return !text(deliverable?.superseded_by_deliverable_id);
+}
+
+function isCurrentReviewRequest(review) {
+  return !review?.retired_at && !text(review?.superseded_by_review_request_id);
+}
+
+function workspaceReviewNeedsAttention(review) {
+  const deliverable = state.deliverables?.[text(review.deliverable_id)];
+  return isCurrentReviewRequest(review) && isCurrentDeliverable(deliverable);
 }
 
 function workspaceGovernanceAgendaIsVisible(item, visibleTeamIds, visibleProjectIds) {
@@ -18495,9 +18509,7 @@ function currentDeliveryReleasePackages(releasePackages) {
 
 function deliverableAcceptanceStage(row) {
   const deliverable = row.deliverable;
-  const activeReviews = row.reviewRequests.filter(
-    (review) => !text(review.superseded_by_review_request_id),
-  );
+  const activeReviews = row.reviewRequests.filter(isCurrentReviewRequest);
   const label = activeReviews.length
     ? "Deliverable agent review"
     : "Deliverable acceptance";
@@ -18759,9 +18771,7 @@ function renderReleaseSummary(releasePackages) {
 }
 
 function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPromotions) {
-  const currentReviews = reviews.filter(
-    (review) => !text(review.superseded_by_review_request_id),
-  );
+  const currentReviews = reviews.filter(isCurrentReviewRequest);
   const currentReleases = currentDeliveryReleasePackages(releasePackages);
   const currentPromotionIds = new Set(
     currentReleases.flatMap((release) => release.git_promotion_record_ids || []),
