@@ -89,6 +89,10 @@ def build_compact_wake_context(
         if fresh_context
         else _compact_fields(agent, ("id",))
     )
+    if not fresh_context and lease.get("role_description_changed") is True:
+        role_description = _optional_text(agent.get("role_description"))
+        if role_description is not None:
+            compact_agent["role_description"] = role_description
     compact_agent.pop("display_name", None)
     dispatch = _compact_current_dispatch(lease)
     context: dict[str, Any] = {

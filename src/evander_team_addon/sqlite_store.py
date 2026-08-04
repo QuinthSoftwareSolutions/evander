@@ -975,6 +975,12 @@ class TeamStateSqliteStore:
                     column_name="last_agent_handoff_at",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="last_delivered_role_description_fingerprint",
+                    definition="TEXT",
+                )
                 connection.execute(
                     """
                     UPDATE team_agent_runtimes
@@ -2241,6 +2247,9 @@ class TeamStateSqliteStore:
                 "last_agent_handoff_at": row["last_agent_handoff_at"],
                 "last_context_rotated_at": row["last_context_rotated_at"],
                 "last_thread_id": row["last_thread_id"],
+                "last_delivered_role_description_fingerprint": row[
+                    "last_delivered_role_description_fingerprint"
+                ],
                 "updated_at": row["updated_at"],
             }
 
@@ -2260,9 +2269,10 @@ class TeamStateSqliteStore:
                     context_rotation_reason, context_rotation_request_note,
                     last_handoff_summary, context_handoff_preparation_pending,
                     context_handoff_preparation_status, last_agent_handoff_summary,
-                    last_agent_handoff_at, last_context_rotated_at, last_thread_id, updated_at
+                    last_agent_handoff_at, last_context_rotated_at, last_thread_id,
+                    last_delivered_role_description_fingerprint, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2290,6 +2300,7 @@ class TeamStateSqliteStore:
                     runtime.get("last_agent_handoff_at"),
                     runtime.get("last_context_rotated_at"),
                     runtime.get("last_thread_id"),
+                    runtime.get("last_delivered_role_description_fingerprint"),
                     runtime["updated_at"],
                 ),
             )
@@ -6836,6 +6847,7 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     last_agent_handoff_at TEXT,
     last_context_rotated_at TEXT,
     last_thread_id TEXT,
+    last_delivered_role_description_fingerprint TEXT,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake

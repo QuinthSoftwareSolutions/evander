@@ -13,6 +13,9 @@ from typing import Iterator
 _IGNORED_PATH_CLEAN_BATCH_COUNT = 1024
 _IGNORED_PATH_CLEAN_BATCH_BYTES = 128 * 1024
 _IGNORED_PATH_CLEAN_TIMEOUT_SECONDS = 60.0
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,14 @@ class TaskWorktreeCleanupResult:
     reclaimed_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundTaskWorktreePaths:
+    root_fd: int
+    repo_fd: int
+    worktrees_root_fd: int | None
+    target_fd: int | None
+
+
 @contextmanager
 def task_worktree_repository_lock(lock_path: Path) -> Iterator[None]:
     """Serialize task-worktree preparation and cleanup for one session repository."""
@@ -67,6 +78,7 @@ def task_worktree_repository_lock(lock_path: Path) -> Iterator[None]:
 
 def cleanup_task_worktree(
     *,
+    trusted_root: Path,
     repo_dir: Path,
     worktrees_root: Path,
     target_dir: Path,
@@ -101,113 +113,278 @@ def cleanup_task_worktree(
                 ),
             )
 
-        second = inspect_task_worktree(
-            repo_dir=repo_dir,
-            worktrees_root=worktrees_root,
-            target_dir=target_dir,
-            branch=branch,
-            expected_commit_sha=expected_commit_sha,
-        )
-        if not second.safe_to_remove:
-            return _refused_result(second, validation_count=2)
-
-        removed = False
-        if second.target_exists:
-            if second.ignored_paths:
-                cleanup_error = _remove_proven_ignored_paths(
-                    target_dir,
-                    second.ignored_paths,
+        try:
+            with _open_bound_task_worktree_paths(
+                trusted_root=trusted_root,
+                repo_dir=repo_dir,
+                worktrees_root=worktrees_root,
+                target_dir=target_dir,
+                target_exists=first.target_exists,
+            ) as bound:
+                pass_fds = _bound_pass_fds(bound)
+                bound_repo_dir = _fd_path(bound.repo_fd)
+                bound_worktrees_root = (
+                    _fd_path(bound.worktrees_root_fd)
+                    if bound.worktrees_root_fd is not None
+                    else worktrees_root
                 )
-                if cleanup_error is not None:
+                bound_target_dir = (
+                    _fd_path(bound.target_fd) if bound.target_fd is not None else target_dir
+                )
+                second = inspect_task_worktree(
+                    repo_dir=bound_repo_dir,
+                    worktrees_root=bound_worktrees_root,
+                    target_dir=bound_target_dir,
+                    branch=branch,
+                    expected_commit_sha=expected_commit_sha,
+                    pass_fds=pass_fds,
+                )
+                if not first.target_exists and second.target_exists:
                     return _refused_result(
-                        TaskWorktreeInspection(
-                            safe_to_remove=False,
-                            target_exists=True,
-                            registered=second.registered,
-                            actual_branch=second.actual_branch,
-                            actual_commit_sha=second.actual_commit_sha,
-                            failed_check="ignored_path_cleanup_failed",
-                            message=cleanup_error,
-                            tracked_paths=list(second.tracked_paths),
-                            untracked_paths=list(second.untracked_paths),
-                            ignored_paths=list(second.ignored_paths),
-                            ignored_bytes=second.ignored_bytes,
-                            worktree_bytes=second.worktree_bytes,
+                        _unsafe_inspection(
+                            second,
+                            failed_check="worktree_path_changed",
+                            message="task worktree appeared during final validation",
                         ),
                         validation_count=2,
                     )
-            args = ["git", "-C", str(repo_dir), "worktree", "remove"]
-            args.append(str(target_dir))
-            removal = _run(args, check=False)
-            if removal.returncode != 0:
-                final = inspect_task_worktree(
-                    repo_dir=repo_dir,
-                    worktrees_root=worktrees_root,
-                    target_dir=target_dir,
-                    branch=branch,
-                    expected_commit_sha=expected_commit_sha,
-                )
-                if not final.safe_to_remove:
-                    return _refused_result(final, validation_count=3)
-                detail = removal.stderr.strip() or removal.stdout.strip()
-                return _refused_result(
-                    TaskWorktreeInspection(
-                        safe_to_remove=False,
-                        target_exists=final.target_exists,
-                        registered=final.registered,
-                        actual_branch=final.actual_branch,
-                        actual_commit_sha=final.actual_commit_sha,
-                        failed_check="worktree_removal_failed",
-                        message=(
-                            "Git refused non-force task worktree removal"
-                            + (f": {detail}" if detail else "")
+                if bound.target_fd is not None and not _fd_still_names_path(
+                    bound.target_fd, target_dir
+                ):
+                    return _refused_result(
+                        _unsafe_inspection(
+                            second,
+                            failed_check="worktree_path_changed",
+                            message="task worktree changed during final validation",
                         ),
-                        tracked_paths=list(final.tracked_paths),
-                        untracked_paths=list(final.untracked_paths),
-                        ignored_paths=list(final.ignored_paths),
-                        ignored_bytes=final.ignored_bytes,
-                        worktree_bytes=final.worktree_bytes,
-                    ),
-                    validation_count=3,
-                )
-            removed = True
-        _run(["git", "-C", str(repo_dir), "worktree", "prune", "--expire", "now"])
+                        validation_count=2,
+                    )
+                if not second.safe_to_remove:
+                    return _refused_result(second, validation_count=2)
 
-        if os.path.lexists(target_dir):
-            return _result_from_inspection(
-                second,
-                state="refused",
-                removed=removed,
-                pruned=True,
+                if second.target_exists and second.ignored_paths:
+                    assert bound.target_fd is not None
+                    cleanup_error = _remove_proven_ignored_paths(
+                        bound.target_fd,
+                        second.ignored_paths,
+                    )
+                    if cleanup_error is not None:
+                        return _refused_result(
+                            _unsafe_inspection(
+                                second,
+                                failed_check="ignored_path_cleanup_failed",
+                                message=cleanup_error,
+                            ),
+                            validation_count=2,
+                        )
+
+                removed = False
+                if second.target_exists:
+                    assert bound.target_fd is not None
+                    removal = _run(
+                        [
+                            "git",
+                            "-C",
+                            str(bound_repo_dir),
+                            "worktree",
+                            "remove",
+                            str(bound_target_dir),
+                        ],
+                        check=False,
+                        pass_fds=pass_fds,
+                    )
+                    if removal.returncode != 0:
+                        final = inspect_task_worktree(
+                            repo_dir=bound_repo_dir,
+                            worktrees_root=bound_worktrees_root,
+                            target_dir=bound_target_dir,
+                            branch=branch,
+                            expected_commit_sha=expected_commit_sha,
+                            pass_fds=pass_fds,
+                        )
+                        if not final.safe_to_remove:
+                            return _refused_result(final, validation_count=3)
+                        detail = removal.stderr.strip() or removal.stdout.strip()
+                        return _refused_result(
+                            TaskWorktreeInspection(
+                                safe_to_remove=False,
+                                target_exists=final.target_exists,
+                                registered=final.registered,
+                                actual_branch=final.actual_branch,
+                                actual_commit_sha=final.actual_commit_sha,
+                                failed_check="worktree_removal_failed",
+                                message=(
+                                    "Git refused non-force task worktree removal"
+                                    + (f": {detail}" if detail else "")
+                                ),
+                                tracked_paths=list(final.tracked_paths),
+                                untracked_paths=list(final.untracked_paths),
+                                ignored_paths=list(final.ignored_paths),
+                                ignored_bytes=final.ignored_bytes,
+                                worktree_bytes=final.worktree_bytes,
+                            ),
+                            validation_count=3,
+                        )
+                    removed = True
+                _run(
+                    ["git", "-C", str(bound_repo_dir), "worktree", "prune", "--expire", "now"],
+                    pass_fds=pass_fds,
+                )
+
+                if os.path.lexists(target_dir):
+                    return _result_from_inspection(
+                        second,
+                        state="refused",
+                        removed=removed,
+                        pruned=True,
+                        validation_count=2,
+                        failed_check="worktree_removal_incomplete",
+                        message=f"task worktree still exists after removal: {target_dir}",
+                        safe_to_remove=False,
+                    )
+                registered = _registered_worktree(
+                    bound_repo_dir,
+                    bound_target_dir,
+                    pass_fds=pass_fds,
+                )
+                if registered is not None:
+                    return _result_from_inspection(
+                        second,
+                        state="refused",
+                        removed=removed,
+                        pruned=True,
+                        validation_count=2,
+                        failed_check="worktree_registration_active",
+                        message=f"task worktree registration remains after pruning: {target_dir}",
+                        safe_to_remove=False,
+                    )
+                return _result_from_inspection(
+                    second,
+                    state="removed" if removed else "already_absent",
+                    removed=removed,
+                    pruned=True,
+                    validation_count=2,
+                    message=(
+                        "task worktree removed and registration pruned"
+                        if removed
+                        else "task worktree was already absent; registrations were pruned"
+                    ),
+                )
+        except (OSError, ValueError) as exc:
+            return _refused_result(
+                _unsafe_inspection(
+                    first,
+                    failed_check="worktree_path_changed",
+                    message=f"task worktree changed before final validation: {exc}",
+                ),
                 validation_count=2,
-                failed_check="worktree_removal_incomplete",
-                message=f"task worktree still exists after removal: {target_dir}",
-                safe_to_remove=False,
             )
-        registered = _registered_worktree(repo_dir, target_dir)
-        if registered is not None:
-            return _result_from_inspection(
-                second,
-                state="refused",
-                removed=removed,
-                pruned=True,
-                validation_count=2,
-                failed_check="worktree_registration_active",
-                message=f"task worktree registration remains after pruning: {target_dir}",
-                safe_to_remove=False,
-            )
-        return _result_from_inspection(
-            second,
-            state="removed" if removed else "already_absent",
-            removed=removed,
-            pruned=True,
-            validation_count=2,
-            message=(
-                "task worktree removed and registration pruned"
-                if removed
-                else "task worktree was already absent; registrations were pruned"
+
+
+@contextmanager
+def _open_bound_task_worktree_paths(
+    *,
+    trusted_root: Path,
+    repo_dir: Path,
+    worktrees_root: Path,
+    target_dir: Path,
+    target_exists: bool,
+) -> Iterator[_BoundTaskWorktreePaths]:
+    """Open task-worktree paths from an immutable session-home directory."""
+
+    root_fd = _open_directory_no_follow(trusted_root)
+    opened_fds = [root_fd]
+    try:
+        repo_fd = _open_relative_directory(
+            root_fd,
+            _relative_directory_parts(
+                root=trusted_root,
+                path=repo_dir,
+                path_label="task worktree repository",
             ),
         )
+        opened_fds.append(repo_fd)
+        worktrees_root_fd: int | None = None
+        target_fd: int | None = None
+        if target_exists:
+            worktrees_root_fd = _open_relative_directory(
+                root_fd,
+                _relative_directory_parts(
+                    root=trusted_root,
+                    path=worktrees_root,
+                    path_label="task worktree root",
+                ),
+            )
+            opened_fds.append(worktrees_root_fd)
+            target_fd = _open_relative_directory(
+                worktrees_root_fd,
+                _relative_directory_parts(
+                    root=worktrees_root,
+                    path=target_dir,
+                    path_label="task worktree",
+                ),
+            )
+            opened_fds.append(target_fd)
+        yield _BoundTaskWorktreePaths(
+            root_fd=root_fd,
+            repo_fd=repo_fd,
+            worktrees_root_fd=worktrees_root_fd,
+            target_fd=target_fd,
+        )
+    finally:
+        for fd in reversed(opened_fds):
+            os.close(fd)
+
+
+def _open_directory_no_follow(path: Path) -> int:
+    return os.open(path, _DIRECTORY_OPEN_FLAGS)
+
+
+def _open_relative_directory(root_fd: int, parts: tuple[str, ...]) -> int:
+    current_fd = os.dup(root_fd)
+    try:
+        for part in parts:
+            next_fd = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _relative_directory_parts(
+    *,
+    root: Path,
+    path: Path,
+    path_label: str,
+) -> tuple[str, ...]:
+    root_path = _absolute_path_without_parent_traversal(root, path_label="trusted root")
+    candidate_path = _absolute_path_without_parent_traversal(path, path_label=path_label)
+    try:
+        relative = candidate_path.relative_to(root_path)
+    except ValueError as exc:
+        raise ValueError(f"{path_label} must stay below {root_path}") from exc
+    if not relative.parts:
+        raise ValueError(f"{path_label} must stay below {root_path}")
+    return relative.parts
+
+
+def _absolute_path_without_parent_traversal(path: Path, *, path_label: str) -> Path:
+    candidate = Path(path)
+    if ".." in candidate.parts:
+        raise ValueError(f"{path_label} must not contain parent segments")
+    return candidate if candidate.is_absolute() else Path.cwd() / candidate
+
+
+def _bound_pass_fds(bound: _BoundTaskWorktreePaths) -> tuple[int, ...]:
+    return tuple(
+        fd for fd in (bound.repo_fd, bound.worktrees_root_fd, bound.target_fd) if fd is not None
+    )
+
+
+def _fd_path(directory_fd: int) -> Path:
+    return Path(f"/proc/self/fd/{directory_fd}")
 
 
 def inspect_task_worktree(
@@ -217,6 +394,7 @@ def inspect_task_worktree(
     target_dir: Path,
     branch: str,
     expected_commit_sha: str,
+    pass_fds: tuple[int, ...] = (),
 ) -> TaskWorktreeInspection:
     expected_sha = expected_commit_sha.casefold()
     root = worktrees_root.resolve(strict=False)
@@ -257,18 +435,16 @@ def inspect_task_worktree(
     branch_commit = _git_output(
         ["git", "-C", str(repo_dir), "rev-parse", "--verify", f"refs/heads/{branch}"],
         check=False,
+        pass_fds=pass_fds,
     )
     if branch_commit is None or branch_commit.casefold() != expected_sha:
         return _unsafe(
             target_exists=os.path.lexists(target_dir),
             failed_check="retained_commit_mismatch",
-            message=(
-                f"branch {branch!r} does not retain expected commit "
-                f"{expected_commit_sha}"
-            ),
+            message=(f"branch {branch!r} does not retain expected commit {expected_commit_sha}"),
         )
 
-    registration = _registered_worktree(repo_dir, target_dir)
+    registration = _registered_worktree(repo_dir, target_dir, pass_fds=pass_fds)
     target_exists = os.path.lexists(target_dir)
     if not target_exists:
         if registration is not None and registration.get("path") != str(target):
@@ -308,14 +484,20 @@ def inspect_task_worktree(
             ),
         )
 
-    top_level = _git_output(["git", "-C", str(target_dir), "rev-parse", "--show-toplevel"])
+    top_level = _git_output(
+        ["git", "-C", str(target_dir), "rev-parse", "--show-toplevel"],
+        pass_fds=pass_fds,
+    )
     if top_level is None or Path(top_level).resolve(strict=False) != target:
         return _unsafe(
             target_exists=True,
             failed_check="worktree_path_mismatch",
             message=f"Git reports an unexpected task worktree path: {top_level}",
         )
-    actual_branch = _git_output(["git", "-C", str(target_dir), "branch", "--show-current"])
+    actual_branch = _git_output(
+        ["git", "-C", str(target_dir), "branch", "--show-current"],
+        pass_fds=pass_fds,
+    )
     if actual_branch != branch:
         return _unsafe(
             target_exists=True,
@@ -323,7 +505,10 @@ def inspect_task_worktree(
             message=f"task worktree uses branch {actual_branch!r}, expected {branch!r}",
             actual_branch=actual_branch,
         )
-    actual_commit = _git_output(["git", "-C", str(target_dir), "rev-parse", "HEAD"])
+    actual_commit = _git_output(
+        ["git", "-C", str(target_dir), "rev-parse", "HEAD"],
+        pass_fds=pass_fds,
+    )
     if actual_commit is None or actual_commit.casefold() != expected_sha:
         return _unsafe(
             target_exists=True,
@@ -336,7 +521,7 @@ def inspect_task_worktree(
             actual_commit_sha=actual_commit,
         )
 
-    tracked = _tracked_change_paths(target_dir)
+    tracked = _tracked_change_paths(target_dir, pass_fds=pass_fds)
     if tracked:
         return _unsafe(
             target_exists=True,
@@ -347,7 +532,8 @@ def inspect_task_worktree(
             tracked_paths=tracked,
         )
     untracked = _git_path_list(
-        ["git", "-C", str(target_dir), "ls-files", "--others", "--exclude-standard", "-z"]
+        ["git", "-C", str(target_dir), "ls-files", "--others", "--exclude-standard", "-z"],
+        pass_fds=pass_fds,
     )
     if untracked:
         return _unsafe(
@@ -368,7 +554,8 @@ def inspect_task_worktree(
             "--ignored",
             "--exclude-standard",
             "-z",
-        ]
+        ],
+        pass_fds=pass_fds,
     )
     return TaskWorktreeInspection(
         safe_to_remove=True,
@@ -385,6 +572,7 @@ def inspect_task_worktree(
 
 def build_libvirt_task_worktree_cleanup_command(
     *,
+    trusted_root: str,
     repo_dir: str,
     worktrees_root: str,
     target_dir: str,
@@ -399,6 +587,8 @@ def build_libvirt_task_worktree_cleanup_command(
         "python3",
         "-c",
         Path(__file__).read_text(encoding="utf-8"),
+        "--trusted-root",
+        trusted_root,
         "--repo-dir",
         repo_dir,
         "--worktrees-root",
@@ -417,9 +607,15 @@ def build_libvirt_task_worktree_cleanup_command(
     return " ".join(shlex.quote(item) for item in invocation)
 
 
-def _registered_worktree(repo_dir: Path, target_dir: Path) -> dict[str, str] | None:
+def _registered_worktree(
+    repo_dir: Path,
+    target_dir: Path,
+    *,
+    pass_fds: tuple[int, ...] = (),
+) -> dict[str, str] | None:
     output = _run(
-        ["git", "-C", str(repo_dir), "worktree", "list", "--porcelain", "-z"]
+        ["git", "-C", str(repo_dir), "worktree", "list", "--porcelain", "-z"],
+        pass_fds=pass_fds,
     ).stdout
     target = target_dir.resolve(strict=False)
     current: dict[str, str] = {}
@@ -438,12 +634,20 @@ def _registered_worktree(repo_dir: Path, target_dir: Path) -> dict[str, str] | N
     if current:
         records.append(current)
     return next(
-        (record for record in records if Path(record.get("path", "")).resolve(strict=False) == target),
+        (
+            record
+            for record in records
+            if Path(record.get("path", "")).resolve(strict=False) == target
+        ),
         None,
     )
 
 
-def _tracked_change_paths(target_dir: Path) -> list[str]:
+def _tracked_change_paths(
+    target_dir: Path,
+    *,
+    pass_fds: tuple[int, ...] = (),
+) -> list[str]:
     output = _run(
         [
             "git",
@@ -453,7 +657,8 @@ def _tracked_change_paths(target_dir: Path) -> list[str]:
             "--porcelain=v1",
             "-z",
             "--untracked-files=no",
-        ]
+        ],
+        pass_fds=pass_fds,
     ).stdout
     fields = output.split("\0")
     paths: list[str] = []
@@ -475,21 +680,22 @@ def _tracked_change_paths(target_dir: Path) -> list[str]:
     return sorted(set(paths))
 
 
-def _git_path_list(args: list[str]) -> list[str]:
-    return sorted({path for path in _run(args).stdout.split("\0") if path})
+def _git_path_list(args: list[str], *, pass_fds: tuple[int, ...] = ()) -> list[str]:
+    return sorted({path for path in _run(args, pass_fds=pass_fds).stdout.split("\0") if path})
 
 
-def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | None:
+def _remove_proven_ignored_paths(target_fd: int, paths: list[str]) -> str | None:
     """Remove only ignored paths observed by the final pre-cleanup inspection."""
 
+    bound_target = f"/proc/self/fd/{target_fd}"
     for batch in _ignored_path_clean_batches(paths):
         try:
-            result = _run(
+            result = subprocess.run(
                 [
                     "git",
                     "--literal-pathspecs",
                     "-C",
-                    str(target_dir),
+                    bound_target,
                     "clean",
                     "-f",
                     "-d",
@@ -498,7 +704,10 @@ def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | No
                     *batch,
                 ],
                 check=False,
-                timeout_seconds=_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+                timeout=_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS,
+                pass_fds=(target_fd,),
             )
         except subprocess.TimeoutExpired:
             return (
@@ -508,11 +717,30 @@ def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | No
             )
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
-            return (
-                f"failed to remove {len(batch)} proven ignored path(s)"
-                + (f": {detail}" if detail else "")
+            return f"failed to remove {len(batch)} proven ignored path(s)" + (
+                f": {detail}" if detail else ""
             )
     return None
+
+
+def _fd_still_names_path(directory_fd: int, path: Path) -> bool:
+    try:
+        opened = os.fstat(directory_fd)
+        current = path.stat(follow_symlinks=False)
+        return (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino)
+    except OSError:
+        return False
+
+
+def _unsafe_inspection(
+    inspection: TaskWorktreeInspection,
+    *,
+    failed_check: str,
+    message: str,
+) -> TaskWorktreeInspection:
+    values = asdict(inspection)
+    values.update(safe_to_remove=False, failed_check=failed_check, message=message)
+    return TaskWorktreeInspection(**values)
 
 
 def _ignored_path_clean_batches(paths: list[str]) -> Iterator[list[str]]:
@@ -566,8 +794,13 @@ def _tree_inventory_bytes(root: Path) -> int:
     return total
 
 
-def _git_output(args: list[str], *, check: bool = True) -> str | None:
-    result = _run(args, check=check)
+def _git_output(
+    args: list[str],
+    *,
+    check: bool = True,
+    pass_fds: tuple[int, ...] = (),
+) -> str | None:
+    result = _run(args, check=check, pass_fds=pass_fds)
     if result.returncode != 0:
         return None
     return result.stdout.strip()
@@ -578,6 +811,7 @@ def _run(
     *,
     check: bool = True,
     timeout_seconds: float | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -585,6 +819,7 @@ def _run(
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
+        pass_fds=pass_fds,
     )
 
 
@@ -639,9 +874,7 @@ def _result_from_inspection(
 ) -> TaskWorktreeCleanupResult:
     return TaskWorktreeCleanupResult(
         state=state,
-        safe_to_remove=(
-            inspection.safe_to_remove if safe_to_remove is None else safe_to_remove
-        ),
+        safe_to_remove=(inspection.safe_to_remove if safe_to_remove is None else safe_to_remove),
         removed=removed,
         pruned=pruned,
         validation_count=validation_count,
@@ -663,6 +896,7 @@ def _main() -> int:
     import json
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--trusted-root", required=True)
     parser.add_argument("--repo-dir", required=True)
     parser.add_argument("--worktrees-root", required=True)
     parser.add_argument("--target-dir", required=True)
@@ -672,6 +906,7 @@ def _main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     result = cleanup_task_worktree(
+        trusted_root=Path(args.trusted_root),
         repo_dir=Path(args.repo_dir),
         worktrees_root=Path(args.worktrees_root),
         target_dir=Path(args.target_dir),

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-04 - Retained Wake Role-Description Updates
+
+- Included a persistent agent's full updated role description in retained Team
+  wake context, while continuing to omit it when unchanged.
+
+## 2026-08-02 - Bound Task Worktree Cleanup
+
+- Bound ignored-file cleanup to an open descriptor for the worktree validated under the
+  repository lock, preventing path replacement and symlink races from redirecting `git clean`.
+- Anchored repository and worktree traversal at the stable session home, refusing symlinked
+  parent components and retaining the validated descriptors through Git cleanup and removal.
+- Refused cleanup when an absent task worktree appears during final validation, so no mutation
+  can proceed without a descriptor bound to the validated directory.
+
 ## 2026-08-04 - Fail-closed Team Chat Authorization
 
 - Failed mutation-authorized Chat messages before agent resume when their
