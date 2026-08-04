@@ -2462,6 +2462,55 @@ class TeamConversation(TeamModel):
         return _optional_text(value)
 
 
+class TeamChatMutationAuthorization(TeamModel):
+    """Server-issued mutation scope snapshot for one operator chat message."""
+
+    version: Literal[1] = 1
+    mode: Literal["reply_only", "project_scoped"] = "reply_only"
+    source: Literal["admin_rbac", "external_bridge", "internal"]
+    principal_id: str
+    recipient_directory_path: str | None = None
+    project_ids: list[str] = Field(default_factory=list)
+    managed_repo_ids: list[str] = Field(default_factory=list)
+    authorized_at: datetime = Field(default_factory=utc_now)
+    reason: str | None = None
+
+    @field_validator("principal_id", mode="before")
+    @classmethod
+    def _principal_id(cls, value: object) -> str:
+        return _required_text(value, "principal_id")
+
+    @field_validator("recipient_directory_path", mode="before")
+    @classmethod
+    def _recipient_directory_path(cls, value: object) -> str | None:
+        text = _optional_text(value)
+        return DirectoryPath(segments=text).as_posix() if text is not None else None
+
+    @field_validator("project_ids", "managed_repo_ids", mode="before")
+    @classmethod
+    def _scope_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _reason(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "TeamChatMutationAuthorization":
+        if self.mode == "reply_only":
+            if self.project_ids or self.managed_repo_ids:
+                raise ValueError("reply-only Team chat authorization cannot contain scope ids")
+            return self
+        if self.recipient_directory_path is None:
+            raise ValueError(
+                "project-scoped Team chat authorization requires recipient_directory_path"
+            )
+        if not self.project_ids:
+            raise ValueError("project-scoped Team chat authorization requires project_ids")
+        return self
+
+
 class TeamConversationMessage(TeamModel):
     id: str
     conversation_id: str

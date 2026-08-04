@@ -100,7 +100,10 @@ from evander_team_addon.services.domain.task_assessment import (
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+)
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
@@ -172,6 +175,18 @@ def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
 
 def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
     return TeamChatService(repo)
+
+
+def _authorized_chat_mutation(repo: TeamStateRepository, agent_id: str):
+    state = repo.read()
+    return project_scoped_team_chat_authorization(
+        state,
+        agent=state.agents[agent_id],
+        source="internal",
+        principal_id="admin",
+        recipient_directory_path="root",
+        project_is_authorized=lambda _directory_path: True,
+    )
 
 
 def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
@@ -1764,7 +1779,6 @@ def test_external_chat_ingress_is_idempotent_and_queues_normal_team_dispatch(
         source_thread_id=None,
         source_author_id="discord-operator",
         source_author_name="Operator Alice",
-        allow_team_mutations=False,
     )
     replay_state, replay = chat.enqueue_external_operator_chat_message(
         conversation_id=None,
@@ -1778,7 +1792,6 @@ def test_external_chat_ingress_is_idempotent_and_queues_normal_team_dispatch(
         source_thread_id=None,
         source_author_id="discord-operator",
         source_author_name="Operator Alice",
-        allow_team_mutations=False,
     )
 
     assert first["duplicate"] is False
@@ -6287,6 +6300,7 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
         conversation_id=conversation.id,
         body="Can you check this after the current wake?",
         created_by="operator:alice",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     dispatch_id = f"team-chat:{message.id}"
@@ -6342,7 +6356,6 @@ def test_repository_reply_only_chat_dispatch_has_no_mutation_scope(
         conversation_id=conversation.id,
         body="Please only explain the current state.",
         created_by="operator:alice",
-        allow_team_mutations=False,
         expected_revision=state.revision,
     )
     dispatch_id = f"team-chat:{message.id}"

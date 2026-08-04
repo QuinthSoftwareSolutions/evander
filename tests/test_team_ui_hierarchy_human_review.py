@@ -47,6 +47,68 @@ def test_projects_view_receives_release_evidence_collections() -> None:
     } <= TEAM_VIEW_COLLECTIONS["projects"]
 
 
+def test_workspace_excludes_operator_directives_from_attention() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function workspaceInboxItemNeedsAttention(item)" in source
+    assert 'return text(item.item_type) !== "operator_directive";' in source
+    assert "const attentionInbox = pendingInbox.filter(workspaceInboxItemNeedsAttention);" in source
+    assert "pendingInbox: attentionInbox," in source
+    assert "function workspaceRuntimeAttentionNeedsAttention(row)" in source
+    assert ".filter(workspaceRuntimeAttentionNeedsAttention)" in source
+    assert "function pendingInboxForAgent(agentId)" in source
+
+
+def test_workspace_attention_has_pagination_controls() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    stylesheet = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css"
+    ).read_text(encoding="utf-8")
+
+    assert "const workspaceAttentionPageSize = 7;" in source
+    assert "let workspaceAttentionPage = 1;" in source
+    assert "function bindWorkspaceAttentionPagination()" in source
+    assert "data-workspace-attention-page" in source
+    assert "function renderWorkspaceAttentionPagination(total, page, pageCount)" in source
+    assert "Showing ${first}-${last} of ${total}" in source
+    assert ".workspace-attention-pagination" in stylesheet
+
+
+def test_workspace_places_delivery_under_current_workload_without_tab_shortcuts() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    dashboard_source = source[
+        source.index("function renderWorkspaceDashboard()") : source.index(
+            "function renderWorkspaceTarget("
+        )
+    ]
+
+    assert "renderWorkspaceAttentionPanel(model)," in dashboard_source
+    assert "renderWorkspaceWorkStatusPanel(model)," in dashboard_source
+    assert "renderWorkspaceDeliveryPanel(model)," in dashboard_source
+    assert "renderWorkspaceNavigationPanel" not in source
+    assert "Detailed tabs" not in source
+
+
+def test_attention_excludes_retired_or_superseded_delivery_lineage() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function isCurrentDeliverable(deliverable)" in source
+    assert 'return !text(deliverable?.superseded_by_deliverable_id);' in source
+    assert "function isCurrentReviewRequest(review)" in source
+    assert 'return !review?.retired_at && !text(review?.superseded_by_review_request_id);' in source
+    assert ".filter(workspaceReviewNeedsAttention)" in source
+    assert "if (!isCurrentDeliverable(row.deliverable))" in source
+    assert "const currentReviews = reviews.filter(isCurrentReviewRequest);" in source
+
+
 def test_planning_view_receives_formal_review_status_collection() -> None:
     assert "review_requests" in TEAM_VIEW_COLLECTIONS["planning"]
 

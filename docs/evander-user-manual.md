@@ -5994,7 +5994,7 @@ Chat messages may contain text, attachments, or both. Use the attachment control
 
 The **Files** dialog controls Team Chat's directory-scoped attachment policy. Its root defaults allow operator-to-agent and agent-to-operator files, at most five files per message and 10 MiB per file, limited to common text, JSON, PDF, and raster-image types. Agent sends require exact approval by default. Child directories inherit the closest configured values. This policy belongs entirely to the Team Add-on: Microsoft Teams and the core communication connectors may use different file rules, and their settings neither grant nor deny built-in Chat attachments.
 
-The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer but cannot change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
+The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer with text but cannot attach agent files or change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
 
 Live state-stream and automatic Chat refreshes preserve an operator's reading
 position. If the reader is already at the bottom, changes conversations, or
@@ -6011,11 +6011,11 @@ new data does not jump the transcript away from the passage being read.
 > 4. The agent replies with <code>team_reply_to_chat</code>.
 > 5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
 >
-> A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
+> A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Mutation-enabled Admin Chat requires privileged operations to be unlocked and the sender to hold directory-scoped <code>team_chats.mutate</code> authority over both the recipient agent and each included project. The server snapshots the intersection of that authority and the agent's visible projects when the message is accepted; repository scope is derived from those projects. A mutation-authorized message fails without resuming the agent if that intersection becomes empty before lease. Missing or legacy mutation metadata is reply-only. When a human asks “please change Imani's task priority,” an authorized mutation-enabled dispatch can perform the state change and reply. A reply-only dispatch must answer with text only and without changing Team state.
 >
 > The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
 >
-> For an outbound file, the agent first calls <code>team_stage_chat_attachment</code> with a regular file under <code>/home/agent</code>. It then supplies the session-owned staged ID to <code>team_reply_to_chat</code> or <code>team_send_operator_chat_message</code>. Staging expires after 24 hours. When the effective policy requires approval, the approval is bound to the target, message body, staged IDs, filenames, sizes, MIME types, and SHA-256 hashes.
+> For an outbound file from a mutation-enabled Chat dispatch, the agent first calls <code>team_stage_chat_attachment</code> with a regular file under <code>/home/agent</code>. It then supplies the session-owned staged ID to <code>team_reply_to_chat</code> or <code>team_send_operator_chat_message</code>. Reply-only Chat cannot stage or attach agent files, including files staged by an earlier dispatch. Staging expires after 24 hours. When the effective policy requires approval, the approval is bound to the target, message body, staged IDs, filenames, sizes, MIME types, and SHA-256 hashes.
 
 ![Team Chat conversation between a synthetic operator and Imani](assets/evander-user-manual/screenshots/team-chat.png)
 
@@ -6048,7 +6048,8 @@ The bridge defaults to <code>allow_team_mutations=false</code>. Enabling Team
 mutations requires a non-empty fixed <code>authorized_author_ids</code> list,
 and the authenticated source author must match it. A Discord trigger should
 also filter allowed authors and exclude the Evander bot, but the effect-side
-author allowlist remains the mutation authority.
+author allowlist remains required. The recipient agent and every included
+project must also remain inside the workflow effect's directory scope.
 
 When the agent replies, Team commits the internal sent message first, creates a
 pending <code>ExternalChatDeliveryRecord</code>, and transactionally emits

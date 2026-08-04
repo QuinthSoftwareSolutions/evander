@@ -37,6 +37,7 @@ from evander.admin.user_notifications import (
     normalize_admin_notification_user_id,
 )
 from evander.admin.web.user_store import AdminWebUserStore
+from evander.admin.web.rbac import scope_matches
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -83,7 +84,6 @@ from .git_naming import validate_branch_name
 from .costs import TeamCostService
 from .chat_attachments import TeamChatAttachmentPolicyService, TeamChatAttachmentStorage
 from .mcp import (
-    CHAT_TEAM_MCP_TOOL_NAMES,
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -144,7 +144,9 @@ from .models import (
     TeamMemoryStatus,
     TeamBlockerState,
     TeamRecordState,
+    TeamDispatch,
     TeamDispatchStatus,
+    TeamConversationMessage,
     TeamState,
     TeamTaskState,
     agent_project_ids,
@@ -190,7 +192,13 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
-from .services.chat_service import TeamChatService
+from .services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+    reply_only_team_chat_authorization,
+    team_chat_mutation_allowed,
+    team_chat_mutation_scope_lost,
+)
 from .services.domain.agent_access import (
     _agent_payload,
     _subordinate_agent_payloads,
@@ -2673,6 +2681,35 @@ def _dispatch_queued_team_chat_messages(
         conversation = state.conversations[conversation_id]
         try:
             agent_payload = agent.model_dump(mode="json")
+            dispatch = state.dispatches[dispatch_id]
+            if _team_chat_mutation_scope_lost(message, dispatch):
+                error = (
+                    "Team Chat authorization changed before dispatch; "
+                    "no authorized projects remain"
+                )
+                tool_grant_result = _set_session_team_mcp_tools(
+                    context,
+                    session_id=agent.session_id,
+                    tool_names=[],
+                    dispatch_id=dispatch_id,
+                )
+                state, _message = TeamChatService(repo).mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+                dispatches.append(
+                    {
+                        "agent_id": agent_id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation_id,
+                        "message_id": message_id,
+                        "dispatch_id": dispatch_id,
+                        "authorization_denied": True,
+                        "error": error,
+                        "team_chat_mcp_tools": tool_grant_result,
+                    }
+                )
+                continue
             attachment_paths = _copy_team_chat_attachments_for_dispatch(
                 context,
                 repo=repo,
@@ -2680,9 +2717,10 @@ def _dispatch_queued_team_chat_messages(
                 agent=agent,
                 message=message,
             )
-            mutation_allowed = _team_chat_mutation_allowed(message)
-            chat_tool_names = list(CHAT_TEAM_MCP_TOOL_NAMES)
+            mutation_allowed = _team_chat_mutation_allowed(message, dispatch)
+            chat_tool_names = [TEAM_REPLY_TO_CHAT_TOOL]
             if mutation_allowed:
+                chat_tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
                 chat_tool_names.extend(_ordinary_team_tools_for_agent(agent_payload))
             tool_grant_result = _set_session_team_mcp_tools(
                 context,
@@ -3324,9 +3362,81 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                     "source_author_id is not authorized for Team mutations on this bridge"
                 )
         repo = TeamStateRepository(_runtime_dir(context))
+        before = repo.read()
+        conversation_id = _optional_text(payload.get("conversation_id"))
+        agent_id = _optional_text(payload.get("agent_id"))
+        duplicate_ingress = next(
+            (
+                record
+                for record in before.external_chat_ingress.values()
+                if record.provider == provider
+                and record.communication_target_id == target.id
+                and record.source_message_id
+                == _required_text(payload.get("source_message_id"), "source_message_id")
+            ),
+            None,
+        )
+        if duplicate_ingress is not None:
+            mutation_authorization = reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=source_author_id,
+                reason="idempotent_replay_uses_existing_authorization",
+            )
+        else:
+            if conversation_id is not None:
+                conversation = before.conversations.get(conversation_id)
+                if conversation is None:
+                    raise ValueError(f"conversation {conversation_id} not found")
+                agent_id = conversation.agent_id
+            agent = before.agents.get(agent_id or "")
+            if agent is None:
+                raise ValueError(f"agent {agent_id or ''} not found")
+        if duplicate_ingress is None and allow_team_mutations:
+            session_repository = _session_repository_from_context(context)
+            get_session = getattr(session_repository, "get_session", None)
+            try:
+                session = get_session(agent.session_id) if callable(get_session) else None
+            except Exception:
+                session = None
+            if session is None:
+                session = (_session_records_by_id(session_repository) or {}).get(
+                    agent.session_id
+                )
+            recipient_directory_path = _optional_text(
+                getattr(session, "directory_path", None)
+            )
+            if recipient_directory_path is None:
+                raise ValueError(
+                    "mutation-enabled external Team chat requires a resolvable recipient directory"
+                )
+            if not scope_matches(directory_path, recipient_directory_path):
+                raise ValueError(
+                    "external Team chat recipient is outside the workflow directory scope"
+                )
+            mutation_authorization = project_scoped_team_chat_authorization(
+                before,
+                agent=agent,
+                source="external_bridge",
+                principal_id=source_author_id,
+                recipient_directory_path=recipient_directory_path,
+                project_is_authorized=lambda project_directory_path: scope_matches(
+                    directory_path,
+                    project_directory_path,
+                ),
+            )
+            if mutation_authorization.mode != "project_scoped":
+                raise ValueError(
+                    "mutation-enabled external Team chat has no authorized projects"
+                )
+        elif duplicate_ingress is None:
+            mutation_authorization = reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=source_author_id,
+                reason="mutations_disabled_by_bridge",
+            )
         state, result = TeamChatService(repo).enqueue_external_operator_chat_message(
-            conversation_id=_optional_text(payload.get("conversation_id")),
-            agent_id=_optional_text(payload.get("agent_id")),
+            conversation_id=conversation_id,
+            agent_id=agent_id,
             operator_user_id=_required_text(payload.get("operator_user_id"), "operator_user_id"),
             operator_display_name=_optional_text(payload.get("operator_display_name")),
             body=_required_text(payload.get("body"), "body"),
@@ -3336,7 +3446,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             source_thread_id=source_thread_id,
             source_author_id=source_author_id,
             source_author_name=_optional_text(payload.get("source_author_name")),
-            allow_team_mutations=allow_team_mutations,
+            mutation_authorization=mutation_authorization,
         )
         if not result.get("duplicate"):
             conversation = state.conversations[result["conversation_id"]]
@@ -6865,7 +6975,8 @@ def _build_team_chat_prompt(
         "acknowledgement, or no-op reply.\n\n"
         if mutation_allowed
         else "This chat wake is reply-only. Do not mutate Team state; use only "
-        f"{TEAM_REPLY_TO_CHAT_TOOL} and {TEAM_STAGE_CHAT_ATTACHMENT_TOOL}. If the operator "
+        f"{TEAM_REPLY_TO_CHAT_TOOL}. File attachments are unavailable in reply-only "
+        "chat. If the operator "
         "asks you to create, assign, "
         "request review, mark, or otherwise change Team state, state clearly that "
         "no Team state change was performed in this dispatch and that the request "
@@ -8995,19 +9106,20 @@ def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     return [*ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES]
 
 
-def _team_chat_mutation_allowed(message: object) -> bool:
-    metadata = _object_field(message, "metadata")
-    if not isinstance(metadata, Mapping):
-        return True
-    for key in (
-        "allow_team_mutations",
-        "allow_team_mutation",
-        "mutation_allowed",
-        "team_mutation_allowed",
-    ):
-        if key in metadata:
-            return bool(metadata[key])
-    return True
+def _team_chat_mutation_allowed(message: object, dispatch: object) -> bool:
+    return (
+        isinstance(message, TeamConversationMessage)
+        and isinstance(dispatch, TeamDispatch)
+        and team_chat_mutation_allowed(message, dispatch)
+    )
+
+
+def _team_chat_mutation_scope_lost(message: object, dispatch: object) -> bool:
+    return (
+        isinstance(message, TeamConversationMessage)
+        and isinstance(dispatch, TeamDispatch)
+        and team_chat_mutation_scope_lost(message, dispatch)
+    )
 
 
 def _team_session_has_active_prompt(context: Any, *, session_id: str) -> bool:
@@ -9110,7 +9222,10 @@ def _active_team_mcp_tools_for_other_dispatches(
         if agent is None or getattr(agent, "session_id", None) != session_id:
             continue
         if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
-            tool_names.extend(CHAT_TEAM_MCP_TOOL_NAMES)
+            tool_names.append(TEAM_REPLY_TO_CHAT_TOOL)
+            active_dispatch = state.dispatches.get(active_dispatch_id)
+            if active_dispatch is not None and active_dispatch.project_ids:
+                tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
         else:
             tool_names.extend(
                 _ordinary_team_tools_for_agent({"team_id": getattr(agent, "team_id", None)})

@@ -116,6 +116,7 @@ const gitProviders = [
 ];
 const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
+const workspaceAttentionPageSize = 7;
 const defaultPlanningTaskStates = new Set([
   "pending",
   "in_progress",
@@ -423,6 +424,7 @@ const deliveryStatusLabels = {
 
 let selectedDeliveryFilter = "attention";
 let selectedDeliveryProjectId = "";
+let workspaceAttentionPage = 1;
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
 let humanReviewQueue = {
@@ -662,6 +664,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindProjectLeadSelects();
   bindAgentEditTeamScopedSelects();
   bindRuntimeFilters();
+  bindWorkspaceAttentionPagination();
   bindDeliveryFilters();
   bindPlanningFilters();
   bindTeamDisclosures();
@@ -853,6 +856,22 @@ function bindTopLevelTabs() {
     setTeamView(button.dataset.teamView || button.dataset.teamLinkView || defaultTeamView);
   });
   updateTeamViewTabs();
+}
+
+function bindWorkspaceAttentionPagination() {
+  document.addEventListener("click", (event) => {
+    const pageButton = event.target?.closest?.("[data-workspace-attention-page]");
+    if (!pageButton) {
+      return;
+    }
+    event.preventDefault();
+    workspaceAttentionPage = Math.max(1, Number(pageButton.dataset.workspaceAttentionPage || 1));
+    renderWorkspaceDashboard();
+    document.querySelector(".workspace-attention-panel")?.scrollIntoView({
+      block: "start",
+      behavior: "auto",
+    });
+  });
 }
 
 function normalizedTeamView(view) {
@@ -5030,7 +5049,7 @@ function renderReviewDeliveryWorkspace() {
 }
 
 function deliveryRowNeedsAttention(row) {
-  if (text(row.deliverable.superseded_by_deliverable_id)) {
+  if (!isCurrentDeliverable(row.deliverable)) {
     return false;
   }
   if (
@@ -5244,10 +5263,7 @@ function renderWorkspaceDashboard() {
   renderWorkspaceTarget(
     panel,
     "[data-workspace-attention-column]",
-    [
-      renderWorkspaceAttentionPanel(model),
-      renderWorkspaceDeliveryPanel(model),
-    ].join(""),
+    renderWorkspaceAttentionPanel(model),
   );
   renderWorkspaceTarget(
     panel,
@@ -5255,7 +5271,7 @@ function renderWorkspaceDashboard() {
     [
       renderWorkspaceTeamStatusPanel(model),
       renderWorkspaceWorkStatusPanel(model),
-      renderWorkspaceNavigationPanel(),
+      renderWorkspaceDeliveryPanel(model),
     ].join(""),
   );
 }
@@ -5295,8 +5311,10 @@ function buildWorkspaceDashboardModel() {
     .filter((item) => !runtimeInboxIds.has(text(item.id)))
     .filter((item) => visibleAgentIds.has(text(item.recipient_agent_id)))
     .sort(compareWorkspaceInboxItems);
+  const attentionInbox = pendingInbox.filter(workspaceInboxItemNeedsAttention);
   const pendingReviews = values(state.review_requests)
     .filter((review) => !terminalRecordStates.has(review.state))
+    .filter(workspaceReviewNeedsAttention)
     .filter((review) => workspaceReviewIsVisible(review, visibleProjectIds))
     .sort(compareWorkspaceReviews);
   const pendingGovernanceAgenda = values(state.governance_agenda)
@@ -5306,6 +5324,7 @@ function buildWorkspaceDashboardModel() {
   const runtimeAttention = (runtime.attention || [])
     .filter(isVisibleRuntimeRow)
     .filter((row) => runtimeAttentionGroup(row) !== "retained_history")
+    .filter(workspaceRuntimeAttentionNeedsAttention)
     .sort(runtimeSortRows);
   const dueAgents = dueLeasedAgentsForFilter(runtime.agents || []);
   const deliveryRows = buildReviewDeliveryRows();
@@ -5315,7 +5334,7 @@ function buildWorkspaceDashboardModel() {
     costAttention,
     blockedTasks,
     pendingReviews,
-    pendingInbox,
+    pendingInbox: attentionInbox,
     pendingGovernanceAgenda,
   });
   return {
@@ -5325,6 +5344,7 @@ function buildWorkspaceDashboardModel() {
     openTasks,
     blockedTasks,
     pendingInbox,
+    attentionInbox,
     pendingReviews,
     pendingGovernanceAgenda,
     runtimeAttention,
@@ -5419,17 +5439,20 @@ function renderWorkspaceMetricCard(metric) {
 }
 
 function renderWorkspaceAttentionPanel(model) {
-  const limit = 7;
-  const visibleItems = model.attentionItems.slice(0, limit);
-  const remaining = Math.max(0, model.attentionItems.length - visibleItems.length);
+  const total = model.attentionItems.length;
+  const pageCount = Math.max(1, Math.ceil(total / workspaceAttentionPageSize));
+  const page = Math.min(workspaceAttentionPage, pageCount);
+  workspaceAttentionPage = page;
+  const offset = (page - 1) * workspaceAttentionPageSize;
+  const visibleItems = model.attentionItems.slice(offset, offset + workspaceAttentionPageSize);
   const body = visibleItems.length
     ? `
       <ul class="workspace-attention-list">
         ${visibleItems.map(renderWorkspaceAttentionItem).join("")}
       </ul>
-      ${remaining ? `<div class="workspace-more-row">${remaining} more item${remaining === 1 ? "" : "s"} in detailed tabs.</div>` : ""}
+      ${renderWorkspaceAttentionPagination(total, page, pageCount)}
     `
-    : `<p class="empty-state">No runtime blockers, pending reviews, open inbox items, or governance agenda items need attention.</p>`;
+    : `<p class="empty-state">No runtime blockers, pending reviews, actionable inbox items, or governance agenda items need attention.</p>`;
   return `
     <section class="workspace-dashboard-panel workspace-attention-panel" aria-labelledby="workspace-attention-heading">
       <div class="workspace-panel-header">
@@ -5442,6 +5465,24 @@ function renderWorkspaceAttentionPanel(model) {
       ${body}
       ${model.generatedAt ? `<div class="meta-line">Runtime generated ${escapeHtml(model.generatedAt)}</div>` : ""}
     </section>
+  `;
+}
+
+function renderWorkspaceAttentionPagination(total, page, pageCount) {
+  if (pageCount <= 1) {
+    return "";
+  }
+  const first = (page - 1) * workspaceAttentionPageSize + 1;
+  const last = Math.min(total, page * workspaceAttentionPageSize);
+  return `
+    <nav class="workspace-attention-pagination" aria-label="Workspace attention pages">
+      <span>Showing ${first}-${last} of ${total}</span>
+      <div class="record-actions">
+        <button type="button" class="record-action secondary" data-workspace-attention-page="${page - 1}"${page <= 1 ? " disabled" : ""}>Previous</button>
+        <span>Page ${page} of ${pageCount}</span>
+        <button type="button" class="record-action secondary" data-workspace-attention-page="${page + 1}"${page >= pageCount ? " disabled" : ""}>Next</button>
+      </div>
+    </nav>
   `;
 }
 
@@ -5576,38 +5617,6 @@ function renderWorkspaceWorkStatusPanel(model) {
   `;
 }
 
-function renderWorkspaceNavigationPanel() {
-  const links = [
-    ["projects", "Projects", "Project catalog and review profiles"],
-    ["task-board", "Task board", "Project work by lane"],
-    ["cases", "Cases", "Intake and ticket context"],
-    ["governance", "Governance", "Groups, agenda, and oversight"],
-    ["mail", "Agent Mail", "Internal messages and historical correspondence"],
-    ["timeline", "Activity timeline", "Retained-record activity history"],
-    ["org", "Org chart", "Team graph"],
-  ];
-  return `
-    <section class="workspace-dashboard-panel" aria-labelledby="workspace-navigation-heading">
-      <div class="workspace-panel-header">
-        <div>
-          <p class="section-label">Drill down</p>
-          <h3 id="workspace-navigation-heading">Detailed tabs</h3>
-        </div>
-      </div>
-      <div class="workspace-link-grid">
-        ${links
-          .map(([view, label, detail]) => `
-            <button type="button" class="workspace-link-card" data-team-link-view="${escapeAttr(view)}">
-              <strong>${escapeHtml(label)}</strong>
-              <span>${escapeHtml(detail)}</span>
-            </button>
-          `)
-          .join("")}
-      </div>
-    </section>
-  `;
-}
-
 function renderWorkspaceStatusCount(label, value, tone = "info") {
   return `
     <div class="workspace-status-count workspace-tone-${escapeAttr(tone || "info")}">
@@ -5637,6 +5646,19 @@ function workspaceReviewIsVisible(review, visibleProjectIds) {
   const deliverable = state.deliverables[text(review.deliverable_id)];
   const task = deliverable ? state.tasks[text(deliverable.task_id)] : null;
   return !task || workspaceTaskIsVisible(task, visibleProjectIds);
+}
+
+function isCurrentDeliverable(deliverable) {
+  return !text(deliverable?.superseded_by_deliverable_id);
+}
+
+function isCurrentReviewRequest(review) {
+  return !review?.retired_at && !text(review?.superseded_by_review_request_id);
+}
+
+function workspaceReviewNeedsAttention(review) {
+  const deliverable = state.deliverables?.[text(review.deliverable_id)];
+  return isCurrentReviewRequest(review) && isCurrentDeliverable(deliverable);
 }
 
 function workspaceGovernanceAgendaIsVisible(item, visibleTeamIds, visibleProjectIds) {
@@ -5821,6 +5843,15 @@ function workspaceAttentionItems({
     });
   });
   return items.sort(compareWorkspaceAttentionItems);
+}
+
+function workspaceInboxItemNeedsAttention(item) {
+  return text(item.item_type) !== "operator_directive";
+}
+
+function workspaceRuntimeAttentionNeedsAttention(row) {
+  const inboxItemId = text(row.inbox_item_id);
+  return !inboxItemId || workspaceInboxItemNeedsAttention(state.inbox?.[inboxItemId] || {});
 }
 
 function workspaceRuntimeAttentionMeta(row) {
@@ -9446,7 +9477,7 @@ function renderChatThreadMarkup({
       ${renderChatReadonlyBanner(conversation, readOnly)}
       ${callStrip}
       ${renderChatMessageList(conversation, messages, olderLoading)}
-      ${renderChatComposer(label, readOnly)}
+      ${renderChatComposer(conversation, label, readOnly)}
     </div>
   `;
 }
@@ -9483,7 +9514,7 @@ function patchChatThread(
     list.innerHTML = renderChatMessageListContents(conversation, messages, olderLoading);
     list.dataset.chatMessageSignature = listSignature;
   }
-  composer.outerHTML = renderChatComposer(label, readOnly);
+  composer.outerHTML = renderChatComposer(conversation, label, readOnly);
   return true;
 }
 
@@ -9551,9 +9582,14 @@ function renderChatMessageListContents(conversation, messages, olderLoading) {
   `;
 }
 
-function renderChatComposer(label, readOnly) {
+function renderChatComposer(conversation, label, readOnly) {
   const conversationId = text(selectedChatConversationId);
   const attachments = [...(pendingChatAttachments.get(conversationId) || [])];
+  const mutationEnabled = !readOnly && text(conversation?.mutation_mode) === "project_scoped";
+  const modeLabel = mutationEnabled ? "Mutation enabled" : "Reply only";
+  const modeTitle = mutationEnabled
+    ? "This message can authorize Team mutations within your directory-scoped project permissions."
+    : "This message can receive an agent reply but cannot authorize Team mutations.";
   return `
     <form class="chat-composer" data-chat-message-form>
       <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
@@ -9566,6 +9602,7 @@ function renderChatComposer(label, readOnly) {
         `).join("")}
       </div>
       <div class="chat-composer-actions">
+        <span class="chat-mutation-mode ${mutationEnabled ? "is-enabled" : "is-reply-only"}" title="${escapeAttr(modeTitle)}">${escapeHtml(modeLabel)}</span>
         <label class="chat-attach-button ${readOnly ? "is-disabled" : ""}">
           <input type="file" multiple data-chat-attachment-input="${escapeAttr(conversationId)}" ${chatSending || readOnly ? "disabled" : ""} />
           <span>Attach</span>
@@ -9669,6 +9706,12 @@ function renderChatMessage(message) {
   const externalDelivery = metadata.external_delivery && typeof metadata.external_delivery === "object"
     ? metadata.external_delivery
     : null;
+  const mutationMode = sender === "operator" ? text(message.mutation_mode) : "";
+  const mutationModeLabel = mutationMode === "project_scoped"
+    ? "Mutation enabled"
+    : mutationMode === "reply_only"
+      ? "Reply only"
+      : "";
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
@@ -9678,6 +9721,7 @@ function renderChatMessage(message) {
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
+          ${mutationModeLabel ? `<span class="chat-mutation-mode ${mutationMode === "project_scoped" ? "is-enabled" : "is-reply-only"}">${escapeHtml(mutationModeLabel)}</span>` : ""}
           ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
         ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
@@ -18483,9 +18527,7 @@ function currentDeliveryReleasePackages(releasePackages) {
 
 function deliverableAcceptanceStage(row) {
   const deliverable = row.deliverable;
-  const activeReviews = row.reviewRequests.filter(
-    (review) => !text(review.superseded_by_review_request_id),
-  );
+  const activeReviews = row.reviewRequests.filter(isCurrentReviewRequest);
   const label = activeReviews.length
     ? "Deliverable agent review"
     : "Deliverable acceptance";
@@ -18747,9 +18789,7 @@ function renderReleaseSummary(releasePackages) {
 }
 
 function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPromotions) {
-  const currentReviews = reviews.filter(
-    (review) => !text(review.superseded_by_review_request_id),
-  );
+  const currentReviews = reviews.filter(isCurrentReviewRequest);
   const currentReleases = currentDeliveryReleasePackages(releasePackages);
   const currentPromotionIds = new Set(
     currentReleases.flatMap((release) => release.git_promotion_record_ids || []),
