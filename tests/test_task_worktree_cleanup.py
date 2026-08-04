@@ -108,6 +108,62 @@ def test_cleanup_refuses_symlink_swap_before_ignored_file_removal(
     assert victim_env.read_text(encoding="utf-8") == "keep me\n"
 
 
+@pytest.mark.parametrize("ignored_paths", [[], ["cache/generated.bin"]])
+def test_cleanup_refuses_worktree_that_appears_during_final_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ignored_paths: list[str],
+) -> None:
+    inspections = iter(
+        [
+            TaskWorktreeInspection(
+                safe_to_remove=True,
+                target_exists=False,
+                registered=True,
+                actual_branch="agents/session/task",
+                actual_commit_sha="a" * 40,
+                message="already absent",
+            ),
+            TaskWorktreeInspection(
+                safe_to_remove=True,
+                target_exists=True,
+                registered=True,
+                actual_branch="agents/session/task",
+                actual_commit_sha="a" * 40,
+                message="safe",
+                ignored_paths=ignored_paths,
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        cleanup_module,
+        "inspect_task_worktree",
+        lambda **_kwargs: next(inspections),
+    )
+
+    def _unexpected_mutation(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("cleanup must not mutate a worktree without a bound descriptor")
+
+    monkeypatch.setattr(cleanup_module, "_run", _unexpected_mutation)
+
+    result = cleanup_task_worktree(
+        repo_dir=tmp_path / "repo",
+        worktrees_root=tmp_path / "worktrees",
+        target_dir=tmp_path / "worktrees" / "task",
+        branch="agents/session/task",
+        expected_commit_sha="a" * 40,
+        lock_path=tmp_path / "locks" / "repo.lock",
+    )
+
+    assert result.state == "refused"
+    assert result.safe_to_remove is False
+    assert result.removed is False
+    assert result.validation_count == 2
+    assert result.failed_check == "worktree_path_changed"
+    assert result.message == "task worktree appeared during final validation"
+    assert result.ignored_paths == ignored_paths
+
+
 def test_libvirt_cleanup_command_is_self_contained_and_removes_safe_worktree(
     tmp_path: Path,
 ) -> None:

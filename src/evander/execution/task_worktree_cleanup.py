@@ -125,6 +125,15 @@ def cleanup_task_worktree(
                 branch=branch,
                 expected_commit_sha=expected_commit_sha,
             )
+            if not first.target_exists and second.target_exists:
+                return _refused_result(
+                    _unsafe_inspection(
+                        second,
+                        failed_check="worktree_path_changed",
+                        message="task worktree appeared during final validation",
+                    ),
+                    validation_count=2,
+                )
             if target_fd is not None and not _fd_still_names_path(target_fd, target_dir):
                 return _refused_result(
                     _unsafe_inspection(
