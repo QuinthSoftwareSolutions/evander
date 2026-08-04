@@ -5293,6 +5293,7 @@ function buildWorkspaceDashboardModel() {
   const pendingInbox = values(state.inbox)
     .filter((item) => text(item.state) !== "handled")
     .filter((item) => !runtimeInboxIds.has(text(item.id)))
+    .filter(workspaceInboxItemNeedsAttention)
     .filter((item) => visibleAgentIds.has(text(item.recipient_agent_id)))
     .sort(compareWorkspaceInboxItems);
   const pendingReviews = values(state.review_requests)
@@ -5306,6 +5307,7 @@ function buildWorkspaceDashboardModel() {
   const runtimeAttention = (runtime.attention || [])
     .filter(isVisibleRuntimeRow)
     .filter((row) => runtimeAttentionGroup(row) !== "retained_history")
+    .filter(workspaceRuntimeAttentionNeedsAttention)
     .sort(runtimeSortRows);
   const dueAgents = dueLeasedAgentsForFilter(runtime.agents || []);
   const deliveryRows = buildReviewDeliveryRows();
@@ -5429,7 +5431,7 @@ function renderWorkspaceAttentionPanel(model) {
       </ul>
       ${remaining ? `<div class="workspace-more-row">${remaining} more item${remaining === 1 ? "" : "s"} in detailed tabs.</div>` : ""}
     `
-    : `<p class="empty-state">No runtime blockers, pending reviews, open inbox items, or governance agenda items need attention.</p>`;
+    : `<p class="empty-state">No runtime blockers, pending reviews, actionable inbox items, or governance agenda items need attention.</p>`;
   return `
     <section class="workspace-dashboard-panel workspace-attention-panel" aria-labelledby="workspace-attention-heading">
       <div class="workspace-panel-header">
@@ -5821,6 +5823,15 @@ function workspaceAttentionItems({
     });
   });
   return items.sort(compareWorkspaceAttentionItems);
+}
+
+function workspaceInboxItemNeedsAttention(item) {
+  return text(item.item_type) !== "operator_directive";
+}
+
+function workspaceRuntimeAttentionNeedsAttention(row) {
+  const inboxItemId = text(row.inbox_item_id);
+  return !inboxItemId || workspaceInboxItemNeedsAttention(state.inbox?.[inboxItemId] || {});
 }
 
 function workspaceRuntimeAttentionMeta(row) {

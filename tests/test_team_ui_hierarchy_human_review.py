@@ -47,6 +47,19 @@ def test_projects_view_receives_release_evidence_collections() -> None:
     } <= TEAM_VIEW_COLLECTIONS["projects"]
 
 
+def test_workspace_excludes_operator_directives_from_attention() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function workspaceInboxItemNeedsAttention(item)" in source
+    assert 'return text(item.item_type) !== "operator_directive";' in source
+    assert ".filter(workspaceInboxItemNeedsAttention)" in source
+    assert "function workspaceRuntimeAttentionNeedsAttention(row)" in source
+    assert ".filter(workspaceRuntimeAttentionNeedsAttention)" in source
+    assert "function pendingInboxForAgent(agentId)" in source
+
+
 def test_planning_view_receives_formal_review_status_collection() -> None:
     assert "review_requests" in TEAM_VIEW_COLLECTIONS["planning"]
 
