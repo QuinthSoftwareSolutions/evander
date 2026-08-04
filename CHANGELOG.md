@@ -9,6 +9,8 @@
 
 - Bound ignored-file cleanup to an open descriptor for the worktree validated under the
   repository lock, preventing path replacement and symlink races from redirecting `git clean`.
+- Anchored repository and worktree traversal at the stable session home, refusing symlinked
+  parent components and retaining the validated descriptors through Git cleanup and removal.
 - Refused cleanup when an absent task worktree appears during final validation, so no mutation
   can proceed without a descriptor bound to the validated directory.
 
