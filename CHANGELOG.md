@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-04 - Retained Wake Role-Description Updates
+
+- Included a persistent agent's full updated role description in retained Team
+  wake context, while continuing to omit it when unchanged.
+
 ## 2026-08-02 - Bound Task Worktree Cleanup
 
 - Bound ignored-file cleanup to an open descriptor for the worktree validated under the
