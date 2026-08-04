@@ -18,6 +18,7 @@ def test_cleanup_revalidates_under_lock_immediately_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    (tmp_path / "worktrees" / "task").mkdir(parents=True)
     inspections = iter(
         [
             TaskWorktreeInspection(
@@ -59,6 +60,52 @@ def test_cleanup_revalidates_under_lock_immediately_before_mutation(
     assert result.validation_count == 2
     assert result.failed_check == "untracked_files"
     assert result.untracked_paths == ["late.txt"]
+
+
+def test_cleanup_refuses_symlink_swap_before_ignored_file_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "worktrees" / "task"
+    target.mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    victim_env = victim / ".env"
+    victim_env.write_text("keep me\n", encoding="utf-8")
+    moved_target = tmp_path / "moved-task"
+    inspection = TaskWorktreeInspection(
+        safe_to_remove=True,
+        target_exists=True,
+        registered=True,
+        actual_branch="agents/session/task",
+        actual_commit_sha="a" * 40,
+        message="safe",
+        ignored_paths=[".env"],
+    )
+    inspection_count = 0
+
+    def _inspect(**_kwargs: object) -> TaskWorktreeInspection:
+        nonlocal inspection_count
+        inspection_count += 1
+        if inspection_count == 2:
+            target.rename(moved_target)
+            target.symlink_to(victim, target_is_directory=True)
+        return inspection
+
+    monkeypatch.setattr(cleanup_module, "inspect_task_worktree", _inspect)
+
+    result = cleanup_task_worktree(
+        repo_dir=tmp_path / "repo",
+        worktrees_root=tmp_path / "worktrees",
+        target_dir=target,
+        branch="agents/session/task",
+        expected_commit_sha="a" * 40,
+        lock_path=tmp_path / "locks" / "repo.lock",
+    )
+
+    assert result.state == "refused"
+    assert result.failed_check == "worktree_path_changed"
+    assert victim_env.read_text(encoding="utf-8") == "keep me\n"
 
 
 def test_libvirt_cleanup_command_is_self_contained_and_removes_safe_worktree(
@@ -200,18 +247,23 @@ def test_ignored_cleanup_batches_paths_and_bounds_each_git_process(
         args: list[str],
         *,
         check: bool = True,
-        timeout_seconds: float | None = None,
+        timeout: float | None = None,
+        **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        calls.append((args, check, timeout_seconds))
+        calls.append((args, check, timeout))
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(cleanup_module, "_run", _record_run)
+    monkeypatch.setattr(cleanup_module.subprocess, "run", _record_run)
     monkeypatch.setattr(cleanup_module, "_IGNORED_PATH_CLEAN_BATCH_COUNT", 2)
 
-    error = cleanup_module._remove_proven_ignored_paths(
-        tmp_path,
-        ["cache/a.bin", "cache/b.bin", "cache/c.bin"],
-    )
+    directory_fd = cleanup_module.os.open(tmp_path, cleanup_module.os.O_RDONLY)
+    try:
+        error = cleanup_module._remove_proven_ignored_paths(
+            directory_fd,
+            ["cache/a.bin", "cache/b.bin", "cache/c.bin"],
+        )
+    finally:
+        cleanup_module.os.close(directory_fd)
 
     assert error is None
     assert [call[0][-2:] for call in calls] == [
@@ -232,16 +284,21 @@ def test_ignored_cleanup_reports_bounded_git_timeout(
         args: list[str],
         *,
         check: bool = True,
-        timeout_seconds: float | None = None,
+        timeout: float | None = None,
+        **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(args, timeout_seconds or 0)
+        raise subprocess.TimeoutExpired(args, timeout or 0)
 
-    monkeypatch.setattr(cleanup_module, "_run", _time_out)
+    monkeypatch.setattr(cleanup_module.subprocess, "run", _time_out)
 
-    error = cleanup_module._remove_proven_ignored_paths(
-        tmp_path,
-        ["cache/generated.bin"],
-    )
+    directory_fd = cleanup_module.os.open(tmp_path, cleanup_module.os.O_RDONLY)
+    try:
+        error = cleanup_module._remove_proven_ignored_paths(
+            directory_fd,
+            ["cache/generated.bin"],
+        )
+    finally:
+        cleanup_module.os.close(directory_fd)
 
     assert error == "timed out after 60 seconds while removing 1 proven ignored path(s)"
 

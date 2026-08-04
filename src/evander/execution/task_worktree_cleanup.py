@@ -101,41 +101,63 @@ def cleanup_task_worktree(
                 ),
             )
 
-        second = inspect_task_worktree(
-            repo_dir=repo_dir,
-            worktrees_root=worktrees_root,
-            target_dir=target_dir,
-            branch=branch,
-            expected_commit_sha=expected_commit_sha,
-        )
-        if not second.safe_to_remove:
-            return _refused_result(second, validation_count=2)
-
-        removed = False
-        if second.target_exists:
-            if second.ignored_paths:
-                cleanup_error = _remove_proven_ignored_paths(
+        target_fd: int | None = None
+        if first.target_exists:
+            try:
+                target_fd = os.open(
                     target_dir,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                )
+            except OSError as exc:
+                return _refused_result(
+                    _unsafe_inspection(
+                        first,
+                        failed_check="worktree_path_changed",
+                        message=f"task worktree changed before final validation: {exc}",
+                    ),
+                    validation_count=2,
+                )
+        try:
+            second = inspect_task_worktree(
+                repo_dir=repo_dir,
+                worktrees_root=worktrees_root,
+                target_dir=target_dir,
+                branch=branch,
+                expected_commit_sha=expected_commit_sha,
+            )
+            if target_fd is not None and not _fd_still_names_path(target_fd, target_dir):
+                return _refused_result(
+                    _unsafe_inspection(
+                        second,
+                        failed_check="worktree_path_changed",
+                        message="task worktree changed during final validation",
+                    ),
+                    validation_count=2,
+                )
+            if not second.safe_to_remove:
+                return _refused_result(second, validation_count=2)
+
+            if second.target_exists and second.ignored_paths:
+                assert target_fd is not None
+                cleanup_error = _remove_proven_ignored_paths(
+                    target_fd,
                     second.ignored_paths,
                 )
                 if cleanup_error is not None:
                     return _refused_result(
-                        TaskWorktreeInspection(
-                            safe_to_remove=False,
-                            target_exists=True,
-                            registered=second.registered,
-                            actual_branch=second.actual_branch,
-                            actual_commit_sha=second.actual_commit_sha,
+                        _unsafe_inspection(
+                            second,
                             failed_check="ignored_path_cleanup_failed",
                             message=cleanup_error,
-                            tracked_paths=list(second.tracked_paths),
-                            untracked_paths=list(second.untracked_paths),
-                            ignored_paths=list(second.ignored_paths),
-                            ignored_bytes=second.ignored_bytes,
-                            worktree_bytes=second.worktree_bytes,
                         ),
                         validation_count=2,
                     )
+        finally:
+            if target_fd is not None:
+                os.close(target_fd)
+
+        removed = False
+        if second.target_exists:
             args = ["git", "-C", str(repo_dir), "worktree", "remove"]
             args.append(str(target_dir))
             removal = _run(args, check=False)
@@ -479,17 +501,18 @@ def _git_path_list(args: list[str]) -> list[str]:
     return sorted({path for path in _run(args).stdout.split("\0") if path})
 
 
-def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | None:
+def _remove_proven_ignored_paths(target_fd: int, paths: list[str]) -> str | None:
     """Remove only ignored paths observed by the final pre-cleanup inspection."""
 
+    bound_target = f"/proc/self/fd/{target_fd}"
     for batch in _ignored_path_clean_batches(paths):
         try:
-            result = _run(
+            result = subprocess.run(
                 [
                     "git",
                     "--literal-pathspecs",
                     "-C",
-                    str(target_dir),
+                    bound_target,
                     "clean",
                     "-f",
                     "-d",
@@ -498,7 +521,10 @@ def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | No
                     *batch,
                 ],
                 check=False,
-                timeout_seconds=_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+                timeout=_IGNORED_PATH_CLEAN_TIMEOUT_SECONDS,
+                pass_fds=(target_fd,),
             )
         except subprocess.TimeoutExpired:
             return (
@@ -513,6 +539,26 @@ def _remove_proven_ignored_paths(target_dir: Path, paths: list[str]) -> str | No
                 + (f": {detail}" if detail else "")
             )
     return None
+
+
+def _fd_still_names_path(directory_fd: int, path: Path) -> bool:
+    try:
+        opened = os.fstat(directory_fd)
+        current = path.stat(follow_symlinks=False)
+        return (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino)
+    except OSError:
+        return False
+
+
+def _unsafe_inspection(
+    inspection: TaskWorktreeInspection,
+    *,
+    failed_check: str,
+    message: str,
+) -> TaskWorktreeInspection:
+    values = asdict(inspection)
+    values.update(safe_to_remove=False, failed_check=failed_check, message=message)
+    return TaskWorktreeInspection(**values)
 
 
 def _ignored_path_clean_batches(paths: list[str]) -> Iterator[list[str]]:
