@@ -138,6 +138,10 @@ from evander_team_addon.services.domain.chat import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     _publish_admin_chat_notification,
 )
+from evander_team_addon.services.domain.agent_access import (
+    _agent_payload,
+    agent_role_description_fingerprint,
+)
 from evander_team_addon.services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _case_payloads_for_agent,
@@ -1207,6 +1211,17 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     }
     assert "Task creation mandate for this wake" not in retained_prompt
     assert len(retained_prompt) < len(fresh_prompt)
+
+    changed_role_prompt = _build_prompt(
+        {**retained_lease, "role_description_changed": True},
+        effective_resume_mode="same_context",
+    )
+    changed_role_context = _team_context_from_prompt(changed_role_prompt)
+    assert changed_role_context["agent"] == {
+        "id": "ordinary-agent",
+        "role_description": "Integrate accepted contributions.",
+    }
+    assert "Role description update" in changed_role_prompt
 
     distinct_base_repo_context = {
         **repo_context,
@@ -2495,6 +2510,13 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert usage_context.team_id == "team"
     assert usage_context.project_id == "project"
     assert usage_context.agent_id == "backend"
+    state_after_resume = repo.read()
+    assert (
+        state_after_resume.agent_runtimes["backend"].last_delivered_role_description_fingerprint
+        == agent_role_description_fingerprint(
+            _agent_payload(state_after_resume, state_after_resume.agents["backend"])
+        )
+    )
     prompt = str(resumer.calls[0]["prompt"])
     assert "wakeprivate" not in prompt
     assert "private runtime prompt note" not in prompt
@@ -7416,7 +7438,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert "a superior may set state: finished on a subordinate non-terminal task" in str(
         copied_file["content"]
     )
-    assert "your own full role_description is included in the wake prompt" in str(
+    assert "your own full role_description is included in fresh wake context" in str(
         copied_file["content"]
     )
     assert "Use team_get_my_identity when exact identity" in str(copied_file["content"])

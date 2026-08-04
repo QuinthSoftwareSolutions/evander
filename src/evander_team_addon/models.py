@@ -913,6 +913,7 @@ class AgentRuntime(TeamModel):
     last_agent_handoff_at: datetime | None = None
     last_context_rotated_at: datetime | None = None
     last_thread_id: str | None = None
+    last_delivered_role_description_fingerprint: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("agent_id", mode="before")
@@ -928,6 +929,7 @@ class AgentRuntime(TeamModel):
         "last_handoff_summary",
         "last_agent_handoff_summary",
         "last_thread_id",
+        "last_delivered_role_description_fingerprint",
         mode="before",
     )
     @classmethod

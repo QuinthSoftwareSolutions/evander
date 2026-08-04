@@ -202,6 +202,7 @@ from .services.chat_service import (
 from .services.domain.agent_access import (
     _agent_payload,
     _subordinate_agent_payloads,
+    agent_role_description_fingerprint,
 )
 from .services.commands.outbox import _team_event_outbox_records
 from .services.domain.chat import (
@@ -2490,6 +2491,15 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                if not context_handoff_preparation:
+                    state = TeamRuntimeService(repo).record_agent_role_description_delivered(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        role_description_fingerprint=_required_text(
+                            lease.get("role_description_fingerprint"),
+                            "role_description_fingerprint",
+                        ),
+                    )
                 delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(lease)
                 if delivered_action_feedback_dispatch_ids:
                     feedback_service = TeamAdminService(repo)
@@ -2792,6 +2802,14 @@ def _dispatch_queued_team_chat_messages(
                 state = TeamChatService(repo).mark_chat_message_ordinary_context_seeded(
                     message_id=message_id,
                 )
+                state = TeamRuntimeService(repo).record_agent_role_description_delivered(
+                    agent_id=agent_id,
+                    dispatch_id=dispatch_id,
+                    role_description_fingerprint=_required_text(
+                        chat_lease.get("role_description_fingerprint"),
+                        "role_description_fingerprint",
+                    ),
+                )
             if context_rotation_pending and mutation_allowed:
                 thread_id = _optional_text(result_payload.get("thread_id"))
                 state = TeamRuntimeService(repo).record_context_rotation_dispatch_started(
@@ -2851,6 +2869,8 @@ def _team_chat_wake_lease(
 ) -> dict[str, Any]:
     dispatch = state.dispatches[dispatch_id]
     agent_payload = _agent_payload(state, agent)
+    role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
+    runtime = state.agent_runtimes[agent.id]
     projects = [
         {
             **state.projects[project_id].model_dump(mode="json"),
@@ -2876,7 +2896,11 @@ def _team_chat_wake_lease(
     )
     return {
         "agent": agent_payload,
-        "runtime": state.agent_runtimes[agent.id].model_dump(mode="json"),
+        "runtime": runtime.model_dump(mode="json"),
+        "role_description_changed": (
+            runtime.last_delivered_role_description_fingerprint != role_description_fingerprint
+        ),
+        "role_description_fingerprint": role_description_fingerprint,
         "dispatch_id": dispatch_id,
         "has_prior_successful_wake": has_prior_successful_wake,
         "reason": "team_chat",
@@ -6289,9 +6313,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or detailed visible records through the Team read tools instead of "
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
-        "Identity detail: your own full role_description is included in the wake "
-        "prompt Team context. Compact context may still omit display names or "
-        f"trim subordinate role descriptions. Use {TEAM_GET_MY_IDENTITY_TOOL} "
+        "Identity detail: your own full role_description is included in fresh wake "
+        "context and in retained-context deltas when it changes. Compact context may "
+        "still omit display names or trim subordinate role descriptions. Use "
+        f"{TEAM_GET_MY_IDENTITY_TOOL} "
         "when exact identity, effective permissions, direct superior display "
         "name, subordinate display names, or another complete identity field "
         "matters for the current decision.\n\n"
@@ -6748,6 +6773,12 @@ def _build_prompt(
         if fresh_context
         else ""
     )
+    role_description_delta_section = (
+        "Role description update: Team context JSON.agent.role_description has changed "
+        "since the last delivered Team wake. Treat it as the current role guidance.\n\n"
+        if not fresh_context and context.get("agent", {}).get("role_description")
+        else ""
+    )
     return (
         "Continue your assigned team-agent work.\n"
         f"Follow the Team Add-on guidance in {TEAM_AGENT_GUIDANCE_PATH}, managed "
@@ -6756,6 +6787,7 @@ def _build_prompt(
         "arguments; use Team read tools for omitted record detail.\n\n"
         f"{mode_section}"
         f"{identity_section}"
+        f"{role_description_delta_section}"
         f"{_task_creation_mandate_guidance(agent) if fresh_context else ''}"
         f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repos_prompt_guidance(project_repos)}"
