@@ -3,7 +3,7 @@
 ## 2026-08-04 - Focused Team Workspace Attention
 
 - Removed operator and governance directives from the Team Workspace attention
-  dashboard and its inbox totals; they remain available from the receiving
+  dashboard while retaining them in its neutral inbox totals and the receiving
   agent and team detail views.
 
 ## 2026-08-02 - Team Review Cohort Authorization

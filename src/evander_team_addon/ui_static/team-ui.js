@@ -5293,9 +5293,9 @@ function buildWorkspaceDashboardModel() {
   const pendingInbox = values(state.inbox)
     .filter((item) => text(item.state) !== "handled")
     .filter((item) => !runtimeInboxIds.has(text(item.id)))
-    .filter(workspaceInboxItemNeedsAttention)
     .filter((item) => visibleAgentIds.has(text(item.recipient_agent_id)))
     .sort(compareWorkspaceInboxItems);
+  const attentionInbox = pendingInbox.filter(workspaceInboxItemNeedsAttention);
   const pendingReviews = values(state.review_requests)
     .filter((review) => !terminalRecordStates.has(review.state))
     .filter((review) => workspaceReviewIsVisible(review, visibleProjectIds))
@@ -5317,7 +5317,7 @@ function buildWorkspaceDashboardModel() {
     costAttention,
     blockedTasks,
     pendingReviews,
-    pendingInbox,
+    pendingInbox: attentionInbox,
     pendingGovernanceAgenda,
   });
   return {
@@ -5327,6 +5327,7 @@ function buildWorkspaceDashboardModel() {
     openTasks,
     blockedTasks,
     pendingInbox,
+    attentionInbox,
     pendingReviews,
     pendingGovernanceAgenda,
     runtimeAttention,

@@ -54,7 +54,8 @@ def test_workspace_excludes_operator_directives_from_attention() -> None:
 
     assert "function workspaceInboxItemNeedsAttention(item)" in source
     assert 'return text(item.item_type) !== "operator_directive";' in source
-    assert ".filter(workspaceInboxItemNeedsAttention)" in source
+    assert "const attentionInbox = pendingInbox.filter(workspaceInboxItemNeedsAttention);" in source
+    assert "pendingInbox: attentionInbox," in source
     assert "function workspaceRuntimeAttentionNeedsAttention(row)" in source
     assert ".filter(workspaceRuntimeAttentionNeedsAttention)" in source
     assert "function pendingInboxForAgent(agentId)" in source
