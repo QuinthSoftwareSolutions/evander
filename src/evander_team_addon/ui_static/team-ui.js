@@ -9472,7 +9472,7 @@ function renderChatThreadMarkup({
       ${renderChatReadonlyBanner(conversation, readOnly)}
       ${callStrip}
       ${renderChatMessageList(conversation, messages, olderLoading)}
-      ${renderChatComposer(label, readOnly)}
+      ${renderChatComposer(conversation, label, readOnly)}
     </div>
   `;
 }
@@ -9509,7 +9509,7 @@ function patchChatThread(
     list.innerHTML = renderChatMessageListContents(conversation, messages, olderLoading);
     list.dataset.chatMessageSignature = listSignature;
   }
-  composer.outerHTML = renderChatComposer(label, readOnly);
+  composer.outerHTML = renderChatComposer(conversation, label, readOnly);
   return true;
 }
 
@@ -9577,9 +9577,14 @@ function renderChatMessageListContents(conversation, messages, olderLoading) {
   `;
 }
 
-function renderChatComposer(label, readOnly) {
+function renderChatComposer(conversation, label, readOnly) {
   const conversationId = text(selectedChatConversationId);
   const attachments = [...(pendingChatAttachments.get(conversationId) || [])];
+  const mutationEnabled = !readOnly && text(conversation?.mutation_mode) === "project_scoped";
+  const modeLabel = mutationEnabled ? "Mutation enabled" : "Reply only";
+  const modeTitle = mutationEnabled
+    ? "This message can authorize Team mutations within your directory-scoped project permissions."
+    : "This message can receive an agent reply but cannot authorize Team mutations.";
   return `
     <form class="chat-composer" data-chat-message-form>
       <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
@@ -9592,6 +9597,7 @@ function renderChatComposer(label, readOnly) {
         `).join("")}
       </div>
       <div class="chat-composer-actions">
+        <span class="chat-mutation-mode ${mutationEnabled ? "is-enabled" : "is-reply-only"}" title="${escapeAttr(modeTitle)}">${escapeHtml(modeLabel)}</span>
         <label class="chat-attach-button ${readOnly ? "is-disabled" : ""}">
           <input type="file" multiple data-chat-attachment-input="${escapeAttr(conversationId)}" ${chatSending || readOnly ? "disabled" : ""} />
           <span>Attach</span>
@@ -9695,6 +9701,12 @@ function renderChatMessage(message) {
   const externalDelivery = metadata.external_delivery && typeof metadata.external_delivery === "object"
     ? metadata.external_delivery
     : null;
+  const mutationMode = sender === "operator" ? text(message.mutation_mode) : "";
+  const mutationModeLabel = mutationMode === "project_scoped"
+    ? "Mutation enabled"
+    : mutationMode === "reply_only"
+      ? "Reply only"
+      : "";
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
@@ -9704,6 +9716,7 @@ function renderChatMessage(message) {
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
+          ${mutationModeLabel ? `<span class="chat-mutation-mode ${mutationMode === "project_scoped" ? "is-enabled" : "is-reply-only"}">${escapeHtml(mutationModeLabel)}</span>` : ""}
           ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
         ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}

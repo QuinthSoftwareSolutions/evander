@@ -553,6 +553,14 @@ sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
 
+Admin Chat sends are mutation-enabled only when privileged operations are
+unlocked and the sender has directory-scoped `team_chats.mutate` authority over
+the recipient agent and the included projects. The server snapshots the
+intersection of that authority and the agent's visible projects when accepting
+the message; managed repositories are derived from those projects. Missing or
+legacy mutation metadata is reply-only. Built-in Owners and Operators receive
+`team_chats.mutate`; other users can still send reply-only messages.
+
 Chat refreshes and live snapshots preserve reader position when the operator is
 scrolled up, while a reader already near the bottom remains pinned to new
 messages. Loading older history preserves the visible anchor as messages are
@@ -568,8 +576,10 @@ text. The provider, target, and source-message ID form the durable ingress
 idempotency key, so replay returns the original Team message and
 `team-chat:<message-id>` dispatch. `allow_team_mutations` defaults to `false`;
 enabling it also requires a fixed `authorized_author_ids` allowlist containing
-the authenticated source author. The target must additionally allow `reply` for
-a preserved provider thread or `write` for a top-level response.
+the authenticated source author. Mutation-enabled bridge messages are further
+bounded to the workflow effect directory for both the recipient agent and
+included projects. The target must additionally allow `reply` for a preserved
+provider thread or `write` for a top-level response.
 
 An agent reply to an externally originated message is committed to Team state
 before delivery is attempted. `team_reply_to_chat` creates a pending external

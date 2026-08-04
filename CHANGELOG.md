@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-08-04 - Workspace Attention Pagination
+
+- Added Previous and Next controls to the Team Workspace attention list, with a
+  visible item range and current-page indicator.
+
+## 2026-08-04 - RBAC-scoped Team Chat Mutations
+
+- Preserved broad project and managed-repository scopes for mutation-enabled
+  Team Chat while requiring the human sender to hold the new directory-scoped
+  `team_chats.mutate` permission over both the recipient agent and included
+  projects; built-in Owners and Operators retain this capability.
+- Snapshotted server-derived chat mutation grants at send time, made missing or
+  legacy mutation metadata reply-only, bounded external bridges to their
+  workflow directory, and exposed reply-only versus mutation-enabled mode in
+  the Chat UI.
+
 ## 2026-08-04 - Current Delivery Attention
 
 - Excluded retired and superseded review requests, and superseded deliverables,

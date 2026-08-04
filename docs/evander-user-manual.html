@@ -12313,11 +12313,15 @@ without a successful reply is marked failed with the available error
 context.</li>
 </ol>
 <p>A Chat dispatch can be <strong>reply-only</strong> or allow ordinary
-Team mutations. Its <code>allow_team_mutations</code> metadata controls
-whether the agent receives normal Team action tools alongside
-<code>team_reply_to_chat</code>. When a human asks “please change
-Imani&#39;s task priority,” a mutation-enabled dispatch can perform the
-authorized state change and reply. A reply-only dispatch must answer
+Team mutations. Mutation-enabled Admin Chat requires privileged
+operations to be unlocked and the sender to hold directory-scoped
+<code>team_chats.mutate</code> authority over both the recipient agent
+and each included project. The server snapshots the intersection of that
+authority and the agent&#39;s visible projects when the message is accepted;
+repository scope is derived from those projects. Missing or legacy
+mutation metadata is reply-only. When a human asks “please change
+Imani&#39;s task priority,” an authorized mutation-enabled dispatch can
+perform the state change and reply. A reply-only dispatch must answer
 without changing Team state.</p>
 <p>The agent may use <code>team_send_operator_chat_message</code> only
 for operator participants listed in its current dispatch context. That
@@ -12362,7 +12366,9 @@ Enabling Team mutations requires a non-empty fixed
 <code>authorized_author_ids</code> list, and the authenticated source
 author must match it. A Discord trigger should also filter allowed
 authors and exclude the Evander bot, but the effect-side author
-allowlist remains the mutation authority.</p>
+allowlist remains required. The recipient agent and every included
+project must also remain inside the workflow effect&#39;s directory
+scope.</p>
 <p>When the agent replies, Team commits the internal sent message first,
 creates a pending <code>ExternalChatDeliveryRecord</code>, and
 transactionally emits <code>team.chat.external_reply_requested</code>.

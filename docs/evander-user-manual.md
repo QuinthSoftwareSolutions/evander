@@ -6011,7 +6011,7 @@ new data does not jump the transcript away from the passage being read.
 > 4. The agent replies with <code>team_reply_to_chat</code>.
 > 5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
 >
-> A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
+> A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Mutation-enabled Admin Chat requires privileged operations to be unlocked and the sender to hold directory-scoped <code>team_chats.mutate</code> authority over both the recipient agent and each included project. The server snapshots the intersection of that authority and the agent's visible projects when the message is accepted; repository scope is derived from those projects. Missing or legacy mutation metadata is reply-only. When a human asks “please change Imani's task priority,” an authorized mutation-enabled dispatch can perform the state change and reply. A reply-only dispatch must answer without changing Team state.
 >
 > The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
 >
@@ -6048,7 +6048,8 @@ The bridge defaults to <code>allow_team_mutations=false</code>. Enabling Team
 mutations requires a non-empty fixed <code>authorized_author_ids</code> list,
 and the authenticated source author must match it. A Discord trigger should
 also filter allowed authors and exclude the Evander bot, but the effect-side
-author allowlist remains the mutation authority.
+author allowlist remains required. The recipient agent and every included
+project must also remain inside the workflow effect's directory scope.
 
 When the agent replies, Team commits the internal sent message first, creates a
 pending <code>ExternalChatDeliveryRecord</code>, and transactionally emits

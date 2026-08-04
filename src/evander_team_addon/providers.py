@@ -37,6 +37,7 @@ from evander.admin.user_notifications import (
     normalize_admin_notification_user_id,
 )
 from evander.admin.web.user_store import AdminWebUserStore
+from evander.admin.web.rbac import scope_matches
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -145,6 +146,7 @@ from .models import (
     TeamBlockerState,
     TeamRecordState,
     TeamDispatchStatus,
+    TeamConversationMessage,
     TeamState,
     TeamTaskState,
     agent_project_ids,
@@ -190,7 +192,12 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
-from .services.chat_service import TeamChatService
+from .services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+    reply_only_team_chat_authorization,
+    team_chat_mutation_allowed,
+)
 from .services.domain.agent_access import (
     _agent_payload,
     _subordinate_agent_payloads,
@@ -3324,9 +3331,81 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                     "source_author_id is not authorized for Team mutations on this bridge"
                 )
         repo = TeamStateRepository(_runtime_dir(context))
+        before = repo.read()
+        conversation_id = _optional_text(payload.get("conversation_id"))
+        agent_id = _optional_text(payload.get("agent_id"))
+        duplicate_ingress = next(
+            (
+                record
+                for record in before.external_chat_ingress.values()
+                if record.provider == provider
+                and record.communication_target_id == target.id
+                and record.source_message_id
+                == _required_text(payload.get("source_message_id"), "source_message_id")
+            ),
+            None,
+        )
+        if duplicate_ingress is not None:
+            mutation_authorization = reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=source_author_id,
+                reason="idempotent_replay_uses_existing_authorization",
+            )
+        else:
+            if conversation_id is not None:
+                conversation = before.conversations.get(conversation_id)
+                if conversation is None:
+                    raise ValueError(f"conversation {conversation_id} not found")
+                agent_id = conversation.agent_id
+            agent = before.agents.get(agent_id or "")
+            if agent is None:
+                raise ValueError(f"agent {agent_id or ''} not found")
+        if duplicate_ingress is None and allow_team_mutations:
+            session_repository = _session_repository_from_context(context)
+            get_session = getattr(session_repository, "get_session", None)
+            try:
+                session = get_session(agent.session_id) if callable(get_session) else None
+            except Exception:
+                session = None
+            if session is None:
+                session = (_session_records_by_id(session_repository) or {}).get(
+                    agent.session_id
+                )
+            recipient_directory_path = _optional_text(
+                getattr(session, "directory_path", None)
+            )
+            if recipient_directory_path is None:
+                raise ValueError(
+                    "mutation-enabled external Team chat requires a resolvable recipient directory"
+                )
+            if not scope_matches(directory_path, recipient_directory_path):
+                raise ValueError(
+                    "external Team chat recipient is outside the workflow directory scope"
+                )
+            mutation_authorization = project_scoped_team_chat_authorization(
+                before,
+                agent=agent,
+                source="external_bridge",
+                principal_id=source_author_id,
+                recipient_directory_path=recipient_directory_path,
+                project_is_authorized=lambda project_directory_path: scope_matches(
+                    directory_path,
+                    project_directory_path,
+                ),
+            )
+            if mutation_authorization.mode != "project_scoped":
+                raise ValueError(
+                    "mutation-enabled external Team chat has no authorized projects"
+                )
+        elif duplicate_ingress is None:
+            mutation_authorization = reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=source_author_id,
+                reason="mutations_disabled_by_bridge",
+            )
         state, result = TeamChatService(repo).enqueue_external_operator_chat_message(
-            conversation_id=_optional_text(payload.get("conversation_id")),
-            agent_id=_optional_text(payload.get("agent_id")),
+            conversation_id=conversation_id,
+            agent_id=agent_id,
             operator_user_id=_required_text(payload.get("operator_user_id"), "operator_user_id"),
             operator_display_name=_optional_text(payload.get("operator_display_name")),
             body=_required_text(payload.get("body"), "body"),
@@ -3336,7 +3415,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             source_thread_id=source_thread_id,
             source_author_id=source_author_id,
             source_author_name=_optional_text(payload.get("source_author_name")),
-            allow_team_mutations=allow_team_mutations,
+            mutation_authorization=mutation_authorization,
         )
         if not result.get("duplicate"):
             conversation = state.conversations[result["conversation_id"]]
@@ -8996,18 +9075,7 @@ def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
 
 
 def _team_chat_mutation_allowed(message: object) -> bool:
-    metadata = _object_field(message, "metadata")
-    if not isinstance(metadata, Mapping):
-        return True
-    for key in (
-        "allow_team_mutations",
-        "allow_team_mutation",
-        "mutation_allowed",
-        "team_mutation_allowed",
-    ):
-        if key in metadata:
-            return bool(metadata[key])
-    return True
+    return isinstance(message, TeamConversationMessage) and team_chat_mutation_allowed(message)
 
 
 def _team_session_has_active_prompt(context: Any, *, session_id: str) -> bool:

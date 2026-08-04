@@ -29,6 +29,7 @@ from evander.admin.services.managed_git_common import (
 )
 from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
+    TEAM_CHATS_MUTATE_PERMISSION,
     TEAM_CHATS_READ_ALL_PERMISSION,
     TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
     normalize_admin_web_group_id,
@@ -118,7 +119,11 @@ from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
 from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
 from .services.admin_service import TeamAdminService
-from .services.chat_service import TeamChatService
+from .services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+    reply_only_team_chat_authorization,
+)
 from .services.human_review_assignment_service import (
     human_review_eligibility_resolver,
     reconcile_current_human_review_assignments,
@@ -1225,6 +1230,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def list_conversations(request: Request) -> JSONResponse:
         state = repository.read()
         scope = _chat_list_scope(context.auth, request, state)
+        scope = _add_team_chat_mutation_modes(
+            scope,
+            auth=context.auth,
+            service=getattr(context, "service", None),
+            session_repository=_session_repository_from_context(context),
+            request=request,
+            state=state,
+        )
         return JSONResponse(
             _conversation_collection_payload(
                 state,
@@ -1246,6 +1259,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             created_by=identity["actor"],
         )
         scope = _chat_scope_for_operator(context.auth, request, state, identity["user_id"])
+        scope = _add_team_chat_mutation_modes(
+            scope,
+            auth=context.auth,
+            service=getattr(context, "service", None),
+            session_repository=_session_repository_from_context(context),
+            request=request,
+            state=state,
+        )
         response_payload = _conversation_collection_payload(
             state,
             scope=scope,
@@ -1276,6 +1297,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     conversation,
                     include_messages=True,
                     current_operator_user_id=scope["current_operator"]["user_id"],
+                    mutation_mode=(
+                        _team_chat_mutation_authorization_for_request(
+                            context,
+                            request,
+                            state,
+                            conversation,
+                            principal_id=scope["current_operator"]["user_id"],
+                        ).mode
+                        if conversation.operator_user_id
+                        == scope["current_operator"]["user_id"]
+                        else "reply_only"
+                    ),
                 ),
                 **_chat_scope_payload(state, scope),
             }
@@ -1312,6 +1345,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 conversation_id,
                 auth=context.auth,
                 request=request,
+                context=context,
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
@@ -1323,6 +1357,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 request,
                 conversation_id,
                 auth=context.auth,
+                context=context,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -1342,6 +1377,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             conversation,
             write=True,
             identity=identity,
+        )
+        mutation_authorization = _team_chat_mutation_authorization_for_request(
+            context,
+            request,
+            before,
+            conversation,
+            principal_id=identity["user_id"],
         )
         prepared_attachments = []
         content_type = str(request.headers.get("content-type") or "").lower()
@@ -1400,10 +1442,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 body=body,
                 attachments=prepared_attachments,
                 created_by=identity["actor"],
-                allow_team_mutations=_request_has_unlocked_privileged_operations(
-                    context,
-                    request,
-                ),
+                mutation_authorization=mutation_authorization,
             )
         except Exception:
             chat_attachment_storage.delete_prepared(
@@ -1451,6 +1490,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     conversation,
                     include_messages=True,
                     current_operator_user_id=identity["user_id"],
+                    mutation_mode=mutation_authorization.mode,
                 ),
                 **_chat_scope_payload(
                     state,
@@ -3950,15 +3990,126 @@ def _conversation_agent_directory_path(
     state: TeamState,
     conversation: Any,
 ) -> str:
+    return _strict_conversation_agent_directory_path(context, state, conversation) or "root"
+
+
+def _strict_conversation_agent_directory_path(
+    context: AddonContext,
+    state: TeamState,
+    conversation: Any,
+) -> str | None:
     agent = state.agents.get(conversation.agent_id)
     if agent is None:
-        return "root"
+        return None
     repository = _session_repository_from_context(context)
     get_session = getattr(repository, "get_session", None)
     if not callable(get_session):
-        return "root"
-    session = get_session(agent.session_id)
-    return normalize_directory_path(getattr(session, "directory_path", None))
+        return None
+    try:
+        session = get_session(agent.session_id)
+    except Exception:
+        return None
+    if session is None or not getattr(session, "directory_path", None):
+        return None
+    try:
+        return normalize_directory_path(session.directory_path)
+    except (TypeError, ValueError):
+        return None
+
+
+def _team_chat_mutation_authorization_for_request(
+    context: AddonContext,
+    request: Request,
+    state: TeamState,
+    conversation: Any,
+    *,
+    principal_id: str,
+):
+    return _team_chat_mutation_authorization(
+        auth=context.auth,
+        service=getattr(context, "service", None),
+        session_repository=_session_repository_from_context(context),
+        request=request,
+        state=state,
+        conversation=conversation,
+        principal_id=principal_id,
+    )
+
+
+def _team_chat_mutation_authorization(
+    *,
+    auth: Any | None,
+    service: Any | None,
+    session_repository: Any | None,
+    request: Request,
+    state: TeamState,
+    conversation: Any,
+    principal_id: str,
+):
+    agent = state.agents.get(conversation.agent_id)
+    get_session = getattr(session_repository, "get_session", None)
+    session = None
+    if agent is not None and callable(get_session):
+        try:
+            session = get_session(agent.session_id)
+        except Exception:
+            session = None
+    raw_directory_path = getattr(session, "directory_path", None)
+    try:
+        recipient_directory_path = (
+            normalize_directory_path(raw_directory_path) if raw_directory_path else None
+        )
+    except (TypeError, ValueError):
+        recipient_directory_path = None
+    if recipient_directory_path is None:
+        return reply_only_team_chat_authorization(
+            source="admin_rbac",
+            principal_id=principal_id,
+            reason="recipient_directory_unresolved",
+        )
+    if auth is None or not request_has_privileged_operations(
+        auth=auth,
+        service=service,
+        request=request,
+    ):
+        return reply_only_team_chat_authorization(
+            source="admin_rbac",
+            principal_id=principal_id,
+            recipient_directory_path=recipient_directory_path,
+            reason="privileged_operations_locked",
+        )
+    if not _auth_can(
+        auth,
+        request,
+        TEAM_CHATS_MUTATE_PERMISSION,
+        directory_path=recipient_directory_path,
+    ):
+        return reply_only_team_chat_authorization(
+            source="admin_rbac",
+            principal_id=principal_id,
+            recipient_directory_path=recipient_directory_path,
+            reason="permission_denied",
+        )
+    if agent is None:
+        return reply_only_team_chat_authorization(
+            source="admin_rbac",
+            principal_id=principal_id,
+            recipient_directory_path=recipient_directory_path,
+            reason="recipient_agent_missing",
+        )
+    return project_scoped_team_chat_authorization(
+        state,
+        agent=agent,
+        source="admin_rbac",
+        principal_id=principal_id,
+        recipient_directory_path=recipient_directory_path,
+        project_is_authorized=lambda directory_path: _auth_can(
+            auth,
+            request,
+            TEAM_CHATS_MUTATE_PERMISSION,
+            directory_path=directory_path,
+        ),
+    )
 
 
 def _agent_execution_records_by_session(service: Any | None) -> dict[str, Any] | None:
@@ -4136,6 +4287,14 @@ def _view_payload_for_request(
     generated_at = utc_now().isoformat()
     if view == "chat":
         scope = _chat_list_scope(auth, request, state)
+        scope = _add_team_chat_mutation_modes(
+            scope,
+            auth=auth,
+            service=None,
+            session_repository=session_repository,
+            request=request,
+            state=state,
+        )
         selected_conversation_id = _query_text(request, "selected_conversation_id")
         chat_payload = _conversation_collection_payload(
             state,
@@ -4941,6 +5100,37 @@ def _chat_list_scope(
     )
 
 
+def _add_team_chat_mutation_modes(
+    scope: dict[str, Any],
+    *,
+    auth: Any | None,
+    service: Any | None,
+    session_repository: Any | None,
+    request: Request,
+    state: TeamState,
+) -> dict[str, Any]:
+    current_operator_user_id = str(scope["current_operator"]["user_id"])
+    selected_operator_user_id = str(scope["selected_operator"]["user_id"])
+    modes: dict[str, str] = {}
+    for conversation in state.conversations.values():
+        if conversation.operator_user_id != selected_operator_user_id:
+            continue
+        if conversation.operator_user_id != current_operator_user_id:
+            modes[conversation.id] = "reply_only"
+            continue
+        authorization = _team_chat_mutation_authorization(
+            auth=auth,
+            service=service,
+            session_repository=session_repository,
+            request=request,
+            state=state,
+            conversation=conversation,
+            principal_id=current_operator_user_id,
+        )
+        modes[conversation.id] = authorization.mode
+    return {**scope, "mutation_modes": modes}
+
+
 def _chat_scope_for_operator(
     auth: Any | None,
     request: Request,
@@ -5702,6 +5892,7 @@ def _conversation_collection_payload(
     if selected_id is None and include_selected_messages and conversations:
         selected_id = conversations[0].id
     messages_by_conversation = _conversation_messages_by_conversation(state)
+    mutation_modes = scope.get("mutation_modes", {})
     return {
         "revision": state.revision,
         "selected_conversation_id": selected_id,
@@ -5718,6 +5909,7 @@ def _conversation_collection_payload(
                 include_messages=include_selected_messages and conversation.id == selected_id,
                 messages_by_conversation=messages_by_conversation,
                 current_operator_user_id=current_operator_user_id,
+                mutation_mode=mutation_modes.get(conversation.id),
             )
             for conversation in conversations
         ],
@@ -5732,6 +5924,7 @@ def _conversation_payload(
     message_limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
     messages_by_conversation: Mapping[str, Sequence[Any]] | None = None,
     current_operator_user_id: str | None = None,
+    mutation_mode: str | None = None,
 ) -> dict[str, Any]:
     messages = _conversation_messages(
         state,
@@ -5750,6 +5943,7 @@ def _conversation_payload(
             current_operator_user_id is not None
             and conversation.operator_user_id != current_operator_user_id
         ),
+        "mutation_mode": mutation_mode,
         "last_message_preview": conversation.last_message_preview,
         "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
         "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
@@ -5863,6 +6057,7 @@ def _conversation_snapshot_payload(
     *,
     auth: Any | None = None,
     request: Request | None = None,
+    context: AddonContext | None = None,
 ) -> dict[str, Any]:
     state = repository.read()
     conversation = state.conversations.get(conversation_id)
@@ -5886,6 +6081,19 @@ def _conversation_snapshot_payload(
             conversation,
             include_messages=True,
             current_operator_user_id=current_operator_user_id,
+            mutation_mode=(
+                _team_chat_mutation_authorization_for_request(
+                    context,
+                    request,
+                    state,
+                    conversation,
+                    principal_id=current_operator_user_id,
+                ).mode
+                if context is not None
+                and request is not None
+                and current_operator_user_id == conversation.operator_user_id
+                else "reply_only"
+            ),
         ),
         **(_chat_scope_payload(state, scope) if scope is not None else {}),
     }
@@ -5897,6 +6105,7 @@ async def _conversation_snapshot_events(
     conversation_id: str,
     *,
     auth: Any | None = None,
+    context: AddonContext | None = None,
     poll_interval_seconds: float = 1.0,
 ) -> AsyncIterator[str]:
     last_serialized = ""
@@ -5906,6 +6115,7 @@ async def _conversation_snapshot_events(
             conversation_id,
             auth=auth,
             request=request,
+            context=context,
         )
     except (ValueError, PermissionError):
         return
@@ -5921,6 +6131,7 @@ async def _conversation_snapshot_events(
                 conversation_id,
                 auth=auth,
                 request=request,
+                context=context,
             )
         except (ValueError, PermissionError):
             break
@@ -5960,6 +6171,14 @@ def _conversation_message_payload(message: Any, state: TeamState | None = None) 
             for attachment_id in message.attachment_ids
             if attachment_id in state.chat_attachments
         ]
+    authorization = (message.metadata or {}).get("team_mutation_authorization")
+    mutation_mode = (
+        authorization.get("mode")
+        if message.sender == "operator"
+        and isinstance(authorization, Mapping)
+        and authorization.get("mode") in {"reply_only", "project_scoped"}
+        else None
+    )
     return {
         "id": message.id,
         "conversation_id": message.conversation_id,
@@ -5973,6 +6192,7 @@ def _conversation_message_payload(message: Any, state: TeamState | None = None) 
         "error": message.error,
         "attachments": attachments,
         "metadata": dict(message.metadata or {}),
+        "mutation_mode": mutation_mode,
         "created_at": message.created_at.isoformat() if message.created_at else None,
         "updated_at": message.updated_at.isoformat() if message.updated_at else None,
     }

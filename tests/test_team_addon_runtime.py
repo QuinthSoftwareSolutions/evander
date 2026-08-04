@@ -12,7 +12,7 @@ import pytest
 from evander.admin.composition import build_admin_runtime
 from evander.admin.user_notifications import AdminUserNotificationStore
 from evander.config import GatewayConfig
-from evander.directories import DirectoryStore
+from evander.directories import DirectoryService, DirectoryStore
 from evander.artifact_spaces import ArtifactSpaceStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.scheduled import scheduled_internal_event_store_path
@@ -145,7 +145,10 @@ from evander_team_addon.services.domain.wake import (
 )
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+)
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.human_correction_reconciliation_service import (
     HumanCorrectionReconciliationService,
@@ -189,6 +192,18 @@ def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
 
 def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
     return TeamChatService(repo)
+
+
+def _authorized_chat_mutation(repo: TeamStateRepository, agent_id: str):
+    state = repo.read()
+    return project_scoped_team_chat_authorization(
+        state,
+        agent=state.agents[agent_id],
+        source="internal",
+        principal_id="alice@example.com",
+        recipient_directory_path="root",
+        project_is_authorized=lambda _directory_path: True,
+    )
 
 
 def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
@@ -3294,6 +3309,7 @@ def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_r
         body="Please answer this after your current wake finishes.",
         attachments=[prepared_attachment],
         created_by="operator:alice@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     dispatch_id = f"team-chat:{message.id}"
@@ -3503,6 +3519,7 @@ def test_every_wake_policy_applies_to_mutation_enabled_chat_and_seeds_context(
         conversation_id=conversation.id,
         body="Create whatever Team state is needed.",
         created_by="operator:alice@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     _team_chat_service(repo).queue_chat_message_dispatch(
@@ -3717,6 +3734,7 @@ def test_explicit_new_context_forces_fresh_mutation_chat_after_retained_baseline
         conversation_id=conversation.id,
         body="Use the explicitly fresh mutation context.",
         created_by="operator:alice@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     _team_chat_service(repo).queue_chat_message_dispatch(
@@ -8125,6 +8143,9 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     config = GatewayConfig(runtime_dir=tmp_path)
     directory_store = DirectoryStore(config.directories_store_path)
     directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    directory_service.create(parent="root", name="team-b")
     SqliteCommunicationTargetsRepository(
         communication_targets_db_path(config.runtime_dir)
     ).write_overlay(
@@ -8175,6 +8196,11 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
             metadata={"directory_path": "root", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                read_all_sessions=lambda: {
+                    "session-backend": SimpleNamespace(directory_path="root")
+                }
+            ),
         ),
     )
 
@@ -8186,7 +8212,9 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     assert replay["duplicate"] is True
     stored = TeamStateRepository(tmp_path).read()
     message = stored.conversation_messages[result["message_id"]]
-    assert message.metadata.get("allow_team_mutations") is None
+    assert message.metadata["allow_team_mutations"] is True
+    assert message.metadata["team_mutation_authorization"]["mode"] == "project_scoped"
+    assert message.metadata["team_mutation_authorization"]["project_ids"] == ["project"]
     published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
     assert len(published) == 1
     assert published[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
@@ -8209,6 +8237,27 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     )
     with pytest.raises(ValueError, match="not authorized"):
         denied.execute()
+
+    cross_directory = TeamEnqueueOperatorChatMessageEffectProvider()
+    cross_directory.initialize(
+        definition.model_copy(
+            update={
+                "id": "cross-directory-external-chat",
+                "source_message_id": "discord-message-cross-directory",
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root/team-a", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                get_session=lambda _session_id: SimpleNamespace(
+                    directory_path="root/team-b"
+                )
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="outside the workflow directory scope"):
+        cross_directory.execute()
 
     read_only = TeamEnqueueOperatorChatMessageEffectProvider()
     read_only.initialize(
