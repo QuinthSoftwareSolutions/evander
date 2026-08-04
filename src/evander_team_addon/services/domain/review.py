@@ -471,7 +471,10 @@ def create_sealed_review_cohort(
         actor.id == deliverable.producer_agent_id
         or _supervises(state, actor.id, deliverable.producer_agent_id)
         or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
-        or _is_team_manager(state, actor)
+        or (
+            task is not None
+            and _is_team_manager_for_task_project(state, actor=actor, task=task)
+        )
     )
     if not permitted:
         raise ValueError(

@@ -786,6 +786,7 @@ class TeamReadService:
             "priority": task.priority,
             "owner_agent_id": task.owner_agent_id,
             "project_id": task.project_id,
+            "git_base_branch": task.git_base_branch,
             "case_id": task.case_id,
             "dependency_status": derived.get("dependency_status"),
             "resolution_status": derived.get("resolution_status"),

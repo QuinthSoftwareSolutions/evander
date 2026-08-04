@@ -74,6 +74,7 @@ type SessionRecord = {
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   approval_notification_target_ids?: string[];
   approval_notification_target_options?: Array<{ value: string; label: string }>;
+  allowed_contact_ids?: string[] | null;
   communication_target_ids?: string[] | null;
   communication_target_options?: AgentCreateCommunicationTargetOption[];
   effective_tool_policy?: EffectiveToolPolicy | null;
@@ -251,6 +252,7 @@ type SessionPolicyDraft = {
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
+  allowedContactIds: string[] | null;
   communicationTargetIds: string[] | null;
   emailMailboxGrants: EmailMailboxGrant[] | null;
   discordChannelAllowlist: string[];
@@ -427,6 +429,10 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
+    allowedContactIds:
+      session.allowed_contact_ids == null
+        ? null
+        : dedupeStrings(session.allowed_contact_ids),
     communicationTargetIds:
       session.communication_target_ids == null
         ? null
@@ -1222,6 +1228,7 @@ export function SessionsScreen() {
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
+    allowedContactIds: null,
     communicationTargetIds: null,
     emailMailboxGrants: null,
     discordChannelAllowlist: [],
@@ -2067,6 +2074,7 @@ export function SessionsScreen() {
             method: "PATCH",
             body: JSON.stringify({
               allowed_script_names: policyDraft.allowedScriptNames,
+              allowed_contact_ids: policyDraft.allowedContactIds,
               communication_target_ids: policyDraft.communicationTargetIds,
               email_mailbox_grants: policyDraft.emailMailboxGrants,
               discord_channel_allowlist: policyDraft.discordChannelAllowlist,
@@ -2684,6 +2692,50 @@ export function SessionsScreen() {
                       These IDs must resolve to notify-capable communication targets in the selected directory.
                     </p>
                     {renderApprovalNotificationTargetEditor()}
+                  </div>
+                  <div className="field-stack wide-field">
+                    <span>Contacts</span>
+                    <p className="field-description">
+                      Choose whether this session can use every contact visible in its directory or only an explicit
+                      allowlist. An explicit allowlist with no contact IDs blocks access to every contact.
+                    </p>
+                    <div className="inline-actions compact-actions" role="radiogroup" aria-label="Contact access">
+                      <label className="checkbox-row">
+                        <input
+                          type="radio"
+                          name="session-contact-access-mode"
+                          checked={policyDraft.allowedContactIds === null}
+                          onChange={() => updatePolicyDraft({ allowedContactIds: null })}
+                          disabled={mutationLocked}
+                        />
+                        <span>All directory contacts</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="radio"
+                          name="session-contact-access-mode"
+                          checked={policyDraft.allowedContactIds !== null}
+                          onChange={() => updatePolicyDraft({ allowedContactIds: policyDraft.allowedContactIds ?? [] })}
+                          disabled={mutationLocked}
+                        />
+                        <span>Explicit allowlist</span>
+                      </label>
+                    </div>
+                    {policyDraft.allowedContactIds === null ? (
+                      <div className="callout">
+                        This session inherits access to all contacts visible in its directory.
+                      </div>
+                    ) : (
+                      <StringListEditor
+                        values={policyDraft.allowedContactIds}
+                        onChange={(nextValues) => updatePolicyDraft({ allowedContactIds: nextValues })}
+                        disabled={mutationLocked}
+                        itemLabel="Contact ID"
+                        addLabel="Add contact"
+                        placeholder="Enter a configured contact ID"
+                        emptyState="No contacts are allowed."
+                      />
+                    )}
                   </div>
                   {policyDraft.communicationTargetIds === null || policyDraft.emailMailboxGrants === null ? (
                     <div className="field-stack wide-field">

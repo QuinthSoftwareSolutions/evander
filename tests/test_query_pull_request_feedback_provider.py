@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from evander.config import GatewayConfig
 from evander.events.provider_models import PullRequestFeedbackQueryDefinition
 from evander.pr_feedback import FeedbackEnvelope, ProviderPollResult
@@ -166,6 +168,45 @@ def test_pull_request_feedback_query_uses_explicit_ado_project(tmp_path: Path, m
     assert captured["init"]["project"] == "Explicit Project"
     assert output["project"] == "Explicit Project"
     assert output["next_cursor"] == "2026-05-22T08:00:00Z"
+
+
+def test_pull_request_feedback_query_rejects_an_arbitrary_organization_before_polling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    called = False
+
+    class StubAdapter:
+        def __init__(self, **kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr(
+        "evander.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        StubAdapter,
+    )
+    resolver = _Resolver(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            ado_organization="directory-org",
+            azure_devops_project="Default Project",
+            azure_devops_pr_pat_env="TEAM_ADO_PAT",
+        )
+    )
+
+    query = PullRequestFeedbackQueryDefinition(
+        id="query-feedback-untrusted-org",
+        display_name="Feedback",
+        type="query:pull-request:feedback",
+        provider="azure_devops",
+        repo="repo-only",
+        pr_id="18",
+        ado_organization="https://attacker.example/organization",
+    )
+
+    with pytest.raises(ValueError, match="dev.azure.com or \\*\\.visualstudio.com"):
+        _execute(query, resolver=resolver, env={"TEAM_ADO_PAT": "secret"})
+
+    assert called is False
 
 
 def test_pull_request_feedback_query_prefers_configured_project_for_ado_clone_url(

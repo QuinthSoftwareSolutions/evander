@@ -36,6 +36,7 @@ from .agent_access import (
 from .common import (
     _append_unique,
     _optional_text,
+    _release_candidate_branch,
     _required_text,
     _string_list,
     utc_now,
@@ -47,6 +48,7 @@ from .git_common import (
     _normalize_agent_branch_ref,
     _project_git_or_error,
 )
+from .git_work_contexts import authoritative_deliverable_git_base
 from .task_assessment import (
     TaskAssessmentBoundaryError,
     require_release_scope,
@@ -59,6 +61,13 @@ _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
 _HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = (
     "human_correction_aggregation_task_id"
 )
+
+
+class ReleasePackageValidationError(ValueError):
+    def __init__(self, *, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def allowed_release_parent_task_ids(
@@ -419,14 +428,16 @@ def _apply_git_release_recovery(
         "release_branch": release.release_branch,
         "canonical_branch": release.canonical_branch
         or canonical_release_branch(project, release.id),
-        "base_branch": git.base_branch,
+        "base_branch": failed_promotion.git_base_branch or release.git_base_branch,
         "expected_commit_sha": expected_commit_sha,
         "source_branches": [agent_branch],
         "expected_source_commits": {agent_branch: expected_commit_sha},
         "allowed_changed_paths": (allowed_changed_paths if release.policy_version >= 2 else None),
     }
     pinned_recovery_base = _optional_text(
-        failed_promotion.outputs.get("base_commit_sha")
+        failed_promotion.base_commit_sha
+        or failed_promotion.outputs.get("base_commit_sha")
+        or release.base_commit_sha
     )
     if pinned_recovery_base is not None:
         payload["base_commit_sha"] = pinned_recovery_base
@@ -520,6 +531,46 @@ def _build_release_package(
             )
     else:
         deliverable_ids = requested_deliverable_ids
+
+    predecessor_candidate_branch = (
+        _release_candidate_branch(predecessor)
+        if predecessor is not None
+        else None
+    )
+
+    def _release_input_git_base(
+        deliverable: Deliverable,
+    ) -> tuple[str | None, str | None]:
+        branch, commit = authoritative_deliverable_git_base(
+            state,
+            deliverable=deliverable,
+        )
+        if predecessor is None:
+            return branch, commit
+        expected_branch = predecessor_candidate_branch
+        expected_commit = predecessor.candidate_commit_sha
+        if expected_branch is None or expected_commit is None:
+            raise ValueError(
+                f"predecessor release {predecessor.id} has no exact rejected "
+                "candidate Git provenance"
+            )
+        task = state.tasks.get(deliverable.task_id)
+        if (
+            task is not None
+            and task.git_base_branch is not None
+            and task.git_base_branch != expected_branch
+        ):
+            raise ValueError(
+                f"correction task {task.id} base {task.git_base_branch!r} does not "
+                f"match rejected candidate branch {expected_branch!r}"
+            )
+        if commit is not None and commit.casefold() != expected_commit.casefold():
+            raise ValueError(
+                f"correction deliverable {deliverable.id} base commit {commit} does "
+                f"not match rejected candidate {expected_commit}"
+            )
+        return expected_branch, expected_commit
+
     allowed_parent_task_ids = allowed_release_parent_task_ids(
         state,
         project_id=project_id,
@@ -542,6 +593,45 @@ def _build_release_package(
         }
         return None
     result["source_deliverable_lineage"] = release_scope["source_lineage"]
+    preflight_git_base_branches: set[str] = set()
+    for deliverable_id in (
+        correction_deliverable_ids if predecessor is not None else deliverable_ids
+    ):
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            continue
+        refs = deliverable.git_refs
+        if not any(
+            (
+                refs.branch_context_id,
+                refs.agent_branch,
+                refs.review_branch,
+                refs.feature_branch,
+                refs.release_branch,
+                refs.commit_sha,
+            )
+        ):
+            continue
+        if project.git is None:
+            result["errors"].append(
+                f"project {project.id} has no git configuration for release promotion"
+            )
+            return None
+        try:
+            branch, _commit = _release_input_git_base(deliverable)
+        except ValueError as exc:
+            result["errors"].append(str(exc))
+            return None
+        if branch is not None:
+            preflight_git_base_branches.add(branch)
+    if len(preflight_git_base_branches) > 1:
+        result["error_code"] = "mixed_git_base_branches"
+        result["errors"].append(
+            "mixed_git_base_branches: Git release inputs use incompatible task "
+            "base branches; create an explicit integration task on the selected "
+            "base and release only its accepted deliverable"
+        )
+        return None
     artifact_refs: list[str] = []
     feature_branches: list[str] = []
     feature_sources_by_task: dict[str, list[str]] = {}
@@ -559,6 +649,7 @@ def _build_release_package(
             if waiver.deliverable_id in predecessor.deliverable_ids
         )
     reviewed_commit_shas: list[str] = []
+    git_base_snapshots: set[tuple[str | None, str | None]] = set()
     valid = True
     promotion_deliverable_ids = set(
         correction_deliverable_ids if predecessor is not None else deliverable_ids
@@ -671,6 +762,14 @@ def _build_release_package(
             continue
         feature = deliverable.git_refs.feature_branch
         if feature:
+            try:
+                git_base_snapshots.add(
+                    _release_input_git_base(deliverable)
+                )
+            except ValueError as exc:
+                result["errors"].append(str(exc))
+                valid = False
+                continue
             reviewed_commit_sha, review_error = _reviewed_commit_for_release(
                 state,
                 deliverable,
@@ -709,6 +808,14 @@ def _build_release_package(
                 valid = False
                 continue
             if source_branch is not None:
+                try:
+                    git_base_snapshots.add(
+                        _release_input_git_base(deliverable)
+                    )
+                except ValueError as exc:
+                    result["errors"].append(str(exc))
+                    valid = False
+                    continue
                 reviewed_commit_sha, review_error = _reviewed_commit_for_release(
                     state,
                     deliverable,
@@ -747,6 +854,30 @@ def _build_release_package(
     if not valid:
         return None
     needs_git_release = bool(feature_branches or feature_sources_by_task)
+    release_git_base_branch: str | None = None
+    release_base_commit_sha: str | None = None
+    if needs_git_release:
+        base_branches = {
+            branch for branch, _commit in git_base_snapshots if branch is not None
+        }
+        base_commits = {
+            commit for _branch, commit in git_base_snapshots if commit is not None
+        }
+        if (
+            len(base_branches) != 1
+            or len(base_commits) != 1
+            or len(git_base_snapshots) != 1
+        ):
+            result["error_code"] = "mixed_git_base_branches"
+            result["errors"].append(
+                "mixed_git_base_branches: Git release inputs must share one "
+                "authoritative task base branch and commit; create an explicit "
+                "integration task on the selected base and release only its "
+                "accepted deliverable"
+            )
+            return None
+        release_git_base_branch = next(iter(base_branches))
+        release_base_commit_sha = next(iter(base_commits))
     if predecessor is not None and not needs_git_release:
         result["errors"].append(
             "successor release correction deliverables must include reviewed Git "
@@ -802,8 +933,22 @@ def _build_release_package(
         )
         target_canonical_branch = validate_branch_name(
             _optional_text(request.get("canonical_branch"))
+            or (predecessor.canonical_branch if predecessor is not None else None)
             or canonical_release_branch(project, release_id)
         )
+    canonical_base_commit_sha = release_base_commit_sha
+    if predecessor is not None and target_canonical_branch == predecessor.canonical_branch:
+        if predecessor.state == TeamRecordState.ACCEPTED:
+            canonical_base_commit_sha = (
+                predecessor.published_commit_sha
+                or predecessor.approved_commit_sha
+                or predecessor.candidate_commit_sha
+            )
+        else:
+            canonical_base_commit_sha = (
+                predecessor.canonical_base_commit_sha
+                or predecessor.base_commit_sha
+            )
     promotion_ids: list[str] = []
     now = utc_now()
     is_candidate_correction_successor = (
@@ -838,6 +983,8 @@ def _build_release_package(
                 source_branch=source_branches[0],
                 target_branch=feature_branch(effective_team_id, task_id, actor_agent_id),
                 promotion_kind="feature",
+                git_base_branch=release_git_base_branch,
+                base_commit_sha=release_base_commit_sha,
             )
             promotion_ids.append(feature_promotion_id)
     state.release_packages[release_id] = ReleasePackage(
@@ -853,9 +1000,17 @@ def _build_release_package(
         feature_branches=feature_branches,
         release_branch=target_release_branch,
         canonical_branch=target_canonical_branch,
-        base_commit_sha=(
-            predecessor.candidate_commit_sha if predecessor is not None else None
+        git_base_branch=(
+            predecessor_candidate_branch
+            if predecessor is not None
+            else release_git_base_branch
         ),
+        base_commit_sha=(
+            predecessor.candidate_commit_sha
+            if predecessor is not None
+            else release_base_commit_sha
+        ),
+        canonical_base_commit_sha=canonical_base_commit_sha,
         git_promotion_record_ids=promotion_ids,
         policy_version=2,
         verification_waivers=verification_waivers,
@@ -905,7 +1060,8 @@ def _build_release_package(
                 "project_id": project.id,
                 "release_package_id": release_id,
                 "managed_repo_id": git.managed_repo_id,
-                "base_branch": git.base_branch,
+                "base_branch": promotion.git_base_branch,
+                "base_commit_sha": promotion.base_commit_sha,
                 "source_branches": list(feature_sources_by_task[promotion.task_id]),
                 "expected_source_commits": {
                     branch: source_expected_commits[branch]
@@ -1054,6 +1210,8 @@ def _create_correction_aggregate_promotion(
         ],
         target_branch=target_branch,
         promotion_kind="correction_aggregate",
+        git_base_branch=release.git_base_branch,
+        base_commit_sha=rejected_candidate,
         outputs={
             "correction_deliverable_ids": [
                 deliverable_id for deliverable_id, _branch, _sha in source_rows
@@ -1072,7 +1230,7 @@ def _create_correction_aggregate_promotion(
         "project_id": project.id,
         "release_package_id": release.id,
         "managed_repo_id": git.managed_repo_id,
-        "base_branch": git.base_branch,
+        "base_branch": release.git_base_branch,
         "base_commit_sha": rejected_candidate,
         "required_source_ancestor_commit_sha": rejected_candidate,
         "source_branches": [branch for _deliverable_id, branch, _sha in source_rows],
@@ -1998,6 +2156,8 @@ def _queue_release_promotion_if_ready(
         ],
         target_branch=target_release_branch,
         promotion_kind="release",
+        git_base_branch=release.git_base_branch,
+        base_commit_sha=release.base_commit_sha,
     )
     state.git_promotions[release_promotion.id] = release_promotion
     release.release_branch = target_release_branch
@@ -2015,7 +2175,8 @@ def _queue_release_promotion_if_ready(
         "project_id": project.id,
         "release_package_id": release.id,
         "managed_repo_id": git.managed_repo_id,
-        "base_branch": git.base_branch,
+        "base_branch": release.git_base_branch,
+        "base_commit_sha": release.base_commit_sha,
         "source_branches": list(feature_branches),
         "expected_source_commits": _release_expected_feature_commits(state, release),
         "allowed_changed_paths": allowed_changed_paths,
@@ -2042,6 +2203,7 @@ def _release_failure_recipient(state: TeamState, release: ReleasePackage) -> str
 
 
 __all__ = [
+    "ReleasePackageValidationError",
     "GIT_RELEASE_RECOVERY_EVENT_TYPE",
     "_emit_git_release_recovery_event",
     "_apply_git_release_request",

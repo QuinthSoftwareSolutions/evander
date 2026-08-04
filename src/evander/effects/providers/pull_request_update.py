@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Literal
 
 from evander.pull_request_automation import build_pull_request_provider
 
-from .base import EffectProviderBase
+from .base import EffectProviderBase, scoped_effect_directory_path
 
 
 class PullRequestUpdateEffectProvider(EffectProviderBase):
@@ -23,24 +23,24 @@ class PullRequestUpdateEffectProvider(EffectProviderBase):
         provider_name = self._require_string(payload.get("provider"), field_name="provider")
         repo = self._require_string(payload.get("repo"), field_name="repo")
         pr_id = self._require_string(payload.get("pr_id"), field_name="pr_id")
-        directory_path = self._normalize_optional_string(payload.get("directory_path"))
-        if directory_path is None:
-            directory_path = self._context_directory_path()
-        organization_url = self._normalize_optional_string(payload.get("organization_url"))
-        project = self._normalize_optional_string(payload.get("project"))
+        directory_path = scoped_effect_directory_path(
+            self._context(),
+            self._normalize_optional_string(payload.get("directory_path"))
+            or self._context_directory_path(),
+        )
 
         _, resolved_project, provider = build_pull_request_provider(
             context=self._context(),
             provider=provider_name,
             directory_path=directory_path,
-            organization_url=organization_url,
-            project=project,
+            ado_organization=self._normalize_optional_string(payload.get("ado_organization")),
+            project=self._normalize_optional_string(payload.get("project")),
             node_type=self.NODE_TYPE,
         )
         response = provider.update_pull_request(
             repo=repo,
             pr_id=pr_id,
-            project=project or resolved_project,
+            project=resolved_project,
             title=self._optional_raw_string(payload.get("title")),
             description=self._optional_raw_string(payload.get("description")),
             status=self._normalize_optional_string(payload.get("status")),
@@ -58,7 +58,7 @@ class PullRequestUpdateEffectProvider(EffectProviderBase):
             "repo",
             "pr_id",
             "directory_path",
-            "organization_url",
+            "ado_organization",
             "project",
             "title",
             "description",
@@ -137,7 +137,7 @@ class PullRequestTagEffectProvider(PullRequestUpdateEffectProvider):
             "pr_id",
             "tag",
             "directory_path",
-            "organization_url",
+            "ado_organization",
             "project",
         ):
             if effect is not None and hasattr(effect, field_name):

@@ -27,7 +27,7 @@ class PullRequestGetQueryProvider(QueryProviderBase):
         directory_path = self._normalize_optional_string(payload.get("directory_path"))
         if directory_path is None:
             directory_path = self._context_directory_path()
-        organization_url = self._normalize_optional_string(payload.get("organization_url"))
+        ado_organization = self._normalize_optional_string(payload.get("ado_organization"))
         project = self._normalize_optional_string(payload.get("project"))
         include_reviewers = self._coerce_optional_bool(
             payload.get("include_reviewers"),
@@ -61,7 +61,7 @@ class PullRequestGetQueryProvider(QueryProviderBase):
             context=self._context(),
             provider=provider_name,
             directory_path=directory_path,
-            organization_url=organization_url,
+            ado_organization=ado_organization,
             project=project,
             node_type=self.NODE_TYPE,
         )
@@ -81,7 +81,7 @@ class PullRequestGetQueryProvider(QueryProviderBase):
             "repo",
             "pr_id",
             "directory_path",
-            "organization_url",
+            "ado_organization",
             "project",
             "include_reviewers",
             "include_commits",

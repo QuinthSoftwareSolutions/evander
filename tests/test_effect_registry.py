@@ -107,7 +107,10 @@ from evander.triggers.queue import TriggerQueueRecord
 
 class _ResolverStub:
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
-        return GatewayConfig(runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")))
+        return GatewayConfig(
+            runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")),
+            ado_organization="directory-org",
+        )
 
     def resolve_host_directories_for_directory(
         self, directory_path: str | None
@@ -752,6 +755,8 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
         provider="ado",
         repo="repo-1",
         pr_id="17",
+        ado_organization="workflow-org",
+        project="Workflow Project",
         title="New title",
         add_tags="reviewed",
         remove_tags=["needs-review"],
@@ -796,18 +801,23 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
         env={"AZURE_DEVOPS_PR_PAT": "secret"},
     )
     provider = factory.build(effect, directory_path="root/team-a")
-    output = provider.execute()
+    output = provider.execute(
+        resolved_config={
+            "ado_organization": "resolved-org",
+            "project": "Resolved Project",
+        }
+    )
 
     assert captured["init"] == {
-        "organization_url": "https://dev.azure.com",
-        "project": "default",
+        "organization_url": "https://dev.azure.com/resolved-org",
+        "project": "Resolved Project",
         "pat": "secret",
         "timeout_seconds": 30.0,
     }
     assert captured["request"] == {
         "repo": "repo-1",
         "pr_id": "17",
-        "project": "default",
+        "project": "Resolved Project",
         "title": "New title",
         "description": None,
         "status": None,
@@ -817,6 +827,115 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
     }
     assert output["updated"] is True
     assert output["added_tags"] == ["reviewed"]
+
+
+@pytest.mark.parametrize(
+    "effect_type",
+    [
+        "effect:pull-request:update",
+        "effect:pull-request:add-tag",
+        "effect:pull-request:remove-tag",
+    ],
+)
+def test_pull_request_effect_definitions_migrate_legacy_organization_urls_and_keep_projects(
+    effect_type: str,
+) -> None:
+    payload: dict[str, object] = {
+        "id": "effect-pr",
+        "display_name": "PR effect",
+        "type": effect_type,
+        "provider": "ado",
+        "repo": "repo-1",
+        "pr_id": "17",
+        "organization_url": "https://dev.azure.com/legacy-org",
+        "project": "attacker-project",
+    }
+    if effect_type == "effect:pull-request:update":
+        payload["title"] = "Updated title"
+        definition = PullRequestUpdateEffectDefinition
+    elif effect_type == "effect:pull-request:add-tag":
+        payload["tag"] = "reviewed"
+        definition = PullRequestAddTagEffectDefinition
+    else:
+        payload["tag"] = "stale"
+        definition = PullRequestRemoveTagEffectDefinition
+
+    parsed = definition.model_validate(payload)
+
+    assert parsed.ado_organization == "https://dev.azure.com/legacy-org"
+    assert parsed.project == "attacker-project"
+
+
+def test_pull_request_effect_rejects_an_arbitrary_organization_before_constructing_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed = False
+
+    class StubPrProvider:
+        def __init__(self, **kwargs: object) -> None:
+            nonlocal constructed
+            constructed = True
+
+    monkeypatch.setattr(
+        "evander.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+    )
+    effect = PullRequestUpdateEffectDefinition(
+        id="effect-pr-update-untrusted-org",
+        display_name="Update PR",
+        type="effect:pull-request:update",
+        provider="ado",
+        repo="repo-1",
+        pr_id="17",
+        ado_organization="https://attacker.example/organization",
+        project="Project",
+        title="New title",
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(
+            create_vm_calls=[],
+            clone_repo_into_vm_calls=[],
+            bootstrap_python_in_vm_calls=[],
+            bootstrap_frontend_in_vm_calls=[],
+            resume_calls=[],
+        ),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+
+    with pytest.raises(ValueError, match="dev.azure.com or \\*\\.visualstudio.com"):
+        factory.build(effect, directory_path="root/team-a").execute()
+
+    assert constructed is False
+
+
+def test_pull_request_update_effect_rejects_out_of_scope_directory() -> None:
+    effect = PullRequestUpdateEffectDefinition(
+        id="effect-pr-update",
+        display_name="Update PR",
+        type="effect:pull-request:update",
+        provider="ado",
+        repo="repo-1",
+        pr_id="17",
+        title="New title",
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(
+            create_vm_calls=[],
+            clone_repo_into_vm_calls=[],
+            bootstrap_python_in_vm_calls=[],
+            bootstrap_frontend_in_vm_calls=[],
+            resume_calls=[],
+        ),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+    provider = factory.build(effect, directory_path="root/team-a")
+
+    with pytest.raises(
+        ValueError,
+        match="directory_path 'root/team-b' is outside workflow directory scope 'root/team-a'",
+    ):
+        provider.execute(resolved_config={"directory_path": "root/team-b"})
 
 
 def test_pull_request_tag_effect_providers_resolve_single_tag(
@@ -830,6 +949,7 @@ def test_pull_request_tag_effect_providers_resolve_single_tag(
         repo="repo-1",
         pr_id="17",
         tag="reviewed",
+        project="Add Tag Project",
     )
     remove_effect = PullRequestRemoveTagEffectDefinition(
         id="effect-pr-remove-tag",
@@ -839,6 +959,7 @@ def test_pull_request_tag_effect_providers_resolve_single_tag(
         repo="repo-1",
         pr_id="17",
         tag="stale",
+        project="Remove Tag Project",
     )
     assert add_effect.provider == "azure_devops"
     assert remove_effect.provider == "azure_devops"
@@ -888,7 +1009,7 @@ def test_pull_request_tag_effect_providers_resolve_single_tag(
         {
             "repo": "repo-1",
             "pr_id": "17",
-            "project": "default",
+            "project": "Add Tag Project",
             "title": None,
             "description": None,
             "status": None,
@@ -899,7 +1020,7 @@ def test_pull_request_tag_effect_providers_resolve_single_tag(
         {
             "repo": "repo-1",
             "pr_id": "17",
-            "project": "default",
+            "project": "Remove Tag Project",
             "title": None,
             "description": None,
             "status": None,

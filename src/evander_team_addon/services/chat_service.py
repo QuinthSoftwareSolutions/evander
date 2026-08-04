@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Sequence
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from .domain import common as _team_common
 from ..repository import (
     TeamStateConflictError,
@@ -20,6 +22,7 @@ from ..models import (
     TeamDispatchStatus,
     TeamConversation,
     TeamConversationMessage,
+    TeamChatMutationAuthorization,
     TeamChatAttachment,
     TeamOutboxRecord,
     TeamState,
@@ -76,35 +79,140 @@ def _attachment_preview(count: int) -> str:
     return f"Sent {count} attachment{'s' if count != 1 else ''}"
 
 
-def _operator_chat_dispatch_scope(
+TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY = "team_mutation_authorization"
+
+
+def reply_only_team_chat_authorization(
+    *,
+    source: str,
+    principal_id: str,
+    reason: str,
+    recipient_directory_path: str | None = None,
+) -> TeamChatMutationAuthorization:
+    return TeamChatMutationAuthorization(
+        mode="reply_only",
+        source=source,
+        principal_id=principal_id,
+        recipient_directory_path=recipient_directory_path,
+        reason=reason,
+    )
+
+
+def project_scoped_team_chat_authorization(
     state: TeamState,
     *,
     agent: PersistentAgent,
-    message: TeamConversationMessage,
-) -> dict[str, list[str]]:
-    mutation_allowed = True
-    for key in (
-        "allow_team_mutations",
-        "allow_team_mutation",
-        "mutation_allowed",
-        "team_mutation_allowed",
-    ):
-        if key in message.metadata:
-            mutation_allowed = bool(message.metadata[key])
-            break
-    if not mutation_allowed:
-        return {"project_ids": [], "managed_repo_ids": []}
+    source: str,
+    principal_id: str,
+    recipient_directory_path: str,
+    project_is_authorized: Callable[[str], bool],
+) -> TeamChatMutationAuthorization:
     project_ids = sorted(
         project_id
         for project_id in _visible_project_ids_for_agent(state, agent)
         if project_id in state.projects
+        and project_is_authorized(
+            state.projects[project_id].git.directory_path
+            if state.projects[project_id].git is not None
+            else "root"
+        )
     )
+    if not project_ids:
+        return reply_only_team_chat_authorization(
+            source=source,
+            principal_id=principal_id,
+            recipient_directory_path=recipient_directory_path,
+            reason="no_authorized_projects",
+        )
     managed_repo_ids = sorted(
         {
             project.git.managed_repo_id
             for project_id in project_ids
             if (project := state.projects.get(project_id)) is not None
             and project.git is not None
+        }
+    )
+    return TeamChatMutationAuthorization(
+        mode="project_scoped",
+        source=source,
+        principal_id=principal_id,
+        recipient_directory_path=recipient_directory_path,
+        project_ids=project_ids,
+        managed_repo_ids=managed_repo_ids,
+    )
+
+
+def _message_team_chat_mutation_authorization(
+    message: TeamConversationMessage,
+) -> TeamChatMutationAuthorization | None:
+    raw = message.metadata.get(TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return TeamChatMutationAuthorization.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def _matching_team_chat_dispatch(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
+    return (
+        dispatch.cause_kind == "team_chat"
+        and dispatch.cause_id == message.id
+    )
+
+
+def team_chat_mutation_allowed(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
+    authorization = _message_team_chat_mutation_authorization(message)
+    return (
+        authorization is not None
+        and authorization.mode == "project_scoped"
+        and _matching_team_chat_dispatch(message, dispatch)
+        and bool(dispatch.project_ids)
+    )
+
+
+def team_chat_mutation_scope_lost(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
+    authorization = _message_team_chat_mutation_authorization(message)
+    return (
+        authorization is not None
+        and authorization.mode == "project_scoped"
+        and _matching_team_chat_dispatch(message, dispatch)
+        and not dispatch.project_ids
+    )
+
+
+def _operator_chat_dispatch_scope(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    message: TeamConversationMessage,
+) -> dict[str, list[str]]:
+    authorization = _message_team_chat_mutation_authorization(message)
+    if authorization is None or authorization.mode != "project_scoped":
+        return {"project_ids": [], "managed_repo_ids": []}
+    snapshotted_project_ids = set(authorization.project_ids)
+    project_ids = sorted(
+        project_id
+        for project_id in _visible_project_ids_for_agent(state, agent)
+        if project_id in snapshotted_project_ids and project_id in state.projects
+    )
+    snapshotted_managed_repo_ids = set(authorization.managed_repo_ids)
+    managed_repo_ids = sorted(
+        {
+            project.git.managed_repo_id
+            for project_id in project_ids
+            if (project := state.projects.get(project_id)) is not None
+            and project.git is not None
+            and project.git.managed_repo_id in snapshotted_managed_repo_ids
         }
     )
     return {
@@ -230,7 +338,7 @@ class TeamChatService:
         source_thread_id: str | None,
         source_author_id: str,
         source_author_name: str | None,
-        allow_team_mutations: bool = False,
+        mutation_authorization: TeamChatMutationAuthorization | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         """Atomically persist and queue one externally-originated Team Chat message."""
 
@@ -343,8 +451,17 @@ class TeamChatService:
                 "queued_at": now.isoformat(),
                 "queued_reason": "queued by external communication bridge",
             }
-            if not allow_team_mutations:
-                metadata["allow_team_mutations"] = False
+            effective_authorization = mutation_authorization or reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=normalized_source_author_id,
+                reason="mutation_authorization_missing",
+            )
+            metadata[TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY] = (
+                effective_authorization.model_dump(mode="json")
+            )
+            metadata["allow_team_mutations"] = (
+                effective_authorization.mode == "project_scoped"
+            )
             state.conversation_messages[message_id] = TeamConversationMessage(
                 id=message_id,
                 conversation_id=conversation.id,
@@ -375,7 +492,7 @@ class TeamChatService:
                 conversation_id=conversation.id,
                 message_id=message_id,
                 dispatch_id=dispatch_id,
-                allow_team_mutations=allow_team_mutations,
+                allow_team_mutations=effective_authorization.mode == "project_scoped",
                 created_at=now,
                 updated_at=now,
             )
@@ -484,7 +601,7 @@ class TeamChatService:
         body: str | None,
         attachments: Sequence[PreparedChatAttachment] = (),
         created_by: str | None = None,
-        allow_team_mutations: bool = True,
+        mutation_authorization: TeamChatMutationAuthorization | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, TeamConversationMessage]:
         normalized_conversation_id = _required_text(conversation_id, "conversation_id")
@@ -516,8 +633,17 @@ class TeamChatService:
                 }.items()
                 if value
             }
-            if not allow_team_mutations:
-                metadata["allow_team_mutations"] = False
+            effective_authorization = mutation_authorization or reply_only_team_chat_authorization(
+                source="internal",
+                principal_id=conversation.operator_user_id,
+                reason="mutation_authorization_missing",
+            )
+            metadata[TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY] = (
+                effective_authorization.model_dump(mode="json")
+            )
+            metadata["allow_team_mutations"] = (
+                effective_authorization.mode == "project_scoped"
+            )
             state.conversation_messages[message_id] = TeamConversationMessage(
                 id=message_id,
                 conversation_id=conversation.id,

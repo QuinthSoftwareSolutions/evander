@@ -287,6 +287,14 @@ def agent_routes(
     def agent_directory_path(agent_id: str, *, backend: str | None = None) -> str:
         return agent_directory_paths(agent_id, backend=backend)[0]
 
+    def agent_record_directory_paths(record: Any) -> tuple[str, ...]:
+        host = getattr(record, "host", None)
+        if isinstance(host, dict):
+            directory_paths = host.get("directory_paths")
+            if isinstance(directory_paths, (list, tuple)) and directory_paths:
+                return _unique_directory_paths(list(directory_paths))
+        return _unique_directory_paths([getattr(record, "directory_path", None)])
+
     def require_owner_for_directory_paths(
         request: Request, directory_paths: tuple[str, ...]
     ) -> JSONResponse | None:
@@ -294,6 +302,23 @@ def agent_routes(
             if error_response := require_owner_privileged(request, directory_path=directory_path):
                 return error_response
         return None
+
+    def require_owner_read_for_directory_paths(
+        request: Request, directory_paths: tuple[str, ...]
+    ) -> JSONResponse | None:
+        for directory_path in directory_paths:
+            try:
+                _auth.require_permission(
+                    request,
+                    ADMIN_OWNER_PERMISSION,
+                    directory_path=directory_path,
+                )
+            except PermissionError as exc:
+                return json_error(str(exc), status_code=403)
+        return None
+
+    def require_owner_read(request: Request, *, directory_path: str) -> JSONResponse | None:
+        return require_owner_read_for_directory_paths(request, (directory_path,))
 
     async def list_agents(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
@@ -351,15 +376,19 @@ def agent_routes(
 
     async def get_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
+        backend = _string_query(request, "backend")
         try:
             record = await run_in_threadpool(
                 service.vm_agent_admin.get_agent,
                 agent_id,
-                backend=_string_query(request, "backend"),
+                backend=backend,
                 directory_path=_string_query(request, "directory_path"),
                 reconcile_containers=_bool_query(request, "reconcile_containers", default=False),
                 omit_vm_state=_bool_query(request, "omit_vm_state", default=True),
             )
+            directory_paths = agent_record_directory_paths(record)
+            if error_response := require_owner_read_for_directory_paths(request, directory_paths):
+                return error_response
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
         except Exception as exc:
@@ -369,6 +398,13 @@ def agent_routes(
     async def get_agent_executions(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         try:
+            directory_path = await run_in_threadpool(
+                agent_directory_path,
+                agent_id,
+                backend="container_worker_vm",
+            )
+            if error_response := require_owner_read(request, directory_path=directory_path):
+                return error_response
             limit = min(
                 AGENT_EXECUTION_HISTORY_MAX_LIMIT,
                 max(

@@ -138,6 +138,10 @@ The branch remains internal evidence at this stage. Review does not publish it t
 > - base branch, base commit, and current verified commit;
 > - status and timestamps.
 >
+> The base branch is copied from the task's durable snapshot and the first
+> preparation pins its exact commit. Later dispatches reuse that commit even if
+> the project default or remote branch advances.
+>
 > An explicitly Git-backed deliverable supplies
 > <code>branch_context_id</code> and <code>git_refs.commit_sha</code>. Unknown Git
 > reference fields are rejected. The server verifies caller, task, dispatch,

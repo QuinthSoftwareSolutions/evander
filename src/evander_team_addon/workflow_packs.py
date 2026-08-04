@@ -729,6 +729,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "expected_commit_sha": (
                     "${{team-git-promotion-requested.payload.expected_commit_sha}}"
                 ),
+                "expected_destination_commit_sha": (
+                    "${{team-git-promotion-requested.payload.base_commit_sha}}"
+                ),
                 "destination_branch": "${{team-git-promotion-requested.payload.target_branch}}",
             },
             {
@@ -742,6 +745,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "result_outputs": {
                     "destination_branch": (
                         "${{team-push-canonical-branch.destination_branch ?? null}}"
+                    ),
+                    "expected_destination_commit_sha": (
+                        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+                    ),
+                    "destination_commit": (
+                        "${{team-push-canonical-branch.destination_commit ?? null}}"
                     ),
                     "error_code": "${{team-push-canonical-branch.reason ?? null}}",
                 },
@@ -760,6 +769,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "result_outputs": {
                     "destination_branch": (
                         "${{team-push-canonical-branch.destination_branch ?? null}}"
+                    ),
+                    "expected_destination_commit_sha": (
+                        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+                    ),
+                    "destination_commit": (
+                        "${{team-push-canonical-branch.destination_commit ?? null}}"
                     ),
                     "error_code": "${{team-push-canonical-branch.reason ?? null}}",
                 },
