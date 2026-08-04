@@ -399,6 +399,20 @@ button.workspace-view-link {
   flex: 0 0 auto;
 }
 
+.workspace-attention-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workspace-attention-pagination .record-actions {
+  align-items: center;
+}
+
 .workspace-team-row-meta {
   display: flex;
   align-items: center;

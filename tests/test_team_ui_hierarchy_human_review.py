@@ -61,6 +61,23 @@ def test_workspace_excludes_operator_directives_from_attention() -> None:
     assert "function pendingInboxForAgent(agentId)" in source
 
 
+def test_workspace_attention_has_pagination_controls() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    stylesheet = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css"
+    ).read_text(encoding="utf-8")
+
+    assert "const workspaceAttentionPageSize = 7;" in source
+    assert "let workspaceAttentionPage = 1;" in source
+    assert "function bindWorkspaceAttentionPagination()" in source
+    assert "data-workspace-attention-page" in source
+    assert "function renderWorkspaceAttentionPagination(total, page, pageCount)" in source
+    assert "Showing ${first}-${last} of ${total}" in source
+    assert ".workspace-attention-pagination" in stylesheet
+
+
 def test_attention_excludes_retired_or_superseded_delivery_lineage() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"

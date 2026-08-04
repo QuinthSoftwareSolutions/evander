@@ -116,6 +116,7 @@ const gitProviders = [
 ];
 const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
+const workspaceAttentionPageSize = 7;
 const defaultPlanningTaskStates = new Set([
   "pending",
   "in_progress",
@@ -423,6 +424,7 @@ const deliveryStatusLabels = {
 
 let selectedDeliveryFilter = "attention";
 let selectedDeliveryProjectId = "";
+let workspaceAttentionPage = 1;
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
 let humanReviewQueue = {
@@ -662,6 +664,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindProjectLeadSelects();
   bindAgentEditTeamScopedSelects();
   bindRuntimeFilters();
+  bindWorkspaceAttentionPagination();
   bindDeliveryFilters();
   bindPlanningFilters();
   bindTeamDisclosures();
@@ -853,6 +856,22 @@ function bindTopLevelTabs() {
     setTeamView(button.dataset.teamView || button.dataset.teamLinkView || defaultTeamView);
   });
   updateTeamViewTabs();
+}
+
+function bindWorkspaceAttentionPagination() {
+  document.addEventListener("click", (event) => {
+    const pageButton = event.target?.closest?.("[data-workspace-attention-page]");
+    if (!pageButton) {
+      return;
+    }
+    event.preventDefault();
+    workspaceAttentionPage = Math.max(1, Number(pageButton.dataset.workspaceAttentionPage || 1));
+    renderWorkspaceDashboard();
+    document.querySelector(".workspace-attention-panel")?.scrollIntoView({
+      block: "start",
+      behavior: "auto",
+    });
+  });
 }
 
 function normalizedTeamView(view) {
@@ -5423,15 +5442,18 @@ function renderWorkspaceMetricCard(metric) {
 }
 
 function renderWorkspaceAttentionPanel(model) {
-  const limit = 7;
-  const visibleItems = model.attentionItems.slice(0, limit);
-  const remaining = Math.max(0, model.attentionItems.length - visibleItems.length);
+  const total = model.attentionItems.length;
+  const pageCount = Math.max(1, Math.ceil(total / workspaceAttentionPageSize));
+  const page = Math.min(workspaceAttentionPage, pageCount);
+  workspaceAttentionPage = page;
+  const offset = (page - 1) * workspaceAttentionPageSize;
+  const visibleItems = model.attentionItems.slice(offset, offset + workspaceAttentionPageSize);
   const body = visibleItems.length
     ? `
       <ul class="workspace-attention-list">
         ${visibleItems.map(renderWorkspaceAttentionItem).join("")}
       </ul>
-      ${remaining ? `<div class="workspace-more-row">${remaining} more item${remaining === 1 ? "" : "s"} in detailed tabs.</div>` : ""}
+      ${renderWorkspaceAttentionPagination(total, page, pageCount)}
     `
     : `<p class="empty-state">No runtime blockers, pending reviews, actionable inbox items, or governance agenda items need attention.</p>`;
   return `
@@ -5446,6 +5468,24 @@ function renderWorkspaceAttentionPanel(model) {
       ${body}
       ${model.generatedAt ? `<div class="meta-line">Runtime generated ${escapeHtml(model.generatedAt)}</div>` : ""}
     </section>
+  `;
+}
+
+function renderWorkspaceAttentionPagination(total, page, pageCount) {
+  if (pageCount <= 1) {
+    return "";
+  }
+  const first = (page - 1) * workspaceAttentionPageSize + 1;
+  const last = Math.min(total, page * workspaceAttentionPageSize);
+  return `
+    <nav class="workspace-attention-pagination" aria-label="Workspace attention pages">
+      <span>Showing ${first}-${last} of ${total}</span>
+      <div class="record-actions">
+        <button type="button" class="record-action secondary" data-workspace-attention-page="${page - 1}"${page <= 1 ? " disabled" : ""}>Previous</button>
+        <span>Page ${page} of ${pageCount}</span>
+        <button type="button" class="record-action secondary" data-workspace-attention-page="${page + 1}"${page >= pageCount ? " disabled" : ""}>Next</button>
+      </div>
+    </nav>
   `;
 }
 
