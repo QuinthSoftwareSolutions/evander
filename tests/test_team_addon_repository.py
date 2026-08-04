@@ -2351,6 +2351,52 @@ def test_direct_acceptance_decision_survives_later_formal_review(
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
+def test_directly_rejected_deliverable_cannot_enter_formal_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-rejected-review",
+        task_id="task",
+        summary="Needs rework.",
+        artifact_refs=["artifact-space:/rejected-review"],
+        request_id="request-submit-rejected-review",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-reject")
+    _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-rejected-review",
+        decision="rejected",
+        reason="The direct handoff is not acceptable.",
+        request_id="request-reject-before-review",
+    )
+
+    _lease_review_handoff_dispatch(
+        repo,
+        deliverable_id="deliverable-rejected-review",
+        dispatch_id="dispatch-rejected-formal-review",
+    )
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        id="review-after-direct-rejection",
+        deliverable_id="deliverable-rejected-review",
+        reviewer_agent_id="worker",
+        instructions="Attempt to override the direct rejection.",
+        request_id="request-review-after-direct-rejection",
+    )
+
+    assert requested["success"] is False
+    assert "cannot enter formal review" in requested["errors"][0]["message"]
+    assert "review-after-direct-rejection" not in state.review_requests
+    deliverable = state.deliverables["deliverable-rejected-review"]
+    assert deliverable.state == TeamRecordState.REJECTED
+    assert deliverable.acceptance_decision is not None
+    assert deliverable.acceptance_decision.decision == "rejected"
+
+
 def test_direct_acceptance_decision_survives_promotion_failure(
     tmp_path: Path,
 ) -> None:

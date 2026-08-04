@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-02 - Rejected Deliverable Review Integrity
+
+- Prevented formal review from overriding a direct superior rejection and added
+  model-level validation that terminally rejected handoffs cannot become accepted.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over

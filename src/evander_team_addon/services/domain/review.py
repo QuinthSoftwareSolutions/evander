@@ -240,6 +240,18 @@ def _apply_review_request(
     task = state.tasks.get(deliverable.task_id)
     project_id = task.project_id if task is not None else None
     if (
+        deliverable.state == TeamRecordState.REJECTED
+        or (
+            deliverable.acceptance_decision is not None
+            and deliverable.acceptance_decision.decision == "rejected"
+        )
+    ):
+        result["errors"].append(
+            f"rejected deliverable {deliverable.id} cannot enter formal review; "
+            "submit a replacement deliverable for rework"
+        )
+        return None
+    if (
         deliverable.state == TeamRecordState.ACCEPTED
         and deliverable.rework_requested_at is not None
         and deliverable.superseded_by_deliverable_id is None

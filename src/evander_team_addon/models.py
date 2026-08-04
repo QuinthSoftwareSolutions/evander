@@ -1530,8 +1530,12 @@ class Deliverable(TeamModel):
             raise ValueError(
                 "deliverable acceptance decision must be made by its acceptance recipient"
             )
+        if decision.decision == "rejected" and self.state != TeamRecordState.REJECTED:
+            raise ValueError(
+                "a deliverable rejected by its acceptance recipient must remain rejected"
+            )
         # The decision records the original direct handoff. Later formal review or
-        # promotion processing may legitimately move the current deliverable state.
+        # promotion processing may legitimately move a previously accepted deliverable.
         return self
 
     @model_validator(mode="after")
