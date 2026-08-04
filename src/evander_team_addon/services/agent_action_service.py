@@ -19,6 +19,9 @@ from ..models import (
     TeamDispatchStatus,
     TeamTaskState,
 )
+from .candidate_correction_reconciliation_service import (
+    reconcile_candidate_correction_successors,
+)
 from .domain.blockers import (
     open_or_get_blocker,
     reconcile_task_blockers_after_reassignment,
@@ -44,6 +47,7 @@ from .domain.case_task import (
     _apply_goal_update,
     _apply_task_creation_plan,
     _plan_task_creation,
+    _resolve_task_creation_plan_git_bases,
     _restore_case_task_state,
     _snapshot_case_task_state,
     _subordinate_task_finish_allowed,
@@ -143,11 +147,13 @@ class TeamAgentActionService:
         repository: TeamStateRepository,
         *,
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
+        git_default_branch_resolver: Callable[..., object] | None = None,
     ) -> None:
         self._repository = repository
         self._human_review_eligibility_resolver = (
             human_review_eligibility_resolver
         )
+        self._git_default_branch_resolver = git_default_branch_resolver
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -550,6 +556,18 @@ class TeamAgentActionService:
                     continue
                 reserved_task_ids.add(plan.task_id)
                 task_creation_plans.append(plan)
+
+            try:
+                task_creation_plans = _resolve_task_creation_plan_git_bases(
+                    state_model,
+                    task_creation_plans,
+                    git_default_branch_resolver=(
+                        self._git_default_branch_resolver
+                    ),
+                )
+            except ValueError as exc:
+                result["errors"].append(f"task_creations: {exc}")
+                task_creation_plans = []
 
             graph_errors = _task_creation_batch_graph_errors(
                 state_model,
@@ -1168,6 +1186,13 @@ class TeamAgentActionService:
                     _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "ephemeral_acceptances", index, exc)
+
+            if result["decided_review_request_ids"]:
+                reconcile_candidate_correction_successors(
+                    state_model,
+                    result=result,
+                    now=utc_now(),
+                )
 
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, project_id)

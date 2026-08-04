@@ -398,9 +398,16 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
     blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
-    task_creation_commands = TeamTaskCreationCommandService(repo)
+    git_default_branch_resolver = _team_mcp_git_default_branch_resolver(context)
+    task_creation_commands = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
     outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
-    task_update_commands = TeamTaskUpdateCommandService(repo)
+    task_update_commands = TeamTaskUpdateCommandService(
+        repo,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
     agent_control_commands = TeamAgentControlCommandService(repo)
     governance_commands = TeamGovernanceCommandService(repo)
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
@@ -1086,7 +1093,8 @@ def _register_slice5_tools(
         team_send_operator_chat_message,
         name=TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         description=(
-            "Send a Team Chat message to a known operator participant. Requires "
+            "Send a Team Chat message to an operator in the caller's existing direct "
+            "conversation. Requires "
             "recipient_operator_user_id, body, and request_id."
         ),
     )
@@ -1336,8 +1344,9 @@ def _register_slice6_tools(
         team_route_human_finding_correction,
         name=TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
         description=(
-            "Route the existing correction child for an ambiguous human-review "
-            "finding to a project assignee, optionally recording affected "
+            "Recover an existing correction child for a legacy human-review "
+            "finding that still carries ambiguous-routing metadata by assigning "
+            "it to a project assignee and optionally recording affected "
             "deliverables. This does not create or rewrite the task."
         ),
     )
@@ -1395,6 +1404,7 @@ def _register_slice6_tools(
         state: str = "pending",
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1422,6 +1432,7 @@ def _register_slice6_tools(
                 state=state,
                 parent_task_id=parent_task_id,
                 originating_task_id=originating_task_id,
+                git_base_branch=git_base_branch,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1446,7 +1457,9 @@ def _register_slice6_tools(
             "provenance and explicitly name direct-child or dependency task "
             "contributions. A non-integration leaf may also use a deliverable_contract "
             "with no contribution task IDs when it must resolve through an accepted "
-            "deliverable. originating_task_id records lineage only and does not "
+            "deliverable. git_base_branch optionally selects this task's immutable "
+            "starting workstream; otherwise a child inherits its parent and a root "
+            "snapshots the project default. originating_task_id records lineage only and does not "
             "seed Git content; when a correction must edit accepted predecessor "
             "content, also put that predecessor in dependency_task_ids so its exact "
             "accepted commit is verified and composed before work starts."
@@ -1606,6 +1619,7 @@ def _register_slice6_tools(
         description: str | None = None,
         owner_agent_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
+        git_base_branch: str | None = None,
         integration_boundary: bool | None = None,
         deliverable_contract: dict[str, Any] | None = None,
         completion: dict[str, Any] | None = None,
@@ -1627,6 +1641,7 @@ def _register_slice6_tools(
             "description": description,
             "owner_agent_id": owner_agent_id,
             "dependency_task_ids": dependency_task_ids,
+            "git_base_branch": git_base_branch,
             "integration_boundary": integration_boundary,
             "deliverable_contract": deliverable_contract,
             "completion": completion,
@@ -1655,7 +1670,8 @@ def _register_slice6_tools(
             "Before any deliverable submission, an authorized task-graph editor "
             "can supply a deliverable_contract to require accepted work, and can "
             "also designate a composite as an integration boundary with "
-            "integration_boundary=true."
+            "integration_boundary=true. git_base_branch may be changed only before "
+            "Git preparation, deliverable submission, or promotion creation."
         ),
     )
 
@@ -2658,6 +2674,33 @@ def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
             directory_path=directory_path,
             branch=agent_branch,
         )
+
+    return _resolve
+
+
+def _team_mcp_git_default_branch_resolver(context: AddonContext):
+    managed_git = getattr(context.service, "managed_git_admin", None)
+
+    def _resolve(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> object:
+        nonlocal managed_git
+        if managed_git is None:
+            from evander.admin.composition import build_admin_runtime
+
+            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
+        get_repository = getattr(managed_git, "get_repository", None)
+        if not callable(get_repository):
+            raise RuntimeError("managed Git repository lookup is unavailable")
+        record = get_repository(
+            managed_repo_id,
+            directory_path=directory_path,
+        )
+        if not isinstance(record, Mapping):
+            raise RuntimeError("managed Git repository lookup returned an invalid record")
+        return record.get("default_branch")
 
     return _resolve
 

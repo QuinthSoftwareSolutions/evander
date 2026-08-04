@@ -248,7 +248,7 @@ class TeamRuntimeService:
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
 
-    def revoke_operator_stand_downs(
+    def revoke_stand_downs(
         self,
         *,
         agent_id: str,
@@ -267,7 +267,11 @@ class TeamRuntimeService:
             for stand_down in state.stand_downs.values():
                 if (
                     stand_down.agent_id == normalized_agent_id
-                    and stand_down.source == AgentStandDownSource.OPERATOR
+                    and stand_down.source
+                    in {
+                        AgentStandDownSource.OPERATOR,
+                        AgentStandDownSource.SUPERIOR,
+                    }
                     and stand_down.active
                 ):
                     affected_ids.update(
@@ -281,7 +285,7 @@ class TeamRuntimeService:
                     stand_down.cleared_at = now
                     revoked_ids.append(stand_down.id)
             if not revoked_ids:
-                raise ValueError(f"agent {normalized_agent_id} has no active operator stand-down")
+                raise ValueError(f"agent {normalized_agent_id} has no active direct stand-down")
             idempotency_suffix = "stand-down-revocation:" + ",".join(sorted(revoked_ids))
             for affected_id in sorted(affected_ids):
                 if _active_stand_downs_for_agent(state, affected_id):
@@ -314,6 +318,20 @@ class TeamRuntimeService:
         self._publish_stand_down_revocation_wakes(wake_result.get("events"))
         return state
 
+    def revoke_operator_stand_downs(
+        self,
+        *,
+        agent_id: str,
+        revoked_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        """Compatibility alias for the privileged operator stand-down route."""
+        return self.revoke_stand_downs(
+            agent_id=agent_id,
+            revoked_by=revoked_by,
+            expected_revision=expected_revision,
+        )
+
     def _publish_stand_down_revocation_wakes(self, events: object) -> None:
         if not isinstance(events, list) or not events:
             return
@@ -344,7 +362,7 @@ class TeamRuntimeService:
                 )
             except Exception:
                 logger.exception(
-                    "failed to publish immediate wake after operator stand-down revocation"
+                    "failed to publish immediate wake after privileged stand-down revocation"
                 )
                 continue
             outbox_record = records_by_idempotency_key.get(idempotency_key)
@@ -354,7 +372,7 @@ class TeamRuntimeService:
                 self._repository.complete_outbox_record(record_id=outbox_record.id)
             except Exception:
                 logger.exception(
-                    "published operator stand-up wake but failed to acknowledge outbox record %s",
+                    "published privileged stand-up wake but failed to acknowledge outbox record %s",
                     outbox_record.id,
                 )
 
@@ -923,7 +941,8 @@ class TeamRuntimeService:
                         ),
                         "recent_action_feedback": action_feedback,
                         "operator_chat_participants": _operator_chat_participant_payloads(
-                            state_model
+                            state_model,
+                            agent_id=agent.id,
                         ),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
@@ -1104,7 +1123,8 @@ class TeamRuntimeService:
                         ),
                         "manager_fallback_summary": manager_fallback_summary,
                         "operator_chat_participants": _operator_chat_participant_payloads(
-                            state_model
+                            state_model,
+                            agent_id=manager.id,
                         ),
                         "superior_agent_id": manager.reports_to_agent_id,
                         "subordinate_agent_ids": list(manager.subordinate_agent_ids),

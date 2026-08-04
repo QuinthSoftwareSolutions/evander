@@ -986,6 +986,16 @@ def _normalize_static_pull_request_provider(value: ConfigValue) -> ConfigValue:
     return value
 
 
+def _migrate_legacy_pull_request_organization(data: object) -> object:
+    if not isinstance(data, Mapping):
+        return data
+    payload = dict(data)
+    if "ado_organization" not in payload and "organization_url" in payload:
+        payload["ado_organization"] = payload["organization_url"]
+    payload.pop("organization_url", None)
+    return payload
+
+
 class PullRequestAddTagEffectDefinition(EffectDefinition):
     type: Literal["effect:pull-request:add-tag"]
     provider: ConfigValue
@@ -993,8 +1003,13 @@ class PullRequestAddTagEffectDefinition(EffectDefinition):
     pr_id: ConfigValue
     tag: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod
@@ -1009,8 +1024,13 @@ class PullRequestRemoveTagEffectDefinition(EffectDefinition):
     pr_id: ConfigValue
     tag: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod
@@ -1024,7 +1044,7 @@ class PullRequestUpdateEffectDefinition(EffectDefinition):
     repo: ConfigValue
     pr_id: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
     title: ConfigValue | None = None
     description: ConfigValue | None = None
@@ -1032,6 +1052,11 @@ class PullRequestUpdateEffectDefinition(EffectDefinition):
     add_tags: ConfigValue | None = None
     remove_tags: ConfigValue | None = None
     expected_statuses: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod
@@ -1211,6 +1236,7 @@ class GitPushBranchEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
     source_ref: ConfigValue
     expected_commit_sha: ConfigValue
+    expected_destination_commit_sha: ConfigValue | None = None
     destination_branch: ConfigValue
 
 

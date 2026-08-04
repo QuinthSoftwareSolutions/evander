@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.services import (
     AzureDevOpsPrQueryProvider,
     normalize_pr_automation_provider,
@@ -13,7 +14,7 @@ def build_pull_request_provider(
     context: Any,
     provider: str,
     directory_path: str | None,
-    organization_url: str | None,
+    ado_organization: str | None,
     project: str | None,
     node_type: str,
 ) -> tuple[str, str, AzureDevOpsPrQueryProvider]:
@@ -29,14 +30,14 @@ def build_pull_request_provider(
         raise RuntimeError(f"{node_type} provider_config_resolver cannot resolve directories")
 
     config = resolve_for_directory(directory_path)
-    resolved_organization_url = _normalize_optional_string(
-        organization_url
-    ) or _normalize_optional_string(getattr(config, "azure_devops_organization_url", None))
+    resolved_organization_url = resolve_azure_devops_organization_url(
+        ado_organization=ado_organization,
+        legacy_organization_url=getattr(config, "azure_devops_organization_url", None),
+        node_type=node_type,
+    )
     resolved_project = _normalize_optional_string(project) or _normalize_optional_string(
         getattr(config, "azure_devops_project", None)
     )
-    if not resolved_organization_url:
-        raise ValueError(f"{node_type} requires organization_url for Azure DevOps")
     if not resolved_project:
         raise ValueError(f"{node_type} requires project for Azure DevOps")
 

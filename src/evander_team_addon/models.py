@@ -23,9 +23,10 @@ from evander.worker.models import WorkerFailureCause, WorkerResourceLimits
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
+    validate_branch_name,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -100,6 +101,12 @@ class TeamRecordState(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+
+
+class HumanReviewFindingTargetScope(str, Enum):
+    LEGACY_UNSPECIFIED = "legacy_unspecified"
+    RELEASE_CANDIDATE = "release_candidate"
+    DELIVERABLES = "deliverables"
 
 
 class ReviewBlockKind(str, Enum):
@@ -1210,6 +1217,7 @@ class AgentTask(TeamModel):
     created_by_actor: str | None = None
     parent_task_id: str | None = None
     originating_task_id: str | None = None
+    git_base_branch: str | None = None
     cancellation: TaskCancellation | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -1247,6 +1255,12 @@ class AgentTask(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("dependency_task_ids", mode="before")
     @classmethod
@@ -2976,6 +2990,9 @@ class HumanReviewTestTarget(TeamModel):
 class HumanReviewFindingSnapshot(TeamModel):
     finding_id: str
     text: str
+    target_scope: HumanReviewFindingTargetScope = (
+        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    )
     target_deliverable_ids: list[str] = Field(default_factory=list)
     correction_task_id: str | None = None
     proposed_resolution: str | None = None
@@ -3001,6 +3018,36 @@ class HumanReviewFindingSnapshot(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_target_scope(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("target_scope") is not None:
+            return value
+        normalized = dict(value)
+        if normalized.get("target_deliverable_ids"):
+            normalized["target_scope"] = (
+                HumanReviewFindingTargetScope.DELIVERABLES
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _target_scope_matches_ids(self) -> "HumanReviewFindingSnapshot":
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "release-candidate human findings cannot target deliverables"
+            )
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "deliverable-scoped human findings require target deliverables"
+            )
+        return self
 
 
 class HumanReviewRequest(TeamModel):
@@ -3088,6 +3135,9 @@ class HumanReviewFinding(TeamModel):
     id: str
     source_human_review_request_id: str
     text: str
+    target_scope: HumanReviewFindingTargetScope = (
+        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    )
     target_deliverable_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     correction_task_id: str
@@ -3129,6 +3179,36 @@ class HumanReviewFinding(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_target_scope(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("target_scope") is not None:
+            return value
+        normalized = dict(value)
+        if normalized.get("target_deliverable_ids"):
+            normalized["target_scope"] = (
+                HumanReviewFindingTargetScope.DELIVERABLES
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _target_scope_matches_ids(self) -> "HumanReviewFinding":
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "release-candidate human findings cannot target deliverables"
+            )
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "deliverable-scoped human findings require target deliverables"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_resolution(self) -> "HumanReviewFinding":
@@ -3198,8 +3278,10 @@ class ReleasePackage(TeamModel):
     feature_branches: list[str] = Field(default_factory=list)
     release_branch: str | None = None
     canonical_branch: str | None = None
+    git_base_branch: str | None = None
     published_commit_sha: str | None = None
     base_commit_sha: str | None = None
+    canonical_base_commit_sha: str | None = None
     candidate_commit_sha: str | None = None
     candidate_tree_hash: str | None = None
     approved_commit_sha: str | None = None
@@ -3217,6 +3299,21 @@ class ReleasePackage(TeamModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_initial_canonical_base(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        if (
+            value.get("canonical_base_commit_sha") is not None
+            or value.get("supersedes_release_package_id") is not None
+            or value.get("base_commit_sha") is None
+        ):
+            return value
+        normalized = dict(value)
+        normalized["canonical_base_commit_sha"] = value.get("base_commit_sha")
+        return normalized
 
     @field_validator("id", "project_id", mode="before")
     @classmethod
@@ -3243,6 +3340,7 @@ class ReleasePackage(TeamModel):
         "supersedes_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
+        "canonical_base_commit_sha",
         "candidate_commit_sha",
         "candidate_tree_hash",
         "approved_commit_sha",
@@ -3254,6 +3352,12 @@ class ReleasePackage(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("manifest", mode="before")
     @classmethod
@@ -3390,6 +3494,8 @@ class GitPromotionRecord(TeamModel):
     task_id: str | None = None
     deliverable_id: str | None = None
     release_package_id: str | None = None
+    git_base_branch: str | None = None
+    base_commit_sha: str | None = None
     state: Literal["pending", "succeeded", "failed", "retired"] = "pending"
     commit_sha: str | None = None
     outputs: dict[str, Any] = Field(default_factory=dict)
@@ -3413,6 +3519,7 @@ class GitPromotionRecord(TeamModel):
         "task_id",
         "deliverable_id",
         "release_package_id",
+        "base_commit_sha",
         "commit_sha",
         "error",
         mode="before",
@@ -3420,6 +3527,12 @@ class GitPromotionRecord(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("outputs", mode="before")
     @classmethod
@@ -7328,6 +7441,11 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     for release in sorted(
         state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)
     ):
+        if release.state in {
+            TeamRecordState.ACCEPTED,
+            TeamRecordState.REJECTED,
+        }:
+            continue
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
         next_action_hint = _release_next_action_hint(state, release)

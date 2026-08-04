@@ -66,6 +66,7 @@ from evander_team_addon.models import (
     DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAgentPolicy,
+    GitWorkContext,
     GovernanceAgendaItemState,
     ProjectGitConfig,
     ProjectGoal,
@@ -301,11 +302,23 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
         project = state.projects["project"]
         project.git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
         )
         project.release_policy = ProjectReleasePolicy(allow_ungated=True)
+        state.tasks["task"].git_base_branch = "main"
+        state.git_work_contexts["ctx-deliverable"] = GitWorkContext(
+            id="ctx-deliverable",
+            agent_id="backend",
+            task_id="task",
+            base_branch="main",
+            base_commit="base-commit",
+            agent_branch="agents/session-backend/work",
+            commit_sha="reviewed-commit",
+        )
         deliverable = state.deliverables["deliverable"]
         deliverable.verification = DeliverableVerification(status="passed")
         refs = deliverable.git_refs
+        refs.branch_context_id = "ctx-deliverable"
         refs.agent_branch = "agents/session-backend/work"
         refs.review_branch = "team/team/reviews/deliverable"
         refs.commit_sha = "reviewed-commit"
@@ -1264,6 +1277,15 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     for session_id in ("session-manager", "session-lead", "session-backend"):
         _upsert_session(context, session_id=session_id, allowed_tools=slice6_tools)
     repo = _seed_planning_state(context.config.runtime_dir)
+
+    def _configure_project_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure_project_git)
     _lease_planning_agents(repo)
     server = create_server(context)
 
@@ -1298,6 +1320,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
             "priority": 1,
             "title": "MCP task",
             "description": "Build the MCP task.",
+            "git_base_branch": "feature/mcp",
             "request_id": "request-mcp-task",
         },
         _make_request_context(session_id="session-lead"),
@@ -1314,6 +1337,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
                     "priority": 1,
                     "title": "Batch A",
                     "description": "First batch task.",
+                    "git_base_branch": "feature/batch",
                 },
                 {
                     "task_id": "task-mcp-batch-b",
@@ -1321,8 +1345,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
                     "project_id": "project",
                     "priority": 1,
                     "title": "Batch B",
-                    "description": "Second batch task.",
-                    "dependency_task_ids": ["task-mcp-batch-a"],
+                        "description": "Second batch task.",
+                        "parent_task_id": "task-mcp-batch-a",
+                        "dependency_task_ids": ["task-mcp"],
                 },
             ],
             "request_id": "request-mcp-task-batch",
@@ -1340,6 +1365,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         {
             "task_id": "task-mcp",
             "state": "in_progress",
+            "git_base_branch": "feature/mcp-updated",
             "request_id": "request-mcp-task-update",
         },
         _make_request_context(session_id="session-backend"),
@@ -1412,6 +1438,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert state.stand_downs[stood_down["stand_down_id"]].scope == "agent"
     assert state.cases["case-mcp"].title == "MCP case updated"
     assert state.tasks["task-mcp"].state.value == "in_progress"
+    assert state.tasks["task-mcp"].git_base_branch == "feature/mcp-updated"
+    assert state.tasks["task-mcp-batch-a"].git_base_branch == "feature/batch"
+    assert state.tasks["task-mcp-batch-b"].git_base_branch == "feature/batch"
     assert state.projects["project"].goals[0].state == TeamRecordState.IN_PROGRESS
 
 

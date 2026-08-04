@@ -419,7 +419,8 @@ config, while service env vars can come from optional per-service `config/*.env`
 optional `secrets.env`.
 For private PR feedback polling, the service environment must provide `GITHUB_TOKEN` and/or
 `AZURE_DEVOPS_PR_PAT` as needed, and the effective `root` config must set the correct
-`azure_devops_organization_url`, `azure_devops_project`, and wake timing settings.
+`ado_organization`, `azure_devops_project`, and wake timing settings. The legacy
+`azure_devops_organization_url` is safely migrated when it names a public Azure DevOps organization.
 
 ### Azure DevOps worker and work-item workflows
 
@@ -431,7 +432,8 @@ set -a; source secrets.env; set +a
 evander-cli poll-ado-backlog --log-level INFO
 ```
 
-The ADO worker reads `azure_devops_organization_url` and `azure_devops_project` from the
+The ADO worker reads the canonical Azure DevOps origin derived from `ado_organization` and
+`azure_devops_project` from the
 effective provider config and uses `AZURE_DEVOPS_PR_PAT` or the configured
 `azure_devops_pr_pat_env` when Azure DevOps PR polling is enabled. It no longer polls backlog work
 items or requires `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` to run PR feedback/completion paths.

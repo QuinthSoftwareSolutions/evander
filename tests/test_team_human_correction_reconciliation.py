@@ -43,6 +43,9 @@ from evander_team_addon.services.domain.human_reviews import (
     HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY,
     route_human_finding_correction,
 )
+from evander_team_addon.services.domain.git_promotion import (
+    _queue_canonical_push_after_release_success,
+)
 from evander_team_addon.services.domain.release_packages import (
     _apply_git_release_recovery,
 )
@@ -54,6 +57,7 @@ from evander_team_addon.services.git_release_service import TeamGitReleaseServic
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
+CANONICAL_BASE_COMMIT = "0" * 40
 PREDECESSOR_COMMIT = "a" * 40
 PREDECESSOR_TREE = "b" * 40
 CORRECTION_COMMIT = "c" * 40
@@ -162,6 +166,8 @@ def _reconciliation_state(*, include_parent: bool = True) -> TeamState:
         deliverable_ids=["source-deliverable"],
         release_branch=manifest.release_branch,
         canonical_branch="main",
+        base_commit_sha=CANONICAL_BASE_COMMIT,
+        canonical_base_commit_sha=CANONICAL_BASE_COMMIT,
         candidate_commit_sha=PREDECESSOR_COMMIT,
         candidate_tree_hash=PREDECESSOR_TREE,
         manifest=manifest,
@@ -296,11 +302,17 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     successor_id = first["created_successor_release_package_ids"][0]
     successor = state.release_packages[successor_id]
     assert successor.supersedes_release_package_id == "release-rejected"
+    assert successor.git_base_branch == "team/team/releases/release-rejected"
+    assert successor.base_commit_sha == PREDECESSOR_COMMIT
+    assert successor.canonical_base_commit_sha == CANONICAL_BASE_COMMIT
+    assert successor.canonical_branch == "main"
     assert set(successor.deliverable_ids) == {
         "source-deliverable",
         "correction-deliverable",
     }
     assert state.tasks["human-correction-aggregate"].state == TeamTaskState.FINISHED
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+    assert first["resolved_case_ids"] == ["human-case"]
     assert len(successor.git_promotion_record_ids) == 1
     aggregate = state.git_promotions[successor.git_promotion_record_ids[0]]
     assert aggregate.promotion_kind == "correction_aggregate"
@@ -334,7 +346,130 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     ) == 1
 
 
-def test_correction_aggregate_success_queues_one_main_based_release_promotion(
+def test_reconciliation_self_heals_completed_ambiguous_finding(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _retain_stale_ambiguity(state: TeamState) -> TeamState:
+        state.cases["human-case"].metadata[
+            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+        ] = ["finding"]
+        return state
+
+    repo.update(_retain_stale_ambiguity)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    assert result["implicitly_routed_human_review_finding_ids"] == ["finding"]
+    assert result["created_successor_release_package_ids"]
+    assert state.cases["human-case"].metadata[
+        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == []
+    assert state.tasks["human-correction-aggregate"].state == (
+        TeamTaskState.FINISHED
+    )
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+
+
+def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _restore_unresolved_ambiguity(state: TeamState) -> TeamState:
+        state.cases["human-case"].metadata[
+            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+        ] = ["finding"]
+        state.tasks["human-correction-child"].state = TeamTaskState.IN_PROGRESS
+        return state
+
+    state = repo.update(_restore_unresolved_ambiguity)
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+
+    assert result["changed"] is False
+    assert result["revision"] == state.revision
+    final = repo.read()
+    assert final.cases["human-case"].metadata[
+        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
+    ] == ["finding"]
+    assert not any(
+        release.supersedes_release_package_id == "release-rejected"
+        for release in final.release_packages.values()
+    )
+
+
+def test_reconciliation_carries_manifest_only_candidate_branch_into_successor(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _retain_candidate_branch_only_in_manifest(state: TeamState) -> TeamState:
+        predecessor = state.release_packages["release-rejected"]
+        assert predecessor.manifest is not None
+        candidate_branch = predecessor.manifest.release_branch
+        predecessor.release_branch = None
+        predecessor.git_base_branch = "main"
+        state.tasks["human-correction-aggregate"].git_base_branch = candidate_branch
+        state.tasks["human-correction-child"].git_base_branch = candidate_branch
+        return state
+
+    repo.update(_retain_candidate_branch_only_in_manifest)
+    predecessor = repo.read().release_packages["release-rejected"]
+    assert predecessor.manifest is not None
+    candidate_branch = predecessor.manifest.release_branch
+    assert predecessor.release_branch is None
+
+    result = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    successor_id = result["created_successor_release_package_ids"][0]
+    successor = state.release_packages[successor_id]
+    assert successor.supersedes_release_package_id == predecessor.id
+    assert successor.git_base_branch == candidate_branch
+    assert successor.base_commit_sha == PREDECESSOR_COMMIT
+
+
+def test_deduplicated_non_successor_release_keeps_correction_case_active(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _seed_active_package(state: TeamState) -> TeamState:
+        state.release_packages["release-existing"] = ReleasePackage(
+            id="release-existing",
+            project_id="project",
+            deliverable_ids=[
+                "source-deliverable",
+                "correction-deliverable",
+            ],
+            state=TeamRecordState.PENDING,
+        )
+        return state
+
+    repo.update(_seed_active_package)
+
+    first = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    assert first["waiting_case_ids"] == ["human-case"]
+    assert first["deduplicated_release_package_ids"] == ["release-existing"]
+    assert "created_successor_release_package_ids" not in first
+    assert state.cases["human-case"].status == TeamCaseStatus.IN_PROGRESS
+    assert state.tasks["human-correction-aggregate"].state == TeamTaskState.PENDING
+    assert not any(
+        release.supersedes_release_package_id == "release-rejected"
+        for release in state.release_packages.values()
+    )
+
+    revision = state.revision
+    replay = HumanCorrectionReconciliationService(repo).reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == revision
+    assert repo.read().cases["human-case"].status == TeamCaseStatus.IN_PROGRESS
+
+
+def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
@@ -379,14 +514,45 @@ def test_correction_aggregate_success_queues_one_main_based_release_promotion(
         for event in result["events"]
         if event["payload"].get("promotion_id") == release_promotion.id
     )
-    assert release_event["payload"]["base_branch"] == "main"
-    assert "base_commit_sha" not in release_event["payload"]
+    assert release_promotion.git_base_branch == (
+        "team/team/releases/release-rejected"
+    )
+    assert release_promotion.base_commit_sha == PREDECESSOR_COMMIT
+    assert release_event["payload"]["base_branch"] == (
+        "team/team/releases/release-rejected"
+    )
+    assert release_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
     assert release_event["payload"]["allowed_changed_paths"] == [
         "M\tsrc/correction.cs"
     ]
     assert state.deliverables[
         "correction-deliverable"
     ].review_manifest.base_commit_sha == PREDECESSOR_COMMIT
+
+    successor.candidate_commit_sha = "e" * 40
+    successor.approved_commit_sha = "e" * 40
+    assert successor.scope_validation is not None
+    successor.scope_validation.state = "passed"
+    release_promotion.commit_sha = "e" * 40
+    publication = {"events": [], "git_promotion_event_ids": []}
+    _queue_canonical_push_after_release_success(
+        state,
+        release=successor,
+        release_promotion=release_promotion,
+        result=publication,
+    )
+    canonical = next(
+        state.git_promotions[promotion_id]
+        for promotion_id in state.release_packages[successor_id].git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "canonical_push"
+    )
+    canonical_event = next(
+        event
+        for event in publication["events"]
+        if event["payload"].get("promotion_id") == canonical.id
+    )
+    assert canonical.base_commit_sha == CANONICAL_BASE_COMMIT
+    assert canonical_event["payload"]["base_commit_sha"] == CANONICAL_BASE_COMMIT
 
 
 def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
@@ -685,6 +851,33 @@ def test_existing_successor_permanently_terminates_reconciliation(
         for release in final.release_packages.values()
         if release.supersedes_release_package_id == "release-rejected"
     ] == [successor_id]
+
+
+def test_existing_successor_resolves_one_stale_active_case_once(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    service = HumanCorrectionReconciliationService(repo)
+    first = service.reconcile()
+    successor_id = first["created_successor_release_package_ids"][0]
+
+    def _restore_stale_case(state: TeamState) -> TeamState:
+        state.cases["human-case"].status = TeamCaseStatus.IN_PROGRESS
+        return state
+
+    repo.update(_restore_stale_case)
+
+    repaired = service.reconcile()
+    state = repo.read()
+
+    assert repaired["changed"] is True
+    assert repaired["resolved_case_ids"] == ["human-case"]
+    assert repaired["existing_successor_release_package_ids"] == [successor_id]
+    assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
+
+    replay = service.reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == state.revision
 
 
 def test_reconciliation_preserves_authored_resolution_and_unions_evidence(

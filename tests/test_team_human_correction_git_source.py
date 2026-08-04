@@ -769,3 +769,15 @@ def test_correction_preparation_generation_changes_when_manifest_is_repaired() -
     )
 
     assert repaired_manifest_generation != missing_manifest_generation
+
+
+def test_correction_preparation_generation_changes_when_task_base_is_repaired() -> None:
+    state = _release_review_correction_state()
+    task = state.tasks["correction-task"]
+    task.git_base_branch = "team/team/releases/previous"
+    stale_generation = task_preparation_generation(state, task.id)
+
+    task.git_base_branch = RELEASE_BRANCH
+    repaired_generation = task_preparation_generation(state, task.id)
+
+    assert repaired_generation != stale_generation

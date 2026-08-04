@@ -135,6 +135,8 @@ def test_run_pr_integration_preflight_uses_temporary_managed_worktree(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        assert request.url.host == "dev.azure.com"
+        assert request.url.path.startswith("/org/proj/")
         assert request.url.path.endswith("/_apis/git/repositories/repo-1/pullRequests/17")
         assert request.url.params["api-version"] == "7.1"
         assert request.headers["authorization"].startswith("Basic ")

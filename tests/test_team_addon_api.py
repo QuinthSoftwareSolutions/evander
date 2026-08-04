@@ -42,6 +42,7 @@ from evander_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
+    AgentStandDownSource,
     AgentTask,
     AgentStatus,
     AgentVoiceProfile,
@@ -81,7 +82,10 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
-from evander_team_addon.providers import _filtered_team_state_payload
+from evander_team_addon.providers import (
+    _filtered_team_state_payload,
+    build_voice_reconciliation_context,
+)
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from evander_team_addon.services.domain.human_reviews import (
@@ -1030,6 +1034,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
+            base_branch="main",
         )
         return state
 
@@ -1523,12 +1528,33 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
         "findings": [
             {
                 "text": "Correct the release-wide workflow failure.",
+                "target_scope": "release_candidate",
                 "evidence_refs": ["artifact-space:reports/release-failure.txt"],
             }
         ],
         "expected_revision": 0,
         "request_id": "changes-requested-1",
     }
+
+    missing_scope = client.post(
+        "/human-review-requests/human-review-1/decisions",
+        json={
+            **payload,
+            "request_id": "changes-requested-missing-scope",
+            "findings": [
+                {
+                    "text": "Correct the release-wide workflow failure.",
+                    "evidence_refs": [
+                        "artifact-space:reports/release-failure.txt"
+                    ],
+                }
+            ],
+        },
+    )
+    assert missing_scope.status_code == 400
+    assert "must select the entire release candidate" in missing_scope.json()[
+        "error"
+    ]
 
     decided = client.post(
         "/human-review-requests/human-review-1/decisions",
@@ -1549,7 +1575,7 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     ]
     assert len(wake_events) == 1
     assert wake_events[0].event_id == decided_payload["published_event_ids"][0]
-    assert wake_events[0].payload["agent_id"] == "backend"
+    assert wake_events[0].payload["agent_id"] == "lead"
     assert wake_events[0].payload["reason"] == "inbox"
 
     replay = client.post(
@@ -2034,6 +2060,7 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert correction_root.parent_task_id is None
     assert correction_root.originating_task_id == triage_task.id
     assert correction_root.case_id == feedback_case.id
+    assert correction_root.git_base_branch == published_before.release_branch
     assert correction_root.id in final_state.cases[feedback_case.id].task_ids
 
     published_after = final_state.release_packages["release-1"]
@@ -3310,6 +3337,7 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     now = datetime(2026, 1, 2, tzinfo=UTC)
 
     def _mutate(state):
+        state.release_packages["release-1"].state = TeamRecordState.REJECTED
         state.inbox["handled-inbox"] = AgentInboxItem(
             id="handled-inbox",
             recipient_agent_id="backend",
@@ -3366,7 +3394,12 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     assert operations.status_code == 200
     operations_state = operations.json()["data"]["state"]
     assert {"inbox-1", "escalation-1"}.issubset(operations_state["inbox"])
+    assert set(operations_state["release_packages"]) == {"release-1"}
     assert set(operations_state["action_records"]) == {"action-1"}
+    assert not any(
+        row["kind"] in {"blocked_release_package", "failed_git_promotion"}
+        for row in operations_state["runtime_operations"]["attention"]
+    )
     assert set(operations_state["resource_tokens"]["inbox"]) == set(
         operations_state["inbox"]
     )
@@ -4264,6 +4297,15 @@ def test_agent_voice_session_create_query_and_end(
         "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
+    operator_identity = {
+        "user_id": "jonathan",
+        "display_name": "Jonathan",
+        "actor": "operator:jonathan",
+    }
+    monkeypatch.setattr(
+        "evander_team_addon.api._operator_identity_from_request",
+        lambda _auth, _request: dict(operator_identity),
+    )
     client = TestClient(create_app(service))
     _unlock_privileged_operations(client)
 
@@ -4298,6 +4340,8 @@ def test_agent_voice_session_create_query_and_end(
     assert record.caller_metadata["voice_profile"]["speaking_style"] == (
         "Calm, concise, and lightly upbeat."
     )
+    assert record.caller_metadata["operator_user_id"] == "jonathan"
+    assert record.caller_metadata["operator_display_name"] == "Jonathan"
 
     event_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
@@ -4310,6 +4354,25 @@ def test_agent_voice_session_create_query_and_end(
     )
     assert event_response.status_code == 200
     assert event_response.json()["transcript_events"][0]["text"] == "What is blocked?"
+    assert event_response.json()["transcript_events"][0]["speaker"] == "Jonathan (jonathan)"
+    assert event_response.json()["transcript_events"][0]["metadata"]["speaker_role"] == "operator"
+
+    operator_identity.update(
+        user_id="ada",
+        display_name="Ada",
+        actor="operator:ada",
+    )
+    foreign_event = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
+        json={"status": "active", "text": "Can you hear me?", "speaker": "operator"},
+    )
+    assert foreign_event.status_code == 403
+    assert foreign_event.json()["error"] == "voice session belongs to a different operator"
+    operator_identity.update(
+        user_id="jonathan",
+        display_name="Jonathan",
+        actor="operator:jonathan",
+    )
 
     query_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/queries",
@@ -4322,22 +4385,121 @@ def test_agent_voice_session_create_query_and_end(
     assert query_response.status_code == 201
     query = query_response.json()
     assert query["status"] == "pending"
+    assert query["transcript_excerpt"] == "Jonathan (jonathan): Which files changed?"
     assert service.runtime.wake_store.get_request(f"voice-query:{query['query_id']}") is not None
+
+    def _clear_backend_runtime(state):
+        state.agent_runtimes.pop("backend", None)
+        return state
+
+    repo.update(_clear_backend_runtime)
 
     end_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
-        json={"status": "ended", "summary": "Operator asked about blockers."},
+        json={
+            "status": "ended",
+            "summary": "Operator asked about blockers.",
+            "transcript": "operator: What is blocked?\nagent: The task is blocked.",
+        },
     )
     assert end_response.status_code == 200
     ended = end_response.json()
     assert ended["status"] == "ended"
     assert ended["reconciliation_status"] == "scheduled"
-    assert (
-        service.runtime.wake_store.get_request(
-            f"voice-session-reconcile:{payload['voice_session_id']}"
-        )
-        is not None
+    completed_record = service.runtime.voice_session_store.get_by_voice_session_id(
+        payload["voice_session_id"]
     )
+    assert completed_record is not None
+    assert completed_record.transcript == (
+        "Jonathan (jonathan): What is blocked?\nbackend: The task is blocked."
+    )
+    assert completed_record.reconciliation_context["reason"] == "voice_session_reconciliation"
+    assert completed_record.reconciliation_context["tasks"][0]["title"] == "Blocked task"
+    wake = service.runtime.wake_store.get_request(
+        f"voice-session-reconcile:{payload['voice_session_id']}"
+    )
+    assert wake is not None
+    assert completed_record.reconciliation_prompt is not None
+    assert "Current Team context JSON:" in completed_record.reconciliation_prompt
+    assert '"reason": "voice_session_reconciliation"' in completed_record.reconciliation_prompt
+    assert "Blocked task" in completed_record.reconciliation_prompt
+    assert wake.resume_prompt.prompt == completed_record.reconciliation_prompt
+
+
+def test_voice_reconciliation_context_keeps_actionable_blockers_and_reviews(
+    tmp_path: Path,
+) -> None:
+    state = _seed_runtime_operations_state(tmp_path / "runtime").read()
+    state.agent_runtimes.pop("backend", None)
+    oldest = datetime(2026, 7, 1, tzinfo=UTC)
+
+    for index in range(8):
+        created_at = oldest + timedelta(minutes=index)
+        state.blockers[f"resolved-blocker-{index}"] = TeamBlocker(
+            id=f"resolved-blocker-{index}",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id=f"resolved-source-{index}",
+            state=TeamBlockerState.RESOLVED,
+            route=TeamBlockerRoute.RESOLVED,
+            summary=f"Resolved blocker {index}",
+            created_at=created_at,
+            updated_at=created_at,
+            resolved_at=created_at,
+        )
+        state.review_requests[f"terminal-review-{index}"] = ReviewRequest(
+            id=f"terminal-review-{index}",
+            deliverable_id="deliverable",
+            reviewer_agent_id="backend",
+            state=(
+                TeamRecordState.ACCEPTED
+                if index % 2 == 0
+                else TeamRecordState.REJECTED
+            ),
+            created_at=created_at,
+        )
+
+    current_at = oldest + timedelta(days=1)
+    state.blockers["open-blocker"] = TeamBlocker(
+        id="open-blocker",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id="open-source",
+        owner_agent_id="backend",
+        summary="Current open blocker",
+        created_at=current_at,
+        updated_at=current_at,
+    )
+    for review_id, review_state in (
+        ("pending-review", TeamRecordState.PENDING),
+        ("blocked-review", TeamRecordState.BLOCKED),
+    ):
+        state.review_requests[review_id] = ReviewRequest(
+            id=review_id,
+            deliverable_id="deliverable",
+            reviewer_agent_id="backend",
+            state=review_state,
+            created_at=current_at,
+        )
+
+    context = build_voice_reconciliation_context(
+        state,
+        agent_id="backend",
+        session_records={},
+    )
+
+    blocker_ids = {blocker["id"] for blocker in context["blockers"]}
+    assert "open-blocker" in blocker_ids
+    assert blocker_ids.isdisjoint(
+        {f"resolved-blocker-{index}" for index in range(8)}
+    )
+    assert {blocker["state"] for blocker in context["blockers"]} == {"open"}
+    assert {review["id"] for review in context["reviews"]} == {
+        "pending-review",
+        "blocked-review",
+    }
 
 
 def test_agent_voice_session_records_chat_conversation_message(
@@ -4668,6 +4830,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Review ID <input" not in ui.text
     assert 'id="edit-modal"' in ui.text
     assert 'id="edit-record-form"' in ui.text
+    assert "Default base branch for new tasks" in ui.text
 
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
@@ -4740,6 +4903,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text
     assert "create-task-form:created_by_agent_id" in script.text
+    assert "create-task-form:git_base_branch" in script.text
+    assert "data-task-board-create-form" in script.text
+    assert 'readonlyField("Git base branch (locked)"' in script.text
+    assert '["Git base branch", text(task.git_base_branch)]' in script.text
+    assert '["Git base branch", release.git_base_branch]' in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
     assert "data-resume-release-recovery-blocker-id" in script.text
@@ -6386,15 +6554,40 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
         reports_to_agent_id="lead",
     )
 
+    state = _team_runtime_service(repo).stand_down_agent(
+        agent_id="backend",
+        reason="Wait for the lead to finish upstream work.",
+        set_by="lead",
+        source=AgentStandDownSource.SUPERIOR,
+        scope="agent",
+        expected_revision=4,
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/stand-down/revoke",
+        json={"expected_revision": state.revision},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    agent_stand_down = next(iter(body["stand_downs"].values()))
+    assert agent_stand_down["source"] == "superior"
+    assert agent_stand_down["cleared_at"] is not None
+    assert body["agents"]["backend"]["stand_down_active"] is False
+
     response = client.post(
         "/api/addons/team-addon/agents/lead/stand-down",
-        json={"reason": "Await operator follow-up.", "expected_revision": 4},
+        json={"reason": "Await operator follow-up.", "expected_revision": 6},
     )
 
     assert response.status_code == 201
     body = response.json()
-    assert len(body["stand_downs"]) == 1
-    stand_down = next(iter(body["stand_downs"].values()))
+    assert len(body["stand_downs"]) == 2
+    stand_down = next(
+        item
+        for item in body["stand_downs"].values()
+        if item["agent_id"] == "lead" and item["cleared_at"] is None
+    )
     assert stand_down["agent_id"] == "lead"
     assert stand_down["scope"] == "subtree"
     assert stand_down["source"] == "operator"
@@ -6404,12 +6597,14 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
 
     response = client.post(
         "/api/addons/team-addon/agents/lead/stand-down/revoke",
-        json={"expected_revision": 5},
+        json={"expected_revision": 7},
     )
 
     assert response.status_code == 200
     body = response.json()
-    stand_down = next(iter(body["stand_downs"].values()))
+    stand_down = next(
+        item for item in body["stand_downs"].values() if item["agent_id"] == "lead"
+    )
     assert stand_down["cleared_at"] is not None
     assert body["agents"]["lead"]["stand_down_active"] is False
     assert body["agents"]["backend"]["stand_down_active"] is False
@@ -6419,7 +6614,7 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
         json={
             "reason": "Pause only the lead.",
             "scope": "agent",
-            "expected_revision": 6,
+            "expected_revision": 8,
         },
     )
 
@@ -6682,6 +6877,32 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     }
 
     response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "lead",
+            "project_id": "project",
+            "priority": 1,
+            "title": "Snapshot the default",
+            "description": "Exercise task Git-base API projection.",
+            "created_by_agent_id": "lead",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["tasks"]["task"]["git_base_branch"] == "develop"
+
+    response = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={
+            "git_base_branch": "feature/foo",
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["tasks"]["task"]["git_base_branch"] == "feature/foo"
+
+    response = client.post(
         "/api/addons/team-addon/projects",
         json={
             "id": "project-2",
@@ -6692,7 +6913,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "git": {
                 "managed_repo_id": "legacy-repo",
             },
-            "expected_revision": 5,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 400
@@ -7935,6 +8156,72 @@ def test_team_addon_admin_api_rejects_stale_agent_patch_when_runtime_changed(
 
     assert response.status_code == 409
     assert response.json()["current_revision"] == changed.json()["revision"]
+
+
+def test_team_addon_admin_api_rejects_stale_stand_down_revoke_when_hold_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    seeded = _seed_rebase_backend_agent(client)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="backend-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Backend work",
+        description="Ready work must remain held after a stale revoke.",
+        created_by_agent_id="lead",
+        expected_revision=seeded["revision"],
+    )
+    runtime = _team_runtime_service(repo)
+    runtime.stand_down_agent(
+        agent_id="backend",
+        reason="Operator investigation.",
+        set_by="operator:admin",
+        source=AgentStandDownSource.OPERATOR,
+        scope="agent",
+        expected_revision=repo.read().revision,
+    )
+    snapshot = client.get("/api/addons/team-addon/state").json()
+    stale_revision = snapshot["revision"]
+    base_token = snapshot["resource_tokens"]["agents"]["backend"]
+
+    changed = runtime.stand_down_agent(
+        agent_id="backend",
+        reason="New superior safety hold.",
+        set_by="lead",
+        source=AgentStandDownSource.SUPERIOR,
+        scope="agent",
+        expected_revision=stale_revision,
+    )
+    current = client.get("/api/addons/team-addon/state").json()
+    assert current["resource_tokens"]["agents"]["backend"] != base_token
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/stand-down/revoke",
+        json={
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.revision
+    active_holds = [
+        stand_down
+        for stand_down in repo.read().stand_downs.values()
+        if stand_down.agent_id == "backend" and stand_down.active
+    ]
+    assert len(active_holds) == 2
+    assert {stand_down.source for stand_down in active_holds} == {
+        AgentStandDownSource.OPERATOR,
+        AgentStandDownSource.SUPERIOR,
+    }
+    assert repo.list_outbox_records() == []
+    assert InternalEventBus(internal_event_store_path(runtime_dir)).list_events() == []
 
 
 def test_team_addon_admin_api_requires_expected_revision(tmp_path: Path) -> None:

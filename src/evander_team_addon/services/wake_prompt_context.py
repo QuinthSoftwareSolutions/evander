@@ -180,6 +180,11 @@ def build_compact_wake_context(
         omitted_counts,
         "inbox",
     )
+    included_inbox_items = {
+        inbox_item_id: row
+        for row in context["inbox"]
+        if (inbox_item_id := _optional_text(row.get("id"))) is not None
+    }
 
     blockers = sorted(
         (_compact_blocker(row) for row in _mapping_rows(lease.get("blockers"))),
@@ -240,11 +245,13 @@ def build_compact_wake_context(
         releases,
         omitted_counts,
     )
+    visible_release_ids = set(context["release_packages"])
 
     runtime_attention, hidden_attention_count, out_of_scope_attention_count = (
         _runtime_attention_rows(
             lease.get("runtime_attention"),
             dispatch=dispatch,
+            visible_release_ids=visible_release_ids,
         )
     )
     _add_omitted(omitted_counts, "runtime_attention_hidden_failed_actions", hidden_attention_count)
@@ -253,6 +260,18 @@ def build_compact_wake_context(
         "runtime_attention_outside_dispatch",
         out_of_scope_attention_count,
     )
+    if not fresh_context:
+        runtime_attention, duplicate_inbox_attention_count = (
+            _without_inbox_runtime_attention_duplicates(
+                runtime_attention,
+                included_inbox_items=included_inbox_items,
+            )
+        )
+        _add_omitted(
+            omitted_counts,
+            "runtime_attention_duplicate_inbox",
+            duplicate_inbox_attention_count,
+        )
     if runtime_attention:
         context["runtime_attention"] = _limited_rows(
             sorted(
@@ -290,7 +309,8 @@ def build_compact_wake_context(
             _sort_text(row.get("operator_user_id")),
         ),
     )
-    if operator_chat_participants:
+    if "operator_chat_participants" in lease:
+        context["operator_chat_participants_replaces_prior"] = True
         context["operator_chat_participants"] = operator_chat_participants
 
     manager_fallback_summary = lease.get("manager_fallback_summary")
@@ -299,7 +319,10 @@ def build_compact_wake_context(
             manager_fallback_summary
         )
 
-    project_repos = _deduplicated_project_repos(lease)
+    project_repos = _deduplicated_project_repos(
+        lease,
+        retained_delta=not fresh_context,
+    )
     if project_repos:
         context["project_repos"] = project_repos
 
@@ -370,14 +393,21 @@ def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _deduplicated_project_repos(lease: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _deduplicated_project_repos(
+    lease: Mapping[str, Any],
+    *,
+    retained_delta: bool = False,
+) -> list[dict[str, Any]]:
     candidates = list(_mapping_rows(lease.get("project_repos")))
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         candidates.append(project_repo)
     result: list[dict[str, Any]] = []
     for candidate in candidates:
-        compact = _compact_project_repo(candidate)
+        compact = _compact_project_repo(
+            candidate,
+            retained_delta=retained_delta,
+        )
         if compact not in result:
             result.append(compact)
     return result
@@ -1067,7 +1097,11 @@ def _compact_routing_gap(item: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
+def _compact_project_repo(
+    repo: Mapping[str, Any],
+    *,
+    retained_delta: bool = False,
+) -> dict[str, Any]:
     row = _compact_fields(
         repo,
         (
@@ -1090,6 +1124,11 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
     ]
     if git_contexts:
         row["git_work_contexts"] = git_contexts
+    if retained_delta and len(git_contexts) == 1 and git_contexts[0].get("state") == "active":
+        active_context = git_contexts[0]
+        for field_name in ("base_branch", "branch_context_id", "agent_branch"):
+            if row.get(field_name) == active_context.get(field_name):
+                row.pop(field_name, None)
     message = _optional_text(repo.get("message"))
     if message is not None:
         row["message"] = _trim_text(message)
@@ -1304,9 +1343,7 @@ def _current_release_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
     skipped = 0
     for row in rows:
         state = _optional_text(row.get("state"))
-        if state in {"accepted", "rejected"} and not (
-            row.get("error") or row.get("next_action") or row.get("next_action_hint")
-        ):
+        if state in {"accepted", "rejected"}:
             skipped += 1
             continue
         current.append(row)
@@ -1317,6 +1354,7 @@ def _runtime_attention_rows(
     value: object,
     *,
     dispatch: Mapping[str, Any],
+    visible_release_ids: set[str],
 ) -> tuple[list[Mapping[str, Any]], int, int]:
     rows = _mapping_rows(value)
     visible: list[Mapping[str, Any]] = []
@@ -1326,11 +1364,56 @@ def _runtime_attention_rows(
         if row.get("kind") == "failed_action_record":
             hidden += 1
             continue
+        if row.get("kind") == "blocked_release_package":
+            if _optional_text(row.get("state")) in {"accepted", "rejected"}:
+                continue
+            release_id = _optional_text(row.get("release_package_id"))
+            if release_id in visible_release_ids:
+                continue
         if not _runtime_attention_matches_dispatch(row, dispatch):
             out_of_scope += 1
             continue
         visible.append(row)
     return visible, hidden, out_of_scope
+
+
+def _without_inbox_runtime_attention_duplicates(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    included_inbox_items: Mapping[str, dict[str, Any]],
+) -> tuple[list[Mapping[str, Any]], int]:
+    """Fold enriched context into included inbox items before dropping mirrors."""
+
+    if not included_inbox_items:
+        return list(rows), 0
+    retained: list[Mapping[str, Any]] = []
+    duplicates = 0
+    for row in rows:
+        inbox_item_id = _optional_text(row.get("inbox_item_id"))
+        inbox_item = included_inbox_items.get(inbox_item_id or "")
+        if inbox_item is not None:
+            _merge_runtime_attention_context_into_inbox(inbox_item, row)
+            duplicates += 1
+            continue
+        retained.append(row)
+    return retained, duplicates
+
+
+def _merge_runtime_attention_context_into_inbox(
+    inbox_item: dict[str, Any],
+    attention: Mapping[str, Any],
+) -> None:
+    """Preserve scoped relationship metadata omitted from legacy payload shapes."""
+
+    for key in ("team_id", "project_id"):
+        value = _optional_text(attention.get(key))
+        if value is not None and _optional_text(inbox_item.get(key)) is None:
+            inbox_item[key] = value
+    project_ids = _string_items(attention.get("project_ids"))
+    if project_ids and not _string_items(inbox_item.get("project_ids")):
+        inbox_item["project_ids"] = project_ids[:ID_LIST_LIMIT]
+        if len(project_ids) > ID_LIST_LIMIT:
+            inbox_item["project_ids_omitted_count"] = len(project_ids) - ID_LIST_LIMIT
 
 
 def _runtime_attention_matches_dispatch(

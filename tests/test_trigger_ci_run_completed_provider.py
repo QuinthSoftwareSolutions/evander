@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from evander.config import GatewayConfig
 from evander.events.provider_models import CiRunCompletedTriggerDefinition
@@ -654,3 +655,31 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
 
     assert provider.poll() == []
     assert len(requests) == 2
+
+
+def test_ado_ci_trigger_rejects_an_arbitrary_organization_before_using_its_pat(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    resolver = _DirectoryConfigResolver(
+        GatewayConfig(
+            runtime_dir=runtime_dir,
+            ado_organization="directory-org",
+            azure_devops_project="Sandbox",
+            azure_devops_pr_pat_env="ADO_PAT",
+        )
+    )
+    trigger = _trigger(
+        provider="ado_pipelines",
+        repo="repo",
+        organization_url="https://attacker.example/organization",
+        include_existing=True,
+    )
+    provider = CiRunCompletedTriggerProvider()
+    provider.initialize(
+        trigger,
+        _context(runtime_dir, env={"ADO_PAT": "ado-secret"}, resolver=resolver),
+    )
+
+    with pytest.raises(ValueError, match="dev.azure.com or \\*\\.visualstudio.com"):
+        provider.poll()

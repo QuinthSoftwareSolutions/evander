@@ -97,7 +97,18 @@ The internal release branch is not the published branch operators should test or
 
 > <span class="sidebar-kicker">Technical detail</span> **Publishing the exact candidate**
 >
-> Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
+> Only after every gate passes does the workflow create the canonical-push
+> promotion. Core <code>effect:git:push-branch</code> verifies the exact approved
+> commit, requires an existing canonical destination to still equal the
+> release's immutable canonical base commit, and applies a destination lease
+> before pushing. A generated destination that does not exist yet is created
+> only when that pinned base is an ancestor of the approved candidate, under an
+> empty-ref lease. Correction successors keep this canonical base separate from
+> their rejected-candidate merge base. A release based on another branch cannot
+> carry that branch's pre-existing changes to this destination; deliberate
+> cross-base work must be reviewed through an integration task based on the destination.
+> <code>effect:team:mark-release-published</code> records canonical branch,
+> published commit, timestamp, and accepted package state.
 
 ![Pinned Team Git promotion and release-gate flow](../../assets/evander-user-manual/diagrams/16-team-release.svg)
 
@@ -108,6 +119,22 @@ The internal release branch is not the published branch operators should test or
 The release package is the sealed description of one candidate: what work it contains, what reviewers accepted, what changed, which checks must run, and who requested it. Later policy changes do not silently rewrite that package.
 
 All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy unless <code>allow_ungated=true</code> was deliberately configured.
+
+Git inputs must also share one authoritative task base branch and exact base
+commit. Team returns <code>mixed_git_base_branches</code> before creating a
+package when they do not. To merge workstreams deliberately, create an explicit
+integration task on the chosen base and release only its accepted integrated
+deliverable. A task based on <code>feature/foo</code> does not publish there by
+implication; updating that pre-existing branch requires an explicit
+<code>canonical_branch="feature/foo"</code> and still uses exact-SHA,
+fast-forward, and destination-lease protections.
+
+The first release package remains an explicit authorized request. A successor
+for post-release feedback also remains explicit and must name its feedback
+case. The exception is system-generated correction work for a failed candidate
+verification, rejected agent release review, or human
+<code>changes_requested</code>: after its required correction deliverables are
+accepted and reviewed, Team creates the successor automatically.
 
 This prevents policy drift after request time from silently redefining what was approved.
 
@@ -125,6 +152,7 @@ This prevents policy drift after request time from silently redefining what was 
 > - accepted immutable deliverable reviews;
 > - reviewed change manifests;
 > - candidate commit and tree;
+> - task/release base branch and exact base commit;
 > - scope-validation result;
 > - ordered verification commands;
 > - release-review requirements;
@@ -207,7 +235,14 @@ The practical distinction is **content failure versus process failure**. Content
 
 ### Terminal candidate failures
 
-A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. Repair the content, create and accept new deliverables, and request a new release with a new reviewed tree.
+A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. Team creates candidate-pinned correction work. Repair the content and complete its accepted, reviewed Git deliverables; Team then creates one deterministic successor with the new reviewed tree. The project lead does not make a second release request.
+
+The review acceptance and successor intent are persisted atomically. Scheduled
+maintenance applies the same idempotent reconciliation to interrupted or older
+states and recognizes an existing direct successor instead of duplicating it.
+If Team cannot validate or package the resolved correction, it opens a durable
+blocker for the correction owner rather than waiting for a manager to remember
+the release.
 
 The system refuses a cosmetic new release of the same failed deliverables and tree.
 
@@ -252,9 +287,9 @@ is preparing, pending, blocked, or changes-requested.
 
 | Gate result | What happens to the pinned release attempt |
 |---|---|
-| Verification candidate failure | Terminal rejection; changed, reviewed content is required. |
+| Verification candidate failure | Terminal rejection; generated correction work requires changed, reviewed content, then Team creates its successor automatically. |
 | Verification infrastructure failure or timeout | Same attempt is blocked and may retry the unchanged candidate only after concrete recovery evidence; a failed agent-requested retry requires operator escalation. |
-| Agent review rejection | Terminal candidate failure under existing immutable-review rules. |
+| Agent review rejection | Terminal candidate failure; generated correction work must be accepted and reviewed, then Team creates its successor automatically. |
 | Agent review blocked | Same candidate stays blocked until the typed review recovery runs. |
 | Preview preparation failure or expiry | Same human request and candidate are blocked; preparation can rerun. |
 | Human <code>blocked</code> | Same request and candidate remain recoverable without product changes. |
@@ -368,11 +403,15 @@ child task per finding, links each finding to its child, and creates
 deduplicated inbox/wake obligations.
 
 Accepted historical tasks, deliverables, reviews, and candidate content are not
-reopened. A finding that clearly targets one deliverable routes to that task's
-current owner and records the original task as provenance. A finding without a
-deterministic owner remains with the project lead until that lead routes its
-existing child. The coordination parent groups the response but has no combined
-deliverable or agent-authored integration branch of its own.
+reopened. Each new finding explicitly selects either the entire release
+candidate or one or more named candidate deliverables. A single-owner
+deliverable selection routes to that task's current owner and records the
+original task as provenance. The entire candidate, a multi-owner selection, or
+a selection whose historical owner is unavailable routes directly to the
+project lead without waiting for a second routing decision. Only scope-less
+legacy findings can retain ambiguous-routing metadata. The coordination parent
+groups the response but has no combined deliverable or agent-authored
+integration branch of its own.
 
 Each finding child starts from the verified rejected candidate and must produce
 exactly one current accepted correction deliverable with required review
@@ -397,12 +436,14 @@ remain the evidence records; they do not become independent merges against
 <code>main</code>.
 
 After that correction aggregate succeeds, Team performs one final release
-promotion from the pinned aggregate onto the then-current configured base
-branch. That main-integration result becomes the candidate before verification
-and review gates begin. A correction-to-correction conflict and a later
-aggregate-to-main conflict are therefore two distinct, serial package-level
-recovery boundaries. Recovery reuses the failed boundary's pinned base and
-never fans the package back out into per-finding promotions.
+promotion using the predecessor candidate workstream recorded on the successor
+release. It never rereads the project's mutable default. That integration result
+becomes the candidate before verification and review gates begin. A
+correction-to-correction conflict and a later aggregate-to-release conflict are
+therefore two distinct, serial package-level recovery boundaries. Recovery
+reuses the failed boundary's pinned branch and commit and never fans the package
+back out into per-finding promotions. The predecessor's explicit canonical
+publication destination is preserved on the successor.
 
 The coordination parent finishes when that successor exists. The new human
 approval must explicitly confirm every carried finding ID. Only then do those
@@ -524,9 +565,10 @@ to the supported records described in Chapters 18–24.
 | Compare-and-swap target mismatch | Another operation advanced the target. Re-read promotion truth and decide whether a new intent is valid. |
 | Missing release policy | Git publication is blocked unless explicitly ungated. Configure policy; do not bypass the gate. |
 | Unreviewed changed path | Hard scope failure, never waiver-eligible. Rebuild from reviewed content. |
-| Verification command nonzero | Terminal candidate defect. New content and release required. |
+| Verification command nonzero | Terminal candidate defect. Complete the generated candidate-pinned correction with accepted, reviewed Git content; Team creates one successor automatically. |
 | Verification infrastructure error, including structured PID or memory exhaustion | Potentially retryable immutable successor run only after concrete recovery evidence. After an agent-requested retry fails, further agent retry is blocked and operator recovery is required. |
-| Release review rejected | Terminal candidate defect. |
+| Release review rejected | Terminal candidate defect. Complete the generated correction; Team creates the successor automatically without a manager release request. |
+| Resolved generated correction has no successor | Reconciliation must either create or recognize one direct successor. Inspect the durable <code>candidate_correction_successor_failed</code> blocker; do not ask the manager to submit a release request. |
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Human assignment unavailable | Same request and candidate stay blocked. Repair group membership or use audited reassignment; do not skip the gate. |
 | Human preview preparation failed or expired | Same request and candidate stay blocked. Resume to prepare a new generation after fixing the target. |
@@ -547,7 +589,7 @@ correct recovery differs for each.
 
 If the package says accepted but the upstream result looks wrong, do not test or advertise the internal release branch. Hand the package's <code>canonical_branch</code> and <code>published_commit_sha</code>, the canonical-push promotion, and the visible remote mismatch to a release administrator.
 
-Never turn a failed test or rejected review into a retry merely to preserve the same package. New content requires new reviewed deliverables and a new release.
+Never turn a failed test or rejected review into a retry merely to preserve the same package. Complete the generated candidate-pinned correction with new reviewed content and let Team create its successor.
 
 ## Release runbook
 
@@ -573,6 +615,9 @@ During release:
 5. For a blocked human request, recover or reassign the same request; for
    changes requested, follow the generated case and let Team create the changed
    successor after every finding child has accepted, reviewed work.
+6. For failed candidate verification or a rejected agent release review,
+   complete the generated correction task and let Team create its successor;
+   do not hand a release-request obligation to the project lead.
 
 After release:
 

@@ -83,9 +83,11 @@ class TeamCommandExecutor:
         repository: TeamStateRepository,
         *,
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
+        git_default_branch_resolver: Callable[..., object] | None = None,
     ) -> None:
         self._repository = repository
         self._git_candidate_commit_resolver = git_candidate_commit_resolver
+        self._git_default_branch_resolver = git_default_branch_resolver
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -94,6 +96,10 @@ class TeamCommandExecutor:
     @property
     def git_candidate_commit_resolver(self) -> GitCandidateCommitResolver | None:
         return self._git_candidate_commit_resolver
+
+    @property
+    def git_default_branch_resolver(self) -> Callable[..., object] | None:
+        return self._git_default_branch_resolver
 
     def _execute_team_command(
         self,
