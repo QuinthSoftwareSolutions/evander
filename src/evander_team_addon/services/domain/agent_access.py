@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
 from typing import Any
 from ...models import (
     AGENT_OPERATOR_ONLY_FIELDS,
@@ -173,6 +174,14 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     payload["project_ids"] = agent_project_ids(state, agent.id)
     payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
     return payload
+
+
+def agent_role_description_fingerprint(agent_payload: Mapping[str, Any]) -> str:
+    """Return a stable fingerprint for the role description visible to an agent."""
+
+    description = agent_payload.get("role_description")
+    text = description if isinstance(description, str) else ""
+    return sha256(text.encode("utf-8")).hexdigest()
 
 
 def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> list[dict[str, Any]]:

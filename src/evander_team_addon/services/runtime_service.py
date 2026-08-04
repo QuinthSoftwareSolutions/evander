@@ -56,6 +56,7 @@ from .domain.agent_access import (
     _agent_payload,
     _subordinate_agent_payloads,
     _team_ids_with_open_work,
+    agent_role_description_fingerprint,
 )
 from .domain.chat import (
     _append_pending_chat_message_queued_event_for_agent,
@@ -248,7 +249,7 @@ class TeamRuntimeService:
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
 
-    def revoke_operator_stand_downs(
+    def revoke_stand_downs(
         self,
         *,
         agent_id: str,
@@ -267,7 +268,11 @@ class TeamRuntimeService:
             for stand_down in state.stand_downs.values():
                 if (
                     stand_down.agent_id == normalized_agent_id
-                    and stand_down.source == AgentStandDownSource.OPERATOR
+                    and stand_down.source
+                    in {
+                        AgentStandDownSource.OPERATOR,
+                        AgentStandDownSource.SUPERIOR,
+                    }
                     and stand_down.active
                 ):
                     affected_ids.update(
@@ -281,7 +286,7 @@ class TeamRuntimeService:
                     stand_down.cleared_at = now
                     revoked_ids.append(stand_down.id)
             if not revoked_ids:
-                raise ValueError(f"agent {normalized_agent_id} has no active operator stand-down")
+                raise ValueError(f"agent {normalized_agent_id} has no active direct stand-down")
             idempotency_suffix = "stand-down-revocation:" + ",".join(sorted(revoked_ids))
             for affected_id in sorted(affected_ids):
                 if _active_stand_downs_for_agent(state, affected_id):
@@ -314,6 +319,20 @@ class TeamRuntimeService:
         self._publish_stand_down_revocation_wakes(wake_result.get("events"))
         return state
 
+    def revoke_operator_stand_downs(
+        self,
+        *,
+        agent_id: str,
+        revoked_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        """Compatibility alias for the privileged operator stand-down route."""
+        return self.revoke_stand_downs(
+            agent_id=agent_id,
+            revoked_by=revoked_by,
+            expected_revision=expected_revision,
+        )
+
     def _publish_stand_down_revocation_wakes(self, events: object) -> None:
         if not isinstance(events, list) or not events:
             return
@@ -344,7 +363,7 @@ class TeamRuntimeService:
                 )
             except Exception:
                 logger.exception(
-                    "failed to publish immediate wake after operator stand-down revocation"
+                    "failed to publish immediate wake after privileged stand-down revocation"
                 )
                 continue
             outbox_record = records_by_idempotency_key.get(idempotency_key)
@@ -354,7 +373,7 @@ class TeamRuntimeService:
                 self._repository.complete_outbox_record(record_id=outbox_record.id)
             except Exception:
                 logger.exception(
-                    "published operator stand-up wake but failed to acknowledge outbox record %s",
+                    "published privileged stand-up wake but failed to acknowledge outbox record %s",
                     outbox_record.id,
                 )
 
@@ -868,10 +887,17 @@ class TeamRuntimeService:
                     state_model.blockers[blocker_id].model_dump(mode="json")
                     for blocker_id in durable_dispatch.blocker_ids
                 ]
+                agent_payload = _agent_payload(state_model, agent)
+                role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
                 leases.append(
                     {
-                        "agent": _agent_payload(state_model, agent),
+                        "agent": agent_payload,
                         "runtime": runtime.model_dump(mode="json"),
+                        "role_description_changed": (
+                            runtime.last_delivered_role_description_fingerprint
+                            != role_description_fingerprint
+                        ),
+                        "role_description_fingerprint": role_description_fingerprint,
                         "dispatch_id": dispatch_id,
                         "has_prior_successful_wake": has_prior_successful_wake,
                         "reason": reason,
@@ -923,7 +949,8 @@ class TeamRuntimeService:
                         ),
                         "recent_action_feedback": action_feedback,
                         "operator_chat_participants": _operator_chat_participant_payloads(
-                            state_model
+                            state_model,
+                            agent_id=agent.id,
                         ),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
@@ -1104,7 +1131,8 @@ class TeamRuntimeService:
                         ),
                         "manager_fallback_summary": manager_fallback_summary,
                         "operator_chat_participants": _operator_chat_participant_payloads(
-                            state_model
+                            state_model,
+                            agent_id=manager.id,
                         ),
                         "superior_agent_id": manager.reports_to_agent_id,
                         "subordinate_agent_ids": list(manager.subordinate_agent_ids),
@@ -1230,6 +1258,38 @@ class TeamRuntimeService:
         if preparation_error:
             raise RuntimeError(preparation_error[0])
         return state
+
+    def record_agent_role_description_delivered(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        role_description_fingerprint: str,
+        now: datetime | None = None,
+    ) -> TeamState:
+        """Record the description that was successfully sent in a Team prompt."""
+
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_fingerprint = _required_text(
+            role_description_fingerprint,
+            "role_description_fingerprint",
+        )
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, "
+                    f"not {normalized_agent_id}"
+                )
+            runtime = _require_present(state.agent_runtimes, normalized_agent_id, "agent runtime")
+            runtime.last_delivered_role_description_fingerprint = normalized_fingerprint
+            runtime.updated_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
 
     def renew_agent_dispatch_lease(
         self,

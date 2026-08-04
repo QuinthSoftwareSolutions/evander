@@ -42,8 +42,6 @@ class PrIntegrationPreflightAdminService:
         mode: MergePreflightMode,
         directory_path: str,
         managed_repo_id: str,
-        organization_url: str | None = None,
-        project: str | None = None,
     ) -> MergePreflightReport:
         provider_name = normalize_pr_automation_provider(provider)
         if provider_name != "azure_devops":
@@ -81,8 +79,6 @@ class PrIntegrationPreflightAdminService:
             provider_client = self._build_provider(
                 provider=provider_name,
                 directory_path=normalized_directory_path,
-                organization_url=organization_url,
-                project=project,
             )
         except Exception as exc:
             return self._error_report(
@@ -208,8 +204,6 @@ class PrIntegrationPreflightAdminService:
         *,
         provider: str,
         directory_path: str,
-        organization_url: str | None,
-        project: str | None,
     ) -> Any:
         context = ProviderRuntimeBase(
             provider_config_resolver=self._deps.runtime.provider_config,
@@ -219,8 +213,10 @@ class PrIntegrationPreflightAdminService:
             context=context,
             provider=provider,
             directory_path=directory_path,
-            organization_url=organization_url,
-            project=project,
+            # Admin preflight credentials may only be sent to the directory's
+            # trusted provider endpoint, never to request-supplied targets.
+            ado_organization=None,
+            project=None,
             node_type=self.NODE_TYPE,
         )
         return provider_client

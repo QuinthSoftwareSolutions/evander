@@ -10,6 +10,7 @@ from evander.admin.web.rbac import (
     OPERATOR_GROUP_ID,
     OWNER_GROUP_ID,
     PERMISSION_CATALOG,
+    TEAM_CHATS_MUTATE_PERMISSION,
     TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
     USERS_MANAGE_PERMISSION,
     VIEWER_GROUP_ID,
@@ -47,6 +48,7 @@ def test_admin_web_rbac_seeds_builtin_groups(tmp_path: Path) -> None:
     assert WORKFLOWS_READ_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
     assert WORKFLOWS_WRITE_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
     assert WORKFLOW_RUNS_CONTROL_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
+    assert TEAM_CHATS_MUTATE_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
     assert TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION in PERMISSION_CATALOG
     assert (
         TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION
@@ -97,6 +99,7 @@ def test_admin_web_rbac_migrates_legacy_roles_to_assignments(
     assert store.can("owner@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION)
     assert store.can("operator@example.com", WORKFLOWS_WRITE_PERMISSION)
     assert store.can("operator@example.com", WORKFLOW_RUNS_CONTROL_PERMISSION)
+    assert store.can("operator@example.com", TEAM_CHATS_MUTATE_PERMISSION)
     assert (
         store.can("operator@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION)
         is False

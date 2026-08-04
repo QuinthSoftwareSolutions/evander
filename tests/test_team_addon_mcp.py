@@ -66,6 +66,7 @@ from evander_team_addon.models import (
     DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAgentPolicy,
+    GitWorkContext,
     GovernanceAgendaItemState,
     ProjectGitConfig,
     ProjectGoal,
@@ -85,7 +86,10 @@ from evander_team_addon.repository import (
 )
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+)
 from evander_team_addon.services.commands.chat_commands import TeamChatCommandService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 
@@ -96,6 +100,18 @@ def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
 
 def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
     return TeamGitReleaseService(repo)
+
+
+def _authorized_chat_mutation(repo: TeamStateRepository, agent_id: str):
+    state = repo.read()
+    return project_scoped_team_chat_authorization(
+        state,
+        agent=state.agents[agent_id],
+        source="internal",
+        principal_id="operator@example.com",
+        recipient_directory_path="root",
+        project_is_authorized=lambda _directory_path: True,
+    )
 
 
 def _runtime(tmp_path: Path, *, allowed_tools: list[str]):
@@ -301,11 +317,23 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
         project = state.projects["project"]
         project.git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
         )
         project.release_policy = ProjectReleasePolicy(allow_ungated=True)
+        state.tasks["task"].git_base_branch = "main"
+        state.git_work_contexts["ctx-deliverable"] = GitWorkContext(
+            id="ctx-deliverable",
+            agent_id="backend",
+            task_id="task",
+            base_branch="main",
+            base_commit="base-commit",
+            agent_branch="agents/session-backend/work",
+            commit_sha="reviewed-commit",
+        )
         deliverable = state.deliverables["deliverable"]
         deliverable.verification = DeliverableVerification(status="passed")
         refs = deliverable.git_refs
+        refs.branch_context_id = "ctx-deliverable"
         refs.agent_branch = "agents/session-backend/work"
         refs.review_branch = "team/team/reviews/deliverable"
         refs.commit_sha = "reviewed-commit"
@@ -649,9 +677,8 @@ def test_teamless_governance_agent_can_reply_to_active_team_chat(
     assert reply.body == "Understood."
 
 
-def test_teamless_governance_agent_can_stage_attachment_for_active_team_chat(
+def test_reply_only_team_chat_cannot_stage_attachment(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     context = _runtime(
         tmp_path,
@@ -681,51 +708,42 @@ def test_teamless_governance_agent_can_stage_attachment_for_active_team_chat(
         message_id=source_message.id,
         dispatch_id=f"team-chat:{source_message.id}",
     )
-    monkeypatch.setattr(
-        AgentExecEffectProvider,
-        "execute",
-        lambda _self: {
-            "success": True,
-            "session_id": "session-governance",
-            "stdout": (
-                "__EVANDER_TEAM_CHAT_FILE_BEGIN__\n"
-                '{"source_path":"/home/agent/policy.txt","filename":"policy.txt",'
-                '"mime_type":"text/plain","byte_count":6,"content_base64":"cG9saWN5"}\n'
-                "__EVANDER_TEAM_CHAT_FILE_END__\n"
-            ),
-        },
-    )
     server = create_server(context)
 
-    staged_result = _call_tool(
-        server,
-        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
-        {
-            "session_id": "session-governance",
-            "source_path": "/home/agent/policy.txt",
-        },
-    )
-    staged = staged_result["attachment"]
-    replied = _call_tool(
-        server,
-        TEAM_REPLY_TO_CHAT_TOOL,
-        {
-            "session_id": "session-governance",
-            "conversation_id": conversation.id,
-            "message_id": source_message.id,
-            "body": "Attached.",
-            "attachment_ids": [staged["id"]],
-            "request_id": "reply-with-policy",
-        },
-    )
+    with pytest.raises(ToolError, match="not authorized for file attachments"):
+        _call_tool(
+            server,
+            TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+            {
+                "session_id": "session-governance",
+                "source_path": "/home/agent/policy.txt",
+            },
+        )
 
-    assert replied["success"] is True
+    staged = TeamChatAttachmentStorage(context.config.runtime_dir).stage_agent_file(
+        session_id="session-governance",
+        source_path="/home/agent/policy.txt",
+        content=b"policy",
+        filename="policy.txt",
+        mime_type="text/plain",
+    )
+    with pytest.raises(ToolError, match="not authorized for file attachments"):
+        _call_tool(
+            server,
+            TEAM_REPLY_TO_CHAT_TOOL,
+            {
+                "session_id": "session-governance",
+                "conversation_id": conversation.id,
+                "message_id": source_message.id,
+                "body": "Attached.",
+                "attachment_ids": [staged.id],
+                "request_id": "reply-with-previously-staged-policy",
+            },
+        )
+
     stored = repo.read()
-    reply = stored.conversation_messages[replied["chat_message_id"]]
-    assert len(reply.attachment_ids) == 1
-    attachment = stored.chat_attachments[reply.attachment_ids[0]]
-    assert attachment.filename == "policy.txt"
-    assert attachment.created_by_session_id == "session-governance"
+    assert stored.conversation_messages[source_message.id].status == "running"
+    assert stored.chat_attachments == {}
 
 
 def test_teamless_governance_agent_cannot_reply_outside_active_team_chat(
@@ -845,6 +863,7 @@ def test_team_chat_agent_attachment_staging_and_exact_approved_reply(
         conversation_id=conversation.id,
         body="Please return the report.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     chat.begin_chat_message_dispatch(
@@ -945,6 +964,7 @@ def test_concurrent_chat_reply_failure_does_not_delete_committed_attachment(
         conversation_id=conversation.id,
         body="Please return the report.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     chat.begin_chat_message_dispatch(
@@ -1264,6 +1284,15 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     for session_id in ("session-manager", "session-lead", "session-backend"):
         _upsert_session(context, session_id=session_id, allowed_tools=slice6_tools)
     repo = _seed_planning_state(context.config.runtime_dir)
+
+    def _configure_project_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure_project_git)
     _lease_planning_agents(repo)
     server = create_server(context)
 
@@ -1298,6 +1327,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
             "priority": 1,
             "title": "MCP task",
             "description": "Build the MCP task.",
+            "git_base_branch": "feature/mcp",
             "request_id": "request-mcp-task",
         },
         _make_request_context(session_id="session-lead"),
@@ -1314,6 +1344,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
                     "priority": 1,
                     "title": "Batch A",
                     "description": "First batch task.",
+                    "git_base_branch": "feature/batch",
                 },
                 {
                     "task_id": "task-mcp-batch-b",
@@ -1321,8 +1352,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
                     "project_id": "project",
                     "priority": 1,
                     "title": "Batch B",
-                    "description": "Second batch task.",
-                    "dependency_task_ids": ["task-mcp-batch-a"],
+                        "description": "Second batch task.",
+                        "parent_task_id": "task-mcp-batch-a",
+                        "dependency_task_ids": ["task-mcp"],
                 },
             ],
             "request_id": "request-mcp-task-batch",
@@ -1340,6 +1372,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         {
             "task_id": "task-mcp",
             "state": "in_progress",
+            "git_base_branch": "feature/mcp-updated",
             "request_id": "request-mcp-task-update",
         },
         _make_request_context(session_id="session-backend"),
@@ -1412,6 +1445,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert state.stand_downs[stood_down["stand_down_id"]].scope == "agent"
     assert state.cases["case-mcp"].title == "MCP case updated"
     assert state.tasks["task-mcp"].state.value == "in_progress"
+    assert state.tasks["task-mcp"].git_base_branch == "feature/mcp-updated"
+    assert state.tasks["task-mcp-batch-a"].git_base_branch == "feature/batch"
+    assert state.tasks["task-mcp-batch-b"].git_base_branch == "feature/batch"
     assert state.projects["project"].goals[0].state == TeamRecordState.IN_PROGRESS
 
 

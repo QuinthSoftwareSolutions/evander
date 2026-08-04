@@ -1004,6 +1004,7 @@ def _seed_release(repo: TeamStateRepository) -> None:
             feature_branches=["team/team/features/task-backend"],
             release_branch="team/team/releases/release-1",
             canonical_branch="releases/project/release-1",
+            base_commit_sha="base-sha",
             policy_version=2,
             scope_validation=ReleaseScopeValidation(state="pending"),
             state=TeamRecordState.PENDING,

@@ -162,6 +162,13 @@ class TeamMcpContextResolver:
             raise ToolError(f"{tool_name} requires an active Team agent")
         if caller.active_dispatch_id is None:
             raise ToolError(f"{tool_name} requires an active Team dispatch lease")
+        if caller.wake_reason == "team_chat":
+            dispatch = caller.state.dispatches.get(caller.active_dispatch_id)
+            if dispatch is None or not dispatch.project_ids:
+                raise ToolError(
+                    f"{tool_name} is not authorized for file attachments in "
+                    "a reply-only Team Chat dispatch"
+                )
         if caller.agent.team_id is None and caller.wake_reason != "team_chat":
             raise ToolError(
                 f"{tool_name} requires a Team-assigned agent or an active Team Chat dispatch"

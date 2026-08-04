@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
+from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import CiRunCompletedTriggerDefinition
 from evander.triggers.providers._cursor_state import (
@@ -230,15 +231,15 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
     ) -> list[_NormalizedCiRun]:
         context = self._context()
         config = self._resolve_directory_config()
-        organization_url = _normalize_text(trigger.organization_url) or _normalize_text(
-            getattr(config, "azure_devops_organization_url", None)
+        organization_url = resolve_azure_devops_organization_url(
+            ado_organization=trigger.ado_organization,
+            legacy_organization_url=getattr(config, "azure_devops_organization_url", None),
+            node_type=trigger.type,
         )
         project = _normalize_text(trigger.project) or _normalize_text(
             getattr(config, "azure_devops_project", None)
         )
         pat_env = _normalize_text(getattr(config, "azure_devops_pr_pat_env", None))
-        if not organization_url:
-            raise ValueError("trigger:ci:run:completed requires organization_url for Azure DevOps")
         if not project:
             raise ValueError("trigger:ci:run:completed requires project for Azure DevOps")
         if not pat_env:
@@ -513,8 +514,10 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
         if trigger.provider == "github_actions":
             selector = f"workflow={_normalize_text(trigger.workflow) or '*'}"
         else:
-            organization_url = _normalize_text(trigger.organization_url) or _normalize_text(
-                getattr(config, "azure_devops_organization_url", None)
+            organization_url = resolve_azure_devops_organization_url(
+                ado_organization=trigger.ado_organization,
+                legacy_organization_url=getattr(config, "azure_devops_organization_url", None),
+                node_type=trigger.type,
             )
             project = _normalize_text(trigger.project) or _normalize_text(
                 getattr(config, "azure_devops_project", None)

@@ -23,6 +23,16 @@ from evander.workflow.contracts import normalize_directory_paths, normalize_stri
 _WEBHOOK_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
+def _migrate_legacy_pull_request_organization(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    payload = dict(data)
+    if "ado_organization" not in payload and "organization_url" in payload:
+        payload["ado_organization"] = payload["organization_url"]
+    payload.pop("organization_url", None)
+    return payload
+
+
 class EventTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:event"]
     event_type: str = Field(min_length=1)
@@ -619,7 +629,7 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
     provider: PrFeedbackProvider
     repo: ConfigValue | None = None
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
     status: ConfigValue | None = None
     creator_id: ConfigValue | None = None
@@ -643,15 +653,10 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
     def validate_provider(cls, value: object) -> str:
         return validate_pr_feedback_provider(value)
 
-    @field_validator("organization_url", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def normalize_organization_url(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            return value
-        text = str(value).strip().rstrip("/")
-        return text or None
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("project", mode="before")
     @classmethod
@@ -750,7 +755,7 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
     provider: Literal["github_actions", "ado_pipelines"]
     repo: str | None = None
     workflow: str | None = None
-    organization_url: str | None = None
+    ado_organization: str | None = None
     project: str | None = None
     pipeline_id: int | None = None
     pipeline_name: str | None = None
@@ -781,12 +786,17 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
         text = str(value).strip()
         return text or None
 
-    @field_validator("organization_url", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def normalize_organization_url(cls, value: object) -> object:
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
+
+    @field_validator("ado_organization", mode="before")
+    @classmethod
+    def normalize_ado_organization(cls, value: object) -> object:
         if value is None:
             return None
-        text = str(value).strip().rstrip("/")
+        text = str(value).strip()
         return text or None
 
     @field_validator("branches", mode="before")

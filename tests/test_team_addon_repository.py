@@ -72,6 +72,7 @@ from evander_team_addon.models import (
     TaskCompletionKind,
     TeamTaskKind,
     TeamTaskState,
+    TaskDeliverableContract,
     agent_project_ids,
     effective_outcome_kind_definitions,
     project_lead_agent_id,
@@ -99,7 +100,10 @@ from evander_team_addon.services.domain.task_assessment import (
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+)
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
@@ -171,6 +175,18 @@ def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
 
 def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
     return TeamChatService(repo)
+
+
+def _authorized_chat_mutation(repo: TeamStateRepository, agent_id: str):
+    state = repo.read()
+    return project_scoped_team_chat_authorization(
+        state,
+        agent=state.agents[agent_id],
+        source="internal",
+        principal_id="admin",
+        recipient_directory_path="root",
+        project_is_authorized=lambda _directory_path: True,
+    )
 
 
 def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
@@ -489,6 +505,7 @@ def _auto_dev_squad_inputs(
     reviewer_agent_id = duplicate_reviewer_id or f"reviewer-{suffix}"
     project_git: dict[str, object] = {
         "managed_repo_id": MANAGED_REPO_ID,
+        "base_branch": "main",
     }
     if bad_git:
         project_git["managed_repo_id"] = "not-a-managed-repository"
@@ -1762,7 +1779,6 @@ def test_external_chat_ingress_is_idempotent_and_queues_normal_team_dispatch(
         source_thread_id=None,
         source_author_id="discord-operator",
         source_author_name="Operator Alice",
-        allow_team_mutations=False,
     )
     replay_state, replay = chat.enqueue_external_operator_chat_message(
         conversation_id=None,
@@ -1776,7 +1792,6 @@ def test_external_chat_ingress_is_idempotent_and_queues_normal_team_dispatch(
         source_thread_id=None,
         source_author_id="discord-operator",
         source_author_name="Operator Alice",
-        allow_team_mutations=False,
     )
 
     assert first["duplicate"] is False
@@ -1855,13 +1870,13 @@ def test_external_chat_reply_creates_delivery_event_and_records_failure(
     ]["state"] == "failed"
 
 
-def test_repository_send_operator_chat_message_command_creates_conversation_and_replays(
+def test_repository_send_operator_chat_message_command_uses_existing_conversation_and_replays(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-chat")
     _team_chat_service(repo).create_or_get_conversation(
-        agent_id="manager",
+        agent_id="backend",
         operator_user_id="operator-alice",
         operator_display_name="Operator Alice",
         expected_revision=repo.read().revision,
@@ -1891,7 +1906,7 @@ def test_repository_send_operator_chat_message_command_creates_conversation_and_
     assert replay == first
     assert conflict["success"] is False
     assert conflict["errors"][0]["code"] == "idempotency_conflict"
-    assert first["conversation_created"] is True
+    assert first["conversation_created"] is False
     conversation = state.conversations[first["conversation_id"]]
     message = state.conversation_messages[first["chat_message_id"]]
     assert conversation.agent_id == "backend"
@@ -1913,7 +1928,32 @@ def test_repository_send_operator_chat_message_rejects_unknown_operator(
     )
 
     assert result["success"] is False
-    assert result["errors"][0]["code"] == "unknown_operator_participant"
+    assert result["errors"][0]["code"] == "operator_chat_not_member"
+    assert state.conversation_messages == {}
+
+
+def test_repository_send_operator_chat_message_rejects_other_agents_operator(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-chat")
+    _team_chat_service(repo).create_or_get_conversation(
+        agent_id="manager",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        expected_revision=repo.read().revision,
+    )
+
+    state, result = _command_service(repo).send_operator_chat_message_command(
+        session_id="session-backend",
+        recipient_operator_user_id="operator-alice",
+        body="This should fail.",
+        request_id="request-operator-chat-other-agent",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "operator_chat_not_member"
+    assert result["errors"][0]["correction_context"]["operator_user_ids"] == []
     assert state.conversation_messages == {}
 
 
@@ -2762,6 +2802,7 @@ def test_submit_deliverable_command_without_direct_superior_defers_review_routin
 
 def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
     _seed_task(repo, task_id="task")
 
     state, context_id = _team_admin_service(repo).create_git_work_context_with_id(
@@ -5228,6 +5269,253 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     assert replay_state.revision == state.revision
 
 
+def test_task_git_base_snapshots_default_parent_explicit_and_batch_parent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="root-main",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Main workstream",
+        description="Start from the project default.",
+        created_by_agent_id="lead",
+    )
+
+    def _move_default(state):
+        state.projects["project"].git.base_branch = "feature/default-next"
+        return state
+
+    repo.update(_move_default)
+    admin.create_or_reprioritize_task(
+        task_id="child-main",
+        owner_agent_id="backend",
+        project_id="project",
+        parent_task_id="root-main",
+        priority=1,
+        title="Inherited child",
+        description="Keep the parent's workstream.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="root-explicit",
+        owner_agent_id="backend",
+        project_id="project",
+        git_base_branch="feature/explicit",
+        priority=1,
+        title="Explicit workstream",
+        description="Use an explicit base.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="lineage-only",
+        owner_agent_id="backend",
+        project_id="project",
+        originating_task_id="root-explicit",
+        priority=1,
+        title="Lineage only",
+        description="Origin lineage must not select the Git workstream.",
+        created_by_agent_id="lead",
+    )
+    admin.create_case(
+        case_id="ordinary-feature-case",
+        team_id="team",
+        project_id="project",
+        title="Ordinary feature work",
+        source="manual",
+    )
+    admin.update_task(
+        task_id="root-explicit",
+        case_id="ordinary-feature-case",
+        set_case_id=True,
+    )
+    _lease_agent_dispatch(repo, agent_id="lead")
+    state, result = _command_service(repo).create_tasks_command(
+        session_id="session-lead",
+        request_id="request-batch-git-base",
+        tasks=[
+            {
+                "task_id": "batch-child",
+                "owner_agent_id": "backend",
+                "project_id": "project",
+                "parent_task_id": "batch-parent",
+                "priority": 1,
+                "title": "Batch child",
+                "description": "Resolve its parent inside the batch.",
+            },
+            {
+                "task_id": "batch-parent",
+                "owner_agent_id": "backend",
+                "project_id": "project",
+                "git_base_branch": "feature/batch",
+                "priority": 1,
+                "title": "Batch parent",
+                "description": "Own the batch workstream.",
+            },
+        ],
+    )
+
+    assert result["success"] is True
+    assert state.tasks["root-main"].git_base_branch == "main"
+    assert state.tasks["child-main"].git_base_branch == "main"
+    assert state.tasks["root-explicit"].git_base_branch == "feature/explicit"
+    assert state.tasks["lineage-only"].git_base_branch == "feature/default-next"
+    assert state.tasks["batch-parent"].git_base_branch == "feature/batch"
+    assert state.tasks["batch-child"].git_base_branch == "feature/batch"
+
+
+def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _configure_unset_base(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id=MANAGED_REPO_ID,
+            directory_path="root/team-project",
+            base_branch=None,
+        )
+        return state
+
+    repo.update(_configure_unset_base)
+    lookups: list[tuple[str, str]] = []
+
+    class _ManagedGit:
+        def get_repository(
+            self,
+            managed_repo_id: str,
+            *,
+            directory_path: str,
+        ) -> dict[str, str]:
+            lookups.append((managed_repo_id, directory_path))
+            return {"default_branch": "trunk"}
+
+    admin = TeamAdminService(repo, managed_git_admin=_ManagedGit())
+    state = admin.create_or_reprioritize_task(
+        task_id="resolved-admin-default",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Resolve the managed default",
+        description="Persist the actual branch on this task.",
+        created_by_agent_id="lead",
+    )
+    assert state.tasks["resolved-admin-default"].git_base_branch == "trunk"
+    assert state.projects["project"].git is not None
+    assert state.projects["project"].git.base_branch is None
+
+    _lease_agent_dispatch(repo, agent_id="lead")
+    command = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=lambda **kwargs: _ManagedGit().get_repository(
+            **kwargs
+        )["default_branch"],
+    )
+    state, result = command.create_task_command(
+        session_id="session-lead",
+        task_id="resolved-command-default",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Resolve through command service",
+        description="Use the same managed repository authority.",
+        request_id="request-resolve-managed-default",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["resolved-command-default"].git_base_branch == "trunk"
+    assert lookups == [
+        (MANAGED_REPO_ID, "root/team-project"),
+        (MANAGED_REPO_ID, "root/team-project"),
+    ]
+
+
+@pytest.mark.parametrize("lock_kind", ["context", "deliverable", "promotion"])
+def test_task_git_base_edit_locks_after_authoritative_git_work(
+    tmp_path: Path,
+    lock_kind: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    admin = _team_admin_service(repo)
+    state = admin.update_task(
+        task_id="task",
+        git_base_branch="feature/before-lock",
+        set_git_base_branch=True,
+    )
+    assert state.tasks["task"].git_base_branch == "feature/before-lock"
+
+    if lock_kind == "context":
+        admin.create_git_work_context_with_id(
+            context_id="ctx-lock",
+            agent_id="backend",
+            task_id="task",
+            base_branch="feature/before-lock",
+            base_commit="base-lock",
+            agent_branch="agents/session-backend/task-lock",
+        )
+    elif lock_kind == "deliverable":
+        admin.record_deliverable(
+            deliverable_id="deliverable-lock",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="Lock the task base.",
+        )
+    else:
+        def _add_promotion(current):
+            current.git_promotions["promotion-lock"] = GitPromotionRecord(
+                id="promotion-lock",
+                project_id="project",
+                task_id="task",
+                actor_agent_id="backend",
+                source_branch="agents/session-backend/task-lock",
+                target_branch="team/team/features/task-backend",
+                promotion_kind="feature",
+            )
+            return current
+
+        repo.update(_add_promotion)
+
+    with pytest.raises(ValueError) as excinfo:
+        admin.update_task(
+            task_id="task",
+            git_base_branch="feature/after-lock",
+            set_git_base_branch=True,
+        )
+
+    assert getattr(excinfo.value, "code", None) == "git_base_locked"
+    assert repo.read().tasks["task"].git_base_branch == "feature/before-lock"
+
+
+def test_task_git_base_lock_is_stable_through_command_surface(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    _team_admin_service(repo).create_git_work_context_with_id(
+        context_id="ctx-locked-command",
+        agent_id="backend",
+        task_id="task",
+        base_branch="main",
+        base_commit="base-main",
+        agent_branch="agents/session-backend/task-locked-command",
+    )
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-lock")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="task",
+        git_base_branch="feature/too-late",
+        request_id="request-locked-git-base",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "git_base_locked"
+    assert state.tasks["task"].git_base_branch == "main"
+
+
 def test_repository_create_tasks_command_rejects_cycles_atomically(
     tmp_path: Path,
 ) -> None:
@@ -6058,6 +6346,7 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
         conversation_id=conversation.id,
         body="Can you check this after the current wake?",
         created_by="operator:alice",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     dispatch_id = f"team-chat:{message.id}"
@@ -6113,7 +6402,6 @@ def test_repository_reply_only_chat_dispatch_has_no_mutation_scope(
         conversation_id=conversation.id,
         body="Please only explain the current state.",
         created_by="operator:alice",
-        allow_team_mutations=False,
         expected_revision=state.revision,
     )
     dispatch_id = f"team-chat:{message.id}"
@@ -6436,7 +6724,7 @@ def test_repository_agent_action_sends_chat_message_to_known_operator(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     state, _conversation, _created = _team_chat_service(repo).create_or_get_conversation(
-        agent_id="lead",
+        agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
@@ -6465,6 +6753,36 @@ def test_repository_agent_action_sends_chat_message_to_known_operator(
     assert message.sender == "agent"
     assert message.body == "I found the issue."
     assert message.metadata["recipient_operator_user_id"] == "alice@example.com"
+
+
+def test_repository_agent_action_rejects_other_agents_operator_chat_recipient(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, _conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "operator_chat_messages": [
+                {
+                    "recipient_operator_user_id": "alice@example.com",
+                    "body": "This should fail.",
+                }
+            ],
+        },
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is False
+    assert result["created_operator_chat_message_ids"] == []
+    assert "not a member" in result["errors"][0]
+    assert state.conversation_messages == {}
 
 
 def test_repository_agent_action_rejects_unknown_operator_chat_recipient(
@@ -6585,6 +6903,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
     assert "context_clearing_policy" in runtime_columns
+    assert "last_delivered_role_description_fingerprint" in runtime_columns
     assert "voice_profile_json" in agent_columns
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
@@ -6624,6 +6943,357 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "team_idempotency_records" in tables
     assert "team_outbox" in tables
     assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
+
+
+def test_repository_migrates_task_release_and_promotion_git_base_snapshots(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="active-context-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Active context",
+        description="Backfill from its work context.",
+        created_by_agent_id="lead",
+    )
+    admin.create_git_work_context_with_id(
+        context_id="ctx-active-migration",
+        agent_id="backend",
+        task_id="active-context-task",
+        base_branch="main",
+        base_commit="base-active",
+        agent_branch="agents/session-backend/active-context-task",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="active-default-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Active default",
+        description="Backfill from the project default.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="terminal-history-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Terminal history",
+        description="Remain nullable for compatibility.",
+        created_by_agent_id="lead",
+    )
+    admin.update_task(task_id="terminal-history-task", state=TeamTaskState.FINISHED)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="release-main-task",
+        deliverable_id="release-main-deliverable",
+        git_base_branch="main",
+        base_commit_sha="base-main",
+        branch_kind="feature",
+    )
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="release-feature-task",
+        deliverable_id="release-feature-deliverable",
+        git_base_branch="feature/foo",
+        base_commit_sha="base-feature",
+        branch_kind="feature",
+    )
+
+    def _seed_legacy_records(state):
+        state.release_packages["release-compatible"] = ReleasePackage(
+            id="release-compatible",
+            project_id="project",
+            deliverable_ids=["release-main-deliverable"],
+            feature_branches=["team/team/features/release-main-task-backend"],
+            policy_version=2,
+            state=TeamRecordState.PENDING,
+        )
+        state.release_packages["release-ambiguous"] = ReleasePackage(
+            id="release-ambiguous",
+            project_id="project",
+            deliverable_ids=[
+                "release-main-deliverable",
+                "release-feature-deliverable",
+            ],
+            feature_branches=[
+                "team/team/features/release-main-task-backend",
+                "team/team/features/release-feature-task-backend",
+            ],
+            policy_version=2,
+            state=TeamRecordState.PENDING,
+        )
+        state.release_packages["release-terminal"] = ReleasePackage(
+            id="release-terminal",
+            project_id="project",
+            deliverable_ids=["release-main-deliverable"],
+            feature_branches=["team/team/features/release-main-task-backend"],
+            state=TeamRecordState.ACCEPTED,
+        )
+        state.git_promotions["promotion-compatible"] = GitPromotionRecord(
+            id="promotion-compatible",
+            project_id="project",
+            release_package_id="release-compatible",
+            task_id="release-main-task",
+            actor_agent_id="lead",
+            source_branch="team/team/features/release-main-task-backend",
+            target_branch="team/team/releases/release-compatible",
+            promotion_kind="release",
+        )
+        return state
+
+    repo.update(_seed_legacy_records)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE team_tasks SET git_base_branch = NULL")
+        connection.execute("UPDATE team_release_packages SET git_base_branch = NULL")
+        connection.execute(
+            "UPDATE team_git_promotions SET git_base_branch = NULL, base_commit_sha = NULL"
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '43' WHERE key = 'sqlite_schema_version'"
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert migrated.tasks["active-context-task"].git_base_branch == "main"
+    assert migrated.tasks["active-default-task"].git_base_branch == "main"
+    assert migrated.tasks["terminal-history-task"].git_base_branch is None
+    compatible = migrated.release_packages["release-compatible"]
+    assert compatible.git_base_branch == "main"
+    assert compatible.base_commit_sha == "base-main"
+    ambiguous = migrated.release_packages["release-ambiguous"]
+    assert ambiguous.state == TeamRecordState.BLOCKED
+    assert ambiguous.git_base_branch is None
+    assert ambiguous.error == (
+        "mixed_git_base_branches: legacy active release has ambiguous Git base provenance"
+    )
+    assert migrated.release_packages["release-terminal"].git_base_branch is None
+    promotion = migrated.git_promotions["promotion-compatible"]
+    assert promotion.git_base_branch == "main"
+    assert promotion.base_commit_sha == "base-main"
+
+
+def test_repository_repairs_legacy_correction_base_and_blocks_conflicting_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="legacy-correction-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Correct rejected candidate",
+        description="This pre-v44 task incorrectly inherited main.",
+        created_by_agent_id="lead",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="legacy-conflicting-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Conflicting legacy bases",
+        description="Require explicit provenance repair.",
+        created_by_agent_id="lead",
+    )
+
+    release_branch = "team/team/releases/rejected-candidate"
+    now = datetime(2026, 8, 2, tzinfo=UTC)
+
+    def _seed_legacy_links(state):
+        state.release_packages["release-rejected-candidate"] = ReleasePackage(
+            id="release-rejected-candidate",
+            project_id="project",
+            release_branch=release_branch,
+            git_base_branch="main",
+            candidate_commit_sha="c" * 40,
+            candidate_tree_hash="d" * 40,
+            policy_version=2,
+            state=TeamRecordState.REJECTED,
+        )
+        state.human_review_requests["human-review-rejected-candidate"] = (
+            HumanReviewRequest(
+                id="human-review-rejected-candidate",
+                release_package_id="release-rejected-candidate",
+                candidate_commit_sha="c" * 40,
+                candidate_tree_hash="d" * 40,
+                requirement_snapshot=HumanReviewRequirementSnapshot(
+                    directory_path="root",
+                    configured_group_ids=["release-reviewers"],
+                    initially_eligible_user_ids=["reviewer"],
+                ),
+                state="changes_requested",
+                completed_at=now,
+            )
+        )
+        state.human_review_findings["finding-rejected-candidate"] = (
+            HumanReviewFinding(
+                id="finding-rejected-candidate",
+                source_human_review_request_id="human-review-rejected-candidate",
+                text="Repair the rejected candidate.",
+                correction_task_id="legacy-correction-task",
+            )
+        )
+        state.git_work_contexts["ctx-conflict-main"] = GitWorkContext(
+            id="ctx-conflict-main",
+            agent_id="backend",
+            task_id="legacy-conflicting-task",
+            base_branch="main",
+            base_commit="1" * 40,
+            agent_branch="agents/session-backend/conflict-main",
+        )
+        state.git_work_contexts["ctx-conflict-feature"] = GitWorkContext(
+            id="ctx-conflict-feature",
+            agent_id="backend",
+            task_id="legacy-conflicting-task",
+            base_branch="feature/legacy",
+            base_commit="2" * 40,
+            agent_branch="agents/session-backend/conflict-feature",
+        )
+        return state
+
+    repo.update(_seed_legacy_links)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        # Simulate the flawed v44 result plus one preparation attempt: both the
+        # unprepared correction and the conflicting task were assigned main.
+        connection.execute(
+            "UPDATE team_tasks SET git_base_branch = 'main' WHERE id = ?",
+            ("legacy-conflicting-task",),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '44' WHERE key = 'sqlite_schema_version'"
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert migrated.tasks["legacy-correction-task"].git_base_branch == release_branch
+    conflicting = migrated.tasks["legacy-conflicting-task"]
+    assert conflicting.git_base_branch == "main"
+    assert conflicting.state == TeamTaskState.BLOCKED
+    blockers = [
+        blocker
+        for blocker in migrated.blockers.values()
+        if blocker.reason_code == "mixed_git_base_branches"
+        and conflicting.id in blocker.affected_task_ids
+    ]
+    assert len(blockers) == 1
+    assert blockers[0].route == TeamBlockerRoute.OPERATOR
+
+
+def test_repository_migrates_active_correction_successor_from_predecessor_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="legacy-source-task",
+        deliverable_id="legacy-source-deliverable",
+        git_base_branch="main",
+        base_commit_sha="1" * 40,
+        branch_kind="feature",
+    )
+    rejected_branch = "team/team/releases/legacy-rejected"
+    rejected_commit = "2" * 40
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="legacy-correction-input-task",
+        deliverable_id="legacy-correction-deliverable",
+        git_base_branch=rejected_branch,
+        base_commit_sha=rejected_commit,
+        branch_kind="feature",
+    )
+
+    def _seed_successor(state):
+        state.release_packages["legacy-rejected"] = ReleasePackage(
+            id="legacy-rejected",
+            project_id="project",
+            deliverable_ids=["legacy-source-deliverable"],
+            release_branch=rejected_branch,
+            canonical_branch="main",
+            git_base_branch="main",
+            base_commit_sha="1" * 40,
+            candidate_commit_sha=rejected_commit,
+            candidate_tree_hash="3" * 40,
+            policy_version=2,
+            state=TeamRecordState.REJECTED,
+        )
+        state.release_packages["legacy-successor"] = ReleasePackage(
+            id="legacy-successor",
+            project_id="project",
+            supersedes_release_package_id="legacy-rejected",
+            canonical_branch="main",
+            deliverable_ids=[
+                "legacy-source-deliverable",
+                "legacy-correction-deliverable",
+            ],
+            policy_version=2,
+            state=TeamRecordState.PENDING,
+        )
+        state.git_promotions["legacy-canonical-push"] = GitPromotionRecord(
+            id="legacy-canonical-push",
+            project_id="project",
+            release_package_id="legacy-successor",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/legacy-successor",
+            target_branch="main",
+            promotion_kind="canonical_push",
+            base_commit_sha=rejected_commit,
+        )
+        state.release_packages["legacy-successor"].git_promotion_record_ids = [
+            "legacy-canonical-push"
+        ]
+        return state
+
+    repo.update(_seed_successor)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    migration_error = (
+        "mixed_git_base_branches: legacy active release has ambiguous Git base provenance"
+    )
+    with sqlite3.connect(db_path) as connection:
+        # Simulate v44 having mixed inherited and correction deliverables and
+        # incorrectly blocked the otherwise valid successor.
+        connection.execute(
+            """
+            UPDATE team_release_packages
+            SET git_base_branch = NULL,
+                base_commit_sha = NULL,
+                canonical_base_commit_sha = NULL,
+                state = 'blocked',
+                error = ?
+            WHERE id = 'legacy-successor'
+            """,
+            (migration_error,),
+        )
+        connection.execute(
+            """
+            UPDATE team_release_packages
+            SET canonical_base_commit_sha = NULL
+            WHERE id = 'legacy-rejected'
+            """
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '44' WHERE key = 'sqlite_schema_version'"
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+    successor = migrated.release_packages["legacy-successor"]
+
+    assert successor.git_base_branch == rejected_branch
+    assert successor.base_commit_sha == rejected_commit
+    assert successor.canonical_base_commit_sha == "1" * 40
+    assert successor.state == TeamRecordState.PENDING
+    assert successor.error is None
+    assert migrated.git_promotions["legacy-canonical-push"].base_commit_sha == (
+        "1" * 40
+    )
 
 
 def test_repository_migrates_legacy_task_and_deliverable_outcome_kinds(
@@ -6990,6 +7660,9 @@ def test_human_finding_and_post_release_case_commands_are_supported(
         state.human_review_findings["human-finding"].correction_task_id
         == correction_task_id
     )
+    assert state.human_review_findings["human-finding"].target_scope.value == (
+        "release_candidate"
+    )
 
     replay_state, replay = (
         service.route_human_finding_correction_command(
@@ -7316,6 +7989,69 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
     assert metadata["state_schema_version"] == str(SCHEMA_VERSION)
+
+
+def test_repository_backfills_git_base_snapshots_after_legacy_json_import(
+    tmp_path: Path,
+) -> None:
+    seed_repo = _seed_hierarchy(tmp_path / "seed")
+    _set_project_git(seed_repo)
+    _seed_context_backed_accepted_git_deliverable(
+        seed_repo,
+        task_id="legacy-json-git-task",
+        deliverable_id="legacy-json-git-deliverable",
+        git_base_branch="main",
+        base_commit_sha="4" * 40,
+        branch_kind="feature",
+    )
+
+    def _seed_release_and_promotion(state):
+        state.release_packages["legacy-json-release"] = ReleasePackage(
+            id="legacy-json-release",
+            project_id="project",
+            deliverable_ids=["legacy-json-git-deliverable"],
+            feature_branches=[
+                "team/team/features/legacy-json-git-task-backend"
+            ],
+            policy_version=2,
+            state=TeamRecordState.PENDING,
+        )
+        state.git_promotions["legacy-json-promotion"] = GitPromotionRecord(
+            id="legacy-json-promotion",
+            project_id="project",
+            release_package_id="legacy-json-release",
+            task_id="legacy-json-git-task",
+            actor_agent_id="lead",
+            source_branch="team/team/features/legacy-json-git-task-backend",
+            target_branch="team/team/releases/legacy-json-release",
+            promotion_kind="release",
+        )
+        return state
+
+    state = seed_repo.update(_seed_release_and_promotion)
+    payload = state.model_dump(mode="json")
+    payload["tasks"]["legacy-json-git-task"]["state"] = "in_progress"
+    payload["tasks"]["legacy-json-git-task"]["git_base_branch"] = None
+    payload["release_packages"]["legacy-json-release"]["git_base_branch"] = None
+    payload["release_packages"]["legacy-json-release"]["base_commit_sha"] = None
+    payload["git_promotions"]["legacy-json-promotion"]["git_base_branch"] = None
+    payload["git_promotions"]["legacy-json-promotion"]["base_commit_sha"] = None
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    imported = TeamStateRepository(tmp_path).read()
+
+    assert imported.tasks["legacy-json-git-task"].git_base_branch == "main"
+    release = imported.release_packages["legacy-json-release"]
+    assert release.git_base_branch == "main"
+    assert release.base_commit_sha == "4" * 40
+    promotion = imported.git_promotions["legacy-json-promotion"]
+    assert promotion.git_base_branch == "main"
+    assert promotion.base_commit_sha == "4" * 40
 
 
 def test_repository_imports_legacy_json_outcome_records_before_validation(
@@ -8561,6 +9297,7 @@ def test_repository_materializes_auto_dev_squad_with_team_project_and_agents_sha
                 "lead_session_id": "session-project-lead-auto-dev-squad",
                 "git": {
                     "managed_repo_id": MANAGED_REPO_ID,
+                    "base_branch": "main",
                 },
             },
             "agents": {
@@ -16551,11 +17288,15 @@ def test_apply_agent_action_persistent_git_review_promotion_from_context_branch(
     assert promotion.source_branch == "agents/session-backend/task"
     assert promotion.target_branch == "team/team/reviews/deliverable"
     assert promotion.commit_sha == "deadbeef"
+    assert promotion.git_base_branch == "main"
+    assert promotion.base_commit_sha == "base123"
     event = result["events"][0]
     assert event["payload"]["promotion_kind"] == "review"
     assert event["payload"]["deliverable_id"] == "deliverable"
     assert event["payload"]["target_branch"] == "team/team/reviews/deliverable"
     assert event["payload"]["commit_sha"] == "deadbeef"
+    assert event["payload"]["base_branch"] == "main"
+    assert event["payload"]["base_commit_sha"] == "base123"
 
 
 def test_apply_agent_action_persistent_git_review_promotion_rejects_missing_source(
@@ -16942,25 +17683,25 @@ def _seed_accepted_feature_deliverable(
 
     def _mutate(state):
         deliverable = state.deliverables[deliverable_id]
+        git_backed = feature is not None or not artifact_refs
         deliverable.state = TeamRecordState.ACCEPTED
         state.tasks[task_id].state = TeamTaskState.FINISHED
         deliverable.verification = DeliverableVerification(
             status="passed",
             summary="Seeded release verification passed.",
         )
-        deliverable.git_refs.commit_sha = "reviewed-commit"
+        if git_backed:
+            deliverable.git_refs.commit_sha = "reviewed-commit"
         review_id = f"review-{deliverable_id}"
         state.review_requests[review_id] = ReviewRequest(
             id=review_id,
             deliverable_id=deliverable_id,
             reviewer_agent_id="worker",
             state=TeamRecordState.ACCEPTED,
-            reviewed_commit_sha="reviewed-commit",
+            reviewed_commit_sha=("reviewed-commit" if git_backed else None),
         )
         deliverable.review_request_ids = [review_id]
-        if feature is not None:
-            deliverable.git_refs.feature_branch = feature
-            deliverable.git_refs.feature_commit_sha = "reviewed-commit"
+        if git_backed:
             deliverable.review_manifest = DeliverableReviewManifest(
                 base_commit_sha="base-commit",
                 reviewed_commit_sha="reviewed-commit",
@@ -16968,6 +17709,9 @@ def _seed_accepted_feature_deliverable(
                 commit_shas=["reviewed-commit"],
                 changed_paths=["M\tsrc/reviewed.py"],
             )
+        if feature is not None:
+            deliverable.git_refs.feature_branch = feature
+            deliverable.git_refs.feature_commit_sha = "reviewed-commit"
         return state
 
     repo.update(_mutate)
@@ -17006,9 +17750,287 @@ def _seed_accepted_review_sources(
                 state=TeamRecordState.ACCEPTED,
                 reviewed_commit_sha=commit_sha,
             )
+            deliverable.review_manifest = DeliverableReviewManifest(
+                base_commit_sha="base-commit",
+                reviewed_commit_sha=commit_sha,
+                tree_hash=f"{deliverable_id}-tree",
+                commit_shas=[commit_sha],
+                changed_paths=[f"M\tsrc/{deliverable_id}.py"],
+            )
         return state
 
     repo.update(_mutate)
+
+
+def _seed_context_backed_accepted_git_deliverable(
+    repo: TeamStateRepository,
+    *,
+    task_id: str,
+    deliverable_id: str,
+    git_base_branch: str,
+    base_commit_sha: str,
+    branch_kind: str = "review",
+    canonical_branch: str | None = None,
+) -> None:
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id=task_id,
+        owner_agent_id="backend",
+        project_id="project",
+        git_base_branch=git_base_branch,
+        priority=1,
+        title=f"Task {task_id}",
+        description="Context-backed Git work.",
+        created_by_agent_id="lead",
+    )
+    context_id = f"ctx-{task_id}"
+    agent_branch = f"agents/session-backend/{task_id}"
+    admin.create_git_work_context_with_id(
+        context_id=context_id,
+        agent_id="backend",
+        task_id=task_id,
+        base_branch=git_base_branch,
+        base_commit=base_commit_sha,
+        agent_branch=agent_branch,
+        commit_sha=f"commit-{task_id}",
+    )
+    admin.record_deliverable(
+        deliverable_id=deliverable_id,
+        task_id=task_id,
+        producer_agent_id="backend",
+        summary=f"Accepted Git deliverable for {task_id}.",
+    )
+
+    def _accept(state):
+        commit_sha = f"commit-{task_id}"
+        deliverable = state.deliverables[deliverable_id]
+        deliverable.state = TeamRecordState.ACCEPTED
+        deliverable.verification = DeliverableVerification(status="passed")
+        deliverable.git_refs.branch_context_id = context_id
+        deliverable.git_refs.agent_branch = agent_branch
+        deliverable.git_refs.commit_sha = commit_sha
+        if branch_kind == "feature":
+            deliverable.git_refs.feature_branch = canonical_branch or (
+                f"team/team/features/{task_id}-backend"
+            )
+            deliverable.git_refs.feature_commit_sha = commit_sha
+        else:
+            deliverable.git_refs.review_branch = (
+                f"team/team/reviews/{deliverable_id}"
+            )
+        review_id = f"review-{deliverable_id}"
+        state.review_requests[review_id] = ReviewRequest(
+            id=review_id,
+            deliverable_id=deliverable_id,
+            reviewer_agent_id="worker",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha=commit_sha,
+        )
+        deliverable.review_request_ids = [review_id]
+        deliverable.review_manifest = DeliverableReviewManifest(
+            base_commit_sha=base_commit_sha,
+            reviewed_commit_sha=commit_sha,
+            tree_hash=f"tree-{task_id}",
+            commit_shas=[commit_sha],
+            changed_paths=[f"M\tsrc/{task_id}.py"],
+        )
+        state.tasks[task_id].state = TeamTaskState.FINISHED
+        return state
+
+    repo.update(_accept)
+
+
+def test_feature_promotion_uses_task_context_after_project_default_changes(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-main",
+        deliverable_id="deliverable-main",
+        git_base_branch="main",
+        base_commit_sha="base-main",
+    )
+
+    def _move_default(state):
+        state.projects["project"].git.base_branch = "feature/default-moved"
+        return state
+
+    repo.update(_move_default)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_feature_updates": [
+                {
+                    "task_id": "task-main",
+                    "source_review_branches": [
+                        "team/team/reviews/deliverable-main"
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    promotion = state.git_promotions[result["git_promotion_event_ids"][0]]
+    assert promotion.git_base_branch == "main"
+    assert promotion.base_commit_sha == "base-main"
+    assert result["events"][0]["payload"]["base_branch"] == "main"
+    assert result["events"][0]["payload"]["base_commit_sha"] == "base-main"
+
+
+def test_release_rejects_mixed_task_bases_before_mutation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-main",
+        deliverable_id="deliverable-main",
+        git_base_branch="main",
+        base_commit_sha="base-main",
+    )
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-feature",
+        deliverable_id="deliverable-feature",
+        git_base_branch="feature/foo",
+        base_commit_sha="base-feature",
+    )
+    before = repo.read()
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-mixed",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable-main", "deliverable-feature"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "mixed_git_base_branches"
+    assert "explicit integration task" in result["errors"][0]
+    assert state.release_packages == before.release_packages == {}
+    assert state.git_promotions == before.git_promotions == {}
+
+    with pytest.raises(ValueError) as excinfo:
+        _team_admin_service(repo).create_release_package_with_result(
+            project_id="project",
+            deliverable_ids=["deliverable-main", "deliverable-feature"],
+            release_id="release-mixed-admin",
+        )
+    assert getattr(excinfo.value, "code", None) == "mixed_git_base_branches"
+    assert repo.read().release_packages == {}
+
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-integration",
+        deliverable_id="deliverable-integration",
+        git_base_branch="feature/integration",
+        base_commit_sha="base-integration",
+        branch_kind="feature",
+    )
+
+    def _mark_explicit_integration(current):
+        task = current.tasks["task-integration"]
+        task.integration_boundary = True
+        task.dependency_task_ids = ["task-main", "task-feature"]
+        task.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+            required_contribution_task_ids=["task-main", "task-feature"],
+        )
+        integration_commit = "3" * 40
+        integration_deliverable = current.deliverables["deliverable-integration"]
+        integration_deliverable.source_deliverable_ids = [
+            "deliverable-main",
+            "deliverable-feature",
+        ]
+        integration_deliverable.git_refs.commit_sha = integration_commit
+        integration_deliverable.git_refs.submitted_commit_sha = integration_commit
+        integration_deliverable.git_refs.feature_commit_sha = integration_commit
+        integration_deliverable.review_manifest.reviewed_commit_sha = integration_commit
+        integration_deliverable.review_manifest.commit_shas = [integration_commit]
+        integration_context = current.git_work_contexts["ctx-task-integration"]
+        integration_context.state = GitWorkContextState.SUBMITTED
+        integration_context.commit_sha = integration_commit
+        current.review_requests[
+            "review-deliverable-integration"
+        ].reviewed_commit_sha = integration_commit
+        return current
+
+    repo.update(_mark_explicit_integration)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-integrated",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable-integration"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True, result["errors"]
+    integrated_release = state.release_packages["release-integrated"]
+    assert integrated_release.deliverable_ids == ["deliverable-integration"]
+    assert integrated_release.git_base_branch == "feature/integration"
+    assert integrated_release.base_commit_sha == "base-integration"
+
+
+@pytest.mark.parametrize(
+    ("canonical_branch", "expected_destination"),
+    [
+        (None, "releases/project/release-feature"),
+        ("feature/foo", "feature/foo"),
+    ],
+)
+def test_feature_based_release_keeps_publication_destination_explicit(
+    tmp_path: Path,
+    canonical_branch: str | None,
+    expected_destination: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-feature",
+        deliverable_id="deliverable-feature",
+        git_base_branch="feature/foo",
+        base_commit_sha="base-feature",
+        branch_kind="feature",
+    )
+
+    release_request = {
+        "id": "release-feature",
+        "project_id": "project",
+        "deliverable_ids": ["deliverable-feature"],
+    }
+    if canonical_branch is not None:
+        release_request["canonical_branch"] = canonical_branch
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [release_request],
+        },
+    )
+
+    assert result["success"] is True
+    release = state.release_packages["release-feature"]
+    assert release.git_base_branch == "feature/foo"
+    assert release.base_commit_sha == "base-feature"
+    assert release.canonical_branch == expected_destination
+    promotion = state.git_promotions[release.git_promotion_record_ids[0]]
+    assert promotion.git_base_branch == "feature/foo"
+    assert promotion.base_commit_sha == "base-feature"
 
 
 def test_apply_agent_action_rejects_combined_feature_update_and_release_request(
@@ -17150,6 +18172,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert release.feature_branches == ["team/team/features/task-backend"]
     assert release.release_branch == "team/team/releases/rel-1"
     assert release.canonical_branch == "releases/project/rel-1"
+    assert release.canonical_base_commit_sha == release.base_commit_sha
     assert len(release.git_promotion_record_ids) == 1
     kinds = sorted(
         state.git_promotions[pid].promotion_kind for pid in release.git_promotion_record_ids
@@ -17165,6 +18188,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
     assert "canonical_push" not in payloads
 
+    expected_canonical_base = release.canonical_base_commit_sha
     release_promotion_id = release.git_promotion_record_ids[0]
     state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
@@ -17188,9 +18212,126 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
     assert payloads["canonical_push"]["managed_repo_id"] == MANAGED_REPO_ID
+    assert payloads["canonical_push"]["base_commit_sha"] == expected_canonical_base
     assert "canonical_origin_url" not in payloads["canonical_push"]
     assert "provider" not in payloads["canonical_push"]
     assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_canonical_push_requires_immutable_canonical_base_commit(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-missing-base",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release_promotion_id = requested["git_promotion_event_ids"][0]
+
+    def _remove_base_provenance(current: TeamState) -> TeamState:
+        release = current.release_packages["release-missing-base"]
+        release.base_commit_sha = None
+        release.canonical_base_commit_sha = None
+        current.git_promotions[release_promotion_id].base_commit_sha = None
+        return current
+
+    repo.update(_remove_base_provenance)
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="candidate-without-base",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages["release-missing-base"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.error == (
+        "release has no immutable canonical destination base commit for publication"
+    )
+    assert result["git_promotion_event_ids"] == []
+    assert not any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
+
+
+def test_canonical_push_rejects_inconsistent_promotion_base(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-inconsistent-base",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release_promotion_id = requested["git_promotion_event_ids"][0]
+
+    def _add_inconsistent_canonical_promotion(current: TeamState) -> TeamState:
+        release = current.release_packages["release-inconsistent-base"]
+        promotion = GitPromotionRecord(
+            id="promotion-inconsistent-base",
+            project_id="project",
+            release_package_id=release.id,
+            actor_agent_id="lead",
+            source_branch=release.release_branch or "team/team/releases/release-inconsistent-base",
+            target_branch=release.canonical_branch or "releases/project/release-inconsistent-base",
+            promotion_kind="canonical_push",
+            git_base_branch=release.git_base_branch,
+            base_commit_sha="different-base",
+            sources=[
+                {
+                    "source_branch": release.release_branch
+                    or "team/team/releases/release-inconsistent-base",
+                    "expected_commit_sha": "candidate-sha",
+                }
+            ],
+        )
+        current.git_promotions[promotion.id] = promotion
+        release.git_promotion_record_ids.append(promotion.id)
+        return current
+
+    repo.update(_add_inconsistent_canonical_promotion)
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="candidate-sha",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages["release-inconsistent-base"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert (
+        "canonical promotion base different-base does not match canonical destination base"
+        in (
+        release.error or ""
+        )
+    )
+    assert result["git_promotion_event_ids"] == []
 
 
 def test_partial_verification_release_requires_audited_lead_waiver(
@@ -18482,9 +19623,10 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "agent_branch": "agents/lead/release-resolved",
         "target_branch": "team/team/releases/rel-1",
         "release_branch": "team/team/releases/rel-1",
-        "canonical_branch": "releases/project/rel-1",
-        "base_branch": "main",
-        "expected_commit_sha": "reviewed-commit",
+            "canonical_branch": "releases/project/rel-1",
+            "base_branch": "main",
+            "base_commit_sha": "base-commit",
+            "expected_commit_sha": "reviewed-commit",
         "source_branches": ["agents/lead/release-resolved"],
         "expected_source_commits": {"agents/lead/release-resolved": "reviewed-commit"},
         "allowed_changed_paths": ["M\tsrc/reviewed.py"],
@@ -18524,6 +19666,12 @@ def test_apply_agent_action_git_release_recovery_continues_failed_feature_promot
     feature_promotion_id = result["git_promotion_event_ids"][0]
     feature_promotion = state.git_promotions[feature_promotion_id]
     assert feature_promotion.promotion_kind == "feature"
+
+    def _remove_review_manifest(current):
+        current.deliverables["deliverable"].review_manifest = None
+        return current
+
+    repo.update(_remove_review_manifest)
     state, _failure = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=feature_promotion_id,
         success=False,

@@ -89,7 +89,7 @@ test("admin hashes carry non-empty query parameters", () => {
 test("add-on iframe hash query forwards only bounded deep-link fields", () => {
   const forwarded = new URLSearchParams(
     addonIframeHashQuery(
-      "#addon:team-addon?view=my-human-reviews&human_review_request_id=review%201&directory_path=other&privileged_unlocked=true&unsafe=drop-me",
+      "#addon:team-addon?view=my-human-reviews&human_review_request_id=review%201&conversation_id=conversation-1&directory_path=other&privileged_unlocked=true&unsafe=drop-me",
       "addon:team-addon",
     ),
   );
@@ -97,6 +97,7 @@ test("add-on iframe hash query forwards only bounded deep-link fields", () => {
   assert.deepEqual(Object.fromEntries(forwarded), {
     view: "my-human-reviews",
     human_review_request_id: "review 1",
+    conversation_id: "conversation-1",
   });
   assert.equal(
     addonIframeHashQuery(

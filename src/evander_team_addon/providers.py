@@ -37,6 +37,7 @@ from evander.admin.user_notifications import (
     normalize_admin_notification_user_id,
 )
 from evander.admin.web.user_store import AdminWebUserStore
+from evander.admin.web.rbac import scope_matches
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -83,7 +84,6 @@ from .git_naming import validate_branch_name
 from .costs import TeamCostService
 from .chat_attachments import TeamChatAttachmentPolicyService, TeamChatAttachmentStorage
 from .mcp import (
-    CHAT_TEAM_MCP_TOOL_NAMES,
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -142,10 +142,14 @@ from .models import (
     TeamMemoryRecord,
     TeamMemoryScope,
     TeamMemoryStatus,
+    TeamBlockerState,
     TeamRecordState,
+    TeamDispatch,
     TeamDispatchStatus,
+    TeamConversationMessage,
     TeamState,
     TeamTaskState,
+    agent_project_ids,
     team_session_health_payload,
     team_state_payload,
 )
@@ -188,10 +192,17 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
-from .services.chat_service import TeamChatService
+from .services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+    reply_only_team_chat_authorization,
+    team_chat_mutation_allowed,
+    team_chat_mutation_scope_lost,
+)
 from .services.domain.agent_access import (
     _agent_payload,
     _subordinate_agent_payloads,
+    agent_role_description_fingerprint,
 )
 from .services.commands.outbox import _team_event_outbox_records
 from .services.domain.chat import (
@@ -250,6 +261,9 @@ from .services.human_review_assignment_service import (
 from .services.human_correction_reconciliation_service import (
     HumanCorrectionReconciliationService,
 )
+from .services.candidate_correction_reconciliation_service import (
+    CandidateCorrectionReconciliationService,
+)
 from .services.release_gate_service import TeamReleaseGateService
 from .services.release_verification_effects import EffectReleaseVerificationExecutor
 from .services.release_verification_runner import (
@@ -276,7 +290,7 @@ from .services.worktree_cleanup_service import (
     team_task_worktree_cleanup_lock,
 )
 
-TEAM_AGENT_GUIDANCE_VERSION = 29
+TEAM_AGENT_GUIDANCE_VERSION = 30
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -1089,6 +1103,16 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Parent task ID",
                 "string",
                 description="Optional parent task in the same project.",
+            ),
+            _catalog_field(
+                "git_base_branch",
+                "Git base branch",
+                "string",
+                description=(
+                    "Optional durable task starting branch. Blank inherits the "
+                    "parent snapshot or the project default for a new root task."
+                ),
+                placeholder="main",
             ),
             _catalog_field(
                 "dependency_task_ids",
@@ -2127,6 +2151,26 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             payload.get("run_global_maintenance"),
             default=True,
         )
+        candidate_correction_reconciliation: dict[str, Any] = {}
+        candidate_correction_reconciliation_error: str | None = None
+        if run_global_maintenance:
+            try:
+                candidate_correction_reconciliation = (
+                    CandidateCorrectionReconciliationService(repo).reconcile()
+                )
+                if candidate_correction_reconciliation.get("events"):
+                    candidate_correction_reconciliation["published_event_ids"] = (
+                        _publish_team_events(
+                            context,
+                            candidate_correction_reconciliation["events"],
+                        )
+                    )
+            except Exception as exc:
+                # The durable reconciliation blocker and the next Team cycle
+                # preserve recovery without suppressing unrelated wakes.
+                candidate_correction_reconciliation_error = (
+                    str(exc) or exc.__class__.__name__
+                )
         human_correction_reconciliation: dict[str, Any] = {}
         human_correction_reconciliation_error: str | None = None
         if run_global_maintenance:
@@ -2447,6 +2491,15 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                if not context_handoff_preparation:
+                    state = TeamRuntimeService(repo).record_agent_role_description_delivered(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        role_description_fingerprint=_required_text(
+                            lease.get("role_description_fingerprint"),
+                            "role_description_fingerprint",
+                        ),
+                    )
                 delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(lease)
                 if delivered_action_feedback_dispatch_ids:
                     feedback_service = TeamAdminService(repo)
@@ -2606,6 +2659,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             ),
             "human_correction_reconciliation": human_correction_reconciliation,
             "human_correction_reconciliation_error": (human_correction_reconciliation_error),
+            "candidate_correction_reconciliation": (
+                candidate_correction_reconciliation
+            ),
+            "candidate_correction_reconciliation_error": (
+                candidate_correction_reconciliation_error
+            ),
             "errors": errors,
         }
 
@@ -2632,6 +2691,35 @@ def _dispatch_queued_team_chat_messages(
         conversation = state.conversations[conversation_id]
         try:
             agent_payload = agent.model_dump(mode="json")
+            dispatch = state.dispatches[dispatch_id]
+            if _team_chat_mutation_scope_lost(message, dispatch):
+                error = (
+                    "Team Chat authorization changed before dispatch; "
+                    "no authorized projects remain"
+                )
+                tool_grant_result = _set_session_team_mcp_tools(
+                    context,
+                    session_id=agent.session_id,
+                    tool_names=[],
+                    dispatch_id=dispatch_id,
+                )
+                state, _message = TeamChatService(repo).mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+                dispatches.append(
+                    {
+                        "agent_id": agent_id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation_id,
+                        "message_id": message_id,
+                        "dispatch_id": dispatch_id,
+                        "authorization_denied": True,
+                        "error": error,
+                        "team_chat_mcp_tools": tool_grant_result,
+                    }
+                )
+                continue
             attachment_paths = _copy_team_chat_attachments_for_dispatch(
                 context,
                 repo=repo,
@@ -2639,9 +2727,10 @@ def _dispatch_queued_team_chat_messages(
                 agent=agent,
                 message=message,
             )
-            mutation_allowed = _team_chat_mutation_allowed(message)
-            chat_tool_names = list(CHAT_TEAM_MCP_TOOL_NAMES)
+            mutation_allowed = _team_chat_mutation_allowed(message, dispatch)
+            chat_tool_names = [TEAM_REPLY_TO_CHAT_TOOL]
             if mutation_allowed:
+                chat_tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
                 chat_tool_names.extend(_ordinary_team_tools_for_agent(agent_payload))
             tool_grant_result = _set_session_team_mcp_tools(
                 context,
@@ -2713,6 +2802,14 @@ def _dispatch_queued_team_chat_messages(
                 state = TeamChatService(repo).mark_chat_message_ordinary_context_seeded(
                     message_id=message_id,
                 )
+                state = TeamRuntimeService(repo).record_agent_role_description_delivered(
+                    agent_id=agent_id,
+                    dispatch_id=dispatch_id,
+                    role_description_fingerprint=_required_text(
+                        chat_lease.get("role_description_fingerprint"),
+                        "role_description_fingerprint",
+                    ),
+                )
             if context_rotation_pending and mutation_allowed:
                 thread_id = _optional_text(result_payload.get("thread_id"))
                 state = TeamRuntimeService(repo).record_context_rotation_dispatch_started(
@@ -2772,6 +2869,8 @@ def _team_chat_wake_lease(
 ) -> dict[str, Any]:
     dispatch = state.dispatches[dispatch_id]
     agent_payload = _agent_payload(state, agent)
+    role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
+    runtime = state.agent_runtimes[agent.id]
     projects = [
         {
             **state.projects[project_id].model_dump(mode="json"),
@@ -2797,7 +2896,11 @@ def _team_chat_wake_lease(
     )
     return {
         "agent": agent_payload,
-        "runtime": state.agent_runtimes[agent.id].model_dump(mode="json"),
+        "runtime": runtime.model_dump(mode="json"),
+        "role_description_changed": (
+            runtime.last_delivered_role_description_fingerprint != role_description_fingerprint
+        ),
+        "role_description_fingerprint": role_description_fingerprint,
         "dispatch_id": dispatch_id,
         "has_prior_successful_wake": has_prior_successful_wake,
         "reason": "team_chat",
@@ -2847,11 +2950,116 @@ def _team_chat_wake_lease(
             session_records=session_records,
             agent_ids=_prompt_session_health_agent_ids(state, agent_payload),
         ),
-        "operator_chat_participants": _operator_chat_participant_payloads(state),
+        "operator_chat_participants": _operator_chat_participant_payloads(
+            state,
+            agent_id=agent.id,
+        ),
         "superior_agent_id": agent.reports_to_agent_id,
         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
         "subordinates": _subordinate_agent_payloads(state, agent),
     }
+
+
+def build_voice_reconciliation_context(
+    state: TeamState,
+    *,
+    agent_id: str,
+    session_records: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return current compact Team context for a browser-voice reconciliation wake.
+
+    Browser voice calls do not create a durable Team dispatch.  Their terminal
+    wake must still give the resumed agent a bounded, current working set rather
+    than relying only on the prior conversation thread or the much larger,
+    call-start Realtime projection.
+    """
+
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return {}
+    project_ids = agent_project_ids(state, agent.id)
+    terminal_task_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }
+    tasks = [
+        task
+        for task in state.tasks.values()
+        if task.owner_agent_id == agent.id and task.state not in terminal_task_states
+    ]
+    task_ids = {task.id for task in tasks}
+    projects = [
+        {
+            **state.projects[project_id].model_dump(mode="json"),
+            "blocking_sources": project_blocking_sources(state, project_id),
+        }
+        for project_id in project_ids
+        if project_id in state.projects
+    ]
+    runtime = state.agent_runtimes.get(agent.id)
+    lease = {
+        "agent": _agent_payload(state, agent),
+        "runtime": runtime.model_dump(mode="json") if runtime is not None else {},
+        "reason": "voice_session_reconciliation",
+        "tasks": [task_payload_with_assessment(state, task) for task in tasks],
+        "projects": projects,
+        "outcome_kinds": [
+            {
+                **definition,
+                "effective_project_id": project.id,
+            }
+            for project in (
+                state.projects[project_id]
+                for project_id in project_ids
+                if project_id in state.projects
+            )
+            for definition in effective_outcome_kind_payloads(
+                state,
+                team_id=project.team_id,
+                project_id=project.id,
+            )
+        ],
+        "cases": _case_payloads_for_agent(state, agent.id),
+        "inbox": [
+            item.model_dump(mode="json")
+            for item in state.inbox.values()
+            if item.recipient_agent_id == agent.id
+        ],
+        "blockers": [
+            blocker.model_dump(mode="json")
+            for blocker in state.blockers.values()
+            if blocker.state == TeamBlockerState.OPEN
+            and (
+                blocker.owner_agent_id == agent.id
+                or blocker.task_id in task_ids
+                or blocker.project_id in project_ids
+            )
+        ],
+        "reviews": [
+            review.model_dump(mode="json")
+            for review in state.review_requests.values()
+            if review.reviewer_agent_id == agent.id
+            and review.state
+            not in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+        ],
+        "release_packages": _release_package_payloads_for_agent(state, agent),
+        "runtime_attention": _runtime_attention_payloads_for_agent(state, agent),
+        "session_health": team_session_health_payload(
+            state,
+            session_records=session_records,
+            agent_ids=_prompt_session_health_agent_ids(state, _agent_payload(state, agent)),
+        ),
+        "operator_chat_participants": _operator_chat_participant_payloads(
+            state,
+            agent_id=agent.id,
+        ),
+        "superior_agent_id": agent.reports_to_agent_id,
+        "subordinate_agent_ids": list(agent.subordinate_agent_ids),
+        "subordinates": _subordinate_agent_payloads(state, agent),
+    }
+    return build_compact_wake_context(lease, fresh_context=True)
 
 
 def _copy_team_chat_attachments_for_dispatch(
@@ -3178,9 +3386,81 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                     "source_author_id is not authorized for Team mutations on this bridge"
                 )
         repo = TeamStateRepository(_runtime_dir(context))
+        before = repo.read()
+        conversation_id = _optional_text(payload.get("conversation_id"))
+        agent_id = _optional_text(payload.get("agent_id"))
+        duplicate_ingress = next(
+            (
+                record
+                for record in before.external_chat_ingress.values()
+                if record.provider == provider
+                and record.communication_target_id == target.id
+                and record.source_message_id
+                == _required_text(payload.get("source_message_id"), "source_message_id")
+            ),
+            None,
+        )
+        if duplicate_ingress is not None:
+            mutation_authorization = reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=source_author_id,
+                reason="idempotent_replay_uses_existing_authorization",
+            )
+        else:
+            if conversation_id is not None:
+                conversation = before.conversations.get(conversation_id)
+                if conversation is None:
+                    raise ValueError(f"conversation {conversation_id} not found")
+                agent_id = conversation.agent_id
+            agent = before.agents.get(agent_id or "")
+            if agent is None:
+                raise ValueError(f"agent {agent_id or ''} not found")
+        if duplicate_ingress is None and allow_team_mutations:
+            session_repository = _session_repository_from_context(context)
+            get_session = getattr(session_repository, "get_session", None)
+            try:
+                session = get_session(agent.session_id) if callable(get_session) else None
+            except Exception:
+                session = None
+            if session is None:
+                session = (_session_records_by_id(session_repository) or {}).get(
+                    agent.session_id
+                )
+            recipient_directory_path = _optional_text(
+                getattr(session, "directory_path", None)
+            )
+            if recipient_directory_path is None:
+                raise ValueError(
+                    "mutation-enabled external Team chat requires a resolvable recipient directory"
+                )
+            if not scope_matches(directory_path, recipient_directory_path):
+                raise ValueError(
+                    "external Team chat recipient is outside the workflow directory scope"
+                )
+            mutation_authorization = project_scoped_team_chat_authorization(
+                before,
+                agent=agent,
+                source="external_bridge",
+                principal_id=source_author_id,
+                recipient_directory_path=recipient_directory_path,
+                project_is_authorized=lambda project_directory_path: scope_matches(
+                    directory_path,
+                    project_directory_path,
+                ),
+            )
+            if mutation_authorization.mode != "project_scoped":
+                raise ValueError(
+                    "mutation-enabled external Team chat has no authorized projects"
+                )
+        elif duplicate_ingress is None:
+            mutation_authorization = reply_only_team_chat_authorization(
+                source="external_bridge",
+                principal_id=source_author_id,
+                reason="mutations_disabled_by_bridge",
+            )
         state, result = TeamChatService(repo).enqueue_external_operator_chat_message(
-            conversation_id=_optional_text(payload.get("conversation_id")),
-            agent_id=_optional_text(payload.get("agent_id")),
+            conversation_id=conversation_id,
+            agent_id=agent_id,
             operator_user_id=_required_text(payload.get("operator_user_id"), "operator_user_id"),
             operator_display_name=_optional_text(payload.get("operator_display_name")),
             body=_required_text(payload.get("body"), "body"),
@@ -3190,7 +3470,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             source_thread_id=source_thread_id,
             source_author_id=source_author_id,
             source_author_name=_optional_text(payload.get("source_author_name")),
-            allow_team_mutations=allow_team_mutations,
+            mutation_authorization=mutation_authorization,
         )
         if not result.get("duplicate"):
             conversation = state.conversations[result["conversation_id"]]
@@ -3614,6 +3894,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
             "case_id",
             "state",
             "parent_task_id",
+            "git_base_branch",
             "dependency_task_ids",
             "integration_boundary",
             "deliverable_contract",
@@ -3656,6 +3937,11 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 definition_fields=definition_fields,
                 resolved_fields=resolved_fields,
             )
+            git_base_configured = _payload_field_configured(
+                "git_base_branch",
+                definition_fields=definition_fields,
+                resolved_fields=resolved_fields,
+            )
             dependencies_configured = _payload_field_configured(
                 "dependency_task_ids",
                 definition_fields=definition_fields,
@@ -3672,7 +3958,12 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 resolved_fields=resolved_fields,
             )
             state, effective_task_id, created = TeamAdminService(
-                repo
+                repo,
+                managed_git_admin=getattr(
+                    getattr(self.runtime_context, "admin_service", None),
+                    "managed_git_admin",
+                    None,
+                ),
             ).create_or_reprioritize_task_with_result(
                 task_id=task_id,
                 owner_agent_id=normalized_owner_id,
@@ -3686,6 +3977,8 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 state=TeamTaskState(_optional_text(payload.get("state")) or "pending"),
                 parent_task_id=_optional_text(payload.get("parent_task_id")),
                 set_parent_task_id=parent_configured,
+                git_base_branch=_optional_text(payload.get("git_base_branch")),
+                set_git_base_branch=git_base_configured,
                 dependency_task_ids=(
                     _string_list(payload.get("dependency_task_ids"), "dependency_task_ids")
                     if dependencies_configured
@@ -4087,6 +4380,18 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if not active_dispatches:
                 break
         if finalized_count:
+            try:
+                candidate_correction_result = (
+                    CandidateCorrectionReconciliationService(repo).reconcile()
+                )
+                _publish_team_events(
+                    context,
+                    candidate_correction_result.get("events"),
+                )
+            except Exception:
+                # The normal Team reconciliation cycle retries durable
+                # candidate-correction release creation.
+                pass
             try:
                 correction_result = HumanCorrectionReconciliationService(repo).reconcile()
                 _publish_team_events(
@@ -6008,9 +6313,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or detailed visible records through the Team read tools instead of "
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
-        "Identity detail: your own full role_description is included in the wake "
-        "prompt Team context. Compact context may still omit display names or "
-        f"trim subordinate role descriptions. Use {TEAM_GET_MY_IDENTITY_TOOL} "
+        "Identity detail: your own full role_description is included in fresh wake "
+        "context and in retained-context deltas when it changes. Compact context may "
+        "still omit display names or trim subordinate role descriptions. Use "
+        f"{TEAM_GET_MY_IDENTITY_TOOL} "
         "when exact identity, effective permissions, direct superior display "
         "name, subordinate display names, or another complete identity field "
         "matters for the current decision.\n\n"
@@ -6047,8 +6353,12 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or agent release review are also support-typed but are integration "
         "boundaries: do not finish them directly. Work from the runtime-pinned "
         "candidate, submit an assessable Git deliverable, and use its accepted "
-        "reviewed result to create the successor release.\n"
-        f"- For an ambiguous human-review finding, use "
+        "reviewed result. Team automatically creates the successor release when "
+        "that correction resolves; do not call the release-request tool. If "
+        "automatic creation cannot validate or package the correction, follow "
+        "the durable correction blocker instead.\n"
+        f"- For a legacy human-review finding that still carries ambiguous "
+        "routing metadata, use "
         f"{TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL} to route its existing "
         "correction child without rewriting the finding or task. Use "
         f"{TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL} only when the current "
@@ -6194,9 +6504,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "promotion, release sequencing, or a superior explicitly asks for one.\n"
         f"- Release requests stand alone. Use {TEAM_REQUEST_RELEASE_TOOL} once "
         "every deliverable is accepted and no release package already exists for "
-        "that release. This excludes the automatic successor of a generated "
-        "human-review correction graph: Team creates that package after the "
-        "finding children are accepted and reviewed. Other release requests can "
+        "that release. This excludes automatic successors of generated rejected-"
+        "candidate correction work from verification, agent release review, or "
+        "human review: Team creates those packages after the correction work is "
+        "accepted and reviewed. Other release requests can "
         "enqueue prerequisite feature promotions from accepted deliverable "
         "git_refs.review_branch or git_refs.agent_branch before continuing to the "
         "release branch.\n"
@@ -6237,7 +6548,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Team Chat messages are direct conversations with human operators, not "
         f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
         f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
-        "human operators listed in the current Team context as operator chat participants.\n"
+        "operators in your own direct Team Chat conversations listed in the current "
+        "Team context. "
+        "Each wake's operator_chat_participants list replaces every prior wake's list; "
+        "an empty list revokes all proactive Team Chat recipients.\n"
         f"- Use {TEAM_REQUEST_EPHEMERAL_AGENT_TOOL} or "
         f"{TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL} for scoped worker delegation, then "
         f"{TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL} or {TEAM_REJECT_EPHEMERAL_RESULT_TOOL} "
@@ -6438,6 +6752,7 @@ def _build_prompt(
     )
     superior_acceptance_section = _superior_acceptance_guidance(context)
     assigned_review_section = _assigned_deliverable_review_guidance(context)
+    operator_chat_scope_section = _operator_chat_participant_scope_guidance(context)
     context_json = json.dumps(context, sort_keys=True, indent=2)
     mode_section = (
         "This wake starts with a fresh conversation context. The JSON below is "
@@ -6458,6 +6773,12 @@ def _build_prompt(
         if fresh_context
         else ""
     )
+    role_description_delta_section = (
+        "Role description update: Team context JSON.agent.role_description has changed "
+        "since the last delivered Team wake. Treat it as the current role guidance.\n\n"
+        if not fresh_context and context.get("agent", {}).get("role_description")
+        else ""
+    )
     return (
         "Continue your assigned team-agent work.\n"
         f"Follow the Team Add-on guidance in {TEAM_AGENT_GUIDANCE_PATH}, managed "
@@ -6466,6 +6787,7 @@ def _build_prompt(
         "arguments; use Team read tools for omitted record detail.\n\n"
         f"{mode_section}"
         f"{identity_section}"
+        f"{role_description_delta_section}"
         f"{_task_creation_mandate_guidance(agent) if fresh_context else ''}"
         f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repos_prompt_guidance(project_repos)}"
@@ -6478,6 +6800,7 @@ def _build_prompt(
         f"{blocker_section}"
         f"{superior_acceptance_section}"
         f"{assigned_review_section}"
+        f"{operator_chat_scope_section}"
         f"Team context JSON:\n{context_json}\n\n"
         "MCP action surface:\n"
         "- Use the appropriate Team MCP tool for each state change. A note is "
@@ -6684,7 +7007,8 @@ def _build_team_chat_prompt(
         "acknowledgement, or no-op reply.\n\n"
         if mutation_allowed
         else "This chat wake is reply-only. Do not mutate Team state; use only "
-        f"{TEAM_REPLY_TO_CHAT_TOOL} and {TEAM_STAGE_CHAT_ATTACHMENT_TOOL}. If the operator "
+        f"{TEAM_REPLY_TO_CHAT_TOOL}. File attachments are unavailable in reply-only "
+        "chat. If the operator "
         "asks you to create, assign, "
         "request review, mark, or otherwise change Team state, state clearly that "
         "no Team state change was performed in this dispatch and that the request "
@@ -6722,8 +7046,11 @@ def _build_team_chat_prompt(
             )
         )
     )
+    operator_chat_scope_guidance = _operator_chat_participant_scope_guidance(
+        ordinary_team_context
+    )
     ordinary_context_section = (
-        f"{context_guidance}Team context JSON:\n"
+        f"{context_guidance}{operator_chat_scope_guidance}Team context JSON:\n"
         f"{json.dumps(ordinary_team_context, sort_keys=True, indent=2)}"
         if ordinary_team_context is not None
         else context_guidance
@@ -6751,6 +7078,24 @@ def _build_team_chat_prompt(
         "Human operator message:\n"
         f"{_object_field(message, 'body') or '(attachment-only message)'}"
         f"{attachment_guidance}"
+    )
+
+
+def _operator_chat_participant_scope_guidance(
+    context: Mapping[str, Any] | None,
+) -> str:
+    if (
+        context is None
+        or context.get("context_mode") != "retained_delta"
+        or context.get("operator_chat_participants_replaces_prior") is not True
+    ):
+        return ""
+    return (
+        "Operator Team Chat membership for this wake:\n"
+        "- operator_chat_participants is the complete current list and replaces every "
+        "prior wake's list, including lists retained in conversation history. Any "
+        "unlisted recipient is revoked; an empty list means no proactive Team Chat "
+        "recipient is authorized.\n\n"
     )
 
 
@@ -6819,8 +7164,8 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
             "Git content, also include the earlier task in dependency_task_ids so "
             "the assignee receives its verified commit instead of a base-branch-only "
             "worktree. This does not apply to generated human-review correction "
-            "findings: use their system-created child and route an ambiguous finding "
-            "instead of creating a replacement root. You may also create child tasks with "
+            "findings: use their system-created child and route a legacy ambiguous "
+            "finding instead of creating a replacement root. You may also create child tasks with "
             "parent_task_id.\n\n"
         )
     return (
@@ -7071,6 +7416,14 @@ def _prepare_project_repo(
     session_id = _required_text(agent.get("session_id"), "session_id")
     managed_repo_id = _required_text(_value(git, "managed_repo_id"), "project.git.managed_repo_id")
     clone_branch = _optional_text(_value(git, "base_branch"))
+    if clone_branch is None:
+        clone_branch = _managed_repository_default_branch(
+            context,
+            managed_repo_id=managed_repo_id,
+            directory_path=(
+                _optional_text(_value(git, "directory_path")) or "root"
+            ),
+        )
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
         AgentCloneRepoEffectDefinition(
@@ -7121,6 +7474,34 @@ def _prepare_project_repo(
     project_repo.update(commit_diagnostics)
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
     return state, project_repo
+
+
+def _managed_repository_default_branch(
+    context: Any,
+    *,
+    managed_repo_id: str,
+    directory_path: str,
+) -> str:
+    managed_git = getattr(
+        getattr(context, "admin_service", None),
+        "managed_git_admin",
+        None,
+    )
+    get_repository = getattr(managed_git, "get_repository", None)
+    if not callable(get_repository):
+        raise RuntimeError("managed Git default-branch resolution is unavailable")
+    record = get_repository(
+        managed_repo_id,
+        directory_path=directory_path,
+    )
+    if not isinstance(record, Mapping):
+        raise RuntimeError("managed Git repository lookup returned an invalid record")
+    default_branch = _optional_text(record.get("default_branch"))
+    if default_branch is None:
+        raise RuntimeError(
+            f"managed repository {managed_repo_id} has no concrete default branch"
+        )
+    return validate_branch_name(default_branch)
 
 
 def _project_repo_payload(
@@ -7176,7 +7557,14 @@ def _create_project_repo_git_work_contexts(
             },
         )
     rows: list[dict[str, Any]] = []
-    admin = TeamAdminService(repo)
+    admin = TeamAdminService(
+        repo,
+        managed_git_admin=getattr(
+            getattr(context, "admin_service", None),
+            "managed_git_admin",
+            None,
+        ),
+    )
     state_commit_attempt_count = 0
     state_conflict_retry_count = 0
     task_worktree_repo_name = _required_text(
@@ -7216,7 +7604,9 @@ def _create_project_repo_git_work_contexts(
                 task_id=task_id,
                 managed_repo_id=managed_repo_id,
             )
-            effective_base_branch = base_branch
+            effective_base_branch = (
+                _optional_text(task.get("git_base_branch")) or base_branch
+            )
             pinned_base_commit = None
             pinned_base_tree = None
             composition_git_sources = dependency_git_sources
@@ -7234,6 +7624,7 @@ def _create_project_repo_git_work_contexts(
                     agent_id=agent_id,
                     task_id=task_id,
                     agent_branch=agent_branch,
+                    base_branch=effective_base_branch,
                     dependency_git_sources=dependency_git_sources,
                 )
         except RuntimeError as exc:
@@ -7731,6 +8122,7 @@ def _prior_project_repo_task_base_commit(
     agent_id: str,
     task_id: str,
     agent_branch: str,
+    base_branch: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
 ) -> str | None:
     contexts = getattr(state, "git_work_contexts", {})
@@ -7739,9 +8131,8 @@ def _prior_project_repo_task_base_commit(
     matching_contexts = [
         context_model
         for context_model in contexts.values()
-        if _optional_text(getattr(context_model, "agent_id", None)) == agent_id
-        and _optional_text(getattr(context_model, "task_id", None)) == task_id
-        and _optional_text(getattr(context_model, "agent_branch", None)) == agent_branch
+        if _optional_text(getattr(context_model, "task_id", None)) == task_id
+        and _optional_text(getattr(context_model, "base_branch", None)) == base_branch
     ]
     expected_dependency_sources = [dict(row) for row in dependency_git_sources]
     provenance_matches = [
@@ -8747,19 +9138,20 @@ def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     return [*ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES]
 
 
-def _team_chat_mutation_allowed(message: object) -> bool:
-    metadata = _object_field(message, "metadata")
-    if not isinstance(metadata, Mapping):
-        return True
-    for key in (
-        "allow_team_mutations",
-        "allow_team_mutation",
-        "mutation_allowed",
-        "team_mutation_allowed",
-    ):
-        if key in metadata:
-            return bool(metadata[key])
-    return True
+def _team_chat_mutation_allowed(message: object, dispatch: object) -> bool:
+    return (
+        isinstance(message, TeamConversationMessage)
+        and isinstance(dispatch, TeamDispatch)
+        and team_chat_mutation_allowed(message, dispatch)
+    )
+
+
+def _team_chat_mutation_scope_lost(message: object, dispatch: object) -> bool:
+    return (
+        isinstance(message, TeamConversationMessage)
+        and isinstance(dispatch, TeamDispatch)
+        and team_chat_mutation_scope_lost(message, dispatch)
+    )
 
 
 def _team_session_has_active_prompt(context: Any, *, session_id: str) -> bool:
@@ -8862,7 +9254,10 @@ def _active_team_mcp_tools_for_other_dispatches(
         if agent is None or getattr(agent, "session_id", None) != session_id:
             continue
         if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
-            tool_names.extend(CHAT_TEAM_MCP_TOOL_NAMES)
+            tool_names.append(TEAM_REPLY_TO_CHAT_TOOL)
+            active_dispatch = state.dispatches.get(active_dispatch_id)
+            if active_dispatch is not None and active_dispatch.project_ids:
+                tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
         else:
             tool_names.extend(
                 _ordinary_team_tools_for_agent({"team_id": getattr(agent, "team_id", None)})

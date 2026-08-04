@@ -553,6 +553,16 @@ sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
 
+Admin Chat sends are mutation-enabled only when privileged operations are
+unlocked and the sender has directory-scoped `team_chats.mutate` authority over
+the recipient agent and the included projects. The server snapshots the
+intersection of that authority and the agent's visible projects when accepting
+the message; managed repositories are derived from those projects. Missing or
+legacy mutation metadata is reply-only. Built-in Owners and Operators receive
+`team_chats.mutate`; other users can still send reply-only messages. A
+mutation-authorized message whose project intersection becomes empty before
+lease fails without resuming the agent.
+
 Chat refreshes and live snapshots preserve reader position when the operator is
 scrolled up, while a reader already near the bottom remains pinned to new
 messages. Loading older history preserves the visible anchor as messages are
@@ -568,8 +578,10 @@ text. The provider, target, and source-message ID form the durable ingress
 idempotency key, so replay returns the original Team message and
 `team-chat:<message-id>` dispatch. `allow_team_mutations` defaults to `false`;
 enabling it also requires a fixed `authorized_author_ids` allowlist containing
-the authenticated source author. The target must additionally allow `reply` for
-a preserved provider thread or `write` for a top-level response.
+the authenticated source author. Mutation-enabled bridge messages are further
+bounded to the workflow effect directory for both the recipient agent and
+included projects. The target must additionally allow `reply` for a preserved
+provider thread or `write` for a top-level response.
 
 An agent reply to an externally originated message is committed to Team state
 before delivery is attempted. `team_reply_to_chat` creates a pending external
@@ -599,7 +611,9 @@ and the UI renders permitted raster images inline.
 
 Agent-originated files use `team_stage_chat_attachment` first, then pass the
 returned attachment IDs to `team_reply_to_chat` or
-`team_send_operator_chat_message`. Staging accepts only regular files under
+`team_send_operator_chat_message`. Reply-only Chat is text-only; staging and
+attaching agent-originated files to a Chat reply require a non-empty
+project-scoped Chat dispatch. Staging accepts only regular files under
 `/home/agent`, is bound to the calling session, and expires after 24 hours. The
 root policy enables both directions, allows five common document/image files up
 to 10 MiB each, and requires exact approval for an agent send. Configure inherited
@@ -830,7 +844,8 @@ Optional inputs are:
 
 - `team.operator_communication_target_id`
 - `project.git.managed_repo_id`
-- `project.git.base_branch` and `project.git.canonical_release_branch_prefix`
+- `project.git.base_branch` (the default for newly created root tasks) and
+  `project.git.canonical_release_branch_prefix`
 
 The Team Add-on setup, project-create, and project-edit forms include an
 `Import Git repo` action beside the Git fields. It accepts a local checkout or
@@ -1123,9 +1138,10 @@ Tool visibility is scoped by wake class:
 - `context_handoff` preparation wakes get only
   `team_record_context_handoff`; even ordinary Team read/action tools are
   withheld for that bounded advisory turn.
-- Team Chat wakes get the chat-class tool `team_reply_to_chat` and the attachment-staging tool
-  `team_stage_chat_attachment`, plus ordinary tools only when that chat dispatch may mutate Team
-  state.
+- Team Chat wakes get the chat-class tool `team_reply_to_chat`. Reply-only Chat
+  gets no other Team tool; mutation-enabled Chat also gets
+  `team_stage_chat_attachment` and the ordinary Team tools authorized by the
+  dispatch's non-empty project scope.
 - Governance wakes get governance tools only.
 - Ephemeral worker wakes get `team_report_ephemeral_result` only.
 - Inactive or teamless sessions get no ordinary Team action tools, except
@@ -1313,9 +1329,11 @@ Team communication is directional and enforced by the repository, not by prose:
   completion allowlist, or finish a scoped support task with an update whose
   entire mutation is exactly `{"state": "finished"}`. It cannot start work,
   widen the task update, or touch a record outside that dispatch. A dispatch
-  leased after the hold has no exception. Operator holds are durable and can
-  only be cleared through `POST /agents/{agent_id}/stand-down/revoke`; ordinary
-  Team MCP tools cannot revoke or override them.
+  leased after the hold has no exception. The privileged
+  `POST /agents/{agent_id}/stand-down/revoke` route can clear an operator-issued
+  or agent-issued hold at its direct target. Ordinary Team MCP tools cannot
+  clear operator holds and can clear a superior hold only when the caller set
+  that direct hold; inherited subtree holds must be revoked at their root.
 
 Inbox priority controls wake timing, not visibility or permission. `high` and
 `normal` pending inbox items request a debounced recipient wake outside the
@@ -1596,11 +1614,23 @@ checkout as a control checkout. If any preparation fails, the complete dispatch
 fails, created contexts are finalized, and the runtime reservation is released;
 Team never silently drops one scoped task.
 
-On first creation of an ordinary task worktree, Team fetches the configured
-base branch from the managed remote before recording its immutable base commit.
-The managed remote refreshes from canonical upstream before serving that fetch,
-so a new no-predecessor task begins at the current configured base at
-preparation time. Reused worktrees retain their original pinned base.
+Every new Git-backed root task snapshots the project's then-current default base
+branch. An explicit task base overrides that default, while children inherit the
+parent snapshot; batch creation resolves those parent links before committing.
+The snapshot can be edited only before any Git work context, deliverable, or
+promotion exists. On first worktree creation Team fetches that task snapshot
+from the managed remote and records the exact base commit. Reused worktrees and
+later dispatches retain both values even if the remote branch or project default
+moves.
+
+Accepted Git deliverables in one release must share one authoritative task base
+branch and commit. Incompatible workstreams fail with
+`mixed_git_base_branches`; a deliberate cross-base merge is represented by an
+explicit integration task on the selected base, and only its accepted integrated
+deliverable enters the release. A task base is not a publication destination:
+updating a pre-existing branch such as `feature/foo` still requires an explicit
+release `canonical_branch`, with the existing exact-SHA and destination-lease
+checks.
 
 Preparation failures are durable and target-specific so the cron loop does not
 repeat the same failing setup before inference:
@@ -1673,7 +1703,8 @@ tools record intent; the packaged pack routes each event on its
 
 Git work contexts are optional Team state records for coding worktrees. They are
 created only by host/runtime setup for tasks that actually involve Git, and they
-bind an agent, task, optional dispatch, worktree path, base branch/base commit,
+bind an agent, task, optional dispatch, worktree path, the task's snapshotted
+base branch/base commit,
 expected agent branch, exact dependency Git sources, and last verified commit.
 Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
@@ -1718,7 +1749,8 @@ unreferenced Git-context metadata is pruned.
 `effect:team:wake-due-agents` accepts `run_global_maintenance`, defaulting to
 `true` for compatibility. The bundled scheduled wake leaves it enabled. The
 queued-Chat and requested-agent routes set it to `false` so unrelated global
-correction, review-assignment, and worktree-cleanup scans do not delay an
+candidate-correction, human-correction, review-assignment, and worktree-cleanup
+scans do not delay an
 immediate dispatch.
 
 - `review` — `team_publish_review_branch` can promote an ephemeral assignment
@@ -1804,6 +1836,17 @@ session is created, including an authorized retry of the same pinned candidate.
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.
 Creating another release with the same deliverables and failed tree is refused.
+Verification candidate failures and rejected agent release reviews create
+candidate-pinned system correction tasks. When the generated task recursively
+resolves with current accepted, reviewed Git deliverables, Team creates one
+deterministic successor package and correction-aggregate promotion
+automatically; the project lead does not submit another release request. The
+review decision and successor intent are one atomic state transition. Scheduled
+global maintenance performs the same idempotent reconciliation for interrupted
+or older states. A packaging or validation failure opens a durable blocker on
+the correction owner instead of silently returning release responsibility to
+the manager. Initial releases and post-release-feedback successors remain
+explicit requests.
 Only timeouts and infrastructure failures leave verification retryable, and only
 a review recorded as process-blocked may be replaced. Release-review decisions
 are immutable: use `rejected` for a candidate defect and reserve `blocked` for a
@@ -1876,11 +1919,16 @@ release ref that no longer matches the recorded candidate commit and tree.
 `changes_requested` atomically records the decision and findings, ends the
 immutable attempt without publication, and creates or reuses one correction
 `TeamCase` with a coordination-only parent and one immutable-text child per
-finding. Directly attributable findings route to their current owner; only an
-ambiguous finding waits for project-lead routing. The finding child starts from
-the verified rejected candidate and must produce one accepted, reviewed
-correction deliverable. Accepted historical tasks, deliverables, reviews, and
-candidates are never reopened.
+finding. Every new finding must select either `release_candidate` or one or
+more named candidate deliverables as its affected work. A single-owner
+deliverable selection routes to that owner; the entire candidate, a
+multi-owner selection, or a selection whose historical owner is unavailable
+routes to the project lead without an additional routing step. The
+`legacy_unspecified` scope and ambiguous-routing metadata remain readable only
+for recovery of findings created before explicit scope was required. The
+finding child starts from the verified rejected candidate and must produce one
+accepted, reviewed correction deliverable. Accepted historical tasks,
+deliverables, reviews, and candidates are never reopened.
 
 After every finding child has exactly one current accepted, reviewed correction
 deliverable, Team derives each proposed resolution and evidence and
@@ -1918,8 +1966,17 @@ aborting and failing on conflict — never auto-resolving). The central managed
 Git service applies the configured host commit identity, compare-and-swap
 updates the Team target ref, and removes the temporary worktree and operation
 ref on every exit. The core `effect:git:push-branch` effect performs an
-expected-commit and destination-lease preflight for canonical publication and
-refuses to publish anything except the approved candidate.
+expected-commit and destination-lease preflight. Its optional
+`expected_destination_commit_sha` input additionally requires the upstream
+destination to be at an exact reviewed base before publication. If a generated
+destination does not exist yet, the pinned base must be an ancestor of the
+approved candidate and an empty-ref lease rejects concurrent branch creation.
+The Team canonical-push route always supplies the release package's immutable
+`canonical_base_commit_sha`. Initial attempts set it to the release base;
+correction successors retain the predecessor's canonical destination base while
+using the rejected candidate as their separate correction merge base. Existing
+non-Team workflow definitions that omit the optional input retain their previous
+push behavior.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
 remain only in the project's managed bare repository. The **only** branch pushed
