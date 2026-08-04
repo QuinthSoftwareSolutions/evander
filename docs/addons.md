@@ -1314,9 +1314,11 @@ Team communication is directional and enforced by the repository, not by prose:
   completion allowlist, or finish a scoped support task with an update whose
   entire mutation is exactly `{"state": "finished"}`. It cannot start work,
   widen the task update, or touch a record outside that dispatch. A dispatch
-  leased after the hold has no exception. Operator holds are durable and can
-  only be cleared through `POST /agents/{agent_id}/stand-down/revoke`; ordinary
-  Team MCP tools cannot revoke or override them.
+  leased after the hold has no exception. The privileged
+  `POST /agents/{agent_id}/stand-down/revoke` route can clear an operator-issued
+  or agent-issued hold at its direct target. Ordinary Team MCP tools cannot
+  clear operator holds and can clear a superior hold only when the caller set
+  that direct hold; inherited subtree holds must be revoked at their root.
 
 Inbox priority controls wake timing, not visibility or permission. `high` and
 `normal` pending inbox items request a debounced recipient wake outside the

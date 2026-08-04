@@ -142,10 +142,12 @@ from .models import (
     TeamMemoryRecord,
     TeamMemoryScope,
     TeamMemoryStatus,
+    TeamBlockerState,
     TeamRecordState,
     TeamDispatchStatus,
     TeamState,
     TeamTaskState,
+    agent_project_ids,
     team_session_health_payload,
     team_state_payload,
 )
@@ -2894,6 +2896,108 @@ def _team_chat_wake_lease(
         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
         "subordinates": _subordinate_agent_payloads(state, agent),
     }
+
+
+def build_voice_reconciliation_context(
+    state: TeamState,
+    *,
+    agent_id: str,
+    session_records: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return current compact Team context for a browser-voice reconciliation wake.
+
+    Browser voice calls do not create a durable Team dispatch.  Their terminal
+    wake must still give the resumed agent a bounded, current working set rather
+    than relying only on the prior conversation thread or the much larger,
+    call-start Realtime projection.
+    """
+
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return {}
+    project_ids = agent_project_ids(state, agent.id)
+    terminal_task_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }
+    tasks = [
+        task
+        for task in state.tasks.values()
+        if task.owner_agent_id == agent.id and task.state not in terminal_task_states
+    ]
+    task_ids = {task.id for task in tasks}
+    projects = [
+        {
+            **state.projects[project_id].model_dump(mode="json"),
+            "blocking_sources": project_blocking_sources(state, project_id),
+        }
+        for project_id in project_ids
+        if project_id in state.projects
+    ]
+    runtime = state.agent_runtimes.get(agent.id)
+    lease = {
+        "agent": _agent_payload(state, agent),
+        "runtime": runtime.model_dump(mode="json") if runtime is not None else {},
+        "reason": "voice_session_reconciliation",
+        "tasks": [task_payload_with_assessment(state, task) for task in tasks],
+        "projects": projects,
+        "outcome_kinds": [
+            {
+                **definition,
+                "effective_project_id": project.id,
+            }
+            for project in (
+                state.projects[project_id]
+                for project_id in project_ids
+                if project_id in state.projects
+            )
+            for definition in effective_outcome_kind_payloads(
+                state,
+                team_id=project.team_id,
+                project_id=project.id,
+            )
+        ],
+        "cases": _case_payloads_for_agent(state, agent.id),
+        "inbox": [
+            item.model_dump(mode="json")
+            for item in state.inbox.values()
+            if item.recipient_agent_id == agent.id
+        ],
+        "blockers": [
+            blocker.model_dump(mode="json")
+            for blocker in state.blockers.values()
+            if blocker.state == TeamBlockerState.OPEN
+            and (
+                blocker.owner_agent_id == agent.id
+                or blocker.task_id in task_ids
+                or blocker.project_id in project_ids
+            )
+        ],
+        "reviews": [
+            review.model_dump(mode="json")
+            for review in state.review_requests.values()
+            if review.reviewer_agent_id == agent.id
+            and review.state
+            not in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+        ],
+        "release_packages": _release_package_payloads_for_agent(state, agent),
+        "runtime_attention": _runtime_attention_payloads_for_agent(state, agent),
+        "session_health": team_session_health_payload(
+            state,
+            session_records=session_records,
+            agent_ids=_prompt_session_health_agent_ids(state, _agent_payload(state, agent)),
+        ),
+        "operator_chat_participants": _operator_chat_participant_payloads(
+            state,
+            agent_id=agent.id,
+        ),
+        "superior_agent_id": agent.reports_to_agent_id,
+        "subordinate_agent_ids": list(agent.subordinate_agent_ids),
+        "subordinates": _subordinate_agent_payloads(state, agent),
+    }
+    return build_compact_wake_context(lease, fresh_context=True)
 
 
 def _copy_team_chat_attachments_for_dispatch(

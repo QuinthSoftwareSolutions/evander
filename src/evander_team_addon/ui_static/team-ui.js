@@ -10516,10 +10516,10 @@ function effectiveStandDowns(record) {
   return values.filter((item) => item && typeof item === "object");
 }
 
-function operatorRootStandDown(agentId, record) {
+function revocableRootStandDown(agentId, record) {
   const normalizedAgentId = text(agentId);
   return effectiveStandDowns(record).find((item) => {
-    return text(item.source) === "operator"
+    return ["operator", "superior"].includes(text(item.source))
       && text(item.agent_id) === normalizedAgentId
       && text(item.root_agent_id || item.agent_id) === normalizedAgentId
       && !Boolean(item.inherited);
@@ -10539,13 +10539,13 @@ function renderAgentStandDownControls(agentId, record) {
       <button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}" data-stand-down-scope="subtree">Stand down subtree</button>
     `;
   }
-  const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
+  const revocableRoot = revocableRootStandDown(normalizedAgentId, record);
   const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
   const unavailableReason = standDownRevokeUnavailableReason(normalizedAgentId, standDowns);
   return `
     <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
     ${
-      operatorRoot
+      revocableRoot
         ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke stand-down</button>`
         : `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}" disabled aria-disabled="true" title="${escapeAttr(unavailableReason)}">Revoke stand-down</button>`
     }
@@ -10562,14 +10562,9 @@ function standDownRevokeUnavailableReason(agentId, standDowns) {
   const rootLabel = rootAgent ? agentLabel(rootAgent) : rootAgentId || "another agent";
   const inherited = Boolean(primary.inherited) || (rootAgentId && rootAgentId !== text(agentId));
   if (text(primary.source) === "superior") {
-    const setterAgentId = text(primary.set_by);
-    const setterAgent = state.agents?.[setterAgentId];
-    const setterLabel = setterAgent
-      ? agentLabel(setterAgent)
-      : setterAgentId || "the superior who set it";
     return inherited
-      ? `This stand-down is inherited from ${rootLabel}. Only ${setterLabel} can revoke it.`
-      : `Only ${setterLabel} can revoke this superior-issued stand-down.`;
+      ? `This stand-down is inherited from ${rootLabel}. Revoke it on ${rootLabel}.`
+      : "This stand-down cannot be revoked here. Revoke it at its source.";
   }
   if (inherited) {
     return `This stand-down is inherited from ${rootLabel}. Revoke the stand-down on that agent.`;

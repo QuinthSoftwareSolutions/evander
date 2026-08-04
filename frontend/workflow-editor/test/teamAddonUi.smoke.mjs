@@ -170,6 +170,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
     stylesheet,
     /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
   );
+  assert.match(
+    stylesheet,
+    /\.chat-conversations-view\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;/,
+  );
   assert.match(stylesheet, /\.chat-sound-toggle/);
   assert.match(stylesheet, /\.chat-conversation-row\.has-unread/);
   assert.match(stylesheet, /\.chat-unread-badge/);
@@ -4384,7 +4388,7 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
-test("team add-on keeps unavailable stand-down revocation visible with an explanation", async (t) => {
+test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.lead.display_name = "Project Lead";
   const standDown = {
@@ -4414,7 +4418,7 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   const { port, requests } = await createTeamAddonServer(t, {
     initialState,
   });
-  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=true");
 
   await waitForRevision(page, 8);
   await openTeams(page);
@@ -4430,28 +4434,30 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   await detail.waitFor({ state: "visible" });
   const revokeButton = detail.getByRole("button", { name: "Revoke stand-down" });
   await revokeButton.waitFor({ state: "visible" });
-  await revokeButton.hover();
-  assert.equal(await revokeButton.isDisabled(), true);
-  assert.equal(await revokeButton.getAttribute("aria-disabled"), "true");
-  assert.equal(
-    await revokeButton.getAttribute("title"),
-    "Only Project Lead can revoke this superior-issued stand-down.",
-  );
+  assert.equal(await revokeButton.isDisabled(), false);
+  assert.equal(await revokeButton.getAttribute("aria-disabled"), null);
 
   const revokeRequestCountBeforeClick = requests.filter(
     (request) =>
       request.method === "POST"
       && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
   ).length;
-  await revokeButton.dispatchEvent("click");
-  await page.waitForTimeout(100);
+  await revokeButton.click();
+  await waitForCondition(
+    () => requests.filter(
+      (request) =>
+        request.method === "POST"
+        && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+    ).length === revokeRequestCountBeforeClick + 1,
+    "expected an operator revocation request for the direct agent-issued hold",
+  );
   assert.equal(
     requests.filter(
       (request) =>
         request.method === "POST"
         && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
     ).length,
-    revokeRequestCountBeforeClick,
+    revokeRequestCountBeforeClick + 1,
   );
 
   await teamGroup.locator('[data-select-agent-id="worker"]').click();
@@ -4463,7 +4469,7 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   assert.equal(await inheritedRevokeButton.isDisabled(), true);
   assert.equal(
     await inheritedRevokeButton.getAttribute("title"),
-    "This stand-down is inherited from Backend Worker. Only Project Lead can revoke it.",
+    "This stand-down is inherited from Backend Worker. Revoke it on Backend Worker.",
   );
 });
 
@@ -7131,6 +7137,85 @@ function seededTwoConversationChatState() {
   }
   return state;
 }
+
+function seededLongConversationListState(conversationCount = 30) {
+  const state = seededLongChatState(4);
+  state.conversations = {};
+  state.conversation_messages = {};
+  for (let index = 1; index <= conversationCount; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const agentId = `scroll-agent-${suffix}`;
+    const timestamp = new Date(Date.UTC(2026, 5, 9, 1, index, 0)).toISOString();
+    state.conversations[`conversation-${agentId}`] = {
+      id: `conversation-${agentId}`,
+      agent_id: agentId,
+      created_by: "operator",
+      last_message_preview: `Message ${suffix}`,
+      created_at: timestamp,
+      updated_at: timestamp,
+      last_interaction_at: timestamp,
+    };
+  }
+  return state;
+}
+
+test("team add-on Chat keeps recent conversations in an internal scroll region", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededLongConversationListState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const conversationList = page.locator(".chat-conversation-list");
+  await conversationList.locator('[data-chat-conversation-id="conversation-scroll-agent-01"]').waitFor({
+    state: "attached",
+  });
+
+  const metrics = await page.evaluate(() => {
+    const list = document.querySelector(".chat-conversation-list");
+    const sidebar = document.querySelector(".chat-sidebar");
+    const pageRoot = document.documentElement;
+    if (!(list instanceof HTMLElement) || !(sidebar instanceof HTMLElement)) {
+      return null;
+    }
+    const listBox = list.getBoundingClientRect();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    return {
+      listBottom: listBox.bottom,
+      overflowY: getComputedStyle(list).overflowY,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      sidebarBottom: sidebarBox.bottom,
+      documentClientHeight: pageRoot.clientHeight,
+      documentScrollHeight: pageRoot.scrollHeight,
+    };
+  });
+  assert.ok(metrics, "expected recent conversation list metrics");
+  assert.match(metrics.overflowY, /auto|scroll/);
+  assert.ok(
+    metrics.scrollHeight > metrics.clientHeight,
+    `expected recent conversations to scroll internally: ${JSON.stringify(metrics)}`,
+  );
+  assert.ok(
+    metrics.listBottom <= metrics.sidebarBottom + 2,
+    `expected recent conversation list to stay inside sidebar: ${JSON.stringify(metrics)}`,
+  );
+  assert.ok(
+    metrics.documentScrollHeight <= metrics.documentClientHeight + 4,
+    `expected recent conversation list not to overflow the page: ${JSON.stringify(metrics)}`,
+  );
+
+  await conversationList.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await conversationList.locator('[data-chat-conversation-id="conversation-scroll-agent-01"]').scrollIntoViewIfNeeded();
+  assert.ok(
+    (await conversationList.evaluate((element) => element.scrollTop)) > 0,
+    "expected scrolling to reveal older recent conversations",
+  );
+});
 
 test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {

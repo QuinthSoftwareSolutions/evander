@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-08-03 - Browser Voice Reconciliation Context
+
+- Bound browser voice sessions to the authenticated operator, identify transcript
+  turns by the operator's display name and user ID, and reject another operator's
+  event, query, or end request for that call.
+- Added the current compact Team working set to the agent's terminal browser-voice
+  reconciliation wake.
+- Kept terminal voice reconciliation reliable for agents without runtime rows,
+  prioritized open blockers and actionable reviews before context caps, and
+  preserved ISO timestamps while redacting sensitive context values.
+
+## 2026-08-03 - Stand-down Revocation Conflict Safety
+
+- Included direct stand-down lifecycle in Team agent resource tokens so a stale
+  operator request cannot revoke an unseen new hold or enqueue a resulting wake.
+
+## 2026-08-03 - Session Contact Allowlist Editor
+
+- Added nullable contact-access controls to the Admin Sessions policy editor so
+  operators can retain all directory contacts, deny every contact, or persist
+  an explicit contact-ID allowlist without editing session manifests directly.
+
+## 2026-08-03 - Operator Revocation of Agent-Issued Stand-downs
+
+- Allowed human operators to revoke a direct Team agent-issued stand-down from
+  the existing Admin control, while retaining agent-to-agent ownership limits
+  and root-only revocation for inherited subtree holds.
+
+## 2026-08-03 - Scrollable Team Chat Recent Conversations
+
+- Kept the recent-conversation sidebar within its available panel height so long chat lists scroll independently without overflowing the page.
+
+## 2026-08-03 - Exact Agent Detail Authorization
+
+- Authorized Admin Web agent detail responses against the exact backend record
+  returned, including every directory associated with a shared VM.
+
+## 2026-08-02 - Agent Detail Directory Authorization
+
+- Required directory-scoped owner authorization before returning sensitive agent
+  detail records or container execution history from the Admin Web API.
+
 ## 2026-08-03 - Canonical Publication Lineage Repair
 
 - Persisted the canonical destination's pre-release commit separately from a

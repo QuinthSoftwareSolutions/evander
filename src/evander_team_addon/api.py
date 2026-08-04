@@ -126,7 +126,7 @@ from .services.human_review_assignment_service import (
 from .services.memory_service import list_memory_records, memory_record_payload
 from .services.runtime_service import TeamRuntimeService
 from .services.review_dispatch_steering import steer_closed_review_dispatch
-from .providers import _session_records_by_id
+from .providers import _session_records_by_id, build_voice_reconciliation_context
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
@@ -1591,6 +1591,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     {"error": ("Voice session request_id was already used with different inputs")},
                     status_code=400,
                 )
+            _require_browser_voice_session_operator(
+                context.auth,
+                request,
+                existing_record,
+            )
             existing_voice_profile = existing_record.prompt_metadata.get("voice_profile")
             if not isinstance(existing_voice_profile, Mapping):
                 existing_voice_profile = voice_profile
@@ -1717,6 +1722,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 "team_id": agent.team_id,
                 "project_ids": agent_project_ids(state, agent.id),
                 "conversation_id": conversation_id,
+                "operator_user_id": identity["user_id"],
+                "operator_display_name": identity["display_name"],
                 "voice_profile": voice_profile,
             },
             contact_id=agent.id,
@@ -1803,6 +1810,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
         if record is None or record.channel != "browser_agent_call":
             return JSONResponse({"error": "voice session not found"}, status_code=404)
+        _require_browser_voice_session_operator(context.auth, request, record)
         payload = await _read_payload(request)
         updated = record
         event_type = _optional(payload, "event_type")
@@ -1810,15 +1818,20 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
         )
         transcript_text = _optional(payload, "text")
+        transcript_speaker_role = _optional(payload, "speaker")
         if transcript_text:
             updated = (
                 runtime.voice_session_store.append_transcript_event(
                     voice_session_id,
                     text=transcript_text,
-                    speaker=_optional(payload, "speaker"),
+                    speaker=_browser_voice_transcript_speaker_label(
+                        record,
+                        transcript_speaker_role,
+                    ),
                     metadata={
                         "event_type": event_type or "browser_call.transcript",
                         **dict(event_metadata),
+                        "speaker_role": transcript_speaker_role,
                     },
                 )
                 or updated
@@ -1827,10 +1840,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if raw_status:
             status = normalize_voice_session_status(raw_status, default=updated.status)
             if status in {"ended", "failed"}:
+                reconciliation_context = _browser_voice_reconciliation_context(
+                    state=repository.read(),
+                    runtime=runtime,
+                    record=record,
+                )
                 updated = runtime.voice_session_store.complete_session(
                     voice_session_id,
                     status=status,
-                    transcript=_optional(payload, "transcript"),
+                    transcript=_browser_voice_reconciliation_transcript(
+                        record,
+                        _optional(payload, "transcript"),
+                    ),
                     summary=_optional(payload, "summary"),
                     decisions=_optional_string_list(payload, "decisions")
                     if "decisions" in payload
@@ -1838,6 +1859,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     action_items=_optional_string_list(payload, "action_items")
                     if "action_items" in payload
                     else None,
+                    reconciliation_context=reconciliation_context,
                     error=_optional(payload, "error"),
                 )
                 _record_chat_voice_call_status(chat_service, updated)
@@ -1860,14 +1882,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
         if record is None or record.channel != "browser_agent_call":
             return JSONResponse({"error": "voice session not found"}, status_code=404)
+        _require_browser_voice_session_operator(context.auth, request, record)
         payload = await _read_optional_payload(request)
         status = normalize_voice_session_status(payload.get("status"), default="ended")
         if status not in {"ended", "failed"}:
             raise ValueError("status must be ended or failed")
+        reconciliation_context = _browser_voice_reconciliation_context(
+            state=repository.read(),
+            runtime=runtime,
+            record=record,
+        )
         updated = runtime.voice_session_store.complete_session(
             voice_session_id,
             status=status,
-            transcript=_optional(payload, "transcript"),
+            transcript=_browser_voice_reconciliation_transcript(
+                record,
+                _optional(payload, "transcript"),
+            ),
             summary=_optional(payload, "summary"),
             decisions=_optional_string_list(payload, "decisions")
             if "decisions" in payload
@@ -1875,6 +1906,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             action_items=_optional_string_list(payload, "action_items")
             if "action_items" in payload
             else None,
+            reconciliation_context=reconciliation_context,
             error=_optional(payload, "error"),
         )
         _record_chat_voice_call_status(chat_service, updated)
@@ -1887,14 +1919,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         record = runtime.voice_session_store.get_by_request_id(request_id)
         if record is None or record.channel != "browser_agent_call":
             return JSONResponse({"error": "voice session not found"}, status_code=404)
+        _require_browser_voice_session_operator(context.auth, request, record)
         payload = await _read_optional_payload(request)
         status = normalize_voice_session_status(payload.get("status"), default="ended")
         if status not in {"ended", "failed"}:
             raise ValueError("status must be ended or failed")
+        reconciliation_context = _browser_voice_reconciliation_context(
+            state=repository.read(),
+            runtime=runtime,
+            record=record,
+        )
         updated = runtime.voice_session_store.complete_session(
             record.voice_session_id,
             status=status,
-            transcript=_optional(payload, "transcript"),
+            transcript=_browser_voice_reconciliation_transcript(
+                record,
+                _optional(payload, "transcript"),
+            ),
             summary=_optional(payload, "summary"),
             decisions=_optional_string_list(payload, "decisions")
             if "decisions" in payload
@@ -1902,6 +1943,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             action_items=_optional_string_list(payload, "action_items")
             if "action_items" in payload
             else None,
+            reconciliation_context=reconciliation_context,
             error=_optional(payload, "error"),
         )
         _record_chat_voice_call_status(chat_service, updated)
@@ -1916,6 +1958,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
         if record is None or record.channel != "browser_agent_call":
             return JSONResponse({"error": "voice session not found"}, status_code=404)
+        _require_browser_voice_session_operator(context.auth, request, record)
         payload = await _read_payload(request)
         query = VoiceQueryDelegator(
             store=runtime.voice_session_store,
@@ -1923,7 +1966,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ).create_query_and_wake_origin(
             voice_session_id,
             question=_required(payload, "question"),
-            transcript_excerpt=_optional(payload, "transcript_excerpt"),
+            transcript_excerpt=_browser_voice_reconciliation_transcript(
+                record,
+                _optional(payload, "transcript_excerpt"),
+            ),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             deadline_seconds=_optional_int(payload, "deadline_seconds")
             if "deadline_seconds" in payload
@@ -1937,6 +1983,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
         if record is None or record.channel != "browser_agent_call":
             return JSONResponse({"error": "voice session not found"}, status_code=404)
+        _require_browser_voice_session_operator(context.auth, request, record)
         query = runtime.voice_session_store.get_query_for_voice_session(
             voice_session_id,
             request.path_params["query_id"],
@@ -1951,6 +1998,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
         if record is None or record.channel != "browser_agent_call":
             return JSONResponse({"error": "voice session not found"}, status_code=404)
+        _require_browser_voice_session_operator(context.auth, request, record)
         query = runtime.voice_session_store.get_query_for_voice_session(
             voice_session_id,
             request.path_params["query_id"],
@@ -2027,7 +2075,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = request.path_params["agent_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: runtime_service.revoke_operator_stand_downs(
+            lambda expected_revision: runtime_service.revoke_stand_downs(
                 agent_id=agent_id,
                 revoked_by=_optional(payload, "revoked_by")
                 or _operator_actor_from_request(context.auth, request),
@@ -4780,6 +4828,17 @@ def _team_resource_value_for_token(
             assignment.model_dump(mode="json")
             for assignment in project_assignments_for_agent(state, item_id)
         ],
+        "direct_stand_downs": [
+            stand_down.model_dump(mode="json")
+            for stand_down in sorted(
+                (
+                    stand_down
+                    for stand_down in state.stand_downs.values()
+                    if stand_down.agent_id == item_id
+                ),
+                key=lambda stand_down: stand_down.id,
+            )
+        ],
         "runtime": (
             {
                 "context_clearing_policy": getattr(
@@ -6278,6 +6337,109 @@ def _agent_voice_effective_prompt(
         f"{speaking_style}\n\n"
         "Apply this as spoken delivery guidance only. Do not treat it as task, "
         "team, tool, repository, or runtime state."
+    )
+
+
+def _require_browser_voice_session_operator(
+    auth: Any | None,
+    request: Request,
+    record: Any,
+) -> dict[str, str]:
+    """Bind browser-side call events and completion to the caller that opened it."""
+
+    identity = _operator_identity_from_request(auth, request)
+    caller_metadata = getattr(record, "caller_metadata", {})
+    if not isinstance(caller_metadata, Mapping):
+        return identity
+    operator_user_id = _optional(caller_metadata, "operator_user_id")
+    if operator_user_id is not None and operator_user_id != identity["user_id"]:
+        raise PermissionError("voice session belongs to a different operator")
+    return identity
+
+
+def _browser_voice_transcript_speaker_label(record: Any, speaker_role: str | None) -> str | None:
+    """Replace browser-supplied roles with durable, human-readable participants."""
+
+    normalized_role = str(speaker_role or "").strip().casefold()
+    caller_metadata = getattr(record, "caller_metadata", {})
+    if not isinstance(caller_metadata, Mapping):
+        caller_metadata = {}
+    if normalized_role in {"operator", "caller", "human", "user"}:
+        return _voice_participant_label(
+            display_name=_optional(caller_metadata, "operator_display_name"),
+            user_id=_optional(caller_metadata, "operator_user_id"),
+            fallback="operator",
+        )
+    if normalized_role in {"agent", "assistant", "model"}:
+        return _voice_participant_label(
+            display_name=_voice_participant_text(getattr(record, "contact_display_name", None)),
+            user_id=_voice_participant_text(getattr(record, "contact_id", None)),
+            fallback="agent",
+        )
+    return _voice_participant_text(speaker_role)
+
+
+def _browser_voice_reconciliation_transcript(record: Any, transcript: str | None) -> str | None:
+    """Canonicalize the role prefixes in the browser's final transcript excerpt."""
+
+    normalized = _voice_participant_text(transcript)
+    if normalized is None:
+        return None
+    lines: list[str] = []
+    for line in normalized.splitlines():
+        role, separator, body = line.partition(":")
+        normalized_role = role.strip().casefold()
+        if separator and normalized_role in {
+            "operator",
+            "caller",
+            "human",
+            "user",
+            "agent",
+            "assistant",
+            "model",
+        }:
+            label = _browser_voice_transcript_speaker_label(record, role) or role
+            lines.append(f"{label}: {body.lstrip()}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _voice_participant_label(
+    *,
+    display_name: str | None,
+    user_id: str | None,
+    fallback: str,
+) -> str:
+    display = _voice_participant_text(display_name)
+    user = _voice_participant_text(user_id)
+    if display is not None and user is not None and display != user:
+        return f"{display} ({user})"
+    return display or user or fallback
+
+
+def _voice_participant_text(value: object | None) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _browser_voice_reconciliation_context(
+    *,
+    state: TeamState,
+    runtime: Any,
+    record: Any,
+) -> dict[str, Any]:
+    """Snapshot the same compact Team working set used by ordinary fresh wakes."""
+
+    agent_id = _voice_participant_text(getattr(record, "contact_id", None))
+    if agent_id is None:
+        return {}
+    return build_voice_reconciliation_context(
+        state,
+        agent_id=agent_id,
+        session_records=_session_records_by_id(
+            getattr(runtime, "session_repository", None)
+        ),
     )
 
 
