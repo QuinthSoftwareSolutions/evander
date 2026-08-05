@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-06 - Complete Team Git Configuration Surfaces
+
+- Exposed agent author and committer identities in the primary Projects-page creation form so
+  operators can apply project Git identities before the first checkout.
+- Exposed consolidation commit messages in the workflow editor inspector catalog.
+
 ## 2026-08-05 - Compact Team Git Integration History
 
 - Fast-forwarded Team promotions and dependency preparation when one reviewed commit already

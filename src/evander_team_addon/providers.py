@@ -1734,6 +1734,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Exact approved commit SHA for every source branch.",
                 json_value_type="object",
             ),
+            _catalog_field(
+                "commit_message",
+                "Commit message",
+                "string",
+                description="Optional message for a consolidation merge commit.",
+            ),
         ],
     ),
     _catalog_entry(

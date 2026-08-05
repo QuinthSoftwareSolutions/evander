@@ -3132,6 +3132,12 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   await projectForm.locator('[name="lead_agent_id"]').selectOption("lead");
   await projectForm.locator('[name="name"]').fill("Follow-up project");
   await projectForm.locator('[name="goal_description"]').fill("Ship a follow-up slice.");
+  await projectForm.locator("summary", { hasText: "Git config" }).click();
+  await projectForm.locator('[name="managed_repo_id"]').fill("mr_primary_project");
+  await projectForm.locator('[name="agent_author_name"]').fill("Project Author");
+  await projectForm.locator('[name="agent_author_email"]').fill("author@example.test");
+  await projectForm.locator('[name="agent_committer_name"]').fill("Project Committer");
+  await projectForm.locator('[name="agent_committer_email"]').fill("committer@example.test");
   await projectForm.getByRole("button", { name: "Create project" }).click();
   await projectForm.waitFor({ state: "hidden" });
 
@@ -3148,6 +3154,17 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   assert.ok(projectRequest);
   assert.equal(projectRequest.payload.expected_revision, 9);
   assert.equal(projectRequest.payload.name, "Follow-up project");
+  assert.deepEqual(projectRequest.payload.git, {
+    managed_repo_id: "mr_primary_project",
+    agent_author_identity: {
+      name: "Project Author",
+      email: "author@example.test",
+    },
+    agent_committer_identity: {
+      name: "Project Committer",
+      email: "committer@example.test",
+    },
+  });
 });
 
 test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", async (t) => {
