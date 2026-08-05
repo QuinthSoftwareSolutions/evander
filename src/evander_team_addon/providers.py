@@ -5839,6 +5839,37 @@ def _require_artifact_space_read(
         )
 
 
+def _require_team_artifact_space_read(
+    artifact_state: Any,
+    *,
+    artifact_space_path: str,
+    team_id: str,
+    subject: str,
+) -> str:
+    space = artifact_state.spaces.get(artifact_space_path)
+    if space is None:
+        raise ValueError(f"artifact space does not exist: {artifact_space_path}")
+    safe_team_id = _artifact_space_path_segment(team_id, "team_id")
+    team_root = f"/teams/{safe_team_id}"
+    if (
+        _optional_text(space.metadata.get("source")) != "team_addon"
+        or _optional_text(space.metadata.get("team_id")) != team_id
+        or (
+            artifact_space_path != team_root
+            and not artifact_space_path.startswith(f"{team_root}/")
+        )
+    ):
+        raise ArtifactSpacePermissionError(
+            f"artifact space is not owned by Team {team_id}"
+        )
+    _require_artifact_space_read(
+        artifact_state,
+        artifact_space_path=artifact_space_path,
+        subject=subject,
+    )
+    return safe_team_id
+
+
 def _import_team_artifact_for_session(
     context: Any,
     *,
@@ -5846,16 +5877,19 @@ def _import_team_artifact_for_session(
     artifact_id: str,
     session_id: str,
     subject: str,
+    team_id: str,
 ) -> dict[str, Any]:
     normalized_ref = _required_text(artifact_ref, "artifact_ref")
     normalized_artifact_id = _required_text(artifact_id, "artifact_id")
     normalized_session_id = _required_text(session_id, "session_id")
     normalized_subject = _required_text(subject, "subject")
+    normalized_team_id = _required_text(team_id, "team_id")
     artifact_space_path = _artifact_space_path_from_ref(normalized_ref)
     artifact_state = ArtifactSpaceStore(_runtime_dir(context)).read()
-    _require_artifact_space_read(
+    safe_team_id = _require_team_artifact_space_read(
         artifact_state,
         artifact_space_path=artifact_space_path,
+        team_id=normalized_team_id,
         subject=normalized_subject,
     )
     versions = artifact_state.latest_versions_for_space(
@@ -5868,6 +5902,10 @@ def _import_team_artifact_for_session(
             f"artifact_id {normalized_artifact_id}: {artifact_space_path}"
         )
     version = versions[0]
+    if not version.artifact_key.startswith(f"team/{safe_team_id}/"):
+        raise ArtifactSpacePermissionError(
+            f"artifact version is not owned by Team {normalized_team_id}"
+        )
     destination_path = _team_artifact_import_destination_path(
         artifact_space_path=artifact_space_path,
         artifact_id=version.artifact_id,

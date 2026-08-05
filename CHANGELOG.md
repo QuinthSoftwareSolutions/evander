@@ -214,9 +214,10 @@
 
 ## 2026-08-02 - Team Artifact Import Authorization
 
-- Required persistent Team agents to import only artifact references published on deliverables
-  visible within their Team read scope, preventing default-open artifact-space grants from
-  exposing cross-team deliverables.
+- Required imported artifact spaces and published versions to belong to the caller's exact Team,
+  preventing copied deliverable references and default-open grants from exposing cross-team data.
+- Kept same-Team artifacts importable without an explicit deliverable handoff while preserving
+  stricter per-space read grants.
 
 ## 2026-08-02 - Team Recovery Authorization Hardening
 

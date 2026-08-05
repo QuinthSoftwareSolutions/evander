@@ -3271,8 +3271,6 @@ def _register_read_tools(
             session_id=session_id,
             tool_name=TEAM_IMPORT_ARTIFACT_TOOL,
         )
-        if not _read_service(caller).can_import_artifact_ref(artifact_ref):
-            raise ToolError("artifact ref is not available in a visible Team deliverable")
         from .providers import _import_team_artifact_for_session
 
         try:
@@ -3282,6 +3280,7 @@ def _register_read_tools(
                 artifact_id=artifact_id,
                 session_id=caller.session_id,
                 subject=f"team-agent:{caller.agent_id}",
+                team_id=caller.agent.team_id,
             )
         except (FileNotFoundError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc

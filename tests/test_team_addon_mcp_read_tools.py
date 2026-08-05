@@ -857,13 +857,13 @@ def test_runtime_attention_read_service_filters_payload_links_to_actor_scope(
     ] == sorted(group_ranks[record["attention_group"]] for record in result["records"])
 
 
-def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient_session(
+def test_team_import_artifact_allows_same_team_artifact_without_deliverable_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _runtime(
         tmp_path,
-        allowed_tools=[TEAM_GET_DELIVERABLE_TOOL, TEAM_IMPORT_ARTIFACT_TOOL],
+        allowed_tools=[TEAM_IMPORT_ARTIFACT_TOOL],
     )
     recipient_session = context.session_repository.get_session("session-alpha-dev")
     assert recipient_session is not None
@@ -902,24 +902,6 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
         created_by_subject="team-agent:alpha-manager",
     ).latest_versions_for_space(artifact_space_path, artifact_id="bundle")[0]
 
-    def _record_ordinary_handoff(state):
-        state.deliverables["alpha-deliverable"].artifact_refs = [artifact_ref]
-        state.inbox["inbox-1930-handoff"] = AgentInboxItem(
-            id="inbox-1930-handoff",
-            recipient_agent_id="alpha-dev",
-            sender_agent_id="alpha-lead",
-            task_id="alpha-task-a",
-            item_type=TeamInboxItemType.STATUS_REQUEST,
-            payload={
-                "question": (
-                    "The Team-readable 1930 source is available as deliverable "
-                    "alpha-deliverable. Please confirm access and use it for matching."
-                )
-            },
-        )
-        return state
-
-    repo.update(_record_ordinary_handoff)
     assert repo.read().agent_runtimes["alpha-dev"].active_dispatch_id is None
     ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
     expected_destination = (
@@ -972,16 +954,10 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
     server = create_server(context)
     before_revision = repo.read().revision
 
-    deliverable_result = _call_tool(
-        server,
-        TEAM_GET_DELIVERABLE_TOOL,
-        {"session_id": "session-alpha-dev", "deliverable_id": "alpha-deliverable"},
-    )
-    resolved_ref = deliverable_result["record"]["artifact_refs"][0]
     result = _call_tool(
         server,
         TEAM_IMPORT_ARTIFACT_TOOL,
-        {"session_id": "session-alpha-dev", "artifact_ref": resolved_ref},
+        {"session_id": "session-alpha-dev", "artifact_ref": artifact_ref},
     )
 
     _assert_read_success(result)
@@ -1015,6 +991,7 @@ def test_team_import_artifact_enforces_artifact_space_read_grant(
     artifact_store = ArtifactSpaceStore(context.config.runtime_dir)
     artifact_store.ensure_space(
         path=artifact_space_path,
+        metadata={"team_id": "alpha", "source": "team_addon"},
         grants={
             "read_subjects": ["team-agent:alpha-lead"],
             "write_subjects": ["team-agent:alpha-lead"],
@@ -1044,7 +1021,7 @@ def test_team_import_artifact_enforces_artifact_space_read_grant(
         )
 
 
-def test_team_import_artifact_rejects_ref_outside_visible_deliverables(
+def test_team_import_artifact_rejects_cross_team_ref_on_visible_deliverable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1052,16 +1029,28 @@ def test_team_import_artifact_rejects_ref_outside_visible_deliverables(
     repo = _seed_read_tool_state(context.config.runtime_dir)
     artifact_space_path = "/teams/beta/private-deliverable"
     artifact_ref = f"artifact-space:{artifact_space_path}"
-    ArtifactSpaceStore(context.config.runtime_dir).ensure_space(
+    artifact_store = ArtifactSpaceStore(context.config.runtime_dir)
+    artifact_store.ensure_space(
         path=artifact_space_path,
+        metadata={
+            "team_id": "beta",
+            "project_id": "beta-project",
+            "source": "team_addon",
+        },
         subject="team-agent:beta-lead",
     )
+    artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key="team/beta/beta-project/private-deliverable/dispatch-beta/bundle",
+        created_by_subject="team-agent:beta-lead",
+    )
 
-    def _publish_ref_on_hidden_deliverable(state):
-        state.deliverables["beta-deliverable"].artifact_refs = [artifact_ref]
+    def _launder_ref_on_visible_deliverable(state):
+        state.deliverables["alpha-deliverable"].artifact_refs = [artifact_ref]
         return state
 
-    repo.update(_publish_ref_on_hidden_deliverable)
+    repo.update(_launder_ref_on_visible_deliverable)
 
     def fail_import(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
         del self, resolved_config
@@ -1070,7 +1059,43 @@ def test_team_import_artifact_rejects_ref_outside_visible_deliverables(
     monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", fail_import)
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="not available in a visible Team deliverable"):
+    with pytest.raises(ToolError, match="artifact space is not owned by Team alpha"):
+        _call_tool(
+            server,
+            TEAM_IMPORT_ARTIFACT_TOOL,
+            {"session_id": "session-alpha-dev", "artifact_ref": artifact_ref},
+        )
+
+
+def test_team_import_artifact_rejects_cross_team_key_in_same_team_space(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_IMPORT_ARTIFACT_TOOL])
+    _seed_read_tool_state(context.config.runtime_dir)
+    artifact_space_path = "/teams/alpha/aliased-private-deliverable"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_store = ArtifactSpaceStore(context.config.runtime_dir)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        metadata={"team_id": "alpha", "source": "team_addon"},
+        subject="team-agent:alpha-dev",
+    )
+    artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key="team/beta/beta-project/private-deliverable/dispatch-beta/bundle",
+        created_by_subject="team-agent:alpha-dev",
+    )
+
+    def fail_import(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("out-of-scope artifact key must not be imported")
+
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", fail_import)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="artifact version is not owned by Team alpha"):
         _call_tool(
             server,
             TEAM_IMPORT_ARTIFACT_TOOL,
