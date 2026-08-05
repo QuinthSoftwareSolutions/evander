@@ -136,6 +136,17 @@ verification, rejected agent release review, or human
 <code>changes_requested</code>: after its required correction deliverables are
 accepted and reviewed, Team creates the successor automatically.
 
+For a newly accepted ordinary root deliverable in a release-configured project,
+Team records an initial-release disposition as <code>pending</code>. This closes
+the coordination gap without making the initial release automatic. The project
+lead or top-level Team manager must request a package or use
+<code>team_decide_initial_release</code> to record <code>not_planned</code> with
+a reason. Pending rows remain manager-fallback work even if their inbox notices
+were handled. A fallback dispatch can batch only compatible deliverables and is
+authorized for the exact IDs shown in its prompt. An authorized
+<code>reopen</code> restores a not-planned row to pending while preserving the
+reopen audit. Existing deliverables from before this mechanism stay untracked.
+
 This prevents policy drift after request time from silently redefining what was approved.
 
 > <span class="sidebar-kicker">Technical reference</span> **Request authority and frozen manifest**

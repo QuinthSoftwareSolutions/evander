@@ -5613,7 +5613,7 @@ The runtime then applies safety guards:
 - normal wake interval has elapsed where applicable;
 - no-progress suppression does not block task-only polling.
 
-The manager fallback is last, not first. If a Team has open work but no member obtained a lease, the due Team manager can receive a broad routing summary. It exposes coordination gaps without waking the whole hierarchy.
+The manager fallback is last, not first. If a Team has open work but no member obtained a lease, the due Team manager can receive a broad routing summary. It exposes coordination gaps without waking the whole hierarchy. Open work includes a durable pending initial-release decision for a newly accepted ordinary root deliverable. Handling the project lead's root-resolution notice does not remove that decision. The fallback continues until an authorized lead or manager requests a release or records an audited not-planned reason; reopening that decision makes it eligible again. Historical accepted deliverables remain untracked so upgrades do not create a wake flood.
 
 ![Team agent wake decision flow](assets/evander-user-manual/diagrams/13-team-wake-decision.svg)
 
@@ -7029,6 +7029,17 @@ case. The exception is system-generated correction work for a failed candidate
 verification, rejected agent release review, or human
 <code>changes_requested</code>: after its required correction deliverables are
 accepted and reviewed, Team creates the successor automatically.
+
+For a newly accepted ordinary root deliverable in a release-configured project,
+Team records an initial-release disposition as <code>pending</code>. This closes
+the coordination gap without making the initial release automatic. The project
+lead or top-level Team manager must request a package or use
+<code>team_decide_initial_release</code> to record <code>not_planned</code> with
+a reason. Pending rows remain manager-fallback work even if their inbox notices
+were handled. A fallback dispatch can batch only compatible deliverables and is
+authorized for the exact IDs shown in its prompt. An authorized
+<code>reopen</code> restores a not-planned row to pending while preserving the
+reopen audit. Existing deliverables from before this mechanism stay untracked.
 
 This prevents policy drift after request time from silently redefining what was approved.
 

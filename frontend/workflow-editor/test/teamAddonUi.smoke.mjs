@@ -3332,6 +3332,15 @@ test("team add-on delivery records lead with human subjects and progressive tech
       summary: longSummary,
       state: "accepted",
       review_request_ids: ["review-rich-1"],
+      initial_release_disposition: {
+        state: "release_requested",
+        created_at: "2026-06-11T09:26:00Z",
+        updated_at: "2026-06-11T09:30:00Z",
+        decided_at: "2026-06-11T09:30:00Z",
+        decided_by_actor: "agent:lead",
+        reason: null,
+        release_package_id: releaseId,
+      },
       git_refs: {
         branch_context_id: "branch-context-rich-1",
         agent_branch: "agents/backend/rich-result",
@@ -3467,6 +3476,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
     "Summary / outcome",
     "Task and producer",
     "Evidence and artifacts",
+    "Initial release decision",
     "Reviews and decision",
     "Lineage / technical details",
   ]) {
@@ -3477,6 +3487,12 @@ test("team add-on delivery records lead with human subjects and progressive tech
   await deliverableCard
     .getByText("artifact-space:delivery/rich-result", { exact: true })
     .waitFor({ state: "visible" });
+  await deliverableCard.getByText("Release Requested", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await deliverableCard.getByText("agent:lead", { exact: true }).waitFor({
+    state: "visible",
+  });
   const deliverableTechnicalDetails = deliverableCard.locator(
     ".deliverable-lineage-group > details.technical-details",
   );

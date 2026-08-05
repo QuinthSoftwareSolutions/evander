@@ -26,6 +26,7 @@ from evander_team_addon.mcp import (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
@@ -63,11 +64,13 @@ from evander_team_addon.chat_attachments import (
 )
 from evander_team_addon.models import (
     AgentRuntime,
+    DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAgentPolicy,
     GitWorkContext,
     GovernanceAgendaItemState,
+    InitialReleaseDispositionState,
     ProjectGitConfig,
     ProjectGoal,
     ProjectReleasePolicy,
@@ -1776,6 +1779,49 @@ def test_team_addon_mcp_slice8_tool_requires_active_dispatch_without_mutation(
     assert after.revision == before.revision
     assert after.release_packages == before.release_packages
     assert after.git_promotions == before.git_promotions
+
+
+def test_team_addon_mcp_records_audited_initial_release_decision(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    _upsert_session(
+        context,
+        session_id="session-lead",
+        allowed_tools=[TEAM_DECIDE_INITIAL_RELEASE_TOOL],
+    )
+    repo = _seed_slice8_state(context.config.runtime_dir)
+
+    def _track_initial_release(state):
+        state.deliverables[
+            "deliverable"
+        ].initial_release_disposition = DeliverableInitialReleaseDisposition()
+        return state
+
+    repo.update(_track_initial_release)
+    _lease_agent(repo, agent_id="lead", dispatch_id="dispatch-initial-release")
+    server = create_server(context)
+
+    result = _call_tool_with_context(
+        server,
+        TEAM_DECIDE_INITIAL_RELEASE_TOOL,
+        {
+            "deliverable_ids": ["deliverable"],
+            "decision": "not_planned",
+            "reason": "This accepted result remains internal-only.",
+            "request_id": "request-mcp-initial-release",
+        },
+        _make_request_context(session_id="session-lead"),
+    )
+
+    assert result["success"] is True
+    disposition = repo.read().deliverables[
+        "deliverable"
+    ].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.NOT_PLANNED
+    assert disposition.decided_by_actor == "agent:lead"
+    assert disposition.reason == "This accepted result remains internal-only."
 
 
 def test_team_addon_mcp_slice9_tools_smoke_and_worker_visibility(

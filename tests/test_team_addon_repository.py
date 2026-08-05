@@ -21,6 +21,7 @@ from evander_team_addon.models import (
     AgentVoiceProfile,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAgentPolicy,
@@ -34,6 +35,7 @@ from evander_team_addon.models import (
     HumanReviewFinding,
     HumanReviewRequest,
     HumanReviewRequirementSnapshot,
+    InitialReleaseDispositionState,
     ProjectGitConfig,
     ProjectReleasePolicy,
     ReleaseReviewRequirement,
@@ -2257,6 +2259,14 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+
+    def _configure_release_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True,
+        )
+        return state
+
+    repo.update(_configure_release_policy)
     _seed_task(repo, task_id="task")
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
     state, submitted = _command_service(repo).submit_deliverable_command(
@@ -2294,6 +2304,12 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     assert state.inbox[notice_id].state == TeamInboxItemState.HANDLED
     assert state.deliverables["deliverable-accept"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.FINISHED
+    initial_release = state.deliverables[
+        "deliverable-accept"
+    ].initial_release_disposition
+    assert initial_release is not None
+    assert initial_release.state == InitialReleaseDispositionState.PENDING
+    assert initial_release.decided_at is None
     decision = state.deliverables["deliverable-accept"].acceptance_decision
     assert decision is not None
     assert decision.decision == "accepted"
@@ -2301,6 +2317,7 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     persisted = repo.read().deliverables["deliverable-accept"]
     assert persisted.acceptance_recipient_agent_id == "lead"
     assert persisted.acceptance_decision == decision
+    assert persisted.initial_release_disposition == initial_release
 
 
 def test_superior_decision_requires_pending_notice_in_current_dispatch(
@@ -17044,6 +17061,9 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
 
     def _set_review_branch(state):
         state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
+        state.deliverables[
+            "deliverable"
+        ].initial_release_disposition = DeliverableInitialReleaseDisposition()
         return state
 
     repo.update(_set_review_branch)
@@ -17076,6 +17096,11 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     )
     release = state.release_packages["rel-1"]
     assert release.summary == "Release accepted deliverable."
+    disposition = state.deliverables["deliverable"].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.RELEASE_REQUESTED
+    assert disposition.release_package_id == "rel-1"
+    assert disposition.decided_by_actor == "agent:lead"
     feature_promotion_id = result["promotion_event_ids"][0]
     feature_promotion = state.git_promotions[feature_promotion_id]
     assert release.git_promotion_record_ids == [feature_promotion_id]
@@ -17114,6 +17139,109 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert len(repo.list_outbox_records()) == len(outbox_records)
     assert any(
         "already covers this deliverable set" in hint for hint in duplicate["next_action_hints"]
+    )
+
+
+def test_initial_release_not_planned_decision_can_be_reopened_with_audit(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _track_initial_release(state):
+        state.deliverables[
+            "deliverable"
+        ].initial_release_disposition = DeliverableInitialReleaseDisposition()
+        return state
+
+    repo.update(_track_initial_release)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="worker",
+        dispatch_id="dispatch-initial-release-forbidden",
+    )
+    unchanged, forbidden = _command_service(repo).decide_initial_release_command(
+        session_id="session-worker",
+        deliverable_ids=["deliverable"],
+        decision="not_planned",
+        reason="A project member must not make this decision.",
+        request_id="request-initial-release-forbidden",
+    )
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "initial_release_decision_forbidden"
+    assert unchanged.deliverables[
+        "deliverable"
+    ].initial_release_disposition.state == InitialReleaseDispositionState.PENDING
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="manager",
+        dispatch_id="dispatch-initial-release-not-planned",
+    )
+    state, decided = _command_service(repo).decide_initial_release_command(
+        session_id="session-manager",
+        deliverable_ids=["deliverable"],
+        decision="not_planned",
+        reason="This internal-only result is not part of a release.",
+        request_id="request-initial-release-not-planned",
+    )
+
+    assert decided["success"] is True
+    assert decided["decision"] == "not_planned"
+    disposition = state.deliverables["deliverable"].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.NOT_PLANNED
+    assert disposition.decided_by_actor == "agent:manager"
+    assert disposition.reason == "This internal-only result is not part of a release."
+    assert disposition.decided_at is not None
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-initial-release-reopen",
+    )
+    unchanged, release_rejected = _command_service(repo).request_release_command(
+        session_id="session-lead",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        request_id="request-release-while-not-planned",
+    )
+    assert release_rejected["success"] is False
+    assert release_rejected["errors"][0]["code"] == "git_release_request_invalid"
+    assert "reopen the initial release decision" in release_rejected["errors"][0][
+        "message"
+    ]
+    assert unchanged.release_packages == {}
+
+    state, reopened = _command_service(repo).decide_initial_release_command(
+        session_id="session-lead",
+        deliverable_ids=["deliverable"],
+        decision="reopen",
+        reason="The result is now required in the next customer release.",
+        request_id="request-initial-release-reopen",
+    )
+
+    assert reopened["success"] is True
+    assert reopened["decision"] == "reopen"
+    disposition = state.deliverables["deliverable"].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.PENDING
+    assert disposition.decided_at is None
+    assert disposition.decided_by_actor is None
+    assert disposition.reason is None
+    assert disposition.reopened_by_actor == "agent:lead"
+    assert disposition.reopen_reason == (
+        "The result is now required in the next customer release."
+    )
+    assert disposition.reopened_at is not None
+    assert repo.read().deliverables["deliverable"].initial_release_disposition == (
+        disposition
     )
 
 

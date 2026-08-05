@@ -892,6 +892,11 @@ class TeamReadService:
                     if deliverable.verification is not None
                     else None
                 ),
+                "initial_release_disposition": (
+                    deliverable.initial_release_disposition.model_dump(mode="json")
+                    if deliverable.initial_release_disposition is not None
+                    else None
+                ),
                 "created_at": _json_value(deliverable.created_at),
             }
         )

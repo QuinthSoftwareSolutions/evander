@@ -122,6 +122,7 @@ TEAM_RETIRE_REVIEW_TOOL = "team_retire_review"
 TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
+TEAM_DECIDE_INITIAL_RELEASE_TOOL = "team_decide_initial_release"
 TEAM_RECOVER_RELEASE_TOOL = "team_recover_release"
 TEAM_RETRY_RELEASE_GATE_TOOL = "team_retry_release_gate"
 TEAM_REQUEST_EPHEMERAL_AGENT_TOOL = "team_request_ephemeral_agent"
@@ -198,6 +199,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -279,6 +281,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -335,6 +338,7 @@ MCP_TOOL_NAMES = (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -2535,6 +2539,46 @@ def _register_slice8_tools(
         description=(
             "Record asynchronous Git release-package intent from accepted "
             "deliverables. Requires project_id, deliverable_ids, and request_id."
+        ),
+    )
+
+    def team_decide_initial_release(
+        deliverable_ids: list[str],
+        decision: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_DECIDE_INITIAL_RELEASE_TOOL,
+        )
+        try:
+            _state, result = command_service.decide_initial_release_command(
+                session_id=caller.session_id,
+                deliverable_ids=deliverable_ids,
+                decision=decision,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_decide_initial_release,
+        name=TEAM_DECIDE_INITIAL_RELEASE_TOOL,
+        description=(
+            "Record a project lead or team manager decision that pending root "
+            "deliverables are not planned for an initial release, or reopen an "
+            "earlier not-planned decision. Requires deliverable_ids, decision "
+            "(not_planned or reopen), reason, and request_id."
         ),
     )
 

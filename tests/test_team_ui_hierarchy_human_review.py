@@ -426,3 +426,16 @@ def test_deliverable_drill_down_renders_evidence_backed_release_pipeline() -> No
     assert "function deliveryPipelineBlockers(row, release)" in source
     assert "Load exact gate evidence" in source
     assert "releaseDetailCache.get(text(compactRelease.id))" in source
+
+
+def test_delivery_view_surfaces_pending_and_audited_initial_release_decisions() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'initial_release_disposition?.state) === "pending"' in source
+    assert "function renderInitialReleaseDisposition(deliverable)" in source
+    assert "Initial release decision" in source
+    assert "Waiting for the project lead or team manager" in source
+    assert "Not planned for an initial release" in source
+    assert "initialRelease.release_package_id" in source

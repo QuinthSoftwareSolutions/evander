@@ -4965,6 +4965,9 @@ class TeamAdminService:
             "verification_waivers": [dict(item) for item in (verification_waivers or [])],
             "waiver_actor_kind": "operator",
             "waiver_actor_id": _required_text(operator_actor_id, "operator_actor_id"),
+            "release_requested_by_actor": (
+                "operator:" + _required_text(operator_actor_id, "operator_actor_id")
+            ),
         }
         result: dict[str, Any] = {
             "success": False,

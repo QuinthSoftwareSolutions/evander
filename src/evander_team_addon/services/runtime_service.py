@@ -112,8 +112,12 @@ from .domain.git_work_contexts import (
 from .domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
     _manager_fallback_review_routing_authorities,
+    _manager_fallback_initial_release_decision_ids,
     _manager_fallback_summary_payload,
     _manager_fallback_summary_has_actionable_work,
+)
+from .domain.initial_release import (
+    manager_fallback_initial_release_authority_error,
 )
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
@@ -1033,6 +1037,11 @@ class TeamRuntimeService:
                     state_model,
                     summary=manager_fallback_summary,
                 )
+                initial_release_decision_ids = (
+                    _manager_fallback_initial_release_decision_ids(
+                        manager_fallback_summary
+                    )
+                )
                 manager_reservation_scope = build_agent_dispatch_scope(
                     state_model,
                     agent=manager,
@@ -1052,6 +1061,24 @@ class TeamRuntimeService:
                     reviews=manager_reviews,
                     inbox_items=manager_inbox,
                 )
+                initial_release_project_ids = {
+                    task.project_id
+                    for deliverable_id in initial_release_decision_ids
+                    if (deliverable := state_model.deliverables.get(deliverable_id))
+                    is not None
+                    if (task := state_model.tasks.get(deliverable.task_id)) is not None
+                }
+                scoped_project_ids = sorted(
+                    set(manager_scope.project_ids) | initial_release_project_ids
+                )
+                scoped_managed_repo_ids = sorted(
+                    {
+                        project.git.managed_repo_id
+                        for project_id in scoped_project_ids
+                        if (project := state_model.projects.get(project_id)) is not None
+                        and project.git is not None
+                    }
+                )
                 has_prior_successful_wake = _has_prior_successful_ordinary_wake(
                     state_model,
                     manager,
@@ -1063,8 +1090,16 @@ class TeamRuntimeService:
                     cause_kind="manager_fallback",
                     status=TeamDispatchStatus.PREPARING,
                     review_routing_authorities=manager_fallback_routing_authorities,
+                    initial_release_decision_deliverable_ids=(
+                        initial_release_decision_ids
+                    ),
+                    project_ids=scoped_project_ids,
+                    managed_repo_ids=scoped_managed_repo_ids,
                     created_at=effective_now,
-                    **manager_scope.model_fields(),
+                    task_ids=list(manager_scope.task_ids),
+                    blocker_ids=list(manager_scope.blocker_ids),
+                    review_request_ids=list(manager_scope.review_request_ids),
+                    inbox_item_ids=list(manager_scope.inbox_item_ids),
                 )
                 state_model.dispatches[dispatch_id] = durable_dispatch
                 manager_runtime.active_dispatch_id = dispatch_id
@@ -2212,6 +2247,14 @@ def _dispatch_staleness_errors(
             state,
             dispatch_agent_id=dispatch.agent_id,
             authority=authority,
+        )
+        if authority_error is not None:
+            errors.append(authority_error)
+    for deliverable_id in dispatch.initial_release_decision_deliverable_ids:
+        authority_error = manager_fallback_initial_release_authority_error(
+            state,
+            manager_agent_id=dispatch.agent_id,
+            deliverable_id=deliverable_id,
         )
         if authority_error is not None:
             errors.append(authority_error)

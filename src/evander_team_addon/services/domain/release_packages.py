@@ -14,6 +14,7 @@ from ...models import (
     DeliverableReviewManifest,
     GitPromotionRecord,
     GitPromotionSource,
+    InitialReleaseDispositionState,
     PersistentAgent,
     Project,
     ReleasePackage,
@@ -49,6 +50,7 @@ from .git_common import (
     _project_git_or_error,
 )
 from .git_work_contexts import authoritative_deliverable_git_base
+from .initial_release import mark_initial_release_requested
 from .task_assessment import (
     TaskAssessmentBoundaryError,
     require_release_scope,
@@ -531,6 +533,24 @@ def _build_release_package(
             )
     else:
         deliverable_ids = requested_deliverable_ids
+        not_planned_ids = sorted(
+            deliverable_id
+            for deliverable_id in deliverable_ids
+            if (
+                (deliverable := state.deliverables.get(deliverable_id))
+                is not None
+                and deliverable.initial_release_disposition is not None
+                and deliverable.initial_release_disposition.state
+                == InitialReleaseDispositionState.NOT_PLANNED
+            )
+        )
+        if not_planned_ids:
+            result["errors"].append(
+                "initial release is marked not planned for: "
+                + ", ".join(not_planned_ids)
+                + "; reopen the initial release decision before requesting a package"
+            )
+            return None
 
     predecessor_candidate_branch = (
         _release_candidate_branch(predecessor)
@@ -905,6 +925,17 @@ def _build_release_package(
         deliverable_ids=deliverable_ids,
     )
     if duplicate is not None:
+        disposition_ids = mark_initial_release_requested(
+            state,
+            deliverable_ids=deliverable_ids,
+            release_package_id=duplicate.id,
+            decided_by_actor=(
+                _optional_text(request.get("release_requested_by_actor"))
+                or f"agent:{actor_agent_id}"
+            ),
+            now=utc_now(),
+        )
+        result["updated_initial_release_disposition_ids"] = disposition_ids
         result["duplicate"] = True
         result["created"] = False
         result["existing_release_package_id"] = duplicate.id
@@ -1026,6 +1057,17 @@ def _build_release_package(
         created_at=now,
         updated_at=now,
     )
+    disposition_ids = mark_initial_release_requested(
+        state,
+        deliverable_ids=deliverable_ids,
+        release_package_id=release_id,
+        decided_by_actor=(
+            _optional_text(request.get("release_requested_by_actor"))
+            or f"agent:{actor_agent_id}"
+        ),
+        now=now,
+    )
+    result["updated_initial_release_disposition_ids"] = disposition_ids
     result["created"] = True
     result["duplicate"] = False
     result["release_package_id"] = release_id

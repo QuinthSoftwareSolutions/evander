@@ -8,6 +8,17 @@
 - Limited the remaining agent-specific editor to container Codex usage mode and
   hid the edit action for agents without that setting.
 
+## 2026-08-05 - Durable Initial Release Decisions
+
+- Tracked newly accepted ordinary root deliverables in release-configured
+  projects as durable pending initial-release decisions without automatically
+  creating the first release package.
+- Added exact-scope manager-fallback recovery until a project lead or Team
+  manager requests a release or records an audited not-planned reason, with an
+  audited reopen path and compatible-deliverable batching guidance.
+- Exposed initial-release disposition and audit evidence in Team Delivery while
+  leaving legacy accepted deliverables untracked to avoid migration wake floods.
+
 ## 2026-08-02 - Rejected Deliverable Review Integrity
 
 - Prevented formal review from overriding a direct superior rejection and added

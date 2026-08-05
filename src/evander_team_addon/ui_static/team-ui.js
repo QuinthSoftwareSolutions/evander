@@ -5052,6 +5052,9 @@ function deliveryRowNeedsAttention(row) {
   if (!isCurrentDeliverable(row.deliverable)) {
     return false;
   }
+  if (text(row.deliverable?.initial_release_disposition?.state) === "pending") {
+    return true;
+  }
   if (
     currentDeliveryReleasePackages(row.releasePackages).some(
       (release) => !["accepted", "cancelled"].includes(text(release.state)),
@@ -14949,6 +14952,7 @@ function renderDeliverableEvidence(deliverable) {
 
 function renderDeliverableTechnicalDetails(deliverable) {
   const gitRefs = deliverable.git_refs || {};
+  const initialRelease = deliverable.initial_release_disposition || {};
   return renderTechnicalDetails([
     ["Deliverable ID", deliverable.id],
     ["Task ID", deliverable.task_id],
@@ -14965,9 +14969,31 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
+    ["Initial release package ID", initialRelease.release_package_id],
   ], {
     disclosureKey: teamDisclosureKey("deliverable", deliverable.id, "technical"),
   });
+}
+
+function renderInitialReleaseDisposition(deliverable) {
+  const disposition = deliverable.initial_release_disposition;
+  if (!disposition) {
+    return "";
+  }
+  const dispositionState = text(disposition.state || "pending");
+  return `
+    <section class="deliverable-detail-group deliverable-initial-release-disposition">
+      <h4>Initial release decision</h4>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Disposition</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(dispositionState)}">${escapeHtml(humanizeToken(dispositionState))}</span></div></div>
+        ${disposition.decided_by_actor ? `<div><div class="delivery-detail-label">Decided by</div><div class="delivery-detail-value">${escapeHtml(disposition.decided_by_actor)}</div></div>` : ""}
+        ${disposition.decided_at ? `<div><div class="delivery-detail-label">Decided</div><div class="delivery-detail-value">${renderRecordDate(disposition.decided_at)}</div></div>` : ""}
+        ${disposition.release_package_id ? `<div><div class="delivery-detail-label">Release package</div><div class="delivery-detail-value">${renderIdentifierCopy(disposition.release_package_id, { label: "Copy ID" })}</div></div>` : ""}
+      </div>
+      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${escapeHtml(disposition.reason)}</p>` : ""}
+      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${escapeHtml(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
+    </section>
+  `;
 }
 
 function renderDeliverableCard(deliverable, { compact = false } = {}) {
@@ -15006,6 +15032,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
             <h4>Evidence and artifacts</h4>
             ${renderDeliverableEvidence(deliverable)}
           </section>
+          ${renderInitialReleaseDisposition(deliverable)}
           <section class="deliverable-detail-group">
             <h4>Reviews and decision</h4>
             ${reviewIds.length ? renderReviewSummary(reviewIds) : `<p class="empty-state">No reviews recorded.</p>`}
@@ -18479,6 +18506,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
       <h4>Evidence and artifacts</h4>
       ${renderDeliverableEvidence(deliverable)}
     </section>
+    ${renderInitialReleaseDisposition(deliverable)}
     <section class="deliverable-detail-group delivery-row-reviews">
       <h4>Reviews and decision</h4>
       ${reviewIds.length ? renderReviewSummary(reviewIds, { interactive: true }) : `<p class="empty-state">No reviews recorded.</p>`}
@@ -18601,6 +18629,34 @@ function deliverablePipelineStages(row, release) {
     deliverableAcceptanceStage(row),
   ];
   if (!release) {
+    const disposition = row.deliverable.initial_release_disposition;
+    const dispositionState = text(disposition?.state);
+    if (dispositionState === "pending") {
+      stages.push({
+        label: "Initial release decision",
+        state: "waiting",
+        detail: "Waiting for the project lead or team manager to request a release or mark it not planned",
+      });
+      return stages;
+    }
+    if (dispositionState === "not_planned") {
+      stages.push({
+        label: "Initial release decision",
+        state: "complete",
+        detail: disposition.reason
+          ? `Not planned for an initial release: ${disposition.reason}`
+          : "Not planned for an initial release",
+      });
+      return stages;
+    }
+    if (dispositionState === "release_requested") {
+      stages.push({
+        label: "Release inclusion",
+        state: "blocked",
+        detail: `Recorded release package ${text(disposition.release_package_id) || "is"} unavailable`,
+      });
+      return stages;
+    }
     stages.push({
       label: "Release inclusion",
       state: "waiting",

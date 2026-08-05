@@ -1125,6 +1125,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_publish_review_branch`
 - `team_update_feature_branch`
 - `team_request_release`
+- `team_decide_initial_release`
 - `team_recover_release`
 - `team_retry_release_gate`
 - `team_request_ephemeral_agent`
@@ -1204,6 +1205,16 @@ atomically handling the notice. Acceptance can cascade to task acceptance when
 all active deliverables are accepted. Rejection requires a concrete reason,
 marks the deliverable rejected, returns the task to `in_progress`, and creates
 an actionable rework item for the owner.
+
+When that acceptance resolves a newly accepted ordinary root task in a project
+with a release policy, Team also records a durable initial-release disposition.
+It starts as `pending` and is not cleared by acknowledging the root-resolution
+notice. The project lead or top-level Team manager must either include the
+deliverable in `team_request_release` or call `team_decide_initial_release`
+with `decision: not_planned` and a reason. A later authorized
+`decision: reopen` restores a not-planned disposition to `pending` while
+retaining the reopen actor, reason, and timestamp. Historical deliverables that
+predate this state remain untracked instead of creating a migration wake flood.
 
 The receiving superior can instead use `team_request_review` when specialist or
 policy review is needed, or `team_report_blocker` when evidence or a dependency
@@ -1781,6 +1792,13 @@ immediate dispatch.
   branch → canonical branch, finalized by `effect:team:mark-release-published`).
   Pure artifact releases do not require project Git config and do not create
   release or canonical branches.
+
+The initial package remains discretionary rather than automatic. Pending root
+deliverables are included in the periodic manager-fallback summary until an
+authorized actor requests a release or records `not_planned`. The fallback
+dispatch freezes the exact pending deliverable IDs shown in its prompt, so the
+manager may batch compatible deliverables from one project and Git base but
+cannot act on newly appeared or foreign records through that stale lease.
 
 New Git release packages use the current release policy; historical terminal
 records remain readable without being retroactively reopened, while legacy

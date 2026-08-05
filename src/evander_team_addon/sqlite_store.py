@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 47
+SQLITE_SCHEMA_VERSION = 48
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -914,6 +914,18 @@ class TeamStateSqliteStore:
                     table_name="team_dispatches",
                     column_name="review_routing_authorities_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="initial_release_decision_deliverable_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="initial_release_disposition_json",
+                    definition="TEXT",
                 )
                 _ensure_column(
                     connection,
@@ -2578,6 +2590,11 @@ class TeamStateSqliteStore:
                     if row["acceptance_decision_json"] is not None
                     else None
                 ),
+                "initial_release_disposition": (
+                    _json_loads(row["initial_release_disposition_json"])
+                    if row["initial_release_disposition_json"] is not None
+                    else None
+                ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
                 "superseded_by_deliverable_id": row["superseded_by_deliverable_id"],
                 "supersession_reason": row["supersession_reason"],
@@ -2604,13 +2621,14 @@ class TeamStateSqliteStore:
                     release_commit_sha, verification_json, supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
                     review_manifest_json, acceptance_recipient_agent_id,
-                    acceptance_decision_json, supersession_reason, superseded_at,
+                    acceptance_decision_json, initial_release_disposition_json,
+                    supersession_reason, superseded_at,
                     superseded_by_actor, review_cohort_id,
                     review_cohort_sealed_at, rework_requested_at,
                     rework_requested_by_agent_id, rework_reason, outcomes_json,
                     completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2645,6 +2663,11 @@ class TeamStateSqliteStore:
                     (
                         _json_dumps(deliverable.get("acceptance_decision"))
                         if deliverable.get("acceptance_decision") is not None
+                        else None
+                    ),
+                    (
+                        _json_dumps(deliverable.get("initial_release_disposition"))
+                        if deliverable.get("initial_release_disposition") is not None
                         else None
                     ),
                     deliverable.get("supersession_reason"),
@@ -4055,6 +4078,9 @@ class TeamStateSqliteStore:
                 "review_routing_authorities": _json_loads(
                     row["review_routing_authorities_json"] or "[]"
                 ),
+                "initial_release_decision_deliverable_ids": _json_loads(
+                    row["initial_release_decision_deliverable_ids_json"] or "[]"
+                ),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "prepared_at": row["prepared_at"],
@@ -4074,10 +4100,11 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_dispatches(
                     id, agent_id, session_id, cause_kind, cause_id,
-                    review_routing_authorities_json, status,
+                    review_routing_authorities_json,
+                    initial_release_decision_deliverable_ids_json, status,
                     created_at, prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4086,6 +4113,9 @@ class TeamStateSqliteStore:
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
+                    _json_dumps(
+                        dispatch.get("initial_release_decision_deliverable_ids", [])
+                    ),
                     dispatch["status"],
                     dispatch["created_at"],
                     dispatch.get("prepared_at"),
@@ -7493,6 +7523,7 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     review_manifest_json TEXT,
     acceptance_recipient_agent_id TEXT,
     acceptance_decision_json TEXT,
+    initial_release_disposition_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
     supersession_reason TEXT,
@@ -8077,6 +8108,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
+    initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     prepared_at TEXT,

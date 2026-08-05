@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -101,6 +101,12 @@ class TeamRecordState(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+
+
+class InitialReleaseDispositionState(str, Enum):
+    PENDING = "pending"
+    RELEASE_REQUESTED = "release_requested"
+    NOT_PLANNED = "not_planned"
 
 
 class HumanReviewFindingTargetScope(str, Enum):
@@ -1476,6 +1482,76 @@ class DeliverableAcceptanceDecision(TeamModel):
         return self
 
 
+class DeliverableInitialReleaseDisposition(TeamModel):
+    state: InitialReleaseDispositionState = InitialReleaseDispositionState.PENDING
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    decided_at: datetime | None = None
+    decided_by_actor: str | None = None
+    reason: str | None = None
+    release_package_id: str | None = None
+    reopened_at: datetime | None = None
+    reopened_by_actor: str | None = None
+    reopen_reason: str | None = None
+
+    @field_validator(
+        "decided_by_actor",
+        "reason",
+        "release_package_id",
+        "reopened_by_actor",
+        "reopen_reason",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_state_evidence(self) -> "DeliverableInitialReleaseDisposition":
+        reopen_values = (
+            self.reopened_at,
+            self.reopened_by_actor,
+            self.reopen_reason,
+        )
+        if any(value is not None for value in reopen_values) and not all(
+            value is not None for value in reopen_values
+        ):
+            raise ValueError(
+                "initial release disposition reopen evidence requires actor, reason, and time"
+            )
+        if self.state == InitialReleaseDispositionState.PENDING:
+            if any(
+                value is not None
+                for value in (
+                    self.decided_at,
+                    self.decided_by_actor,
+                    self.reason,
+                    self.release_package_id,
+                )
+            ):
+                raise ValueError(
+                    "pending initial release dispositions cannot contain decision evidence"
+                )
+            return self
+        if self.decided_at is None or self.decided_by_actor is None:
+            raise ValueError(
+                "terminal initial release dispositions require actor and decision time"
+            )
+        if self.state == InitialReleaseDispositionState.RELEASE_REQUESTED:
+            if self.release_package_id is None:
+                raise ValueError(
+                    "release-requested initial release dispositions require a release package"
+                )
+            return self
+        if self.reason is None:
+            raise ValueError("not-planned initial release dispositions require a reason")
+        if self.release_package_id is not None:
+            raise ValueError(
+                "not-planned initial release dispositions cannot reference a release package"
+            )
+        return self
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -1493,6 +1569,7 @@ class Deliverable(TeamModel):
     review_manifest: DeliverableReviewManifest | None = None
     acceptance_recipient_agent_id: str | None = None
     acceptance_decision: DeliverableAcceptanceDecision | None = None
+    initial_release_disposition: DeliverableInitialReleaseDisposition | None = None
     supersedes_deliverable_id: str | None = None
     superseded_by_deliverable_id: str | None = None
     supersession_reason: str | None = None
@@ -2131,6 +2208,7 @@ class TeamDispatch(TeamModel):
     review_routing_authorities: list[TeamDispatchReviewRoutingAuthority] = Field(
         default_factory=list
     )
+    initial_release_decision_deliverable_ids: list[str] = Field(default_factory=list)
     status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
     created_at: datetime = Field(default_factory=utc_now)
     prepared_at: datetime | None = None
@@ -2156,6 +2234,7 @@ class TeamDispatch(TeamModel):
         "inbox_item_ids",
         "project_ids",
         "managed_repo_ids",
+        "initial_release_decision_deliverable_ids",
         mode="before",
     )
     @classmethod
@@ -2172,6 +2251,13 @@ class TeamDispatch(TeamModel):
             raise ValueError("dispatch review routing authorities must be unique")
         if self.review_routing_authorities and self.cause_kind != "manager_fallback":
             raise ValueError("dispatch review routing authorities require manager_fallback cause")
+        if (
+            self.initial_release_decision_deliverable_ids
+            and self.cause_kind != "manager_fallback"
+        ):
+            raise ValueError(
+                "dispatch initial release decisions require manager_fallback cause"
+            )
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -4451,6 +4537,23 @@ class TeamState(TeamModel):
                     f"deliverable {deliverable.id} references missing producer "
                     f"{deliverable.producer_agent_id}"
                 )
+            disposition = deliverable.initial_release_disposition
+            if (
+                disposition is not None
+                and disposition.state
+                == InitialReleaseDispositionState.RELEASE_REQUESTED
+            ):
+                release = self.release_packages.get(disposition.release_package_id or "")
+                if release is None:
+                    errors.append(
+                        f"deliverable {deliverable.id} initial release disposition "
+                        f"references missing release {disposition.release_package_id}"
+                    )
+                elif deliverable.id not in release.deliverable_ids:
+                    errors.append(
+                        f"deliverable {deliverable.id} initial release disposition "
+                        f"references release {release.id} that does not include it"
+                    )
             if (
                 deliverable.rework_requested_by_agent_id is not None
                 and deliverable.rework_requested_by_agent_id not in self.agents
@@ -5374,6 +5477,12 @@ class TeamState(TeamModel):
             for project_id in dispatch.project_ids:
                 if project_id not in self.projects:
                     errors.append(f"dispatch {dispatch.id} references missing project {project_id}")
+            for deliverable_id in dispatch.initial_release_decision_deliverable_ids:
+                if deliverable_id not in self.deliverables:
+                    errors.append(
+                        f"dispatch {dispatch.id} initial release authority references "
+                        f"missing deliverable {deliverable_id}"
+                    )
             for authority in dispatch.review_routing_authorities:
                 reviewer = self.agents.get(authority.reviewer_agent_id)
                 project = self.projects.get(authority.project_id)
