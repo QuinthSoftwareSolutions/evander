@@ -13341,6 +13341,37 @@ def test_blocked_review_retry_preserves_attempt_and_reopens_deliverable(
     assert state.review_requests[first_review_id].block_kind == ReviewBlockKind.SYSTEM
     assert state.deliverables["deliverable"].state == TeamRecordState.BLOCKED
 
+    _team_admin_service(repo).create_team(
+        team_id="unrelated-team",
+        name="Unrelated Team",
+        manager_agent_id="unrelated-manager",
+        manager_session_id="session-unrelated-manager",
+        expected_revision=repo.read().revision,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="unrelated-manager",
+        dispatch_id="dispatch-unrelated-retry",
+    )
+
+    def _widen_unrelated_retry_dispatch_scope(state):
+        state.dispatches["dispatch-unrelated-retry"].project_ids = ["project"]
+        return state
+
+    repo.update(_widen_unrelated_retry_dispatch_scope)
+    unchanged, forbidden = _command_service(repo).retry_review_command(
+        session_id="session-unrelated-manager",
+        review_request_id=first_review_id,
+        reason="Route this review outside its owning team.",
+        reviewer_agent_id="unrelated-manager",
+        request_id="request-unrelated-retry",
+    )
+
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "review_retry_invalid"
+    assert "not permitted" in forbidden["errors"][0]["message"]
+    assert unchanged.review_requests[first_review_id].superseded_by_review_request_id is None
+
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-retry-review")
     state, retried = _command_service(repo).retry_review_command(
         session_id="session-lead",

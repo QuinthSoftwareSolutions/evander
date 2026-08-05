@@ -187,6 +187,7 @@ def _human_state(
     manifest = ReleaseCandidateManifest(
         project_id="project",
         release_package_id="release",
+        base_commit_sha="0" * 40,
         candidate_commit_sha="a" * 40,
         candidate_tree_hash="b" * 40,
         release_branch="team/team/releases/release",
@@ -203,6 +204,8 @@ def _human_state(
         deliverable_ids=["source-deliverable"],
         release_branch=manifest.release_branch,
         canonical_branch="main",
+        base_commit_sha="0" * 40,
+        canonical_base_commit_sha="0" * 40,
         candidate_commit_sha=manifest.candidate_commit_sha,
         candidate_tree_hash=manifest.candidate_tree_hash,
         manifest=manifest,

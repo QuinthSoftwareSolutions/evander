@@ -23,6 +23,7 @@ from evander.ado_mentions import (
     resolve_ado_mentions,
 )
 from evander.models import (
+    AdoIdentitySummary,
     AdoPrCommentActivityResponse,
     AdoPrCommitActivityResponse,
     DiscordCommandEnvelope,
@@ -38,12 +39,15 @@ from evander.models import (
     PullRequestCommit,
     PullRequestItem,
     PullRequestReviewer,
+    PullRequestWorkItem,
+    PullRequestWorkItemsResponse,
     PrFeedbackItem,
     ResolveAdoIdentityResponse,
     SessionManifest,
     TeamsMessageEnvelope,
     UpdatePullRequestResponse,
 )
+from evander.issue_owner import assigned_to_identity
 from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.repositories.cursors import DiscordInboxCursorRepository
 from evander.inline_media import (
@@ -226,6 +230,57 @@ def _ado_identity_summary(query: str, identity: Mapping[str, Any]) -> dict[str, 
         "email": _identity_email(identity),
         "raw": dict(identity),
     }
+
+
+def _unique_positive_ints(values: Iterator[Any]) -> list[int]:
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        try:
+            candidate = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if candidate <= 0 or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _pull_request_work_item_assignee(value: Any) -> AdoIdentitySummary | None:
+    identity = assigned_to_identity(value)
+    if identity is None:
+        return None
+    payload = dict(identity)
+    if isinstance(value, Mapping):
+        payload["raw"] = dict(value)
+    return AdoIdentitySummary.model_validate(payload)
+
+
+def _pull_request_work_item_from_reference(
+    *,
+    reference: Mapping[str, Any],
+    details: Mapping[str, Any] | None,
+) -> PullRequestWorkItem:
+    work_item_id = str(reference.get("id") or "").strip()
+    detail_payload = dict(details) if isinstance(details, Mapping) else {}
+    fields = detail_payload.get("fields")
+    fields = fields if isinstance(fields, Mapping) else {}
+    web_links = detail_payload.get("_links")
+    web_links = web_links if isinstance(web_links, Mapping) else {}
+    web_link = web_links.get("web")
+    web_link = web_link if isinstance(web_link, Mapping) else {}
+    return PullRequestWorkItem(
+        work_item_id=work_item_id,
+        title=_text_or_none(fields.get("System.Title")),
+        url=(
+            _text_or_none(web_link.get("href"))
+            or _text_or_none(reference.get("url"))
+            or _text_or_none(detail_payload.get("url"))
+        ),
+        assignee=_pull_request_work_item_assignee(fields.get("System.AssignedTo")),
+        raw={"reference": dict(reference), "work_item": detail_payload},
+    )
 
 
 def _identity_match_values(value: Any) -> set[str]:
@@ -3592,6 +3647,13 @@ class PrQueryProvider(Protocol):
         include_commits: bool | None = None,
     ) -> GetPullRequestResponse: ...
 
+    def get_pull_request_work_items(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+    ) -> PullRequestWorkItemsResponse: ...
+
 
 class GitHubPrReplyProvider:
     def __init__(
@@ -4587,6 +4649,87 @@ class AzureDevOpsPrQueryProvider:
             commits=normalized_commits,
             raw=raw_payload,
         )
+
+    def get_pull_request_work_items(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+    ) -> PullRequestWorkItemsResponse:
+        """Return the Azure DevOps work items associated with a pull request.
+
+        Azure DevOps returns work-item references from the Git API. Fetch the
+        lightweight work-item records separately so workflow configuration can
+        use the assignee's normalized name and email without exposing the PAT
+        to an agent.
+        """
+
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            references_response = client.get(
+                (
+                    f"{self.organization_url}/{self.project}/_apis/git/repositories/"
+                    f"{repo_identifier}/pullRequests/{pr_id}/workitems"
+                ),
+                params={"api-version": "7.1"},
+                auth=("", self.pat),
+            )
+            references_response.raise_for_status()
+            references_payload = references_response.json()
+
+            raw_references = (
+                references_payload.get("value") if isinstance(references_payload, dict) else None
+            )
+            references = [item for item in raw_references or [] if isinstance(item, dict)]
+            numeric_ids = _unique_positive_ints(item.get("id") for item in references)
+            details_by_id = self._get_work_item_details(client=client, work_item_ids=numeric_ids)
+
+        work_items = [
+            _pull_request_work_item_from_reference(
+                reference=reference,
+                details=details_by_id.get(str(reference.get("id") or "").strip()),
+            )
+            for reference in references
+            if str(reference.get("id") or "").strip()
+        ]
+        return PullRequestWorkItemsResponse(
+            provider="azure_devops",
+            repo=repo,
+            pr_id=pr_id,
+            work_items=work_items,
+            count=len(work_items),
+            raw={"references": references},
+        )
+
+    def _get_work_item_details(
+        self,
+        *,
+        client: httpx.Client,
+        work_item_ids: list[int],
+    ) -> dict[str, dict[str, Any]]:
+        details_by_id: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(work_item_ids), 200):
+            response = client.post(
+                f"{self.organization_url}/_apis/wit/workitemsbatch",
+                params={"api-version": "7.1"},
+                headers={"Content-Type": "application/json"},
+                auth=("", self.pat),
+                json={
+                    "ids": work_item_ids[start : start + 200],
+                    "fields": ["System.Id", "System.Title", "System.AssignedTo"],
+                    "errorPolicy": "Omit",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            values = payload.get("value") if isinstance(payload, dict) else None
+            for item in values or []:
+                if not isinstance(item, dict):
+                    continue
+                work_item_id = str(item.get("id") or "").strip()
+                if work_item_id:
+                    details_by_id[work_item_id] = item
+        return details_by_id
 
 
 class GitHubPrQueryProvider:

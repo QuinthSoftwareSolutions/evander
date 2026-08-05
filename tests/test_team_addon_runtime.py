@@ -4659,6 +4659,10 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
     lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
 
     assert lease["reason"] == "manager_fallback"
+    assert lease["role_description_changed"] is True
+    assert lease["role_description_fingerprint"] == agent_role_description_fingerprint(
+        lease["agent"]
+    )
     assert lease["tasks"] == []
     assert lease["inbox"] == []
 

@@ -49,6 +49,7 @@ from evander.admin.web.rbac import (
     AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
     OWNER_GROUP_ID,
+    TEAM_CHATS_MUTATE_PERMISSION,
     TEAM_CHATS_READ_ALL_PERMISSION,
     WORKFLOW_PACKS_MANAGE_PERMISSION,
     WORKFLOW_MAINTAINER_GROUP_ID,
@@ -1578,6 +1579,23 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "azure_devops",
         "ado",
         "github",
+    ]
+    pr_work_items = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "query:pull-request:work-items"
+    )
+    assert [field["key"] for field in pr_work_items["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "directory_path",
+        "ado_organization",
+        "project",
+    ]
+    assert [option["value"] for option in pr_work_items["fields"][0]["options"]] == [
+        "azure_devops",
+        "ado",
     ]
     session_list = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:session:list"
@@ -9689,6 +9707,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
         WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_MUTATE_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
     }
     assert session.json()["permissions"] == session.json()["effective_permissions"]
@@ -9701,6 +9720,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
         WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_MUTATE_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
     }
 

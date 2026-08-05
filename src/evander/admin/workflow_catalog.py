@@ -806,6 +806,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Read messages from a read-capable Teams or Discord communication target."
     ),
     "query:pull-request:get": "Get a provider pull request by id without owning cursor state.",
+    "query:pull-request:work-items": (
+        "List Azure DevOps work items linked to a pull request, including normalized assignees."
+    ),
     "query:session-context": "Read session context and metadata.",
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
     "query:session:list": "List sessions by generic manifest metadata.",
@@ -4258,6 +4261,29 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("project", "Project", "string", bindable=True),
             _field("include_reviewers", "Include reviewers", "boolean", bindable=True),
             _field("include_commits", "Include commits", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:pull-request:work-items",
+        label="Pull request work items",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("ado_organization", "ADO organization", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

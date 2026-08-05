@@ -2097,6 +2097,12 @@ Set `include_commits=true` to fetch commit details and `include_reviewers=true`
 to fetch review API data; `include_reviewers=false` returns an empty reviewer
 list.
 
+Use `query:pull-request:work-items` when an Azure DevOps workflow needs the
+work items linked to one PR. It returns the linked work items in provider order
+with a normalized assignee identity (`display_name`, `unique_name`, and `email`
+when available), so a workflow can make deterministic assignee or PR-owner
+decisions without passing the Azure DevOps credential to an agent.
+
 Azure DevOps exposes PR labels through separate endpoints, so the `tags`
 expression is applied after listing candidate PRs. The expression supports tag
 names with case-insensitive `and`, `or`, `not`, and parentheses, for example
