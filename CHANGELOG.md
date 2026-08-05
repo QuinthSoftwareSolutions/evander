@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-02 - Team Artifact Import Authorization
+
+- Required persistent Team agents to import only artifact references published on deliverables
+  visible within their Team read scope, preventing default-open artifact-space grants from
+  exposing cross-team deliverables.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over

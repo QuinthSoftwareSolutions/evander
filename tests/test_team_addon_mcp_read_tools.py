@@ -1009,7 +1009,7 @@ def test_team_import_artifact_enforces_artifact_space_read_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _runtime(tmp_path, allowed_tools=[TEAM_IMPORT_ARTIFACT_TOOL])
-    _seed_read_tool_state(context.config.runtime_dir)
+    repo = _seed_read_tool_state(context.config.runtime_dir)
     artifact_space_path = "/teams/alpha/restricted"
     artifact_ref = f"artifact-space:{artifact_space_path}"
     artifact_store = ArtifactSpaceStore(context.config.runtime_dir)
@@ -1023,6 +1023,12 @@ def test_team_import_artifact_enforces_artifact_space_read_grant(
         subject="team-agent:alpha-lead",
     )
 
+    def _publish_ref_on_visible_deliverable(state):
+        state.deliverables["alpha-deliverable"].artifact_refs = [artifact_ref]
+        return state
+
+    repo.update(_publish_ref_on_visible_deliverable)
+
     def fail_import(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
         del self, resolved_config
         raise AssertionError("permission-denied artifact must not be imported")
@@ -1031,6 +1037,40 @@ def test_team_import_artifact_enforces_artifact_space_read_grant(
     server = create_server(context)
 
     with pytest.raises(ToolError, match="team-agent:alpha-dev cannot read artifact space"):
+        _call_tool(
+            server,
+            TEAM_IMPORT_ARTIFACT_TOOL,
+            {"session_id": "session-alpha-dev", "artifact_ref": artifact_ref},
+        )
+
+
+def test_team_import_artifact_rejects_ref_outside_visible_deliverables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_IMPORT_ARTIFACT_TOOL])
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+    artifact_space_path = "/teams/beta/private-deliverable"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    ArtifactSpaceStore(context.config.runtime_dir).ensure_space(
+        path=artifact_space_path,
+        subject="team-agent:beta-lead",
+    )
+
+    def _publish_ref_on_hidden_deliverable(state):
+        state.deliverables["beta-deliverable"].artifact_refs = [artifact_ref]
+        return state
+
+    repo.update(_publish_ref_on_hidden_deliverable)
+
+    def fail_import(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("out-of-scope artifact must not be imported")
+
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", fail_import)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not available in a visible Team deliverable"):
         _call_tool(
             server,
             TEAM_IMPORT_ARTIFACT_TOOL,

@@ -215,6 +215,15 @@ class TeamReadService:
             return None
         return _without_none(deliverable.model_dump(mode="json"))
 
+    def can_import_artifact_ref(self, artifact_ref: str) -> bool:
+        """Return whether an artifact ref was published on a visible deliverable."""
+        normalized_ref = _text(artifact_ref)
+        return any(
+            normalized_ref in deliverable.artifact_refs
+            for deliverable in self._state.deliverables.values()
+            if self._deliverable_visible(deliverable)
+        )
+
     def list_review_requests(
         self,
         *,
