@@ -16690,6 +16690,15 @@ function activeReleaseVerificationRun(release) {
   ) || null;
 }
 
+function releaseVerificationRunStillActive(releaseId) {
+  const normalizedId = text(releaseId);
+  const detailedRelease = releaseDetailCache.get(normalizedId)?.release;
+  const release = detailedRelease
+    ? mergeReleaseDetailWithCurrentState(detailedRelease)
+    : state.release_packages?.[normalizedId];
+  return Boolean(activeReleaseVerificationRun(release));
+}
+
 function clearReleaseVerificationLivePolling(releaseId) {
   const normalizedId = text(releaseId);
   const timer = releaseVerificationLivePollTimers.get(normalizedId);
@@ -16715,7 +16724,7 @@ function ensureReleaseVerificationLivePolling(release) {
   }
 }
 
-function scheduleReleaseVerificationLivePoll(releaseId, payload) {
+function scheduleReleaseVerificationLivePoll(releaseId, payload, retryWhileActive = false) {
   const normalizedId = text(releaseId);
   const previous = releaseVerificationLivePollTimers.get(normalizedId);
   if (previous) {
@@ -16723,7 +16732,10 @@ function scheduleReleaseVerificationLivePoll(releaseId, payload) {
   }
   if (
     !expandedReleaseDetailIds.has(normalizedId)
-    || text(payload?.run?.state) !== "running"
+    || (
+      text(payload?.run?.state) !== "running"
+      && !(retryWhileActive && releaseVerificationRunStillActive(normalizedId))
+    )
   ) {
     releaseVerificationLivePollTimers.delete(normalizedId);
     return;
@@ -16763,6 +16775,7 @@ async function loadReleaseVerificationLive(releaseId) {
       error: error instanceof Error ? error.message : "Live verifier output could not be loaded.",
       payload: existing?.payload || null,
     });
+    scheduleReleaseVerificationLivePoll(normalizedId, existing?.payload, true);
   }
   renderReleaseDetailSurfaces();
 }

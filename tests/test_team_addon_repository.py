@@ -2322,6 +2322,45 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     assert persisted.initial_release_disposition == initial_release
 
 
+def test_candidate_correction_recovery_does_not_open_initial_release_decision(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _configure_recovery_task(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True,
+        )
+        state.tasks["task"].created_by_actor = "system:candidate-correction-recovery"
+        return state
+
+    _seed_task(repo, task_id="task")
+    repo.update(_configure_recovery_task)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-recovery",
+        task_id="task",
+        summary="Verified candidate recovery.",
+        artifact_refs=["artifact-space:/candidate-recovery"],
+        request_id="request-submit-recovery",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept")
+
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-recovery",
+        decision="accepted",
+        reason="The downstream recovery is verified.",
+        request_id="request-accept-recovery",
+    )
+
+    assert accepted["success"] is True
+    assert submitted["success"] is True
+    assert state.deliverables["deliverable-recovery"].state == TeamRecordState.ACCEPTED
+    assert state.deliverables["deliverable-recovery"].initial_release_disposition is None
+
+
 def test_superior_decision_requires_pending_notice_in_current_dispatch(
     tmp_path: Path,
 ) -> None:

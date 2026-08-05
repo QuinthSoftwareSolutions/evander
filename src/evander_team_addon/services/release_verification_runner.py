@@ -128,6 +128,19 @@ class TeamReleaseVerificationRunner:
         command_results = [item.model_dump(mode="json", exclude_none=True) for item in run.command_results]
         if len(command_results) != len(verification_commands):
             raise ValueError("release verification run does not match its frozen command manifest")
+        persisted_outcome = _persisted_terminal_outcome(command_results)
+        if persisted_outcome is not None:
+            terminal_state, failure_kind, terminal_error = persisted_outcome
+            _state, result = self._release_gate_service.record_verification_result(
+                release_package_id=release_package_id,
+                verification_run_id=verification_run_id,
+                candidate_commit_sha=candidate_commit_sha,
+                verification_state=terminal_state,
+                command_results=command_results,
+                failure_kind=failure_kind,
+                error=terminal_error,
+            )
+            return result
         terminal_state = "passed"
         failure_kind: str | None = None
         terminal_error: str | None = None
@@ -214,6 +227,7 @@ class TeamReleaseVerificationRunner:
                     result = {
                         "name": command.name,
                         "state": "timed_out",
+                        "failure_kind": "timeout",
                         **(
                             {"job_id": command_results[index]["job_id"]}
                             if command_results[index].get("job_id")
@@ -241,6 +255,15 @@ class TeamReleaseVerificationRunner:
                     command_output.get("failure_kind") == "timeout"
                     or command_status in {"unknown", "preparing", "starting", "running"}
                 )
+                command_failure_kind = (
+                    None
+                    if success
+                    else "timeout"
+                    if command_timed_out
+                    else "candidate"
+                    if command_output.get("failure_kind") == "command"
+                    else "infrastructure"
+                )
                 command_log = "\n".join(
                     part
                     for part in (
@@ -253,6 +276,11 @@ class TeamReleaseVerificationRunner:
                 result = {
                     "name": command.name,
                     "state": "passed" if success else "timed_out" if command_timed_out else "failed",
+                    **(
+                        {"failure_kind": command_failure_kind}
+                        if command_failure_kind is not None
+                        else {}
+                    ),
                     "job_id": (
                         _optional_text(command_output.get("execution_id"))
                         or command_results[index].get("job_id")
@@ -273,17 +301,16 @@ class TeamReleaseVerificationRunner:
                 if not success:
                     if command_timed_out:
                         terminal_state = "timed_out"
-                        failure_kind = "timeout"
+                        failure_kind = command_failure_kind
                         terminal_error = f"release verification command {command.name!r} timed out"
                     else:
                         terminal_state = "failed"
-                        if command_output.get("failure_kind") == "command":
-                            failure_kind = "candidate"
+                        failure_kind = command_failure_kind
+                        if command_failure_kind == "candidate":
                             terminal_error = (
                                 f"release verification command {command.name!r} failed"
                             )
                         else:
-                            failure_kind = "infrastructure"
                             terminal_error = (
                                 f"release verification command {command.name!r} "
                                 "failed in verifier infrastructure"
@@ -320,6 +347,49 @@ class TeamReleaseVerificationRunner:
             error=terminal_error,
         )
         return result
+
+
+def _persisted_terminal_outcome(
+    command_results: list[dict[str, Any]],
+) -> tuple[str, str | None, str | None] | None:
+    """Return a terminal run outcome already durably recorded by a prior effect."""
+
+    for command_result in command_results:
+        command_state = str(command_result.get("state") or "")
+        command_name = str(command_result.get("name") or "verification command")
+        if command_state == "timed_out":
+            return (
+                "timed_out",
+                "timeout",
+                f"release verification command {command_name!r} timed out",
+            )
+        if command_state == "failed":
+            persisted_failure_kind = _optional_text(command_result.get("failure_kind"))
+            failure_kind = (
+                persisted_failure_kind
+                if persisted_failure_kind in {"candidate", "infrastructure"}
+                else "infrastructure"
+                if command_result.get("failure_cause")
+                else "candidate"
+            )
+            return (
+                "failed",
+                failure_kind,
+                (
+                    f"release verification command {command_name!r} failed"
+                    + (
+                        " in verifier infrastructure"
+                        if failure_kind == "infrastructure"
+                        else ""
+                    )
+                ),
+            )
+    if command_results and all(
+        str(command_result.get("state") or "") == "passed"
+        for command_result in command_results
+    ):
+        return "passed", None, None
+    return None
 
 
 def _bounded_verification_log_excerpt(log_text: str) -> str:

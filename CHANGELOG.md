@@ -8,6 +8,9 @@
 - Added a directory-owner-only Admin Web tail for the active verifier command;
   the browser receives a bounded log excerpt through the control plane and never
   receives the worker bearer credential.
+- Finalized restarted verification effects from persisted terminal command outcomes,
+  preserving candidate, infrastructure, and timeout classification, and kept live
+  output polling after transient request failures while the run remains active.
 
 ## 2026-08-05 - Durable Candidate-Correction Successor Recovery
 
@@ -23,6 +26,8 @@
   recovery deliverables, and resolve stale blockers when a direct successor already exists.
 - Migrated legacy `candidate-correction-successor:*` blockers and persisted optional immutable
   task base-commit pins that are enforced when Git work is prepared.
+- Excluded candidate-correction recovery deliverables from ordinary initial-release tracking so
+  they remain attached to the rejected release lineage during successor reconciliation.
 
 ## 2026-08-05 - Human Review Checkbox Accessibility
 

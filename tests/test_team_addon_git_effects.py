@@ -69,6 +69,7 @@ from evander_team_addon.services.release_verification_effects import (
 )
 from evander_team_addon.services.release_verification_runner import (
     ReleaseVerificationTimeoutError,
+    TeamReleaseVerificationRunner,
     _bounded_verification_log_excerpt,
 )
 
@@ -1252,6 +1253,59 @@ def test_release_verifier_persists_live_command_state_and_worker_job(
     assert run.command_results[0].job_id == "live-worker-job"
 
 
+@pytest.mark.parametrize(
+    (
+        "command_state",
+        "command_failure_kind",
+        "expected_release_state",
+        "expects_correction",
+    ),
+    [
+        ("failed", "candidate", TeamRecordState.REJECTED, True),
+        ("failed", "infrastructure", TeamRecordState.BLOCKED, False),
+        ("timed_out", "timeout", TeamRecordState.BLOCKED, False),
+    ],
+)
+def test_release_verifier_resume_finalizes_persisted_terminal_command(
+    tmp_path: Path,
+    command_state: str,
+    command_failure_kind: str,
+    expected_release_state: TeamRecordState,
+    expects_correction: bool,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _persist_terminal_command(state):
+        run = state.release_verification_runs["verification-1"]
+        run.state = "running"
+        run.command_results[0] = ReleaseVerificationCommandResult(
+            name="frozen-check",
+            state=command_state,
+            failure_kind=command_failure_kind,
+            exit_code=1 if command_state == "failed" else None,
+            log_excerpt="persisted verifier failure",
+        )
+        return state
+
+    repo.update(_persist_terminal_command)
+
+    result = TeamReleaseVerificationRunner(repo, SimpleNamespace()).run(
+        release_package_id="release-1",
+        verification_run_id="verification-1",
+        candidate_commit_sha="candidate-sha",
+    )
+
+    state = repo.read()
+    run = state.release_verification_runs["verification-1"]
+    assert result["success"] is True
+    assert result["verification_state"] == command_state
+    assert run.state == command_state
+    assert run.failure_kind == command_failure_kind
+    assert state.release_packages["release-1"].state == expected_release_state
+    assert (run.correction_task_id is not None) is expects_correction
+
+
 def test_release_verification_live_payload_returns_bounded_worker_tail_without_token(
     tmp_path: Path,
     monkeypatch,
@@ -1383,6 +1437,7 @@ def test_release_verifier_classifies_agent_command_timeouts(
     assert recorded["verification_state"] == "timed_out"
     assert recorded["failure_kind"] == "timeout"
     assert recorded["command_results"][0]["state"] == "timed_out"
+    assert recorded["command_results"][0]["failure_kind"] == "timeout"
 
 
 @pytest.mark.parametrize(
@@ -1454,6 +1509,7 @@ def test_release_verifier_does_not_infer_resource_exhaustion_from_command_text(
     assert recorded["verification_state"] == "failed"
     assert recorded["failure_kind"] == "candidate"
     assert recorded["command_results"][0]["state"] == "failed"
+    assert recorded["command_results"][0]["failure_kind"] == "candidate"
 
 
 def test_release_verifier_excerpt_retains_failure_start_and_final_summary() -> None:
@@ -1520,6 +1576,7 @@ def test_release_verifier_uses_structured_worker_resource_exhaustion(
     assert result["success"] is True
     assert recorded["verification_state"] == "failed"
     assert recorded["failure_kind"] == "infrastructure"
+    assert recorded["command_results"][0]["failure_kind"] == "infrastructure"
     assert recorded["command_results"][0]["failure_cause"] == "pids_limit_exhausted"
 
 

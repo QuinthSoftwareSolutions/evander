@@ -2928,6 +2928,7 @@ class ReleaseScopeValidation(TeamModel):
 class ReleaseVerificationCommandResult(TeamModel):
     name: str
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
     job_id: str | None = None
     exit_code: int | None = None
     failure_cause: WorkerFailureCause | None = None

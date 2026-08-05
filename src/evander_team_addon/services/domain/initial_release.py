@@ -19,6 +19,7 @@ from .agent_access import _is_project_lead_for, _is_team_manager
 
 _SYSTEM_OWNED_RELEASE_FOLLOW_UP_ACTORS = frozenset(
     {
+        "system:candidate-correction-recovery",
         "system:git-merge-recovery",
         "system:human-review",
         "system:release-review-correction",
