@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 43
+SQLITE_SCHEMA_VERSION = 49
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -917,6 +917,18 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_dispatches",
+                    column_name="initial_release_decision_deliverable_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="initial_release_disposition_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_inbox",
                     column_name="priority",
                     definition="TEXT NOT NULL DEFAULT 'normal'",
@@ -973,6 +985,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_agent_runtimes",
                     column_name="last_agent_handoff_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="last_delivered_role_description_fingerprint",
                     definition="TEXT",
                 )
                 connection.execute(
@@ -1037,6 +1055,8 @@ class TeamStateSqliteStore:
                     ("completion_json", "TEXT"),
                     ("originating_task_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
+                    ("git_base_branch", "TEXT"),
+                    ("git_base_commit_sha", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -1141,6 +1161,7 @@ class TeamStateSqliteStore:
                 for column_name, definition in (
                     ("reason_code", "TEXT NOT NULL DEFAULT 'unspecified'"),
                     ("reporter_actor", "TEXT"),
+                    ("resolution_scope", "TEXT NOT NULL DEFAULT 'task'"),
                 ):
                     _ensure_column(
                         connection,
@@ -1238,8 +1259,15 @@ class TeamStateSqliteStore:
                     column_name="scope_validation_json",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="git_base_branch",
+                    definition="TEXT",
+                )
                 for column_name in (
                     "base_commit_sha",
+                    "canonical_base_commit_sha",
                     "candidate_commit_sha",
                     "candidate_tree_hash",
                     "approved_commit_sha",
@@ -1309,6 +1337,13 @@ class TeamStateSqliteStore:
                     column_name="sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                for column_name in ("git_base_branch", "base_commit_sha"):
+                    _ensure_column(
+                        connection,
+                        table_name="team_git_promotions",
+                        column_name=column_name,
+                        definition="TEXT",
+                    )
                 _ensure_column(
                     connection,
                     table_name="team_git_work_contexts",
@@ -1343,6 +1378,38 @@ class TeamStateSqliteStore:
                     _migrate_legacy_outcome_kind_definitions(connection)
                 if previous_schema_version < 43:
                     _migrate_worktree_cleanup_evidence(connection)
+                if previous_schema_version < 45:
+                    _migrate_task_git_base_snapshots(connection)
+                if previous_schema_version < 46:
+                    _migrate_release_canonical_base_snapshots(connection)
+                if previous_schema_version < 49:
+                    connection.execute(
+                        """
+                        UPDATE team_blockers
+                        SET source_kind = 'candidate_correction_successor',
+                            resolution_scope = 'downstream'
+                        WHERE source_kind = 'explicit'
+                          AND source_id LIKE 'candidate-correction-successor:%'
+                          AND reason_code = 'candidate_correction_successor_failed'
+                        """
+                    )
+                if (
+                    previous_schema_version < SQLITE_SCHEMA_VERSION
+                    or previous_state_schema_version < SCHEMA_VERSION
+                ):
+                    affected_deliverable_ids = (
+                        _normalize_rejected_acceptance_override_rows(connection)
+                    )
+                    if affected_deliverable_ids:
+                        migrated_state = TeamState.model_validate(
+                            self._read_payload(connection)
+                        )
+                        _reconcile_rejected_acceptance_overrides(
+                            migrated_state,
+                            deliverable_ids=affected_deliverable_ids,
+                            now=utc_now(),
+                        )
+                        self._write_state(connection, migrated_state)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -1392,8 +1459,23 @@ class TeamStateSqliteStore:
                     text = self.legacy_json_path.read_text(encoding="utf-8")
                     payload = json.loads(text)
                     _migrate_legacy_json_outcome_kind_records(payload)
+                    affected_deliverable_ids = (
+                        _normalize_rejected_acceptance_override_payload(payload)
+                    )
                     state = TeamState.model_validate(payload)
+                    if affected_deliverable_ids:
+                        _reconcile_rejected_acceptance_overrides(
+                            state,
+                            deliverable_ids=affected_deliverable_ids,
+                            now=utc_now(),
+                        )
                     self._write_state(connection, state)
+                    # Schema creation precedes the supported JSON import, so a
+                    # version-gated data backfill sees an empty database on the
+                    # first open. Backfill the imported rows in the same
+                    # transaction before recording the import as complete.
+                    _migrate_task_git_base_snapshots(connection)
+                    _migrate_release_canonical_base_snapshots(connection)
                     now = utc_now().isoformat()
                     connection.executemany(
                         """
@@ -2216,6 +2298,9 @@ class TeamStateSqliteStore:
                 "last_agent_handoff_at": row["last_agent_handoff_at"],
                 "last_context_rotated_at": row["last_context_rotated_at"],
                 "last_thread_id": row["last_thread_id"],
+                "last_delivered_role_description_fingerprint": row[
+                    "last_delivered_role_description_fingerprint"
+                ],
                 "updated_at": row["updated_at"],
             }
 
@@ -2235,9 +2320,10 @@ class TeamStateSqliteStore:
                     context_rotation_reason, context_rotation_request_note,
                     last_handoff_summary, context_handoff_preparation_pending,
                     context_handoff_preparation_status, last_agent_handoff_summary,
-                    last_agent_handoff_at, last_context_rotated_at, last_thread_id, updated_at
+                    last_agent_handoff_at, last_context_rotated_at, last_thread_id,
+                    last_delivered_role_description_fingerprint, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2265,6 +2351,7 @@ class TeamStateSqliteStore:
                     runtime.get("last_agent_handoff_at"),
                     runtime.get("last_context_rotated_at"),
                     runtime.get("last_thread_id"),
+                    runtime.get("last_delivered_role_description_fingerprint"),
                     runtime["updated_at"],
                 ),
             )
@@ -2367,6 +2454,8 @@ class TeamStateSqliteStore:
                 "created_by_actor": row["created_by_actor"],
                 "parent_task_id": row["parent_task_id"],
                 "originating_task_id": row["originating_task_id"],
+                "git_base_branch": row["git_base_branch"],
+                "git_base_commit_sha": row["git_base_commit_sha"],
                 "cancellation": (
                     _json_loads(row["cancellation_json"])
                     if row["cancellation_json"] is not None
@@ -2386,11 +2475,12 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    originating_task_id, cancellation_json, task_kind,
+                    originating_task_id, git_base_branch, git_base_commit_sha,
+                    cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2406,6 +2496,8 @@ class TeamStateSqliteStore:
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
                     task.get("originating_task_id"),
+                    task.get("git_base_branch"),
+                    task.get("git_base_commit_sha"),
                     (
                         _json_dumps(task.get("cancellation"))
                         if task.get("cancellation") is not None
@@ -2514,6 +2606,11 @@ class TeamStateSqliteStore:
                     if row["acceptance_decision_json"] is not None
                     else None
                 ),
+                "initial_release_disposition": (
+                    _json_loads(row["initial_release_disposition_json"])
+                    if row["initial_release_disposition_json"] is not None
+                    else None
+                ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
                 "superseded_by_deliverable_id": row["superseded_by_deliverable_id"],
                 "supersession_reason": row["supersession_reason"],
@@ -2540,13 +2637,14 @@ class TeamStateSqliteStore:
                     release_commit_sha, verification_json, supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
                     review_manifest_json, acceptance_recipient_agent_id,
-                    acceptance_decision_json, supersession_reason, superseded_at,
+                    acceptance_decision_json, initial_release_disposition_json,
+                    supersession_reason, superseded_at,
                     superseded_by_actor, review_cohort_id,
                     review_cohort_sealed_at, rework_requested_at,
                     rework_requested_by_agent_id, rework_reason, outcomes_json,
                     completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2581,6 +2679,11 @@ class TeamStateSqliteStore:
                     (
                         _json_dumps(deliverable.get("acceptance_decision"))
                         if deliverable.get("acceptance_decision") is not None
+                        else None
+                    ),
+                    (
+                        _json_dumps(deliverable.get("initial_release_disposition"))
+                        if deliverable.get("initial_release_disposition") is not None
                         else None
                     ),
                     deliverable.get("supersession_reason"),
@@ -2959,6 +3062,7 @@ class TeamStateSqliteStore:
                 "reporter_agent_id": row["reporter_agent_id"],
                 "reporter_actor": row["reporter_actor"],
                 "reason_code": row["reason_code"],
+                "resolution_scope": row["resolution_scope"],
                 "affected_task_ids": affected_tasks.get(row["id"], []),
                 "owner_agent_id": row["owner_agent_id"],
                 "delegate_agent_id": row["delegate_agent_id"],
@@ -2984,13 +3088,13 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_blockers(
                     id, team_id, project_id, task_id, source_kind, source_id,
-                    reporter_agent_id, reporter_actor, reason_code,
+                    reporter_agent_id, reporter_actor, reason_code, resolution_scope,
                     owner_agent_id, delegate_agent_id, state, route,
                     summary, details, priority, escalation_depth, active_dispatch_id,
                     follow_up_at, last_progress_at, terminal_reference_ids_json,
                     created_at, updated_at, resolved_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     blocker["id"],
@@ -3002,6 +3106,7 @@ class TeamStateSqliteStore:
                     blocker.get("reporter_agent_id"),
                     blocker.get("reporter_actor"),
                     blocker.get("reason_code", "unspecified"),
+                    blocker.get("resolution_scope", "task"),
                     blocker.get("owner_agent_id"),
                     blocker.get("delegate_agent_id"),
                     blocker.get("state", "open"),
@@ -3577,8 +3682,10 @@ class TeamStateSqliteStore:
                 "feature_branches": branches.get(row["id"], []),
                 "release_branch": row["release_branch"],
                 "canonical_branch": row["canonical_branch"],
+                "git_base_branch": row["git_base_branch"],
                 "published_commit_sha": row["published_commit_sha"],
                 "base_commit_sha": row["base_commit_sha"],
+                "canonical_base_commit_sha": row["canonical_base_commit_sha"],
                 "candidate_commit_sha": row["candidate_commit_sha"],
                 "candidate_tree_hash": row["candidate_tree_hash"],
                 "approved_commit_sha": row["approved_commit_sha"],
@@ -3613,15 +3720,17 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_release_packages(
                     id, project_id, owner_agent_id, summary, supersedes_release_package_id,
-                    release_branch, canonical_branch, published_commit_sha,
-                    base_commit_sha, candidate_commit_sha, candidate_tree_hash,
+                    release_branch, canonical_branch, git_base_branch,
+                    published_commit_sha,
+                    base_commit_sha, canonical_base_commit_sha,
+                    candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, review_correction_task_id,
                     verification_run_ids_json, review_request_ids_json,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -3631,8 +3740,10 @@ class TeamStateSqliteStore:
                     package.get("supersedes_release_package_id"),
                     package.get("release_branch"),
                     package.get("canonical_branch"),
+                    package.get("git_base_branch"),
                     package.get("published_commit_sha"),
                     package.get("base_commit_sha"),
+                    package.get("canonical_base_commit_sha"),
                     package.get("candidate_commit_sha"),
                     package.get("candidate_tree_hash"),
                     package.get("approved_commit_sha"),
@@ -3985,6 +4096,9 @@ class TeamStateSqliteStore:
                 "review_routing_authorities": _json_loads(
                     row["review_routing_authorities_json"] or "[]"
                 ),
+                "initial_release_decision_deliverable_ids": _json_loads(
+                    row["initial_release_decision_deliverable_ids_json"] or "[]"
+                ),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "prepared_at": row["prepared_at"],
@@ -4004,10 +4118,11 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_dispatches(
                     id, agent_id, session_id, cause_kind, cause_id,
-                    review_routing_authorities_json, status,
+                    review_routing_authorities_json,
+                    initial_release_decision_deliverable_ids_json, status,
                     created_at, prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4016,6 +4131,9 @@ class TeamStateSqliteStore:
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
+                    _json_dumps(
+                        dispatch.get("initial_release_decision_deliverable_ids", [])
+                    ),
                     dispatch["status"],
                     dispatch["created_at"],
                     dispatch.get("prepared_at"),
@@ -4192,6 +4310,8 @@ class TeamStateSqliteStore:
                 "task_id": row["task_id"],
                 "deliverable_id": row["deliverable_id"],
                 "release_package_id": row["release_package_id"],
+                "git_base_branch": row["git_base_branch"],
+                "base_commit_sha": row["base_commit_sha"],
                 "state": row["state"],
                 "commit_sha": row["commit_sha"],
                 "outputs": _json_loads(row["outputs_json"]),
@@ -4208,9 +4328,10 @@ class TeamStateSqliteStore:
                 INSERT INTO team_git_promotions(
                     id, project_id, actor_agent_id, source_branch, sources_json, target_branch,
                     promotion_kind, task_id, deliverable_id, release_package_id, state,
-                    commit_sha, outputs_json, error, created_at, updated_at
+                    git_base_branch, base_commit_sha, commit_sha, outputs_json, error,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     promotion["id"],
@@ -4224,6 +4345,8 @@ class TeamStateSqliteStore:
                     promotion.get("deliverable_id"),
                     promotion.get("release_package_id"),
                     promotion.get("state", "pending"),
+                    promotion.get("git_base_branch"),
+                    promotion.get("base_commit_sha"),
                     promotion.get("commit_sha"),
                     _json_dumps(promotion.get("outputs", {})),
                     promotion.get("error"),
@@ -4833,6 +4956,1198 @@ def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
             "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = ?",
             (_json_dumps(payload), row["id"]),
         )
+
+
+_REJECTED_ACCEPTANCE_MIGRATION_ACTOR = (
+    f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
+)
+_REJECTED_ACCEPTANCE_MIGRATION_REASON = (
+    "Formal review was attached after the deliverable's authoritative direct rejection; "
+    f"the invalid review path was retired during the v{SQLITE_SCHEMA_VERSION} "
+    "state migration."
+)
+
+
+def _acceptance_decision_is_rejected(value: object) -> bool:
+    return isinstance(value, Mapping) and value.get("decision") == "rejected"
+
+
+def _normalize_rejected_acceptance_override_rows(
+    connection: sqlite3.Connection,
+) -> list[str]:
+    """Make legacy rejection overrides parseable before strict model validation."""
+
+    current_review_deliverable_ids = {
+        str(row["deliverable_id"])
+        for row in connection.execute(
+            """
+            SELECT DISTINCT deliverable_id
+            FROM team_review_requests
+            WHERE deliverable_id IS NOT NULL
+              AND retired_at IS NULL
+              AND superseded_by_review_request_id IS NULL
+            """
+        )
+    }
+    affected_ids: list[str] = []
+    for row in connection.execute(
+        """
+        SELECT id, state, acceptance_decision_json
+        FROM team_deliverables
+        WHERE acceptance_decision_json IS NOT NULL
+        ORDER BY id
+        """
+    ):
+        decision = _json_loads(row["acceptance_decision_json"])
+        if not _acceptance_decision_is_rejected(decision):
+            continue
+        deliverable_id = str(row["id"])
+        if (
+            row["state"] == "rejected"
+            and deliverable_id not in current_review_deliverable_ids
+        ):
+            continue
+        connection.execute(
+            "UPDATE team_deliverables SET state = 'rejected' WHERE id = ?",
+            (deliverable_id,),
+        )
+        affected_ids.append(deliverable_id)
+    return affected_ids
+
+
+def _normalize_rejected_acceptance_override_payload(payload: object) -> list[str]:
+    """Apply the same compatibility normalization to a legacy JSON snapshot."""
+
+    if not isinstance(payload, dict):
+        return []
+    deliverables = payload.get("deliverables")
+    reviews = payload.get("review_requests")
+    if not isinstance(deliverables, dict):
+        return []
+    current_review_deliverable_ids = {
+        str(review.get("deliverable_id"))
+        for review in (reviews.values() if isinstance(reviews, dict) else ())
+        if isinstance(review, Mapping)
+        and review.get("deliverable_id") is not None
+        and review.get("retired_at") is None
+        and review.get("superseded_by_review_request_id") is None
+    }
+    affected_ids: list[str] = []
+    for deliverable_id, raw_deliverable in deliverables.items():
+        if not isinstance(raw_deliverable, dict):
+            continue
+        if not _acceptance_decision_is_rejected(
+            raw_deliverable.get("acceptance_decision")
+        ):
+            continue
+        normalized_id = str(deliverable_id)
+        state = raw_deliverable.get("state")
+        state_value = getattr(state, "value", state)
+        if state_value == "rejected" and normalized_id not in current_review_deliverable_ids:
+            continue
+        raw_deliverable["state"] = "rejected"
+        affected_ids.append(normalized_id)
+    return sorted(affected_ids)
+
+
+def _reconcile_rejected_acceptance_overrides(
+    state: TeamState,
+    *,
+    deliverable_ids: Sequence[str],
+    now: datetime,
+) -> None:
+    """Retire invalid review paths and restore actionable direct-rejection work."""
+
+    from .models import (
+        AgentInboxItem,
+        TeamBlockerSourceKind,
+        TeamInboxItemState,
+        TeamInboxItemType,
+        TeamInboxPriority,
+        TeamRecordState,
+        TeamTaskState,
+    )
+    from .services.domain.blockers import resolve_active_blockers_for_source
+    from .services.domain.common import _set_task_state
+    from .services.domain.project_status import _recalculate_project_status
+    from .services.domain.task_assessment import assess_task
+    from .services.domain.work_due import _mark_agent_work_due
+
+    selected_ids = {
+        deliverable_id
+        for deliverable_id in deliverable_ids
+        if deliverable_id in state.deliverables
+    }
+    if not selected_ids:
+        return
+
+    affected_task_ids: set[str] = set()
+    affected_project_ids: set[str] = set()
+    invalid_review_ids: set[str] = set()
+    for deliverable_id in sorted(selected_ids):
+        deliverable = state.deliverables[deliverable_id]
+        deliverable.state = TeamRecordState.REJECTED
+        task = state.tasks.get(deliverable.task_id)
+        if task is not None:
+            affected_project_ids.add(task.project_id)
+        for review in state.review_requests.values():
+            if review.deliverable_id != deliverable_id:
+                continue
+            invalid_review_ids.add(review.id)
+            if review.retired_at is None:
+                review.retired_at = now
+                review.retired_by = _REJECTED_ACCEPTANCE_MIGRATION_ACTOR
+                review.retirement_reason = _REJECTED_ACCEPTANCE_MIGRATION_REASON
+            resolve_active_blockers_for_source(
+                state,
+                source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                source_id=review.id,
+                actor_agent_id=None,
+                dispatch_id=None,
+                note=_REJECTED_ACCEPTANCE_MIGRATION_REASON,
+                reference_ids=[deliverable_id],
+                now=now,
+            )
+        for finding in deliverable.carried_findings:
+            if (
+                finding.source_review_request_id in invalid_review_ids
+                and finding.state == "open"
+            ):
+                finding.state = "resolved"
+                finding.resolution = _REJECTED_ACCEPTANCE_MIGRATION_REASON
+                finding.resolved_at = now
+                finding.resolved_by_review_request_id = None
+        if (
+            task is not None
+            and deliverable.superseded_by_deliverable_id is None
+            and task.state not in {TeamTaskState.CANCELLED, TeamTaskState.REJECTED}
+        ):
+            affected_task_ids.add(task.id)
+
+    _close_invalid_rejection_override_inbox_items(
+        state,
+        deliverable_ids=selected_ids,
+        review_request_ids=invalid_review_ids,
+        now=now,
+    )
+
+    for task_id in sorted(affected_task_ids):
+        task = state.tasks[task_id]
+        task.completion = None
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
+        task.updated_at = now
+        assessment = assess_task(state, task.id)
+        if assessment.active_blocker_ids:
+            _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        elif assessment.active_acceptance_ids or assessment.active_review_request_ids:
+            _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+
+    for deliverable_id in sorted(selected_ids):
+        deliverable = state.deliverables[deliverable_id]
+        task = state.tasks.get(deliverable.task_id)
+        decision = deliverable.acceptance_decision
+        if (
+            task is None
+            or task.id not in affected_task_ids
+            or decision is None
+            or deliverable.superseded_by_deliverable_id is not None
+        ):
+            continue
+        existing_rework = next(
+            (
+                item
+                for item in state.inbox.values()
+                if item.state == TeamInboxItemState.PENDING
+                and item.recipient_agent_id == task.owner_agent_id
+                and item.payload.get("kind") == "superior_acceptance_rejected"
+                and item.payload.get("deliverable_id") == deliverable.id
+            ),
+            None,
+        )
+        if existing_rework is None:
+            token = hashlib.sha256(deliverable.id.encode("utf-8")).hexdigest()[:20]
+            inbox_id = f"inbox-rejected-acceptance-migration-{token}"
+            suffix = 2
+            while inbox_id in state.inbox:
+                inbox_id = f"inbox-rejected-acceptance-migration-{token}-{suffix}"
+                suffix += 1
+            state.inbox[inbox_id] = AgentInboxItem(
+                id=inbox_id,
+                recipient_agent_id=task.owner_agent_id,
+                sender_agent_id=decision.decided_by_agent_id,
+                task_id=task.id,
+                item_type=TeamInboxItemType.STATUS_REQUEST,
+                response_requested=True,
+                priority=TeamInboxPriority.NORMAL,
+                payload={
+                    "kind": "superior_acceptance_rejected",
+                    "deliverable_id": deliverable.id,
+                    "supersedes_deliverable_id": deliverable.id,
+                    "task_id": task.id,
+                    "summary": "Superior rejected the deliverable; revise and resubmit.",
+                    "reason": decision.reason,
+                    "artifact_refs": list(deliverable.artifact_refs),
+                    "migration": (
+                        f"rejected_acceptance_override_v{SQLITE_SCHEMA_VERSION}"
+                    ),
+                },
+                created_at=now,
+                updated_at=now,
+            )
+        _mark_agent_work_due(state, agent_id=task.owner_agent_id, now=now)
+
+    terminal_ancestor_ids = _terminal_ancestor_ids_for_reopened_tasks(
+        state,
+        task_ids=affected_task_ids,
+    )
+    _close_stale_task_resolution_inbox_items(
+        state,
+        reopened_task_ids=affected_task_ids,
+        terminal_ancestor_ids=terminal_ancestor_ids,
+        deliverable_ids=selected_ids,
+        now=now,
+    )
+    if terminal_ancestor_ids:
+        for project_id in sorted(affected_project_ids):
+            project_task_ids = sorted(
+                task_id
+                for task_id in terminal_ancestor_ids
+                if state.tasks[task_id].project_id == project_id
+            )
+            if project_task_ids:
+                _open_rejected_acceptance_migration_blocker(
+                    state,
+                    project_id=project_id,
+                    source_id=(
+                        "rejected-acceptance-terminal-ancestors:"
+                        + ",".join(project_task_ids)
+                    ),
+                    summary="Reconcile terminal ancestor tasks after a restored rejection",
+                    details=(
+                        "A rejected child deliverable had previously been accepted through an "
+                        "invalid formal-review path. Preserve the terminal ancestor history and "
+                        "explicitly reopen or replace it after reviewing downstream effects."
+                    ),
+                    reference_ids=sorted(selected_ids | set(project_task_ids)),
+                    now=now,
+                )
+
+    affected_release_ids = _release_ids_depending_on_deliverables(
+        state,
+        deliverable_ids=selected_ids,
+    )
+    for release_id in affected_release_ids:
+        release = state.release_packages[release_id]
+        if release.state == TeamRecordState.REJECTED:
+            continue
+        _open_rejected_acceptance_migration_blocker(
+            state,
+            project_id=release.project_id,
+            source_id=f"rejected-acceptance-release:{release.id}",
+            summary=f"Reconcile release {release.id} after a restored rejection",
+            details=(
+                "This release includes deliverable lineage whose authoritative direct "
+                "rejection was historically overridden by formal review. The release and "
+                "promotion records were preserved; verify their external effects and create "
+                "a successor from accepted replacement lineage before publication."
+            ),
+            reference_ids=sorted(
+                set(selected_ids)
+                | {release.id}
+                | set(release.git_promotion_record_ids)
+            ),
+            now=now,
+        )
+        affected_project_ids.add(release.project_id)
+
+    for project_id in sorted(affected_project_ids):
+        _recalculate_project_status(state, project_id)
+
+
+def _close_invalid_rejection_override_inbox_items(
+    state: TeamState,
+    *,
+    deliverable_ids: set[str],
+    review_request_ids: set[str],
+    now: datetime,
+) -> None:
+    from .models import TeamInboxItemState
+
+    invalid_review_kinds = {
+        "review_request",
+        "review_retry_request",
+        "review_rejected",
+        "review_rework_restored",
+    }
+    for item in state.inbox.values():
+        if item.state != TeamInboxItemState.PENDING:
+            continue
+        payload = item.payload
+        linked_review_ids = {
+            str(value)
+            for value in payload.get("review_request_ids") or []
+            if value is not None
+        }
+        if payload.get("review_request_id") is not None:
+            linked_review_ids.add(str(payload["review_request_id"]))
+        close = (
+            payload.get("kind") in invalid_review_kinds
+            and bool(linked_review_ids.intersection(review_request_ids))
+        ) or (
+            payload.get("kind") == "superior_acceptance_requested"
+            and payload.get("deliverable_id") in deliverable_ids
+        )
+        if close:
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = now
+
+
+def _terminal_ancestor_ids_for_reopened_tasks(
+    state: TeamState,
+    *,
+    task_ids: set[str],
+) -> set[str]:
+    from .models import TeamTaskState
+
+    terminal_ids: set[str] = set()
+    for task_id in task_ids:
+        current = state.tasks.get(task_id)
+        seen: set[str] = set()
+        while current is not None and current.parent_task_id is not None:
+            parent_id = current.parent_task_id
+            if parent_id in seen:
+                break
+            seen.add(parent_id)
+            parent = state.tasks.get(parent_id)
+            if parent is None:
+                break
+            if parent.state in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}:
+                terminal_ids.add(parent.id)
+            current = parent
+    return terminal_ids
+
+
+def _close_stale_task_resolution_inbox_items(
+    state: TeamState,
+    *,
+    reopened_task_ids: set[str],
+    terminal_ancestor_ids: set[str],
+    deliverable_ids: set[str],
+    now: datetime,
+) -> None:
+    from .models import TeamInboxItemState
+
+    invalid_resolution_task_ids = reopened_task_ids | terminal_ancestor_ids
+    for item in state.inbox.values():
+        if item.state != TeamInboxItemState.PENDING:
+            continue
+        payload = item.payload
+        kind = payload.get("kind")
+        if (
+            kind in {"root_task_resolution", "candidate_correction_resolution"}
+            and (
+                payload.get("task_id") in invalid_resolution_task_ids
+                or payload.get("deliverable_id") in deliverable_ids
+            )
+        ):
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = now
+            continue
+        if kind != "parent_task_transition":
+            continue
+        child_ids = {
+            str(value)
+            for value in payload.get("child_task_ids") or []
+            if value is not None
+        }
+        invalid_child_ids = child_ids.intersection(invalid_resolution_task_ids)
+        if not invalid_child_ids:
+            continue
+        if payload.get("transition") == "integration_ready":
+            item.state = TeamInboxItemState.HANDLED
+        else:
+            remaining_child_ids = sorted(child_ids - invalid_child_ids)
+            payload["child_task_ids"] = remaining_child_ids
+            if not remaining_child_ids:
+                item.state = TeamInboxItemState.HANDLED
+        item.updated_at = now
+
+
+def _release_ids_depending_on_deliverables(
+    state: TeamState,
+    *,
+    deliverable_ids: set[str],
+) -> list[str]:
+    memo: dict[str, bool] = {}
+
+    def depends_on_rejected_lineage(deliverable_id: str, visiting: set[str]) -> bool:
+        if deliverable_id in memo:
+            return memo[deliverable_id]
+        if deliverable_id in deliverable_ids:
+            memo[deliverable_id] = True
+            return True
+        if deliverable_id in visiting:
+            return False
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            memo[deliverable_id] = False
+            return False
+        next_visiting = set(visiting)
+        next_visiting.add(deliverable_id)
+        result = any(
+            depends_on_rejected_lineage(source_id, next_visiting)
+            for source_id in deliverable.source_deliverable_ids
+        )
+        memo[deliverable_id] = result
+        return result
+
+    return sorted(
+        release.id
+        for release in state.release_packages.values()
+        if any(
+            depends_on_rejected_lineage(deliverable_id, set())
+            for deliverable_id in release.deliverable_ids
+        )
+    )
+
+
+def _open_rejected_acceptance_migration_blocker(
+    state: TeamState,
+    *,
+    project_id: str,
+    source_id: str,
+    summary: str,
+    details: str,
+    reference_ids: Sequence[str],
+    now: datetime,
+) -> None:
+    from .models import (
+        TeamBlocker,
+        TeamBlockerEvent,
+        TeamBlockerEventType,
+        TeamBlockerRoute,
+        TeamBlockerSourceKind,
+        TeamBlockerState,
+        TeamInboxPriority,
+    )
+
+    project = state.projects.get(project_id)
+    if project is None:
+        return
+    existing = next(
+        (
+            blocker
+            for blocker in state.blockers.values()
+            if blocker.team_id == project.team_id
+            and blocker.source_kind == TeamBlockerSourceKind.EXPLICIT
+            and blocker.source_id == source_id
+        ),
+        None,
+    )
+    if existing is not None:
+        return
+    token = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:20]
+    blocker_id = f"blocker-rejected-acceptance-migration-{token}"
+    blocker = TeamBlocker(
+        id=blocker_id,
+        team_id=project.team_id,
+        project_id=project.id,
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id=source_id,
+        reason_code="rejected_acceptance_override_reconciliation",
+        reporter_actor=_REJECTED_ACCEPTANCE_MIGRATION_ACTOR,
+        state=TeamBlockerState.OPEN,
+        route=TeamBlockerRoute.OPERATOR,
+        summary=summary,
+        details=details,
+        priority=TeamInboxPriority.HIGH,
+        terminal_reference_ids=sorted(set(reference_ids)),
+        created_at=now,
+        updated_at=now,
+    )
+    state.blockers[blocker.id] = blocker
+    event_id = f"blockerevent-rejected-acceptance-migration-{token}"
+    state.blocker_events[event_id] = TeamBlockerEvent(
+        id=event_id,
+        blocker_id=blocker.id,
+        event_type=TeamBlockerEventType.REPORTED,
+        note=details,
+        reference_ids=list(blocker.terminal_reference_ids),
+        metadata={"sqlite_migration": SQLITE_SCHEMA_VERSION},
+        created_at=now,
+    )
+
+
+_LEGACY_MIXED_GIT_BASE_ERROR = (
+    "mixed_git_base_branches: legacy active release has ambiguous Git base provenance"
+)
+
+
+def _legacy_release_candidate_snapshot(
+    release: sqlite3.Row | None,
+) -> tuple[str | None, str | None]:
+    if release is None:
+        return None, None
+    manifest = _json_loads(release["manifest_json"])
+    manifest = manifest if isinstance(manifest, dict) else {}
+    branch = (
+        str(release["release_branch"] or "").strip()
+        or str(manifest.get("release_branch") or "").strip()
+        or None
+    )
+    commit = (
+        str(release["candidate_commit_sha"] or "").strip()
+        or str(manifest.get("candidate_commit_sha") or "").strip()
+        or None
+    )
+    return branch, commit
+
+
+def _legacy_correction_release_ids_by_task(
+    connection: sqlite3.Connection,
+) -> dict[str, set[str]]:
+    release_ids_by_task: dict[str, set[str]] = {}
+
+    def _add(task_id: object, release_id: object) -> None:
+        normalized_task_id = str(task_id or "").strip()
+        normalized_release_id = str(release_id or "").strip()
+        if normalized_task_id and normalized_release_id:
+            release_ids_by_task.setdefault(normalized_task_id, set()).add(
+                normalized_release_id
+            )
+
+    request_release_ids = {
+        str(row["id"]): str(row["release_package_id"])
+        for row in connection.execute(
+            "SELECT id, release_package_id FROM team_human_review_requests"
+        )
+    }
+    for row in connection.execute(
+        """
+        SELECT finding.correction_task_id, request.release_package_id
+        FROM team_human_review_findings AS finding
+        JOIN team_human_review_requests AS request
+          ON request.id = finding.source_human_review_request_id
+        """
+    ):
+        _add(row["correction_task_id"], row["release_package_id"])
+    for row in connection.execute(
+        """
+        SELECT review_correction_task_id, id AS release_package_id
+        FROM team_release_packages
+        WHERE review_correction_task_id IS NOT NULL
+          AND trim(review_correction_task_id) != ''
+        """
+    ):
+        _add(row["review_correction_task_id"], row["release_package_id"])
+    for row in connection.execute(
+        "SELECT payload_json FROM team_release_verification_runs"
+    ):
+        payload = _json_loads(row["payload_json"])
+        if isinstance(payload, dict):
+            _add(payload.get("correction_task_id"), payload.get("release_package_id"))
+    for row in connection.execute(
+        """
+        SELECT task.id AS task_id, case_record.source, case_record.source_ref,
+               case_record.metadata_json
+        FROM team_tasks AS task
+        JOIN team_cases AS case_record ON case_record.id = task.case_id
+        WHERE case_record.source IN ('human_release_review', 'post_release_feedback')
+        """
+    ):
+        if row["source"] == "human_release_review":
+            _add(row["task_id"], request_release_ids.get(str(row["source_ref"] or "")))
+            continue
+        metadata = _json_loads(row["metadata_json"])
+        if isinstance(metadata, dict):
+            _add(row["task_id"], metadata.get("release_package_id"))
+    return release_ids_by_task
+
+
+def _legacy_task_has_authoritative_git_work(
+    connection: sqlite3.Connection,
+    *,
+    task_id: str,
+) -> bool:
+    for statement in (
+        "SELECT 1 FROM team_git_work_contexts WHERE task_id = ? LIMIT 1",
+        "SELECT 1 FROM team_deliverables WHERE task_id = ? LIMIT 1",
+        "SELECT 1 FROM team_git_promotions WHERE task_id = ? LIMIT 1",
+    ):
+        if connection.execute(statement, (task_id,)).fetchone() is not None:
+            return True
+    return False
+
+
+def _block_legacy_task_git_base_conflict(
+    connection: sqlite3.Connection,
+    *,
+    task: sqlite3.Row,
+    details: str,
+) -> None:
+    now = utc_now().isoformat()
+    connection.execute(
+        """
+        UPDATE team_tasks
+        SET state = 'blocked',
+            state_entered_at = CASE
+                WHEN state = 'blocked' THEN state_entered_at
+                ELSE ?
+            END,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (now, now, task["id"]),
+    )
+    project = connection.execute(
+        "SELECT team_id FROM team_projects WHERE id = ?",
+        (task["project_id"],),
+    ).fetchone()
+    if project is None:
+        return
+    token = hashlib.sha256(str(task["id"]).encode("utf-8")).hexdigest()[:20]
+    blocker_id = f"blocker-legacy-git-base-{token}"
+    source_id = f"legacy-git-base-conflict:{task['id']}"
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_blockers(
+            id, team_id, project_id, task_id, source_kind, source_id,
+            reporter_agent_id, reporter_actor, reason_code, owner_agent_id,
+            delegate_agent_id, state, route, summary, details, priority,
+            escalation_depth, active_dispatch_id, follow_up_at, last_progress_at,
+            terminal_reference_ids_json, created_at, updated_at, resolved_at
+        )
+        VALUES (?, ?, ?, ?, 'explicit', ?, NULL, 'system:sqlite-migration',
+                'mixed_git_base_branches', NULL, NULL, 'open', 'operator', ?, ?,
+                'high', 0, NULL, NULL, NULL, '[]', ?, ?, NULL)
+        """,
+        (
+            blocker_id,
+            project["team_id"],
+            task["project_id"],
+            task["id"],
+            source_id,
+            f"Repair ambiguous Git base for task {task['id']}",
+            details,
+            now,
+            now,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_blocker_affected_tasks(
+            blocker_id, position, task_id
+        ) VALUES (?, 0, ?)
+        """,
+        (blocker_id, task["id"]),
+    )
+    event_id = f"blockerevent-legacy-git-base-{token}"
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_blocker_events(
+            id, blocker_id, event_type, actor_agent_id, from_agent_id,
+            to_agent_id, dispatch_id, note, reference_ids_json,
+            metadata_json, created_at
+        ) VALUES (?, ?, 'reported', NULL, NULL, NULL, NULL, ?, '[]', ?, ?)
+        """,
+        (
+            event_id,
+            blocker_id,
+            details,
+            _json_dumps({"sqlite_migration": SQLITE_SCHEMA_VERSION}),
+            now,
+        ),
+    )
+
+
+def _legacy_deliverable_git_snapshots(
+    connection: sqlite3.Connection,
+    deliverables: Sequence[sqlite3.Row],
+) -> tuple[set[tuple[str, str]], bool]:
+    snapshots: set[tuple[str, str]] = set()
+    unresolved = False
+    for deliverable in deliverables:
+        contexts: list[sqlite3.Row] = []
+        if deliverable["branch_context_id"]:
+            contexts = connection.execute(
+                """
+                SELECT base_branch, base_commit
+                FROM team_git_work_contexts
+                WHERE id = ? AND task_id = ?
+                """,
+                (deliverable["branch_context_id"], deliverable["task_id"]),
+            ).fetchall()
+        if not contexts:
+            contexts = connection.execute(
+                """
+                SELECT DISTINCT base_branch, base_commit
+                FROM team_git_work_contexts
+                WHERE task_id = ?
+                """,
+                (deliverable["task_id"],),
+            ).fetchall()
+        if not contexts:
+            unresolved = True
+            continue
+        complete_for_deliverable = False
+        for context in contexts:
+            branch = str(context["base_branch"] or "").strip()
+            commit = str(context["base_commit"] or "").strip()
+            if not branch or not commit:
+                unresolved = True
+                continue
+            complete_for_deliverable = True
+            snapshots.add((branch, commit))
+        if not complete_for_deliverable:
+            unresolved = True
+    return snapshots, unresolved
+
+
+def _block_legacy_release_git_base_conflict(
+    connection: sqlite3.Connection,
+    *,
+    release_id: str,
+) -> None:
+    connection.execute(
+        """
+        UPDATE team_release_packages
+        SET state = 'blocked',
+            error = ?,
+            updated_at = COALESCE(updated_at, created_at)
+        WHERE id = ?
+        """,
+        (_LEGACY_MIXED_GIT_BASE_ERROR, release_id),
+    )
+
+
+def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
+    """Backfill active Git workstreams without inventing ambiguous provenance."""
+
+    project_defaults: dict[str, str | None] = {}
+    for row in connection.execute("SELECT id, git_json FROM team_projects ORDER BY id"):
+        git_payload = _json_loads(row["git_json"]) if row["git_json"] else None
+        project_defaults[row["id"]] = (
+            str(git_payload.get("base_branch") or "").strip() or None
+            if isinstance(git_payload, dict)
+            else None
+        )
+
+    correction_release_ids = _legacy_correction_release_ids_by_task(connection)
+    active_task_states = ("pending", "in_progress", "waiting_for_review", "blocked")
+    task_rows = connection.execute(
+        """
+        SELECT id, project_id, owner_agent_id, state, title, git_base_branch,
+               state_entered_at, created_at, updated_at
+        FROM team_tasks
+        WHERE state IN (?, ?, ?, ?)
+        ORDER BY id
+        """,
+        active_task_states,
+    ).fetchall()
+    for task in task_rows:
+        current_branch = str(task["git_base_branch"] or "").strip() or None
+        linked_release_ids = correction_release_ids.get(str(task["id"]), set())
+        context_branches = {
+            str(row["base_branch"]).strip()
+            for row in connection.execute(
+                """
+                SELECT base_branch
+                FROM team_git_work_contexts
+                WHERE task_id = ? AND base_branch IS NOT NULL AND trim(base_branch) != ''
+                """,
+                (task["id"],),
+            )
+        }
+
+        if linked_release_ids:
+            if len(linked_release_ids) != 1:
+                _block_legacy_task_git_base_conflict(
+                    connection,
+                    task=task,
+                    details=(
+                        f"Legacy correction task {task['id']} is linked to multiple "
+                        "release candidates and requires an explicit Git-base repair."
+                    ),
+                )
+                continue
+            release_id = next(iter(linked_release_ids))
+            linked_release = connection.execute(
+                """
+                SELECT id, project_id, release_branch, git_base_branch,
+                       candidate_commit_sha, manifest_json
+                FROM team_release_packages
+                WHERE id = ?
+                """,
+                (release_id,),
+            ).fetchone()
+            candidate_branch, _candidate_commit = _legacy_release_candidate_snapshot(
+                linked_release
+            )
+            if (
+                linked_release is None
+                or linked_release["project_id"] != task["project_id"]
+                or candidate_branch is None
+                or len(context_branches) > 1
+                or (context_branches and candidate_branch not in context_branches)
+                or (
+                    current_branch not in {None, candidate_branch}
+                    and _legacy_task_has_authoritative_git_work(
+                        connection,
+                        task_id=str(task["id"]),
+                    )
+                )
+            ):
+                _block_legacy_task_git_base_conflict(
+                    connection,
+                    task=task,
+                    details=(
+                        f"Legacy correction task {task['id']} does not have one "
+                        "unambiguous rejected-candidate Git base and requires "
+                        "explicit repair."
+                    ),
+                )
+                continue
+            if current_branch != candidate_branch:
+                connection.execute(
+                    "UPDATE team_tasks SET git_base_branch = ? WHERE id = ?",
+                    (candidate_branch, task["id"]),
+                )
+            continue
+
+        if len(context_branches) > 1 or (
+            current_branch is not None
+            and context_branches
+            and current_branch not in context_branches
+        ):
+            _block_legacy_task_git_base_conflict(
+                connection,
+                task=task,
+                details=(
+                    f"Legacy task {task['id']} has conflicting persisted Git-base "
+                    "provenance and requires an explicit repair."
+                ),
+            )
+            continue
+        if current_branch is not None:
+            continue
+        branch = (
+            next(iter(context_branches))
+            if context_branches
+            else project_defaults.get(task["project_id"])
+        )
+        if branch is not None:
+            connection.execute(
+                "UPDATE team_tasks SET git_base_branch = ? WHERE id = ?",
+                (branch, task["id"]),
+            )
+
+    active_release_states = ("pending", "in_progress", "blocked")
+    release_rows = connection.execute(
+        """
+        SELECT id, project_id, supersedes_release_package_id, base_commit_sha,
+               error
+        FROM team_release_packages
+        WHERE state IN (?, ?, ?)
+          AND git_base_branch IS NULL
+        ORDER BY id
+        """,
+        active_release_states,
+    ).fetchall()
+    for release in release_rows:
+        deliverables = connection.execute(
+            """
+            SELECT d.*
+            FROM team_release_deliverables AS link
+            JOIN team_deliverables AS d ON d.id = link.deliverable_id
+            WHERE link.package_id = ?
+            ORDER BY link.position
+            """,
+            (release["id"],),
+        ).fetchall()
+        git_deliverables = [
+            row
+            for row in deliverables
+            if any(
+                row[column]
+                for column in (
+                    "branch_context_id",
+                    "agent_branch",
+                    "review_branch",
+                    "feature_branch",
+                    "release_branch",
+                    "commit_sha",
+                )
+            )
+        ]
+        predecessor_id = str(release["supersedes_release_package_id"] or "").strip()
+        has_git_release = (
+            bool(git_deliverables)
+            or bool(predecessor_id)
+            or connection.execute(
+                """
+                SELECT 1
+                FROM team_release_feature_branches
+                WHERE package_id = ?
+                LIMIT 1
+                """,
+                (release["id"],),
+            ).fetchone()
+            is not None
+        )
+        if not has_git_release:
+            continue
+
+        if predecessor_id:
+            predecessor = connection.execute(
+                """
+                SELECT id, project_id, release_branch, git_base_branch,
+                       candidate_commit_sha, manifest_json
+                FROM team_release_packages
+                WHERE id = ?
+                """,
+                (predecessor_id,),
+            ).fetchone()
+            branch, commit = _legacy_release_candidate_snapshot(predecessor)
+            inherited_deliverable_ids = {
+                str(row["deliverable_id"])
+                for row in connection.execute(
+                    """
+                    SELECT deliverable_id
+                    FROM team_release_deliverables
+                    WHERE package_id = ?
+                    """,
+                    (predecessor_id,),
+                )
+            }
+            correction_deliverables = [
+                row
+                for row in git_deliverables
+                if str(row["id"]) not in inherited_deliverable_ids
+            ]
+            inferred, unresolved = _legacy_deliverable_git_snapshots(
+                connection,
+                correction_deliverables,
+            )
+            if inferred:
+                if len(inferred) != 1 or unresolved:
+                    _block_legacy_release_git_base_conflict(
+                        connection,
+                        release_id=str(release["id"]),
+                    )
+                    continue
+                inferred_branch, inferred_commit = next(iter(inferred))
+                if (
+                    (branch is not None and branch != inferred_branch)
+                    or (commit is not None and commit != inferred_commit)
+                ):
+                    _block_legacy_release_git_base_conflict(
+                        connection,
+                        release_id=str(release["id"]),
+                    )
+                    continue
+                branch = branch or inferred_branch
+                commit = commit or inferred_commit
+            elif unresolved:
+                _block_legacy_release_git_base_conflict(
+                    connection,
+                    release_id=str(release["id"]),
+                )
+                continue
+            if (
+                predecessor is None
+                or predecessor["project_id"] != release["project_id"]
+                or branch is None
+                or commit is None
+            ):
+                _block_legacy_release_git_base_conflict(
+                    connection,
+                    release_id=str(release["id"]),
+                )
+                continue
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET git_base_branch = ?,
+                    base_commit_sha = ?,
+                    state = CASE WHEN error = ? THEN 'pending' ELSE state END,
+                    error = CASE WHEN error = ? THEN NULL ELSE error END
+                WHERE id = ?
+                """,
+                (
+                    branch,
+                    commit,
+                    _LEGACY_MIXED_GIT_BASE_ERROR,
+                    _LEGACY_MIXED_GIT_BASE_ERROR,
+                    release["id"],
+                ),
+            )
+            continue
+
+        snapshots, unresolved = _legacy_deliverable_git_snapshots(
+            connection,
+            git_deliverables,
+        )
+        if len(snapshots) == 1 and not unresolved:
+            branch, commit = next(iter(snapshots))
+            existing_commit = str(release["base_commit_sha"] or "").strip() or None
+            if existing_commit is not None and existing_commit != commit:
+                _block_legacy_release_git_base_conflict(
+                    connection,
+                    release_id=str(release["id"]),
+                )
+                continue
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET git_base_branch = ?,
+                    base_commit_sha = COALESCE(base_commit_sha, ?)
+                WHERE id = ?
+                """,
+                (branch, commit, release["id"]),
+            )
+            continue
+        _block_legacy_release_git_base_conflict(
+            connection,
+            release_id=str(release["id"]),
+        )
+
+    promotion_rows = connection.execute(
+        """
+        SELECT id, task_id, release_package_id, outputs_json
+        FROM team_git_promotions
+        WHERE state IN ('pending', 'failed')
+          AND git_base_branch IS NULL
+        ORDER BY id
+        """
+    ).fetchall()
+    for promotion in promotion_rows:
+        branch = None
+        commit = None
+        if promotion["release_package_id"]:
+            release = connection.execute(
+                """
+                SELECT git_base_branch, base_commit_sha
+                FROM team_release_packages
+                WHERE id = ?
+                """,
+                (promotion["release_package_id"],),
+            ).fetchone()
+            if release is not None:
+                branch = release["git_base_branch"]
+                commit = release["base_commit_sha"]
+        if branch is None and promotion["task_id"]:
+            task = connection.execute(
+                "SELECT git_base_branch FROM team_tasks WHERE id = ?",
+                (promotion["task_id"],),
+            ).fetchone()
+            branch = task["git_base_branch"] if task is not None else None
+            context_commits = {
+                str(row["base_commit"]).strip()
+                for row in connection.execute(
+                    """
+                    SELECT base_commit FROM team_git_work_contexts
+                    WHERE task_id = ? AND base_commit IS NOT NULL AND base_commit != ''
+                    """,
+                    (promotion["task_id"],),
+                )
+            }
+            if len(context_commits) == 1:
+                commit = next(iter(context_commits))
+        outputs = _json_loads(promotion["outputs_json"])
+        if commit is None and isinstance(outputs, dict):
+            commit = str(outputs.get("base_commit_sha") or "").strip() or None
+        if branch is not None:
+            connection.execute(
+                """
+                UPDATE team_git_promotions
+                SET git_base_branch = ?, base_commit_sha = ?
+                WHERE id = ?
+                """,
+                (branch, commit, promotion["id"]),
+            )
+
+
+def _migrate_release_canonical_base_snapshots(
+    connection: sqlite3.Connection,
+) -> None:
+    """Backfill the immutable pre-publication SHA for each release lineage."""
+
+    connection.execute(
+        """
+        UPDATE team_release_packages
+        SET canonical_base_commit_sha = base_commit_sha
+        WHERE canonical_base_commit_sha IS NULL
+          AND supersedes_release_package_id IS NULL
+          AND base_commit_sha IS NOT NULL
+        """
+    )
+    while True:
+        changed = 0
+        rows = connection.execute(
+            """
+            SELECT child.id,
+                   child.canonical_branch,
+                   child.base_commit_sha,
+                   predecessor.canonical_branch AS predecessor_canonical_branch,
+                   predecessor.canonical_base_commit_sha AS predecessor_canonical_base,
+                   predecessor.base_commit_sha AS predecessor_base,
+                   predecessor.published_commit_sha AS predecessor_published,
+                   predecessor.approved_commit_sha AS predecessor_approved,
+                   predecessor.candidate_commit_sha AS predecessor_candidate,
+                   predecessor.state AS predecessor_state
+            FROM team_release_packages AS child
+            JOIN team_release_packages AS predecessor
+              ON predecessor.id = child.supersedes_release_package_id
+            WHERE child.canonical_base_commit_sha IS NULL
+            ORDER BY child.created_at, child.id
+            """
+        ).fetchall()
+        for row in rows:
+            if row["canonical_branch"] == row["predecessor_canonical_branch"]:
+                if row["predecessor_state"] == "accepted":
+                    canonical_base = (
+                        row["predecessor_published"]
+                        or row["predecessor_approved"]
+                        or row["predecessor_candidate"]
+                    )
+                else:
+                    canonical_base = (
+                        row["predecessor_canonical_base"]
+                        or row["predecessor_base"]
+                    )
+            else:
+                canonical_base = row["base_commit_sha"]
+            if not canonical_base:
+                continue
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET canonical_base_commit_sha = ?
+                WHERE id = ? AND canonical_base_commit_sha IS NULL
+                """,
+                (canonical_base, row["id"]),
+            )
+            changed += 1
+        if changed == 0:
+            break
+    connection.execute(
+        """
+        UPDATE team_git_promotions
+        SET base_commit_sha = (
+            SELECT release.canonical_base_commit_sha
+            FROM team_release_packages AS release
+            WHERE release.id = team_git_promotions.release_package_id
+        )
+        WHERE promotion_kind = 'canonical_push'
+          AND state IN ('pending', 'failed')
+          AND EXISTS (
+              SELECT 1
+              FROM team_release_packages AS release
+              WHERE release.id = team_git_promotions.release_package_id
+                AND release.canonical_base_commit_sha IS NOT NULL
+          )
+        """
+    )
 
 
 def _backfill_position_values(
@@ -6126,6 +7441,7 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     last_agent_handoff_at TEXT,
     last_context_rotated_at TEXT,
     last_thread_id TEXT,
+    last_delivered_role_description_fingerprint TEXT,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake
@@ -6171,6 +7487,8 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     created_by_actor TEXT,
     parent_task_id TEXT,
     originating_task_id TEXT,
+    git_base_branch TEXT,
+    git_base_commit_sha TEXT,
     cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
@@ -6224,6 +7542,7 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     review_manifest_json TEXT,
     acceptance_recipient_agent_id TEXT,
     acceptance_decision_json TEXT,
+    initial_release_disposition_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
     supersession_reason TEXT,
@@ -6397,6 +7716,7 @@ CREATE TABLE IF NOT EXISTS team_blockers (
     reporter_agent_id TEXT,
     reporter_actor TEXT,
     reason_code TEXT NOT NULL DEFAULT 'unspecified',
+    resolution_scope TEXT NOT NULL DEFAULT 'task',
     owner_agent_id TEXT,
     delegate_agent_id TEXT,
     state TEXT NOT NULL,
@@ -6634,8 +7954,10 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     supersedes_release_package_id TEXT,
     release_branch TEXT,
     canonical_branch TEXT,
+    git_base_branch TEXT,
     published_commit_sha TEXT,
     base_commit_sha TEXT,
+    canonical_base_commit_sha TEXT,
     candidate_commit_sha TEXT,
     candidate_tree_hash TEXT,
     approved_commit_sha TEXT,
@@ -6806,6 +8128,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
+    initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     prepared_at TEXT,
@@ -6930,6 +8253,8 @@ CREATE TABLE IF NOT EXISTS team_git_promotions (
     task_id TEXT,
     deliverable_id TEXT,
     release_package_id TEXT,
+    git_base_branch TEXT,
+    base_commit_sha TEXT,
     state TEXT NOT NULL,
     commit_sha TEXT,
     outputs_json TEXT NOT NULL,

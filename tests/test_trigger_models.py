@@ -524,7 +524,7 @@ def test_pr_triggers_accept_full_criteria_and_preserve_materialized_fields(
                 "provider": "ado",
                 "repo": "repo-1",
                 "directory_path": " root/team-a ",
-                "organization_url": " https://dev.azure.com/example/ ",
+                "ado_organization": " example ",
                 "project": " Sandbox ",
                 "status": "active",
                 "creator_id": "creator-1",
@@ -550,7 +550,7 @@ def test_pr_triggers_accept_full_criteria_and_preserve_materialized_fields(
     assert trigger.provider == "ado"
     assert trigger.repo == "repo-1"
     assert trigger.directory_path == " root/team-a "
-    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.ado_organization == " example "
     assert trigger.project == "Sandbox"
     assert trigger.status == "active"
     assert trigger.creator_id == "creator-1"
@@ -602,7 +602,7 @@ def test_pr_triggers_accept_ado_without_repo(
     assert isinstance(trigger, trigger_cls)
     assert trigger.provider == "ado"
     assert trigger.repo is None
-    assert trigger.organization_url is None
+    assert trigger.ado_organization is None
     assert trigger.project is None
 
 
@@ -705,7 +705,7 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
             "display_name": "CI run completed",
             "type": "trigger:ci:run:completed",
             "provider": "azure-pipelines",
-            "organization_url": " https://dev.azure.com/example/ ",
+            "ado_organization": " example ",
             "project": " APP ",
             "repo": " ",
             "pipeline_id": "42",
@@ -716,7 +716,7 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
     )
 
     assert trigger.provider == "ado_pipelines"
-    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.ado_organization == "example"
     assert trigger.project == "APP"
     assert trigger.repo is None
     assert trigger.pipeline_id == 42

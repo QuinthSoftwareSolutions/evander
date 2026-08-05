@@ -92,7 +92,10 @@ def _seed_cleanup_state(
         lead_agent_id="lead",
         lead_session_id="session-lead",
         goals=[ProjectGoal(id="goal", description="Ship work")],
-        git=ProjectGitConfig(managed_repo_id=_MANAGED_REPO_ID),
+        git=ProjectGitConfig(
+            managed_repo_id=_MANAGED_REPO_ID,
+            base_branch="main",
+        ),
         expected_revision=1,
     )
     admin.create_role(
@@ -1054,3 +1057,57 @@ def test_prior_task_base_commit_rejects_conflicting_team_provenance() -> None:
             task_id="task",
             agent_branch="agents/session-backend/tasks/task-12345678",
         )
+
+
+def test_prior_task_base_commit_is_scoped_to_task_base_snapshot() -> None:
+    state = SimpleNamespace(
+        git_work_contexts={
+            "ctx-main": GitWorkContext(
+                id="ctx-main",
+                agent_id="backend",
+                task_id="task",
+                agent_branch="agents/session-backend/tasks/task-12345678",
+                base_branch="main",
+                base_commit="1" * 40,
+            ),
+            "ctx-feature": GitWorkContext(
+                id="ctx-feature",
+                agent_id="backend",
+                task_id="task",
+                agent_branch="agents/session-backend/tasks/task-12345678",
+                base_branch="feature/foo",
+                base_commit="2" * 40,
+            ),
+        }
+    )
+
+    assert _prior_project_repo_task_base_commit(
+        state,
+        agent_id="backend",
+        task_id="task",
+        agent_branch="agents/session-backend/tasks/task-12345678",
+        base_branch="main",
+    ) == "1" * 40
+
+
+def test_prior_task_base_commit_survives_task_reassignment() -> None:
+    state = SimpleNamespace(
+        git_work_contexts={
+            "ctx-original-owner": GitWorkContext(
+                id="ctx-original-owner",
+                agent_id="backend-original",
+                task_id="task",
+                agent_branch="agents/session-original/tasks/task-12345678",
+                base_branch="feature/foo",
+                base_commit="2" * 40,
+            ),
+        }
+    )
+
+    assert _prior_project_repo_task_base_commit(
+        state,
+        agent_id="backend-reassigned",
+        task_id="task",
+        agent_branch="agents/session-reassigned/tasks/task-12345678",
+        base_branch="feature/foo",
+    ) == "2" * 40

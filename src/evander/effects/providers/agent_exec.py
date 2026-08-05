@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Callable
 
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from evander.events.provider_models import AgentExecEffectDefinition
@@ -23,6 +23,19 @@ from .vm_exec import VmExecEffectProvider
 
 
 class AgentExecEffectProvider(VmExecEffectProvider):
+    def set_container_execution_started_callback(
+        self,
+        callback: Callable[[str], None] | None,
+    ) -> None:
+        """Register a best-effort hook for the worker execution identifier.
+
+        The hook is intentionally process-local and is invoked only after the
+        worker has accepted the job.  It lets higher-level workflows expose
+        progress without leaking worker credentials into a browser client.
+        """
+
+        self._container_execution_started_callback = callback
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
@@ -101,6 +114,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
                 )
             )
         )
+        self._notify_container_execution_started(handle.execution_id)
         logs = ""
         status = None
         try:
@@ -165,6 +179,16 @@ class AgentExecEffectProvider(VmExecEffectProvider):
                 or "Container worker command failed"
             )
         return result
+
+    def _notify_container_execution_started(self, execution_id: str) -> None:
+        callback = getattr(self, "_container_execution_started_callback", None)
+        if not callable(callback):
+            return
+        try:
+            callback(execution_id)
+        except Exception:
+            # A status observer must not strand a successfully-created worker job.
+            pass
 
     def _effect(self) -> AgentExecEffectDefinition:
         if not isinstance(self.effect_definition, AgentExecEffectDefinition):

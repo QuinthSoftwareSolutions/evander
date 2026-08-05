@@ -122,6 +122,7 @@ TEAM_RETIRE_REVIEW_TOOL = "team_retire_review"
 TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
+TEAM_DECIDE_INITIAL_RELEASE_TOOL = "team_decide_initial_release"
 TEAM_RECOVER_RELEASE_TOOL = "team_recover_release"
 TEAM_RETRY_RELEASE_GATE_TOOL = "team_retry_release_gate"
 TEAM_REQUEST_EPHEMERAL_AGENT_TOOL = "team_request_ephemeral_agent"
@@ -198,6 +199,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -279,6 +281,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -335,6 +338,7 @@ MCP_TOOL_NAMES = (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
@@ -366,7 +370,8 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
     ),
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL: (
         "Stage one regular file from the current agent workspace for a Team Chat reply "
-        "or proactive operator message. Returns a session-owned attachment_id."
+        "or proactive operator message. Reply-only Chat dispatches are text-only. "
+        "Returns a session-owned attachment_id."
     ),
     TEAM_IMPORT_ARTIFACT_TOOL: (
         "Permission-check and import the latest published version of an artifact-space "
@@ -398,9 +403,16 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
     blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
-    task_creation_commands = TeamTaskCreationCommandService(repo)
+    git_default_branch_resolver = _team_mcp_git_default_branch_resolver(context)
+    task_creation_commands = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
     outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
-    task_update_commands = TeamTaskUpdateCommandService(repo)
+    task_update_commands = TeamTaskUpdateCommandService(
+        repo,
+        git_default_branch_resolver=git_default_branch_resolver,
+    )
     agent_control_commands = TeamAgentControlCommandService(repo)
     governance_commands = TeamGovernanceCommandService(repo)
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
@@ -939,7 +951,8 @@ def _register_slice5_tools(
         name=TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
         description=(
             "Stage one regular file under /home/agent for an attachment-enabled Team Chat "
-            "message. The returned attachment id is bound to the current session and expires."
+            "message. Reply-only Chat dispatches cannot stage files. The returned attachment "
+            "id is bound to the current session and expires."
         ),
     )
 
@@ -960,6 +973,11 @@ def _register_slice5_tools(
             tool_name=TEAM_REPLY_TO_CHAT_TOOL,
         )
         normalized_attachment_ids = list(attachment_ids or [])
+        if normalized_attachment_ids:
+            resolver.require_chat_attachment_context(
+                session_id=caller.session_id,
+                tool_name=TEAM_REPLY_TO_CHAT_TOOL,
+            )
         prepared_attachments = _prepare_team_chat_agent_attachments(
             context,
             storage=attachment_storage,
@@ -1014,7 +1032,8 @@ def _register_slice5_tools(
         description=(
             "Reply to a human Team Chat operator message for the current chat "
             "dispatch. Requires conversation_id, message_id, request_id, and either body "
-            "or staged attachment_ids. Agent file sends may require exact approval."
+            "or staged attachment_ids. Reply-only dispatches accept text only; agent file "
+            "sends may require exact approval."
         ),
     )
 
@@ -1086,7 +1105,8 @@ def _register_slice5_tools(
         team_send_operator_chat_message,
         name=TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         description=(
-            "Send a Team Chat message to a known operator participant. Requires "
+            "Send a Team Chat message to an operator in the caller's existing direct "
+            "conversation. Requires "
             "recipient_operator_user_id, body, and request_id."
         ),
     )
@@ -1336,8 +1356,9 @@ def _register_slice6_tools(
         team_route_human_finding_correction,
         name=TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
         description=(
-            "Route the existing correction child for an ambiguous human-review "
-            "finding to a project assignee, optionally recording affected "
+            "Recover an existing correction child for a legacy human-review "
+            "finding that still carries ambiguous-routing metadata by assigning "
+            "it to a project assignee and optionally recording affected "
             "deliverables. This does not create or rewrite the task."
         ),
     )
@@ -1395,6 +1416,7 @@ def _register_slice6_tools(
         state: str = "pending",
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1422,6 +1444,7 @@ def _register_slice6_tools(
                 state=state,
                 parent_task_id=parent_task_id,
                 originating_task_id=originating_task_id,
+                git_base_branch=git_base_branch,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1446,7 +1469,9 @@ def _register_slice6_tools(
             "provenance and explicitly name direct-child or dependency task "
             "contributions. A non-integration leaf may also use a deliverable_contract "
             "with no contribution task IDs when it must resolve through an accepted "
-            "deliverable. originating_task_id records lineage only and does not "
+            "deliverable. git_base_branch optionally selects this task's immutable "
+            "starting workstream; otherwise a child inherits its parent and a root "
+            "snapshots the project default. originating_task_id records lineage only and does not "
             "seed Git content; when a correction must edit accepted predecessor "
             "content, also put that predecessor in dependency_task_ids so its exact "
             "accepted commit is verified and composed before work starts."
@@ -1606,6 +1631,7 @@ def _register_slice6_tools(
         description: str | None = None,
         owner_agent_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
+        git_base_branch: str | None = None,
         integration_boundary: bool | None = None,
         deliverable_contract: dict[str, Any] | None = None,
         completion: dict[str, Any] | None = None,
@@ -1627,6 +1653,7 @@ def _register_slice6_tools(
             "description": description,
             "owner_agent_id": owner_agent_id,
             "dependency_task_ids": dependency_task_ids,
+            "git_base_branch": git_base_branch,
             "integration_boundary": integration_boundary,
             "deliverable_contract": deliverable_contract,
             "completion": completion,
@@ -1655,7 +1682,8 @@ def _register_slice6_tools(
             "Before any deliverable submission, an authorized task-graph editor "
             "can supply a deliverable_contract to require accepted work, and can "
             "also designate a composite as an integration boundary with "
-            "integration_boundary=true."
+            "integration_boundary=true. git_base_branch may be changed only before "
+            "Git preparation, deliverable submission, or promotion creation."
         ),
     )
 
@@ -2514,6 +2542,46 @@ def _register_slice8_tools(
         ),
     )
 
+    def team_decide_initial_release(
+        deliverable_ids: list[str],
+        decision: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_DECIDE_INITIAL_RELEASE_TOOL,
+        )
+        try:
+            _state, result = command_service.decide_initial_release_command(
+                session_id=caller.session_id,
+                deliverable_ids=deliverable_ids,
+                decision=decision,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_decide_initial_release,
+        name=TEAM_DECIDE_INITIAL_RELEASE_TOOL,
+        description=(
+            "Record a project lead or team manager decision that pending root "
+            "deliverables are not planned for an initial release, or reopen an "
+            "earlier not-planned decision. Requires deliverable_ids, decision "
+            "(not_planned or reopen), reason, and request_id."
+        ),
+    )
+
     def team_recover_release(
         release_package_id: str,
         agent_branch: str,
@@ -2658,6 +2726,33 @@ def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
             directory_path=directory_path,
             branch=agent_branch,
         )
+
+    return _resolve
+
+
+def _team_mcp_git_default_branch_resolver(context: AddonContext):
+    managed_git = getattr(context.service, "managed_git_admin", None)
+
+    def _resolve(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> object:
+        nonlocal managed_git
+        if managed_git is None:
+            from evander.admin.composition import build_admin_runtime
+
+            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
+        get_repository = getattr(managed_git, "get_repository", None)
+        if not callable(get_repository):
+            raise RuntimeError("managed Git repository lookup is unavailable")
+        record = get_repository(
+            managed_repo_id,
+            directory_path=directory_path,
+        )
+        if not isinstance(record, Mapping):
+            raise RuntimeError("managed Git repository lookup returned an invalid record")
+        return record.get("default_branch")
 
     return _resolve
 

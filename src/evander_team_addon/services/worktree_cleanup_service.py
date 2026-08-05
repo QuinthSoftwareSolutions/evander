@@ -181,6 +181,7 @@ class EffectTaskWorktreeCleanupBackend:
         worktrees_root = f"/home/agent/worktrees/{repo_name}"
         lock_path = _libvirt_task_worktree_lock_path(repo_name)
         command = build_libvirt_task_worktree_cleanup_command(
+            trusted_root="/home/agent",
             repo_dir=repo_dir,
             worktrees_root=worktrees_root,
             target_dir=candidate.worktree_path,

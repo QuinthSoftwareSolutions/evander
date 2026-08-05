@@ -24,6 +24,10 @@ _PARENT_TRANSITION_SUMMARIES = {
     "resolution": "A constituent child reached a resolved disposition.",
     "integration_ready": "Every direct child is resolved; integration is ready.",
 }
+_AUTOMATIC_CANDIDATE_CORRECTION_ACTORS = {
+    "system:release-review-correction",
+    "system:release-verification-correction",
+}
 
 
 def parent_task_for_child(
@@ -246,13 +250,24 @@ def queue_root_task_resolution(
     project = state.projects.get(task.project_id)
     if project is None or project.lead_agent_id == sender_agent_id:
         return None
+    automatic_candidate_correction = (
+        task.created_by_actor in _AUTOMATIC_CANDIDATE_CORRECTION_ACTORS
+    )
+    notice_kind = (
+        "candidate_correction_resolution"
+        if automatic_candidate_correction
+        else "root_task_resolution"
+    )
     existing = next(
         (
             item
             for item in state.inbox.values()
-            if item.state == TeamInboxItemState.PENDING
+            if (
+                automatic_candidate_correction
+                or item.state == TeamInboxItemState.PENDING
+            )
             and item.recipient_agent_id == project.lead_agent_id
-            and item.payload.get("kind") == "root_task_resolution"
+            and item.payload.get("kind") == notice_kind
             and item.payload.get("task_id") == task.id
             and item.payload.get("deliverable_id") == deliverable_id
         ),
@@ -260,8 +275,13 @@ def queue_root_task_resolution(
     )
     if existing is not None:
         existing.updated_at = now
-        _mark_agent_work_due(state, agent_id=project.lead_agent_id, now=now)
-        if result is not None:
+        if automatic_candidate_correction:
+            existing.state = TeamInboxItemState.HANDLED
+            existing.response_requested = False
+            existing.priority = TeamInboxPriority.LOW
+        else:
+            _mark_agent_work_due(state, agent_id=project.lead_agent_id, now=now)
+        if result is not None and not automatic_candidate_correction:
             _append_wake_event_for_notice(
                 state,
                 item=existing,
@@ -270,6 +290,39 @@ def queue_root_task_resolution(
             )
         return existing
     release_ready = project.release_policy is not None
+    if automatic_candidate_correction:
+        item = AgentInboxItem(
+            id=f"inbox-{uuid4().hex}",
+            recipient_agent_id=project.lead_agent_id,
+            sender_agent_id=sender_agent_id,
+            task_id=task.id,
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=False,
+            priority=TeamInboxPriority.LOW,
+            payload={
+                "kind": "candidate_correction_resolution",
+                "project_id": project.id,
+                "task_id": task.id,
+                "deliverable_id": deliverable_id,
+                "summary": (
+                    "A reviewed rejected-gate correction reached its resolved "
+                    "disposition."
+                ),
+                "next_action": (
+                    "Team will automatically create the successor release; "
+                    "no release request is required."
+                ),
+                "release_ready": release_ready,
+                "response_required": False,
+            },
+            state=TeamInboxItemState.HANDLED,
+            created_at=now,
+            updated_at=now,
+        )
+        state.inbox[item.id] = item
+        if result is not None:
+            result.setdefault("created_inbox_item_ids", []).append(item.id)
+        return item
     # Local import avoids the wake -> deliverables -> supervision import cycle.
     from .review_handoff import queue_actionable_inbox_item
 
@@ -287,7 +340,9 @@ def queue_root_task_resolution(
             "summary": "A reviewed root task reached its resolved disposition.",
             "next_action": (
                 "Request a release package for the accepted root deliverable "
-                "and its source lineage."
+                "and its source lineage, or explicitly mark its initial release "
+                "disposition not planned with a reason. Merely handling this "
+                "notice does not resolve the release decision."
                 if release_ready
                 else "Review the root completion and choose the next project action."
             ),

@@ -13,6 +13,7 @@ WORKFLOW_PACKS_MANAGE_PERMISSION = "workflow_packs.manage"
 WORKFLOW_RUNS_READ_PERMISSION = "workflow_runs.read"
 WORKFLOW_RUNS_CONTROL_PERMISSION = "workflow_runs.control"
 TEAM_CHATS_READ_ALL_PERMISSION = "team_chats.read_all"
+TEAM_CHATS_MUTATE_PERMISSION = "team_chats.mutate"
 TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION = "team.human_reviews.decide"
 
 DIRECT_WORKFLOW_PERMISSIONS = frozenset(
@@ -33,6 +34,7 @@ PERMISSION_CATALOG = frozenset(
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
+        TEAM_CHATS_MUTATE_PERMISSION,
         TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
     }
 )
@@ -66,6 +68,7 @@ BUILTIN_GROUP_DEFINITIONS: dict[str, dict[str, object]] = {
                 WORKFLOW_RUNS_READ_PERMISSION,
                 WORKFLOW_RUNS_CONTROL_PERMISSION,
                 TEAM_CHATS_READ_ALL_PERMISSION,
+                TEAM_CHATS_MUTATE_PERMISSION,
             }
         ),
     },

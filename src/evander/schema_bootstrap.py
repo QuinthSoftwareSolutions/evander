@@ -1306,8 +1306,10 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "reason": {"type": ["string", "null"]},
         "source_ref": {"type": "string"},
         "expected_commit_sha": {"type": "string"},
+        "expected_destination_commit_sha": {"type": ["string", "null"]},
         "destination_branch": {"type": "string"},
         "destination_ref": {"type": "string"},
+        "destination_commit": {"type": ["string", "null"]},
         "previous_commit_sha": {"type": ["string", "null"]},
         "commit_sha": {"type": "string"},
     },
@@ -1525,6 +1527,26 @@ _QUERY_OUTPUT_SCHEMAS = {
         "created_by": {"type": ["string", "null"]},
         "reviewers": {"type": "array"},
         "commits": {"type": "array"},
+        "raw": {"type": "object"},
+    },
+    "query:pull-request:work-items": {
+        "provider": {"type": "string"},
+        "repo": {"type": "string"},
+        "pr_id": {"type": "string"},
+        "work_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "work_item_id": {"type": "string"},
+                    "title": {"type": ["string", "null"]},
+                    "url": {"type": ["string", "null"]},
+                    "assignee": {"type": ["object", "null"]},
+                    "raw": {"type": "object"},
+                },
+            },
+        },
+        "count": {"type": "integer"},
         "raw": {"type": "object"},
     },
     "query:semantic:store-status": {

@@ -18,6 +18,7 @@ from ...models import (
     TeamBlocker,
     TeamBlockerEvent,
     TeamBlockerEventType,
+    TeamBlockerResolutionScope,
     TeamBlockerRoute,
     TeamBlockerSourceKind,
     TeamBlockerState,
@@ -66,6 +67,7 @@ def open_or_get_blocker(
     project_id: str | None = None,
     task_id: str | None = None,
     affected_task_ids: Sequence[str] | None = None,
+    resolution_scope: TeamBlockerResolutionScope | str = TeamBlockerResolutionScope.TASK,
     result: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> tuple[TeamBlocker, bool]:
@@ -75,6 +77,11 @@ def open_or_get_blocker(
         else TeamBlockerSourceKind(str(source_kind))
     )
     normalized_source_id = _required_text(source_id, "source_id")
+    normalized_resolution_scope = (
+        resolution_scope
+        if isinstance(resolution_scope, TeamBlockerResolutionScope)
+        else TeamBlockerResolutionScope(str(resolution_scope))
+    )
     effective_now = _ensure_utc(now or utc_now())
     reporter = (
         state.agents.get(reporter_agent_id) if _optional_text(reporter_agent_id) else None
@@ -151,6 +158,7 @@ def open_or_get_blocker(
         reporter_actor=_optional_text(reporter_actor),
         owner_agent_id=anchor_owner.id if anchor_owner is not None else None,
         affected_task_ids=list(affected_task_ids or []),
+        resolution_scope=normalized_resolution_scope,
         state=TeamBlockerState.OPEN,
         route=route,
         summary=_required_text(summary, "summary"),

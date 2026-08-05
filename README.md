@@ -319,9 +319,9 @@ re-run every systemd, VM inventory, workflow, approval, session, and audit read 
 detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.
 
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
-`/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
-detail view. The Workflow tab remains a first-level navigation item for editing workflow graphs and
-inspecting runtime activity.
+`/#sessions`, `/#git-repositories`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the
+dashboard and open the detail view. The Workflow tab remains a first-level navigation item for
+editing workflow graphs and inspecting runtime activity.
 
 ## Admin Web Authentication
 
@@ -419,7 +419,8 @@ config, while service env vars can come from optional per-service `config/*.env`
 optional `secrets.env`.
 For private PR feedback polling, the service environment must provide `GITHUB_TOKEN` and/or
 `AZURE_DEVOPS_PR_PAT` as needed, and the effective `root` config must set the correct
-`azure_devops_organization_url`, `azure_devops_project`, and wake timing settings.
+`ado_organization`, `azure_devops_project`, and wake timing settings. The legacy
+`azure_devops_organization_url` is safely migrated when it names a public Azure DevOps organization.
 
 ### Azure DevOps worker and work-item workflows
 
@@ -431,7 +432,8 @@ set -a; source secrets.env; set +a
 evander-cli poll-ado-backlog --log-level INFO
 ```
 
-The ADO worker reads `azure_devops_organization_url` and `azure_devops_project` from the
+The ADO worker reads the canonical Azure DevOps origin derived from `ado_organization` and
+`azure_devops_project` from the
 effective provider config and uses `AZURE_DEVOPS_PR_PAT` or the configured
 `azure_devops_pr_pat_env` when Azure DevOps PR polling is enabled. It no longer polls backlog work
 items or requires `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` to run PR feedback/completion paths.
@@ -583,6 +585,11 @@ print(signature)
 Evander-managed agent Git uses one bare repository per canonical upstream and directory trust
 boundary. Register the source once, then pass only its `managed_repo_id` through VM, container,
 workflow, and Team surfaces:
+
+Admin Web's **Git Repositories** page manages this registry within the selected directory. After
+unlocking privileged operations, operators can register a canonical source, refresh upstream refs,
+run maintenance, update the host commit identity, or delete an unbound repository. The page also
+lists stable IDs, upstream details, and active bindings independently of agent-session existence.
 
 ```bash
 REPO_JSON="$(

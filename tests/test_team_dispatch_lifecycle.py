@@ -25,8 +25,12 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.chat_service import (
+    TeamChatService,
+    project_scoped_team_chat_authorization,
+)
 from evander_team_addon.services.commands import (
+    TeamAgentControlCommandService,
     TeamBlockerCommandService,
     TeamDeliverableSubmissionCommandService,
     TeamMemoryCommandService,
@@ -48,6 +52,18 @@ from evander_team_addon.services.runtime_service import TeamRuntimeService
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 LEASE_NOW = datetime(2098, 1, 1, tzinfo=UTC)
+
+
+def _authorized_chat_mutation(repository: TeamStateRepository, agent_id: str):
+    state = repository.read()
+    return project_scoped_team_chat_authorization(
+        state,
+        agent=state.agents[agent_id],
+        source="internal",
+        principal_id="operator@example.com",
+        recipient_directory_path="root",
+        project_is_authorized=lambda _directory_path: True,
+    )
 
 
 def _seed_agent_with_task(tmp_path: Path) -> TeamStateRepository:
@@ -540,6 +556,7 @@ def test_project_lead_cancels_task_from_role_bounded_operator_chat(
         conversation_id=conversation.id,
         body="Cancel the superseded worker task.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repository, "lead"),
         expected_revision=state.revision,
     )
     state, _message = chat.begin_chat_message_dispatch(
@@ -564,6 +581,159 @@ def test_project_lead_cancels_task_from_role_bounded_operator_chat(
     assert state.tasks["task"].state == TeamTaskState.CANCELLED
     assert state.tasks["task"].cancellation is not None
     assert state.tasks["task"].cancellation.actor_id == "lead"
+
+
+def test_operator_chat_ignores_legacy_mutation_flags_without_server_grant(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="viewer@example.com",
+        created_by="operator:viewer@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Try to recover broad scope from legacy metadata.",
+        created_by="operator:viewer@example.com",
+        expected_revision=state.revision,
+    )
+
+    def _forge_legacy_flags(team_state):
+        metadata = dict(team_state.conversation_messages[message.id].metadata)
+        metadata.pop("team_mutation_authorization", None)
+        metadata.update(
+            {
+                "allow_team_mutations": True,
+                "allow_team_mutation": True,
+                "mutation_allowed": True,
+                "team_mutation_allowed": True,
+            }
+        )
+        team_state.conversation_messages[message.id].metadata = metadata
+        return team_state
+
+    repository.update(_forge_legacy_flags)
+    state, _ = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    dispatch = state.dispatches[f"team-chat:{message.id}"]
+    assert dispatch.project_ids == []
+    assert dispatch.managed_repo_ids == []
+
+
+def test_empty_scope_chat_dispatch_rejects_targetless_team_mutation(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="viewer@example.com",
+        created_by="operator:viewer@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Stand down the worker despite this reply-only dispatch.",
+        created_by="operator:viewer@example.com",
+        expected_revision=state.revision,
+    )
+    state, _ = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    assert state.dispatches[f"team-chat:{message.id}"].project_ids == []
+
+    state, result = TeamAgentControlCommandService(repository).stand_down_agent_command(
+        session_id="session-lead",
+        agent_id="worker",
+        reason="Unauthorized targetless mutation.",
+        scope="agent",
+        request_id="empty-chat-scope-stand-down",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert not any(
+        stand_down.agent_id == "worker" and stand_down.active
+        for stand_down in state.stand_downs.values()
+    )
+
+
+def test_operator_chat_send_time_scope_does_not_expand_before_lease(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="operator@example.com",
+        created_by="operator:operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Operate only on projects authorized when this message was sent.",
+        created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repository, "lead"),
+        expected_revision=state.revision,
+    )
+    _seed_secondary_project_for_lead(repository)
+
+    state, _ = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    dispatch = state.dispatches[f"team-chat:{message.id}"]
+    assert dispatch.project_ids == ["project"]
+    assert dispatch.managed_repo_ids == [MANAGED_REPO_ID]
+
+
+def test_operator_chat_scope_drops_project_lost_before_lease(tmp_path: Path) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="worker",
+        operator_user_id="operator@example.com",
+        created_by="operator:operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Do not retain a project the agent can no longer see.",
+        created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repository, "worker"),
+        expected_revision=state.revision,
+    )
+
+    def _remove_worker_project_access(team_state):
+        team_state.project_assignments = {
+            assignment_id: assignment
+            for assignment_id, assignment in team_state.project_assignments.items()
+            if assignment.agent_id != "worker"
+        }
+        team_state.agents["worker"].role_id = next(
+            role.id
+            for role in team_state.roles.values()
+            if role.team_id == "team" and role.project_id is None
+        )
+        return team_state
+
+    repository.update(_remove_worker_project_access)
+    state, _ = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    dispatch = state.dispatches[f"team-chat:{message.id}"]
+    assert dispatch.project_ids == []
+    assert dispatch.managed_repo_ids == []
 
 
 def test_operator_chat_selects_owned_task_at_tool_call_time(
@@ -592,6 +762,7 @@ def test_operator_chat_selects_owned_task_at_tool_call_time(
         conversation_id=conversation.id,
         body="Raise the priority of the scoped task.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repository, "worker"),
         expected_revision=state.revision,
     )
     state, _message = chat.begin_chat_message_dispatch(
@@ -673,6 +844,7 @@ def test_operator_chat_selects_direct_acceptance_at_tool_call_time(
         conversation_id=conversation.id,
         body="Reject the superseded direct-acceptance deliverable.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repository, "lead"),
         expected_revision=state.revision,
     )
     chat.begin_chat_message_dispatch(
@@ -883,6 +1055,46 @@ def test_project_lead_links_accepted_cross_task_replacement_from_inbox_scope(
         return state
 
     repository.update(_add_replacement_handoff)
+    admin.create_team(
+        team_id="unrelated-team",
+        name="Unrelated Team",
+        manager_agent_id="unrelated-manager",
+        manager_session_id="session-unrelated-manager",
+        expected_revision=repository.read().revision,
+    )
+
+    admin.create_operator_directive(
+        team_id="unrelated-team",
+        message="Establish an active adversarial dispatch lease.",
+        expected_revision=repository.read().revision,
+    )
+    _state, unrelated_leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="unrelated-manager",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(unrelated_leases) == 1
+    unrelated_dispatch_id = unrelated_leases[0]["dispatch_id"]
+
+    def _widen_unrelated_manager_dispatch_scope(state):
+        state.dispatches[unrelated_dispatch_id].project_ids = ["project"]
+        return state
+
+    repository.update(_widen_unrelated_manager_dispatch_scope)
+    unchanged, forbidden = TeamDeliverableSubmissionCommandService(
+        repository
+    ).link_deliverable_replacement_command(
+        session_id="session-unrelated-manager",
+        predecessor_deliverable_id="rejected-deliverable",
+        replacement_deliverable_id="accepted-replacement",
+        reason="Cross the team boundary.",
+        request_id="unrelated-manager-links-replacement",
+    )
+
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "deliverable_replacement_forbidden"
+    assert unchanged.deliverables["rejected-deliverable"].superseded_by_deliverable_id is None
+
     _state, leases = TeamRuntimeService(repository).lease_due_agents(
         agent_id="lead",
         now=LEASE_NOW,

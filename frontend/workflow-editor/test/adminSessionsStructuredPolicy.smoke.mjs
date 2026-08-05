@@ -16,7 +16,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("sessions structured policy round-trips allowed tools, metadata, and extension validation", async (t) => {
+test("sessions structured policy round-trips allowed tools, contacts, metadata, and extension validation", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -53,6 +53,7 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
         label: "Notify target",
       },
     ],
+    allowed_contact_ids: ["ops"],
     effective_tool_policy: {
       allowed_tools: ["prompt_agent"],
       inherited_approval_required_tools: [],
@@ -247,24 +248,7 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         policyBodies.push(body);
-        assert.deepEqual(body.metadata, {
-          ticket: "INC-123",
-          labels: {
-            team: "ops",
-          },
-          nullable: null,
-        });
-        assert.deepEqual(body.http_targets, {
-          targets: {
-            api: {
-              base_url: "https://api.example.test/v2",
-              metadata: {
-                owner: "workflow",
-              },
-            },
-          },
-        });
-        assert.deepEqual(body.approval_required_tools, []);
+        sessionRecord.allowed_contact_ids = body.allowed_contact_ids;
         sessionRecord.approval_required_tools = body.approval_required_tools;
         await route.fulfill(jsonResponse({ action: "updated", message: "Updated session policy.", session: sessionRecord }));
         return;
@@ -301,6 +285,51 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
     );
   }
 
+  const saveButton = page.getByRole("button", { name: "Save changes" });
+  const contactsSection = page.getByText("Contacts", { exact: true }).first().locator("..");
+  const contactAccessMode = contactsSection.getByRole("radiogroup", { name: "Contact access" });
+  const allDirectoryContacts = contactAccessMode.getByRole("radio", { name: "All directory contacts" });
+  const explicitContactAllowlist = contactAccessMode.getByRole("radio", { name: "Explicit allowlist" });
+
+  assert.equal(await allDirectoryContacts.isChecked(), false);
+  assert.equal(await explicitContactAllowlist.isChecked(), true);
+  assert.equal(await contactsSection.getByLabel("Contact ID").inputValue(), "ops");
+
+  let patchResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/admin/sessions/session-1" &&
+      response.request().method() === "PATCH",
+  );
+  await contactsSection.getByRole("button", { name: "Remove" }).click();
+  await saveButton.click();
+  await patchResponse;
+  assert.deepEqual(policyBodies.at(-1)?.allowed_contact_ids, []);
+
+  patchResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/admin/sessions/session-1" &&
+      response.request().method() === "PATCH",
+  );
+  await allDirectoryContacts.check();
+  await saveButton.click();
+  await patchResponse;
+  assert.equal(policyBodies.at(-1)?.allowed_contact_ids, null);
+  await contactsSection
+    .getByText("This session inherits access to all contacts visible in its directory.", { exact: true })
+    .waitFor({ state: "visible" });
+
+  patchResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/admin/sessions/session-1" &&
+      response.request().method() === "PATCH",
+  );
+  await explicitContactAllowlist.check();
+  await contactsSection.getByRole("button", { name: "Add contact" }).click();
+  await contactsSection.getByLabel("Contact ID").fill("support");
+  await saveButton.click();
+  await patchResponse;
+  assert.deepEqual(policyBodies.at(-1)?.allowed_contact_ids, ["support"]);
+
   const metadataSection = page.getByText("Metadata", { exact: true }).first().locator("..");
   const httpTargetsSection = page.getByText("HTTP targets", { exact: true }).first().locator("..");
   const httpTargetInputs = httpTargetsSection.locator(".http-target-row input");
@@ -319,12 +348,11 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   const metadataLabelsRow = metadataSection.locator(".structured-input-json-row").nth(1);
   const metadataValue = metadataLabelsRow.locator("textarea").first();
   await metadataValue.fill("{bad");
-  const saveButton = page.getByRole("button", { name: "Save changes" });
   await metadataSection.locator(".structured-input-error").waitFor({ state: "visible" });
   await page.waitForTimeout(50);
   await saveButton.click();
   await page.waitForTimeout(100);
-  assert.equal(policyBodies.length, 0);
+  assert.equal(policyBodies.length, 3);
   await metadataValue.fill('{\n  "team": "ops"\n}');
   await metadataSection.locator(".structured-input-error").waitFor({ state: "hidden" });
 
@@ -334,7 +362,7 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   await allowedExtensionsSection.locator(".structured-input-error").filter({ hasText: "Extension must start with a leading dot." }).waitFor({ state: "visible" });
   await saveButton.click();
   await page.locator(".callout.error-callout").filter({ hasText: "Allowed extensions row 1 must start with a leading dot." }).first().waitFor({ state: "visible" });
-  assert.equal(policyBodies.length, 0);
+  assert.equal(policyBodies.length, 3);
   await allowedExtensionsInput.fill(".txt");
   await allowedExtensionsSection.locator(".structured-input-error").waitFor({ state: "hidden" });
 
@@ -346,12 +374,24 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(allowedToolBodies.length, 1);
-  assert.equal(policyBodies.length, 1);
-  assert.deepEqual(policyBodies[0].metadata, {
+  assert.equal(policyBodies.length, 4);
+  assert.deepEqual(policyBodies[3].allowed_contact_ids, ["support"]);
+  assert.deepEqual(policyBodies[3].metadata, {
     ticket: "INC-123",
     labels: {
       team: "ops",
     },
     nullable: null,
   });
+  assert.deepEqual(policyBodies[3].http_targets, {
+    targets: {
+      api: {
+        base_url: "https://api.example.test/v2",
+        metadata: {
+          owner: "workflow",
+        },
+      },
+    },
+  });
+  assert.deepEqual(policyBodies[3].approval_required_tools, []);
 });

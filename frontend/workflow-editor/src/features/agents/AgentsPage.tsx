@@ -17,13 +17,11 @@ import {
 } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
-import { JsonObjectKeyValueEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import { AgentCreateDialog } from "./AgentCreateDialog";
 import { CodexAuthPanel } from "./CodexAuthPanel";
 import {
   createOperationIsActive,
   createOperationMessage,
-  loadAgentCreateOptions,
   loadAgentCreateOperations,
   submitAgentCreateOperation,
   type AgentCreateSubmitMeta,
@@ -33,9 +31,6 @@ import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateOperation,
-  AgentCreateCommunicationTargetOption,
-  AgentCreateEmailMailboxOption,
-  AgentCreateHostDirectoryOption,
   AgentCreateRequest,
   AgentExecutionHistoryResponse,
   AgentExecutionRecord,
@@ -51,21 +46,6 @@ import type {
   SkillListResponse,
   RuntimeImageInfo,
 } from "../admin/types";
-import {
-  CommunicationTargetCheckboxTable,
-  EmailMailboxGrantEditor,
-} from "../communications/SessionGrantEditors";
-import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
-import { HttpTargetsEditor } from "../httpTargets/HttpTargetsEditor";
-import {
-  httpTargetsDraftFromMetadata,
-  httpTargetsPayload,
-  type HttpTargetDraftEntry,
-} from "../httpTargets/httpTargetDraft";
-import {
-  HostDirectoryGrantSelector,
-  hostDirectoryToolsForGrants,
-} from "../hostDirectories/HostDirectoryGrantSelector";
 
 type ActionLogEntry = {
   at: string;
@@ -139,29 +119,7 @@ type BackendFilter = "all" | AgentBackend;
 type StatusFilter = "active" | "inactive" | "all";
 
 type AgentPolicyFormState = {
-  model: string;
-  ttlHours: string;
-  labels: Record<string, string>;
-  webSearchEnabled: boolean;
-  allowedTools: string;
-  connectorGrants: Record<string, unknown>;
-  hostDirectoryGrants: Record<string, string[]>;
-  allowedScriptNames: string;
-  approvalNotificationTargetIds: string[];
-  communicationTargetIds: string[] | null;
-  emailMailboxGrants: EmailMailboxGrant[] | null;
-  discordChannels: string;
-  teamsChannels: string;
-  teamsChats: string;
-  teamsUsers: string;
-  emailMailboxes: string;
-  emailFolders: string;
-  emailFolderAllowlistByMailbox: Record<string, string[]>;
-  emailSendEnabled: boolean;
   codexAuthMode: string;
-  httpTargets: HttpTargetDraftEntry[];
-  httpTargetsLegacyFallback: boolean;
-  httpTargetsSourceError: string | null;
 };
 
 type AgentSkillInstallFormState = {
@@ -230,29 +188,7 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
 
 function emptyPolicyForm(): AgentPolicyFormState {
   return {
-    model: "",
-    ttlHours: "",
-    labels: {},
-    webSearchEnabled: false,
-    allowedTools: "",
-    connectorGrants: {},
-    hostDirectoryGrants: {},
-    allowedScriptNames: "",
-    approvalNotificationTargetIds: [],
-    communicationTargetIds: null,
-    emailMailboxGrants: null,
-    discordChannels: "",
-    teamsChannels: "",
-    teamsChats: "",
-    teamsUsers: "",
-    emailMailboxes: "",
-    emailFolders: "",
-    emailFolderAllowlistByMailbox: {},
-    emailSendEnabled: false,
     codexAuthMode: "",
-    httpTargets: [],
-    httpTargetsLegacyFallback: false,
-    httpTargetsSourceError: null,
   };
 }
 
@@ -260,55 +196,6 @@ function emptySkillInstallForm(): AgentSkillInstallFormState {
   return {
     codexSkills: [],
   };
-}
-
-function parseList(value: string): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const item of value.split(/[\n,]/)) {
-    const normalized = item.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
-}
-
-function formatList(value: unknown): string {
-  if (!Array.isArray(value)) return "";
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
-}
-
-function dedupeStrings(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    const normalized = value.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
-}
-
-function formatNotificationTargetOptionLabel(option: { value: string; label: string }): string {
-  const label = option.label.trim();
-  const value = option.value.trim();
-  if (!label || label === value) {
-    return value;
-  }
-  return `${label} (${value})`;
-}
-
-function optionalText(value: string): string | null {
-  return value.trim() || null;
-}
-
-function optionalNumber(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 type AgentListLoadOptions = {
@@ -915,88 +802,18 @@ function codexUsageForAgent(agent: AgentRecord | null): AgentCodexUsage | null {
 
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
-  const httpTargetsDraft = httpTargetsDraftFromMetadata(policy?.metadata);
-  const labels = policy?.labels ?? Object.fromEntries(labelsForAgent(agent));
   return {
-    model: policy?.model ?? "",
-    ttlHours: "",
-    labels,
-    webSearchEnabled: Boolean(policy?.web_search_enabled),
-    allowedTools: formatList(policy?.allowed_tools),
-    connectorGrants: { ...(policy?.connector_grants ?? {}) },
-    hostDirectoryGrants: { ...(policy?.host_directory_grants ?? {}) },
-    allowedScriptNames: formatList(policy?.allowed_script_names),
-    approvalNotificationTargetIds: dedupeStrings(policy?.approval_notification_target_ids ?? []),
-    communicationTargetIds: policy?.communication_target_ids == null
-      ? null
-      : dedupeStrings(policy.communication_target_ids),
-    emailMailboxGrants: policy?.email_mailbox_grants == null
-      ? null
-      : policy.email_mailbox_grants.map((grant) => ({ ...grant, folders: dedupeStrings(grant.folders) })),
-    discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
-    teamsChannels: formatList(policy?.teams_channel_allowlist),
-    teamsChats: formatList(policy?.teams_chat_allowlist),
-    teamsUsers: formatList(policy?.teams_user_allowlist),
-    emailMailboxes: formatList(policy?.email_mailboxes),
-    emailFolders: formatList(policy?.email_folders),
-    emailFolderAllowlistByMailbox: Object.fromEntries(
-      Object.entries(policy?.email_folder_allowlist_by_mailbox ?? {}).map(
-        ([mailboxId, folders]) => [mailboxId, dedupeStrings(folders)],
-      ),
-    ),
-    emailSendEnabled: Boolean(policy?.email_send_enabled),
     codexAuthMode: policy?.codex_auth_mode ?? "",
-    httpTargets: httpTargetsDraft.entries,
-    httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
-    httpTargetsSourceError: httpTargetsDraft.sourceError,
   };
 }
 
-function buildPolicyPayload(
-  form: AgentPolicyFormState,
-  includeCodexAuthMode = false,
-  includeHttpTargets = false,
-): AgentPolicyUpdateRequest {
-  const payload: AgentPolicyUpdateRequest = {
-    model: optionalText(form.model),
-    labels: form.labels,
-    web_search_enabled: form.webSearchEnabled,
-    allowed_tools: parseList(form.allowedTools),
-    connector_grants: form.connectorGrants,
-    host_directory_grants: form.hostDirectoryGrants,
-    allowed_script_names: parseList(form.allowedScriptNames),
-    approval_notification_target_ids: dedupeStrings(form.approvalNotificationTargetIds),
-    communication_target_ids: form.communicationTargetIds,
-    email_mailbox_grants: form.emailMailboxGrants,
-  };
-  if (includeCodexAuthMode) {
-    payload.codex_auth_mode =
+function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
+  return {
+    codex_auth_mode:
       form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
         ? form.codexAuthMode
-        : null;
-  }
-  if (includeHttpTargets) {
-    payload.http_targets = httpTargetsPayload(form.httpTargets);
-  }
-  if (form.communicationTargetIds === null) {
-    payload.discord_channels = parseList(form.discordChannels);
-    payload.teams_channel_allowlist = parseList(form.teamsChannels);
-    payload.teams_chat_allowlist = parseList(form.teamsChats);
-    payload.teams_user_allowlist = parseList(form.teamsUsers);
-  }
-  if (form.emailMailboxGrants === null) {
-    payload.email_mailboxes = parseList(form.emailMailboxes);
-    payload.email_folders = parseList(form.emailFolders);
-    payload.email_folder_allowlist_by_mailbox = Object.fromEntries(
-      Object.entries(form.emailFolderAllowlistByMailbox).map(
-        ([mailboxId, folders]) => [mailboxId, dedupeStrings(folders)],
-      ),
-    );
-  }
-  if (form.ttlHours.trim()) {
-    payload.ttl_hours = optionalNumber(form.ttlHours);
-  }
-  return payload;
+        : null,
+  };
 }
 
 function isActiveStatus(status: string): boolean {
@@ -1084,24 +901,11 @@ export function AgentsPage() {
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
-  const [editCommunicationTargetOptions, setEditCommunicationTargetOptions] = useState<
-    AgentCreateCommunicationTargetOption[]
-  >([]);
-  const [editEmailMailboxOptions, setEditEmailMailboxOptions] = useState<
-    AgentCreateEmailMailboxOption[]
-  >([]);
-  const [editHostDirectoryOptions, setEditHostDirectoryOptions] = useState<
-    AgentCreateHostDirectoryOption[]
-  >([]);
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
   const [skillInstallForm, setSkillInstallForm] = useState<AgentSkillInstallFormState>(() =>
     emptySkillInstallForm(),
   );
   const [inlineValidation, setInlineValidation] = useState("");
-  const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
-  const [connectorGrantsValidationError, setConnectorGrantsValidationError] = useState<string | null>(null);
-  const [httpTargetsValidationError, setHttpTargetsValidationError] = useState<string | null>(null);
-  const [httpTargetsDirty, setHttpTargetsDirty] = useState(false);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
@@ -1239,7 +1043,6 @@ export function AgentsPage() {
   }, [selectedAgentDetail, selectedAgentKey, selectedListAgent]);
   const selectedAgentPolicy = selectedAgent ? sessionPolicyForAgent(selectedAgent) : null;
   const selectedAgentCodexUsage = codexUsageForAgent(selectedAgent);
-  const selectedAgentApprovalNotificationTargetOptions = selectedAgentPolicy?.approval_notification_target_options ?? [];
   const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
   const operatorSteeringSessionId = selectedAgent?.session_id?.trim() ?? "";
 
@@ -1826,11 +1629,6 @@ export function AgentsPage() {
     }
   }
 
-  function ttlIsInvalid(value: string): boolean {
-    const trimmed = value.trim();
-    return Boolean(trimmed) && optionalNumber(trimmed) == null;
-  }
-
   function toggleInstallSkill(skillName: string, selected: boolean) {
     setSkillInstallForm((current) => {
       const selectedSkills = new Set(current.codexSkills);
@@ -1894,35 +1692,17 @@ export function AgentsPage() {
   }
 
   function openEditForm() {
-    if (!selectedAgent) return;
+    if (!selectedAgent || !selectedAgentCodexUsage) return;
     const policy = sessionPolicyForAgent(selectedAgent);
     if (!policy) {
       setError("The selected agent does not have an unambiguous linked session to edit.");
       return;
     }
     setEditForm(policyFormFromAgent(selectedAgent));
-    setEditCommunicationTargetOptions([]);
-    setEditEmailMailboxOptions([]);
-    setEditHostDirectoryOptions([]);
-    void loadAgentCreateOptions(selectedAgent.directory_path)
-      .then((options) => {
-        setEditCommunicationTargetOptions(options.communication_targets);
-        setEditEmailMailboxOptions(options.email_mailboxes);
-        setEditHostDirectoryOptions(options.host_directories ?? []);
-      })
-      .catch(() => {
-        setEditCommunicationTargetOptions([]);
-        setEditEmailMailboxOptions([]);
-        setEditHostDirectoryOptions([]);
-      });
-    setConnectorGrantsValidationError(null);
-    setHttpTargetsValidationError(null);
-    setHttpTargetsDirty(false);
     setShowEditForm(true);
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
-    setLabelsValidationError(null);
   }
 
   function openSkillInstallForm() {
@@ -1937,43 +1717,6 @@ export function AgentsPage() {
     setShowEditForm(false);
     setShowPromptForm(false);
     setInlineValidation("");
-  }
-
-  function convertLegacyAgentCommunicationPolicy() {
-    setEditForm((current) => {
-      const allowedTools = parseList(current.allowedTools);
-      const fallbackFolders = parseList(current.emailFolders);
-      return {
-        ...current,
-        communicationTargetIds: current.communicationTargetIds ?? dedupeStrings([
-          ...parseList(current.discordChannels),
-          ...parseList(current.teamsChannels),
-          ...parseList(current.teamsChats),
-          ...parseList(current.teamsUsers),
-        ]),
-        emailMailboxGrants: current.emailMailboxGrants ?? parseList(current.emailMailboxes).map(
-          (mailboxId) => {
-            const folders = dedupeStrings(
-              Object.prototype.hasOwnProperty.call(
-                current.emailFolderAllowlistByMailbox,
-                mailboxId,
-              )
-                ? current.emailFolderAllowlistByMailbox[mailboxId]
-                : fallbackFolders,
-            );
-            return {
-              mailbox_id: mailboxId,
-              access: legacyEmailMailboxAccess({
-                allowedTools,
-                folders,
-                emailSendEnabled: current.emailSendEnabled,
-              }),
-              folders,
-            };
-          },
-        ),
-      };
-    });
   }
 
   function openPromptForm() {
@@ -2022,23 +1765,7 @@ export function AgentsPage() {
   }
 
   async function handleEditAgent() {
-    if (!selectedAgent) return;
-    if (ttlIsInvalid(editForm.ttlHours)) {
-      setInlineValidation("TTL hours must be a number.");
-      return;
-    }
-    if (labelsValidationError) {
-      setInlineValidation(labelsValidationError);
-      return;
-    }
-    if (connectorGrantsValidationError) {
-      setInlineValidation(connectorGrantsValidationError);
-      return;
-    }
-    if (httpTargetsValidationError) {
-      setInlineValidation(httpTargetsValidationError);
-      return;
-    }
+    if (!selectedAgent || !selectedAgentCodexUsage) return;
     setBusyAction("edit-agent");
     setInlineValidation("");
     try {
@@ -2047,13 +1774,7 @@ export function AgentsPage() {
         `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}?${query.toString()}`,
         {
           method: "PATCH",
-          body: JSON.stringify(
-            buildPolicyPayload(
-              editForm,
-              selectedAgent.backend === "container_worker_vm" && agentUsesCodex(selectedAgent),
-              httpTargetsDirty,
-            ),
-          ),
+          body: JSON.stringify(buildCodexUsagePayload(editForm)),
         },
       );
       const message = `${selectedAgent.target_name}: ${payload.message}`;
@@ -2155,8 +1876,8 @@ export function AgentsPage() {
     (selectedAgent.backend === "container_worker_vm" || selectedAgent.capabilities.resume);
   const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop;
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
-  const canEditPolicy = Boolean(selectedAgentPolicy);
-  const canInstallSkills = canEditPolicy && skillOptions.length > 0;
+  const canEditCodexUsage = Boolean(selectedAgentPolicy && selectedAgentCodexUsage);
+  const canInstallSkills = Boolean(selectedAgentPolicy) && skillOptions.length > 0;
   const operatorSteeringCanSubmit = Boolean(
     operatorSteeringContext &&
     canControlWorkflowRuns &&
@@ -2440,17 +2161,19 @@ export function AgentsPage() {
                   {selectedExecutionDisplay?.label ?? "Unknown"}
                 </span>
               </Tooltip>
-              <Tooltip content="Edit the selected session policy.">
-                <button
-                  type="button"
-                  className={`admin-icon-button${showEditForm ? " primary" : ""}`}
-                  onClick={openEditForm}
-                  disabled={!canMutate || !canEditPolicy}
-                  aria-label="Edit policy"
-                >
-                  {busyAction === "edit-agent" ? "..." : <EditIcon />}
-                </button>
-              </Tooltip>
+              {canEditCodexUsage ? (
+                <Tooltip content="Edit this container agent's Codex usage mode.">
+                  <button
+                    type="button"
+                    className={`admin-icon-button${showEditForm ? " primary" : ""}`}
+                    onClick={openEditForm}
+                    disabled={!canMutate}
+                    aria-label="Edit Codex usage"
+                  >
+                    {busyAction === "edit-agent" ? "..." : <EditIcon />}
+                  </button>
+                </Tooltip>
+              ) : null}
               <Tooltip content="Copy managed Codex skills into the selected session.">
                 <button
                   type="button"
@@ -2609,12 +2332,12 @@ export function AgentsPage() {
           />
         ) : null}
 
-        {showEditForm && selectedAgent ? (
+        {showEditForm && selectedAgent && selectedAgentCodexUsage ? (
           <div className="modal-backdrop" role="presentation">
-            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Edit agent policy">
+            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Edit Codex usage">
               <div className="modal-header">
                 <div>
-                  <h2>Edit policy</h2>
+                  <h2>Edit Codex usage</h2>
                   <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
                 </div>
                 <button className="admin-action-button compact" type="button" onClick={() => setShowEditForm(false)} disabled={busyAction === "edit-agent"}>
@@ -2625,363 +2348,24 @@ export function AgentsPage() {
                 {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
                 <div className="config-field-grid">
                   <label className="field-stack">
-                    <span>Model</span>
-                    <input
-                      value={editForm.model}
-                      onChange={(event) => setEditForm((current) => ({ ...current, model: event.target.value }))}
-                    />
-                  </label>
-                  {selectedAgent.backend === "container_worker_vm" && agentUsesCodex(selectedAgent) ? (
-                    <label className="field-stack">
-                      <span>Codex usage</span>
-                      <select
-                        value={editForm.codexAuthMode}
-                        onChange={(event) =>
-                          setEditForm((current) => ({
-                            ...current,
-                            codexAuthMode: event.target.value,
-                          }))
-                        }
-                      >
-                        <option value="">Directory default</option>
-                        <option value="metered_api">Metered API</option>
-                        <option value="chatgpt_subscription">ChatGPT subscription</option>
-                      </select>
-                      <span className="field-description">
-                        Applies on the next turn. Existing Codex thread history is preserved.
-                      </span>
-                    </label>
-                  ) : null}
-                  <label className="field-stack">
-                    <span>Renew TTL hours</span>
-                    <input
-                      inputMode="numeric"
-                      value={editForm.ttlHours}
-                      onChange={(event) => setEditForm((current) => ({ ...current, ttlHours: event.target.value }))}
-                      placeholder="Leave blank"
-                    />
-                  </label>
-                  <div className="field-stack">
-                    <span>Labels</span>
-                    <StringMapEditor
-                      value={editForm.labels}
-                      onChange={(nextValue) => setEditForm((current) => ({ ...current, labels: nextValue }))}
-                      onValidationChange={setLabelsValidationError}
-                      fieldLabel="Labels"
-                      description="Key/value rows for agent labels. Blank rows are ignored and duplicate keys are blocked."
-                      emptyState="No labels are configured."
-                      addLabel="Add label"
-                      keyLabel="Key"
-                      valueLabel="Value"
-                    />
-                  </div>
-                  <div className="field-stack wide-field">
-                    <span>HTTP targets</span>
-                    <HttpTargetsEditor
-                      entries={editForm.httpTargets}
-                      onChange={(nextEntries) => {
+                    <span>Codex usage</span>
+                    <select
+                      value={editForm.codexAuthMode}
+                      onChange={(event) =>
                         setEditForm((current) => ({
                           ...current,
-                          httpTargets: nextEntries,
-                          httpTargetsLegacyFallback: false,
-                          httpTargetsSourceError: null,
-                        }));
-                        setHttpTargetsDirty(true);
-                      }}
-                      onValidationChange={setHttpTargetsValidationError}
-                      legacyFallback={editForm.httpTargetsLegacyFallback}
-                      sourceError={editForm.httpTargetsSourceError}
-                      sessionId={sessionPolicyForAgent(selectedAgent)?.session_id ?? null}
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Allowed tools</span>
-                    <StringListEditor
-                      values={parseList(editForm.allowedTools)}
-                      onChange={(nextValues) => setEditForm((current) => ({ ...current, allowedTools: formatList(nextValues) }))}
-                      addLabel="Add tool"
-                      itemLabel="Tool"
-                      placeholder="run_script"
-                      emptyState="No tools are allowed explicitly."
-                    />
-                  </div>
-                  <div className="field-stack wide-field">
-                    <span>Connector grants</span>
-                    <p className="field-description">
-                      Map connector IDs to JSON arrays of operation names. Enable list_connectors and call_connector
-                      in Allowed tools for the agent to use these grants.
-                    </p>
-                    <JsonObjectKeyValueEditor
-                      value={editForm.connectorGrants}
-                      onChange={(nextValue) => setEditForm((current) => ({ ...current, connectorGrants: nextValue }))}
-                      onValidationChange={setConnectorGrantsValidationError}
-                      fieldLabel="Connector grants"
-                      emptyState="No connector operations are granted."
-                      addLabel="Add connector grant"
-                    />
-                  </div>
-                  <div className="field-stack wide-field">
-                    <span>Host directory grants</span>
-                    <p className="field-description">
-                      Select capabilities on named host directories. Selecting a capability also enables its
-                      dedicated host_directory MCP tool; removing a grant does not remove an explicitly allowed tool.
-                    </p>
-                    <HostDirectoryGrantSelector
-                      values={editForm.hostDirectoryGrants}
-                      options={editHostDirectoryOptions}
-                      onChange={(nextValue) =>
-                        setEditForm((current) => ({
-                          ...current,
-                          hostDirectoryGrants: nextValue,
-                          allowedTools: formatList(dedupeStrings([
-                            ...parseList(current.allowedTools),
-                            ...hostDirectoryToolsForGrants(nextValue),
-                          ])),
+                          codexAuthMode: event.target.value,
                         }))
                       }
-                    />
-                  </div>
-                  <label className="checkbox-row agent-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={editForm.webSearchEnabled}
-                      onChange={(event) => setEditForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
-                    />
-                    <span>Web search</span>
+                    >
+                      <option value="">Directory default</option>
+                      <option value="metered_api">Metered API</option>
+                      <option value="chatgpt_subscription">ChatGPT subscription</option>
+                    </select>
+                    <span className="field-description">
+                      Applies on the next turn. Existing Codex thread history is preserved.
+                    </span>
                   </label>
-                  <div className="field-stack">
-                    <span>Allowed scripts</span>
-                    <StringListEditor
-                      values={parseList(editForm.allowedScriptNames)}
-                      onChange={(nextValues) => setEditForm((current) => ({ ...current, allowedScriptNames: formatList(nextValues) }))}
-                      addLabel="Add script"
-                      itemLabel="Script"
-                      placeholder="collect-logs"
-                      emptyState="No scripts are allowed explicitly."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Approval notifications</span>
-                    <p className="field-description">
-                      Notification-only host targets that receive approval requests for this session.
-                      These IDs must resolve to notify-capable communication targets in the selected directory.
-                    </p>
-                    <div className="string-list-selector">
-                      <div className="contacts-editor-header">
-                        <p className="muted-text">
-                          Select notify-capable communication targets from the selected session&apos;s directory.
-                        </p>
-                        <div className="inline-actions contacts-editor-actions">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setEditForm((current) => {
-                                const nextAvailable = selectedAgentApprovalNotificationTargetOptions.find(
-                                  (option) => !current.approvalNotificationTargetIds.includes(option.value),
-                                );
-                                if (!nextAvailable) {
-                                  return current;
-                                }
-                                return {
-                                  ...current,
-                                  approvalNotificationTargetIds: dedupeStrings([
-                                    ...current.approvalNotificationTargetIds,
-                                    nextAvailable.value,
-                                  ]),
-                                };
-                              })
-                            }
-                            disabled={!selectedAgentApprovalNotificationTargetOptions.length}
-                          >
-                            Add notification target
-                          </button>
-                        </div>
-                      </div>
-                      {editForm.approvalNotificationTargetIds.length === 0 ? (
-                        <div className="empty-state">
-                          {selectedAgentApprovalNotificationTargetOptions.length
-                            ? "No approval notification targets selected."
-                            : "No notify-capable communication targets are currently available for this session."}
-                        </div>
-                      ) : null}
-                      {editForm.approvalNotificationTargetIds.map((entry, index) => {
-                        const rowOptions = dedupeStrings([
-                          entry,
-                          ...selectedAgentApprovalNotificationTargetOptions
-                            .map((option) => option.value)
-                            .filter((option) => option === entry || !editForm.approvalNotificationTargetIds.includes(option)),
-                        ]);
-                        const knownTarget =
-                          selectedAgentApprovalNotificationTargetOptions.find((option) => option.value === entry) ?? null;
-                        const isUnknownTarget = knownTarget == null;
-                        return (
-                          <div key={`agent-approval-notification-target-${index}-${entry}`} className="string-list-selector-row">
-                            <label className="field-stack">
-                              <span>Notification target</span>
-                              <select
-                                value={entry}
-                                onChange={(event) =>
-                                  setEditForm((current) => {
-                                    const nextEntries = [...current.approvalNotificationTargetIds];
-                                    nextEntries[index] = event.target.value;
-                                    return {
-                                      ...current,
-                                      approvalNotificationTargetIds: dedupeStrings(nextEntries),
-                                    };
-                                  })
-                                }
-                              >
-                                {rowOptions.map((option) => {
-                                  const optionLabel =
-                                    selectedAgentApprovalNotificationTargetOptions.find(
-                                      (knownOption) => knownOption.value === option,
-                                    ) ?? null;
-                                  return (
-                                    <option key={option} value={option}>
-                                      {option === entry && isUnknownTarget
-                                        ? `${option} (unknown target)`
-                                        : optionLabel
-                                          ? formatNotificationTargetOptionLabel(optionLabel)
-                                          : option}
-                                    </option>
-                                  );
-                                })}
-                              </select>
-                            </label>
-                            <div className="inline-actions compact-actions">
-                              <button
-                                type="button"
-                                className="danger"
-                                onClick={() =>
-                                  setEditForm((current) => ({
-                                    ...current,
-                                    approvalNotificationTargetIds: dedupeStrings(
-                                      current.approvalNotificationTargetIds.filter(
-                                        (_, itemIndex) => itemIndex !== index,
-                                      ),
-                                    ),
-                                  }))
-                                }
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  {editForm.communicationTargetIds === null || editForm.emailMailboxGrants === null ? (
-                    <div className="field-stack wide-field">
-                      <div className="callout">This agent session uses legacy communication allowlists. They remain unchanged until you explicitly convert them.</div>
-                      <button type="button" className="admin-action-button compact" onClick={convertLegacyAgentCommunicationPolicy}>Convert to managed grants</button>
-                    </div>
-                  ) : null}
-                  {editForm.communicationTargetIds === null ? (
-                    <>
-                      <div className="field-stack"><span>Legacy Discord allowlist</span><StringListEditor values={parseList(editForm.discordChannels)} onChange={(nextValues) => setEditForm((current) => ({ ...current, discordChannels: formatList(nextValues) }))} addLabel="Add Discord target" itemLabel="Discord target" placeholder="channel-id or communication-target-id" emptyState="No Discord targets are allowlisted." /></div>
-                      <div className="field-stack"><span>Legacy Teams allowlist</span><StringListEditor values={parseList(editForm.teamsChannels)} onChange={(nextValues) => setEditForm((current) => ({ ...current, teamsChannels: formatList(nextValues) }))} addLabel="Add Teams target" itemLabel="Teams target" placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>" emptyState="No Teams targets are allowlisted." /></div>
-                    </>
-                  ) : (
-                    <div className="field-stack wide-field agent-communication-targets-field">
-                      <span>Communication targets</span>
-                      <p className="field-description">Teams and Discord destinations plus outbound email recipients. Email targets do not grant mailbox access.</p>
-                      <CommunicationTargetCheckboxTable values={editForm.communicationTargetIds} options={editCommunicationTargetOptions} onChange={(nextValues) => setEditForm((current) => ({ ...current, communicationTargetIds: nextValues }))} emptyState="No communication targets are granted." />
-                    </div>
-                  )}
-                  {editForm.emailMailboxGrants === null ? (
-                    <>
-                      <div className="field-stack">
-                        <span>Legacy email mailboxes</span>
-                        <StringListEditor
-                          values={parseList(editForm.emailMailboxes)}
-                          onChange={(nextValues) => setEditForm((current) => {
-                            const mailboxIds = dedupeStrings(nextValues);
-                            const emailFolderAllowlistByMailbox = Object.fromEntries(
-                              Object.entries(current.emailFolderAllowlistByMailbox).filter(
-                                ([mailboxId]) => mailboxIds.includes(mailboxId),
-                              ),
-                            );
-                            const fallbackFolders = parseList(current.emailFolders);
-                            const emailFolders = dedupeStrings(
-                              mailboxIds.flatMap((mailboxId) => (
-                                Object.prototype.hasOwnProperty.call(
-                                  emailFolderAllowlistByMailbox,
-                                  mailboxId,
-                                )
-                                  ? emailFolderAllowlistByMailbox[mailboxId]
-                                  : fallbackFolders
-                              )),
-                            );
-                            return {
-                              ...current,
-                              emailMailboxes: formatList(mailboxIds),
-                              emailFolders: formatList(emailFolders),
-                              emailFolderAllowlistByMailbox,
-                            };
-                          })}
-                          addLabel="Add mailbox"
-                          itemLabel="Mailbox"
-                          placeholder="ops"
-                          emptyState="No email mailboxes are allowlisted."
-                        />
-                      </div>
-                      {Object.keys(editForm.emailFolderAllowlistByMailbox).length > 0 ? (
-                        <div className="field-stack wide-field">
-                          <span>Legacy email folders by mailbox</span>
-                          {parseList(editForm.emailMailboxes).map((mailboxId) => (
-                            <div className="field-stack" key={mailboxId}>
-                              <span>{mailboxId}</span>
-                              <StringListEditor
-                                values={
-                                  Object.prototype.hasOwnProperty.call(
-                                    editForm.emailFolderAllowlistByMailbox,
-                                    mailboxId,
-                                  )
-                                    ? editForm.emailFolderAllowlistByMailbox[mailboxId]
-                                    : parseList(editForm.emailFolders)
-                                }
-                                onChange={(nextValues) => setEditForm((current) => {
-                                  const emailFolderAllowlistByMailbox = {
-                                    ...current.emailFolderAllowlistByMailbox,
-                                    [mailboxId]: dedupeStrings(nextValues),
-                                  };
-                                  const fallbackFolders = parseList(current.emailFolders);
-                                  const emailFolders = dedupeStrings(
-                                    parseList(current.emailMailboxes).flatMap((currentMailboxId) => (
-                                      Object.prototype.hasOwnProperty.call(
-                                        emailFolderAllowlistByMailbox,
-                                        currentMailboxId,
-                                      )
-                                        ? emailFolderAllowlistByMailbox[currentMailboxId]
-                                        : fallbackFolders
-                                    )),
-                                  );
-                                  return {
-                                    ...current,
-                                    emailFolders: formatList(emailFolders),
-                                    emailFolderAllowlistByMailbox,
-                                  };
-                                })}
-                                addLabel="Add folder"
-                                itemLabel="Folder"
-                                placeholder="inbox"
-                                emptyState="No folders are allowlisted for this mailbox."
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="field-stack"><span>Legacy email folders</span><StringListEditor values={parseList(editForm.emailFolders)} onChange={(nextValues) => setEditForm((current) => ({ ...current, emailFolders: formatList(nextValues) }))} addLabel="Add folder" itemLabel="Folder" placeholder="inbox" emptyState="No email folders are allowlisted." /></div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="field-stack wide-field agent-communication-targets-field">
-                      <span>Email mailbox access</span>
-                      <p className="field-description">Read-only is the default. Draft and send access are explicit and separate from recipients.</p>
-                      <EmailMailboxGrantEditor grants={editForm.emailMailboxGrants} options={editEmailMailboxOptions} onChange={(nextGrants) => setEditForm((current) => ({ ...current, emailMailboxGrants: nextGrants }))} emptyState="No mailbox accounts are granted." />
-                    </div>
-                  )}
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>

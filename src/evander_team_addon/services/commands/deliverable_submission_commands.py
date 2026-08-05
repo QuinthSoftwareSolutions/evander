@@ -1053,9 +1053,14 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     message="deliverable replacements must remain within one project",
                 )
             project_id = predecessor_task.project_id
+            project = state.projects.get(project_id)
             if not (
                 _is_project_lead_for(state, agent.id, project_id)
-                or _is_team_manager(state, agent)
+                or (
+                    project is not None
+                    and project.team_id == agent.team_id
+                    and _is_team_manager(state, agent)
+                )
             ):
                 raise TeamCommandValidationError(
                     code="deliverable_replacement_forbidden",

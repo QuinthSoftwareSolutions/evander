@@ -795,6 +795,8 @@ class TeamReadService:
             "priority": task.priority,
             "owner_agent_id": task.owner_agent_id,
             "project_id": task.project_id,
+            "git_base_branch": task.git_base_branch,
+            "git_base_commit_sha": task.git_base_commit_sha,
             "case_id": task.case_id,
             "dependency_status": derived.get("dependency_status"),
             "resolution_status": derived.get("resolution_status"),
@@ -846,6 +848,7 @@ class TeamReadService:
                 "task_id": blocker.task_id,
                 "source_kind": blocker.source_kind.value,
                 "source_id": blocker.source_id,
+                "resolution_scope": blocker.resolution_scope.value,
                 "summary": _compact_text(blocker.summary, 180),
                 "details": _compact_text(blocker.details, 240),
                 "priority": blocker.priority.value,
@@ -898,6 +901,11 @@ class TeamReadService:
                 "verification_status": (
                     deliverable.verification.status
                     if deliverable.verification is not None
+                    else None
+                ),
+                "initial_release_disposition": (
+                    deliverable.initial_release_disposition.model_dump(mode="json")
+                    if deliverable.initial_release_disposition is not None
                     else None
                 ),
                 "created_at": _json_value(deliverable.created_at),

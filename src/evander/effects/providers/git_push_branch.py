@@ -21,6 +21,9 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         expected_commit_sha = self._normalize_required_string(
             payload.get("expected_commit_sha"), field_name="expected_commit_sha"
         )
+        expected_destination_commit_sha = self._normalize_optional_string(
+            payload.get("expected_destination_commit_sha")
+        )
         destination_branch = self._normalize_required_string(
             payload.get("destination_branch"), field_name="destination_branch"
         )
@@ -33,18 +36,27 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         if not callable(push_branch):
             raise RuntimeError("Admin runtime push_branch is not available")
 
+        push_kwargs = {
+            "managed_repo_id": managed_repo_id,
+            "source_ref": source_ref,
+            "expected_commit_sha": expected_commit_sha,
+            "destination_branch": destination_branch,
+            "directory_path": directory_path,
+        }
+        if expected_destination_commit_sha is not None:
+            push_kwargs["expected_destination_commit_sha"] = expected_destination_commit_sha
         result = push_branch(
-            managed_repo_id=managed_repo_id,
-            source_ref=source_ref,
-            expected_commit_sha=expected_commit_sha,
-            destination_branch=destination_branch,
-            directory_path=directory_path,
+            **push_kwargs,
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
         output.setdefault("managed_repo_id", managed_repo_id)
         output.setdefault("source_ref", source_ref)
         output.setdefault("expected_commit_sha", expected_commit_sha)
+        if expected_destination_commit_sha is not None:
+            output.setdefault(
+                "expected_destination_commit_sha", expected_destination_commit_sha
+            )
         output.setdefault("destination_branch", destination_branch)
         if output["success"] is False and not self._normalize_optional_string(output.get("error")):
             message = self._normalize_optional_string(output.get("message"))
@@ -60,6 +72,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
             "directory_path",
             "source_ref",
             "expected_commit_sha",
+            "expected_destination_commit_sha",
             "destination_branch",
         ):
             if effect is not None and hasattr(effect, field_name):

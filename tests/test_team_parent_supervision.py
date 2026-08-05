@@ -28,6 +28,7 @@ from evander_team_addon.services.domain.deliverables import (
 from evander_team_addon.services.domain.review import _cascade_review_decision
 from evander_team_addon.services.domain.task_supervision import (
     queue_parent_task_transition,
+    queue_root_task_resolution,
 )
 
 
@@ -498,6 +499,48 @@ def test_final_root_review_acceptance_wakes_project_lead_for_release() -> None:
     assert {
         event["payload"]["agent_id"] for event in wake_events
     } == {"lead"}
+
+
+def test_reaccepted_root_deliverable_creates_a_new_pending_release_notice() -> None:
+    state = _state_with_hierarchy()
+    root = state.tasks["child-1"]
+    root.parent_task_id = None
+    deliverable = Deliverable(
+        id="deliverable-root-reaccepted",
+        task_id=root.id,
+        producer_agent_id="child-owner",
+        summary="Reaccepted root contribution",
+        state=TeamRecordState.ACCEPTED,
+    )
+    state.deliverables[deliverable.id] = deliverable
+    root.deliverable_ids = [deliverable.id]
+    first_result: dict[str, object] = {"events": [], "created_inbox_item_ids": []}
+
+    first = queue_root_task_resolution(
+        state,
+        task_id=root.id,
+        deliverable_id=deliverable.id,
+        sender_agent_id="child-owner",
+        result=first_result,
+        now=utc_now(),
+    )
+    assert first is not None
+    first.state = TeamInboxItemState.HANDLED
+    second_result: dict[str, object] = {"events": [], "created_inbox_item_ids": []}
+
+    second = queue_root_task_resolution(
+        state,
+        task_id=root.id,
+        deliverable_id=deliverable.id,
+        sender_agent_id="child-owner",
+        result=second_result,
+        now=utc_now(),
+    )
+
+    assert second is not None
+    assert second.id != first.id
+    assert second.state == TeamInboxItemState.PENDING
+    assert second_result["created_inbox_item_ids"] == [second.id]
 
 
 def test_execution_stall_notifies_every_distinct_parent_owner_and_coalesces() -> None:

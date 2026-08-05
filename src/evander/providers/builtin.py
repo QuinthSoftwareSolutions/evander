@@ -124,6 +124,7 @@ from evander.queries.providers.pull_request_feedback import (
 )
 from evander.queries.providers.pull_request_get import PullRequestGetQueryProvider
 from evander.queries.providers.pull_request_list import PullRequestListQueryProvider
+from evander.queries.providers.pull_request_work_items import PullRequestWorkItemsQueryProvider
 from evander.queries.providers.remote_issues import RemoteIssuesQueryProvider
 from evander.queries.providers.semantic_get import SemanticGetQueryProvider
 from evander.queries.providers.semantic_search import SemanticSearchQueryProvider
@@ -305,6 +306,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,
             "query:communication:messages": CommunicationMessagesQueryProvider,
             "query:pull-request:get": PullRequestGetQueryProvider,
+            "query:pull-request:work-items": PullRequestWorkItemsQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,

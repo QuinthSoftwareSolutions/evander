@@ -120,6 +120,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.human-review-checklist-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
+  assert.match(
+    stylesheet,
+    /\.human-review-decision-form \.checkbox-label > input\[type="checkbox"\] \{[\s\S]*?width: 1\.25rem;[\s\S]*?height: 1\.25rem;[\s\S]*?padding: 0;/,
+  );
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
   assert.match(script, /data-review-profile-criteria-editor/);
@@ -169,6 +173,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(
     stylesheet,
     /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-conversations-view\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;/,
   );
   assert.match(stylesheet, /\.chat-sound-toggle/);
   assert.match(stylesheet, /\.chat-conversation-row\.has-unread/);
@@ -1310,6 +1318,7 @@ function chatConversationPayload(state, conversation, { includeMessages = false,
     agent_id: conversation.agent_id,
     agent: chatAgentPayload(state, conversation.agent_id),
     created_by: conversation.created_by || null,
+    mutation_mode: conversation.mutation_mode || "reply_only",
     last_message_preview: conversation.last_message_preview || "",
     created_at: conversation.created_at || null,
     updated_at: conversation.updated_at || null,
@@ -3327,6 +3336,15 @@ test("team add-on delivery records lead with human subjects and progressive tech
       summary: longSummary,
       state: "accepted",
       review_request_ids: ["review-rich-1"],
+      initial_release_disposition: {
+        state: "release_requested",
+        created_at: "2026-06-11T09:26:00Z",
+        updated_at: "2026-06-11T09:30:00Z",
+        decided_at: "2026-06-11T09:30:00Z",
+        decided_by_actor: "agent:lead",
+        reason: null,
+        release_package_id: releaseId,
+      },
       git_refs: {
         branch_context_id: "branch-context-rich-1",
         agent_branch: "agents/backend/rich-result",
@@ -3462,6 +3480,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
     "Summary / outcome",
     "Task and producer",
     "Evidence and artifacts",
+    "Initial release decision",
     "Reviews and decision",
     "Lineage / technical details",
   ]) {
@@ -3472,6 +3491,12 @@ test("team add-on delivery records lead with human subjects and progressive tech
   await deliverableCard
     .getByText("artifact-space:delivery/rich-result", { exact: true })
     .waitFor({ state: "visible" });
+  await deliverableCard.getByText("Release Requested", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await deliverableCard.getByText("agent:lead", { exact: true }).waitFor({
+    state: "visible",
+  });
   const deliverableTechnicalDetails = deliverableCard.locator(
     ".deliverable-lineage-group > details.technical-details",
   );
@@ -4384,7 +4409,7 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
-test("team add-on keeps unavailable stand-down revocation visible with an explanation", async (t) => {
+test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.lead.display_name = "Project Lead";
   const standDown = {
@@ -4414,7 +4439,7 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   const { port, requests } = await createTeamAddonServer(t, {
     initialState,
   });
-  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=true");
 
   await waitForRevision(page, 8);
   await openTeams(page);
@@ -4430,28 +4455,30 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   await detail.waitFor({ state: "visible" });
   const revokeButton = detail.getByRole("button", { name: "Revoke stand-down" });
   await revokeButton.waitFor({ state: "visible" });
-  await revokeButton.hover();
-  assert.equal(await revokeButton.isDisabled(), true);
-  assert.equal(await revokeButton.getAttribute("aria-disabled"), "true");
-  assert.equal(
-    await revokeButton.getAttribute("title"),
-    "Only Project Lead can revoke this superior-issued stand-down.",
-  );
+  assert.equal(await revokeButton.isDisabled(), false);
+  assert.equal(await revokeButton.getAttribute("aria-disabled"), null);
 
   const revokeRequestCountBeforeClick = requests.filter(
     (request) =>
       request.method === "POST"
       && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
   ).length;
-  await revokeButton.dispatchEvent("click");
-  await page.waitForTimeout(100);
+  await revokeButton.click();
+  await waitForCondition(
+    () => requests.filter(
+      (request) =>
+        request.method === "POST"
+        && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
+    ).length === revokeRequestCountBeforeClick + 1,
+    "expected an operator revocation request for the direct agent-issued hold",
+  );
   assert.equal(
     requests.filter(
       (request) =>
         request.method === "POST"
         && request.pathname === "/api/addons/team-addon/agents/backend/stand-down/revoke",
     ).length,
-    revokeRequestCountBeforeClick,
+    revokeRequestCountBeforeClick + 1,
   );
 
   await teamGroup.locator('[data-select-agent-id="worker"]').click();
@@ -4463,7 +4490,7 @@ test("team add-on keeps unavailable stand-down revocation visible with an explan
   assert.equal(await inheritedRevokeButton.isDisabled(), true);
   assert.equal(
     await inheritedRevokeButton.getAttribute("title"),
-    "This stand-down is inherited from Backend Worker. Only Project Lead can revoke it.",
+    "This stand-down is inherited from Backend Worker. Revoke it on Backend Worker.",
   );
 });
 
@@ -7132,6 +7159,85 @@ function seededTwoConversationChatState() {
   return state;
 }
 
+function seededLongConversationListState(conversationCount = 30) {
+  const state = seededLongChatState(4);
+  state.conversations = {};
+  state.conversation_messages = {};
+  for (let index = 1; index <= conversationCount; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const agentId = `scroll-agent-${suffix}`;
+    const timestamp = new Date(Date.UTC(2026, 5, 9, 1, index, 0)).toISOString();
+    state.conversations[`conversation-${agentId}`] = {
+      id: `conversation-${agentId}`,
+      agent_id: agentId,
+      created_by: "operator",
+      last_message_preview: `Message ${suffix}`,
+      created_at: timestamp,
+      updated_at: timestamp,
+      last_interaction_at: timestamp,
+    };
+  }
+  return state;
+}
+
+test("team add-on Chat keeps recent conversations in an internal scroll region", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededLongConversationListState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const conversationList = page.locator(".chat-conversation-list");
+  await conversationList.locator('[data-chat-conversation-id="conversation-scroll-agent-01"]').waitFor({
+    state: "attached",
+  });
+
+  const metrics = await page.evaluate(() => {
+    const list = document.querySelector(".chat-conversation-list");
+    const sidebar = document.querySelector(".chat-sidebar");
+    const pageRoot = document.documentElement;
+    if (!(list instanceof HTMLElement) || !(sidebar instanceof HTMLElement)) {
+      return null;
+    }
+    const listBox = list.getBoundingClientRect();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    return {
+      listBottom: listBox.bottom,
+      overflowY: getComputedStyle(list).overflowY,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      sidebarBottom: sidebarBox.bottom,
+      documentClientHeight: pageRoot.clientHeight,
+      documentScrollHeight: pageRoot.scrollHeight,
+    };
+  });
+  assert.ok(metrics, "expected recent conversation list metrics");
+  assert.match(metrics.overflowY, /auto|scroll/);
+  assert.ok(
+    metrics.scrollHeight > metrics.clientHeight,
+    `expected recent conversations to scroll internally: ${JSON.stringify(metrics)}`,
+  );
+  assert.ok(
+    metrics.listBottom <= metrics.sidebarBottom + 2,
+    `expected recent conversation list to stay inside sidebar: ${JSON.stringify(metrics)}`,
+  );
+  assert.ok(
+    metrics.documentScrollHeight <= metrics.documentClientHeight + 4,
+    `expected recent conversation list not to overflow the page: ${JSON.stringify(metrics)}`,
+  );
+
+  await conversationList.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await conversationList.locator('[data-chat-conversation-id="conversation-scroll-agent-01"]').scrollIntoViewIfNeeded();
+  assert.ok(
+    (await conversationList.evaluate((element) => element.scrollTop)) > 0,
+    "expected scrolling to reveal older recent conversations",
+  );
+});
+
 test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
@@ -7297,6 +7403,36 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
   );
 });
 
+test("team add-on Chat opens the conversation from a deep link", async (t) => {
+  const { port, chatRequests } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+  });
+  const page = await openBrowserPage(
+    t,
+    port,
+    { viewport: { width: 1280, height: 720 } },
+    "/addons/team-addon/?view=chat&conversation_id=conversation-beta-lead",
+  );
+
+  await waitForRevision(page, 9);
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+  assert.equal(
+    await page
+      .locator('[data-chat-conversation-id="conversation-beta-lead"]')
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  assert.ok(
+    chatRequests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/views/chat" &&
+        String(request.search || "").includes("selected_conversation_id=conversation-beta-lead"),
+    ),
+    "expected the chat deep link to select its conversation in the initial request",
+  );
+});
+
 test("team add-on Chat preserves a reader position across a state-stream refresh", async (t) => {
   const { port, state, chatRequests, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
@@ -7451,6 +7587,44 @@ test("team add-on Chat send keeps the selected message list anchored during send
   );
 });
 
+test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const composer = page.locator('.chat-composer textarea[name="body"]');
+  await composer.waitFor({ state: "visible" });
+  await composer.fill("First line");
+  await composer.press("Shift+Enter");
+  await composer.type("Second line");
+
+  assert.equal(await composer.inputValue(), "First line\nSecond line");
+  assert.equal(
+    requests.some(
+      (request) =>
+        request.method === "POST" &&
+        request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages",
+    ),
+    false,
+  );
+
+  await composer.press("Enter");
+  await page.locator(".chat-message").getByText("First line").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
+          request.payload?.body === "First line\nSecond line",
+      ),
+    "expected plain Enter to submit the complete chat message",
+  );
+});
+
 test("team add-on Chat sends selected files as multipart attachments", async (t) => {
   const initialState = seededLongChatState(4);
   const { port } = await createTeamAddonServer(t, { initialState });
@@ -7553,6 +7727,7 @@ test("team add-on Chat remains usable while privileged operations are locked", a
   await waitForRevision(page, 9);
   await page.locator("#team-view-chat-tab").click();
   await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+  await page.locator(".chat-composer .chat-mutation-mode.is-reply-only").getByText("Reply only").waitFor({ state: "visible" });
 
   const newChatButton = page.getByRole("button", { name: "New chat" });
   assert.equal(await newChatButton.isDisabled(), false);
@@ -7588,6 +7763,19 @@ test("team add-on Chat remains usable while privileged operations are locked", a
       request.payload?.body === body,
   );
   assert.equal(sendRequest?.payload?.expected_revision, undefined);
+});
+
+test("team add-on Chat shows mutation-enabled server authority", async (t) => {
+  const initialState = seededLongChatState();
+  initialState.conversations["conversation-alpha-lead"].mutation_mode = "project_scoped";
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-composer .chat-mutation-mode.is-enabled")
+    .getByText("Mutation enabled")
+    .waitFor({ state: "visible" });
 });
 
 test("team add-on Chat notification sound is gated by focus and sender", async (t) => {
@@ -10147,7 +10335,6 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     readiness: "blocked",
     resolution_status: "unresolved",
     integration_ready: false,
-    blocked_by_task_ids: [waiting.id],
     assessment: {
       readiness: "blocked",
       resolution_status: "unresolved",
@@ -10156,6 +10343,20 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
       unresolved_descendant_ids: [waiting.id],
     },
   });
+  initialState.blockers = {
+    "blocker-task-pending": {
+      id: "blocker-task-pending",
+      state: "open",
+      source_kind: "task",
+      source_id: pending.id,
+      task_id: pending.id,
+      reason_code: "test_environment_unavailable",
+      summary: "The task test environment is unavailable.",
+      owner_agent_id: "alpha-lead",
+      route: "owned",
+      escalation_depth: 0,
+    },
+  };
   Object.assign(activeSibling, {
     parent_task_id: planned.id,
     owner_agent_id: "alpha-manager",
@@ -10193,9 +10394,20 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     state: "pending",
     state_entered_at: "2026-06-10T08:00:00Z",
     title: "Independent active root",
-    description: "A separate hierarchy used to exercise root filtering.",
+    description: "A separate hierarchy waiting for prerequisite work.",
     created_by_agent_id: "alpha-manager",
-    readiness: "actionable",
+    dependency_task_ids: [activeSibling.id],
+    dependency_status: "waiting",
+    blocked_by_task_ids: [activeSibling.id],
+    readiness: "waiting_on_dependencies",
+    resolution_status: "unresolved",
+    assessment: {
+      readiness: "waiting_on_dependencies",
+      resolution_status: "unresolved",
+      unsatisfied_dependency_ids: [activeSibling.id],
+      direct_child_ids: [],
+      unresolved_descendant_ids: [],
+    },
     created_at: "2026-06-10T08:00:00Z",
     updated_at: "2026-06-10T08:00:00Z",
   };
@@ -10231,7 +10443,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     };
   }
 
-  const { port } = await createTeamAddonServer(t, { initialState });
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -10246,6 +10458,24 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   );
   await boardPanel.getByText("25 completed tasks hidden.").waitFor({ state: "visible" });
   assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 0);
+  await boardPanel
+    .locator(".task-board-context")
+    .getByText(/1 waiting on dependencies/)
+    .waitFor({ state: "visible" });
+  const dependencyWaitCard = boardPanel.locator(
+    '.task-board-card[data-task-board-task-id="task-independent"]',
+  );
+  await dependencyWaitCard.getByText("Waiting on 1 dependency", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await dependencyWaitCard.getByText("Waiting on dependencies:", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await dependencyWaitCard.evaluate((element) => element.classList.contains("task-board-card-blocked")),
+    false,
+  );
+  assert.equal(await dependencyWaitCard.getByText("Blocked", { exact: true }).count(), 0);
 
   await boardPanel.getByRole("button", { name: "Show completed" }).click();
   assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 20);
@@ -10381,8 +10611,10 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const pendingNodeCard = pendingNode.locator(":scope > .task-board-hierarchy-node");
   await pendingNodeCard.getByText("Readiness: Blocked").waitFor({ state: "visible" });
   await pendingNodeCard.getByText("Assignee: Grace Lead").waitFor({ state: "visible" });
-  await pendingNodeCard.getByText(/1 blocker/).waitFor({ state: "visible" });
-  await pendingNodeCard.getByRole("button", { name: "Await review", exact: true }).waitFor({ state: "visible" });
+  await pendingNodeCard.getByText(/1 assigned blocker/).waitFor({ state: "visible" });
+  await pendingNodeCard.getByText("Assigned blocker:", { exact: true }).waitFor({
+    state: "visible",
+  });
 
   await acceptedNode.getByRole("button", { name: "Ship accepted delivery", exact: true }).click();
   await boardPanel.getByRole("tab", { name: "Board" }).click();
@@ -10408,6 +10640,30 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     /This final line ensures the brief uses the expandable board presentation\./,
   );
   assert.equal(await pendingCard.evaluate((element) => element.classList.contains("task-board-task-direct-child")), true);
+
+  await boardPanel.locator("details.task-board-create > summary").click();
+  const createTaskForm = boardPanel.locator("[data-task-board-create-form]");
+  await createTaskForm.locator('[name="owner_agent_id"]').selectOption("alpha-lead");
+  await createTaskForm.locator('[name="title"]').fill("Feature workstream task");
+  await createTaskForm.locator('[name="description"]').fill("Keep this task on feature/demo.");
+  await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
+  await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
+  await createTaskForm.getByRole("button", { name: "Create task" }).click();
+  await waitForCondition(
+    () => requests.some((request) => (
+      request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/tasks"
+      && request.payload?.title === "Feature workstream task"
+    )),
+    "expected task-board create request",
+  );
+  const createRequest = requests.find((request) => (
+    request.method === "POST"
+    && request.pathname === "/api/addons/team-addon/tasks"
+    && request.payload?.title === "Feature workstream task"
+  ));
+  assert.equal(createRequest.payload.git_base_branch, "feature/demo");
+  assert.equal(createRequest.payload.parent_task_id, "task-planned");
 });
 
 test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {
@@ -10733,8 +10989,19 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await childCard
     .getByText("Worktree: /home/agent/worktrees/task-pending")
     .waitFor({ state: "visible" });
+  await childCard.getByText("Waiting on 1 blocked dependency", { exact: true }).waitFor({
+    state: "visible",
+  });
   const childBlockers = childCard.locator(".task-board-card-blockers");
-  await childBlockers.getByText("Dependency:", { exact: true }).waitFor({ state: "visible" });
+  await childBlockers.getByText("Waiting on blocked dependencies:", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await childBlockers.getByText("Assigned blocker:", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await childBlockers.getByText("Blocker on dependency:", { exact: true }).waitFor({
+    state: "visible",
+  });
   await childBlockers.getByRole("button", { name: "Await review" }).first().waitFor({ state: "visible" });
   await childBlockers
     .getByText("The upstream runtime contract is not signed.", { exact: true })
@@ -11333,9 +11600,15 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await page.unroute(decisionEndpoint);
   await decisionForm.waitFor({ state: "visible" });
   await decisionForm.locator('[data-human-checklist-id="smoke-release"]').check();
-  await decisionForm
-    .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
-    .check();
+  const carriedFindingConfirmation = decisionForm.locator(
+    '[data-confirm-finding-id="human-finding-carried-accessibility"]',
+  );
+  const carriedFindingConfirmationBox = await carriedFindingConfirmation.boundingBox();
+  assert.ok(
+    carriedFindingConfirmationBox?.width >= 20 && carriedFindingConfirmationBox?.height >= 20,
+    "carried-finding confirmation checkbox should have a visible 20px target",
+  );
+  await carriedFindingConfirmation.check();
   await decisionForm
     .locator('textarea[name="summary"]')
     .fill("Smoke test passed against the pinned preview.");

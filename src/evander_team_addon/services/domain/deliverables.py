@@ -31,6 +31,7 @@ from .common import (
     _string_list,
 )
 from .git_work_contexts import finalize_active_git_work_contexts_for_task
+from .initial_release import initialize_pending_initial_release_disposition
 from .task_supervision import (
     queue_parent_resolution_transitions,
     queue_root_task_resolution,
@@ -384,6 +385,14 @@ def _accept_deliverable_and_maybe_task(
         now=now,
     )
     task.updated_at = now
+    if task.parent_task_id is None:
+        for accepted_deliverable in task_deliverables:
+            initialize_pending_initial_release_disposition(
+                state,
+                task=task,
+                deliverable=accepted_deliverable,
+                now=now,
+            )
     parent_notices = queue_parent_resolution_transitions(
         state,
         child_task_id=task.id,
