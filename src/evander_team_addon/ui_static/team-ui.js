@@ -435,6 +435,9 @@ let humanReviewQueue = {
 };
 const releaseDetailCache = new Map();
 const expandedReleaseDetailIds = new Set();
+const releaseVerificationLiveCache = new Map();
+const releaseVerificationLivePollTimers = new Map();
+const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
 const postReleaseReportResults = new Map();
 const runtimeAttentionFilters = {
   kind: "all",
@@ -16143,12 +16146,21 @@ function releaseProgressStages(release) {
     stages.push({ label: "Automated verification", state: "not-applicable", detail: "No automated checks required" });
   } else {
     const runStates = verificationRuns.map((run) => text(run.state));
-    const failed = runStates.some((stateValue) => ["failed", "blocked", "rejected"].includes(stateValue));
+    const failed = runStates.some((stateValue) => ["failed", "timed_out", "blocked", "rejected"].includes(stateValue));
     const completed = runStates.length && runStates.every((stateValue) => ["passed", "succeeded", "accepted"].includes(stateValue));
+    const runningRun = verificationRuns.find((run) => text(run.state) === "running");
+    const currentCommandIndex = Number(runningRun?.current_command_index || 0);
+    const currentCommand = runningRun?.command_results?.[currentCommandIndex]
+      || runningRun?.command_results?.find((result) => text(result.state) === "running");
+    const runningDetail = currentCommand?.name
+      ? `Running: ${text(currentCommand.name)}`
+      : runningRun
+        ? "Preparing verifier"
+        : "";
     stages.push({
       label: "Automated verification",
       state: failed ? "blocked" : completed ? "complete" : "pending",
-      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
+      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : runningDetail || `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
     });
   }
 
@@ -16486,7 +16498,9 @@ function renderCachedReleaseDetail(releaseId) {
   if (cached.error) {
     return `<div class="release-review-detail task-invalid-warning">${escapeHtml(cached.error)}</div>`;
   }
-  return renderReleaseDetail(cached.release);
+  const release = mergeReleaseDetailWithCurrentState(cached.release);
+  ensureReleaseVerificationLivePolling(release);
+  return renderReleaseDetail(release);
 }
 
 async function toggleReleaseDetail(releaseId) {
@@ -16495,6 +16509,7 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
+    clearReleaseVerificationLivePolling(releaseId);
     openTeamDisclosures.delete(
       teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
     );
@@ -16509,6 +16524,8 @@ async function toggleReleaseDetail(releaseId) {
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
     await loadReleaseDetail(releaseId);
+  } else {
+    ensureReleaseVerificationLivePolling(mergeReleaseDetailWithCurrentState(cached.release));
   }
 }
 
@@ -16535,6 +16552,104 @@ async function loadReleaseDetail(releaseId) {
       loading: false,
       error: error instanceof Error ? error.message : "Release detail could not be loaded.",
       release: null,
+    });
+  }
+  renderReleaseDetailSurfaces();
+}
+
+function mergeReleaseDetailWithCurrentState(release) {
+  const current = state.release_packages?.[text(release?.id)];
+  if (!current) {
+    return release;
+  }
+  return {
+    ...release,
+    state: current.state ?? release.state,
+    error: current.error ?? release.error,
+    updated_at: current.updated_at ?? release.updated_at,
+    manifest: current.manifest ?? release.manifest,
+    verification_runs: current.verification_runs ?? release.verification_runs,
+  };
+}
+
+function activeReleaseVerificationRun(release) {
+  return (release?.verification_runs || []).find(
+    (run) => !run.superseded_by_verification_run_id && text(run.state) === "running",
+  ) || null;
+}
+
+function clearReleaseVerificationLivePolling(releaseId) {
+  const normalizedId = text(releaseId);
+  const timer = releaseVerificationLivePollTimers.get(normalizedId);
+  if (timer) {
+    window.clearTimeout(timer);
+  }
+  releaseVerificationLivePollTimers.delete(normalizedId);
+  releaseVerificationLiveCache.delete(normalizedId);
+}
+
+function ensureReleaseVerificationLivePolling(release) {
+  const releaseId = text(release?.id);
+  if (!releaseId || !expandedReleaseDetailIds.has(releaseId)) {
+    return;
+  }
+  if (!activeReleaseVerificationRun(release)) {
+    clearReleaseVerificationLivePolling(releaseId);
+    return;
+  }
+  const cached = releaseVerificationLiveCache.get(releaseId);
+  if (!cached || (!cached.loading && !cached.payload && !cached.error)) {
+    void loadReleaseVerificationLive(releaseId);
+  }
+}
+
+function scheduleReleaseVerificationLivePoll(releaseId, payload) {
+  const normalizedId = text(releaseId);
+  const previous = releaseVerificationLivePollTimers.get(normalizedId);
+  if (previous) {
+    window.clearTimeout(previous);
+  }
+  if (
+    !expandedReleaseDetailIds.has(normalizedId)
+    || text(payload?.run?.state) !== "running"
+  ) {
+    releaseVerificationLivePollTimers.delete(normalizedId);
+    return;
+  }
+  releaseVerificationLivePollTimers.set(normalizedId, window.setTimeout(() => {
+    releaseVerificationLivePollTimers.delete(normalizedId);
+    void loadReleaseVerificationLive(normalizedId);
+  }, RELEASE_VERIFICATION_LIVE_POLL_MS));
+}
+
+async function loadReleaseVerificationLive(releaseId) {
+  const normalizedId = text(releaseId);
+  const existing = releaseVerificationLiveCache.get(normalizedId);
+  if (existing?.loading) {
+    return;
+  }
+  releaseVerificationLiveCache.set(normalizedId, {
+    loading: true,
+    error: null,
+    payload: existing?.payload || null,
+  });
+  renderReleaseDetailSurfaces();
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(normalizedId)}/verification-live?limit=160`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    releaseVerificationLiveCache.set(normalizedId, { loading: false, error: null, payload });
+    scheduleReleaseVerificationLivePoll(normalizedId, payload);
+  } catch (error) {
+    releaseVerificationLiveCache.set(normalizedId, {
+      loading: false,
+      error: error instanceof Error ? error.message : "Live verifier output could not be loaded.",
+      payload: existing?.payload || null,
     });
   }
   renderReleaseDetailSurfaces();
@@ -16794,7 +16909,35 @@ function renderReleaseVerificationCommandResult(
   `;
 }
 
-function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
+function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
+  if (text(run.state) !== "running" || text(result.state) !== "running") {
+    return "";
+  }
+  const live = releaseVerificationLiveCache.get(text(releaseId));
+  const liveRun = live?.payload?.run;
+  const liveCommand = liveRun?.current_command;
+  const matchesCurrentCommand = text(liveRun?.id) === text(run.id)
+    && Number(liveCommand?.index) === index;
+  if (!matchesCurrentCommand && !live?.loading && !live?.error) {
+    return "";
+  }
+  const log = live?.payload?.log;
+  const message = live?.error
+    || log?.message
+    || (live?.loading ? "Connecting to the live verifier output." : "Waiting for verifier output.");
+  const logText = text(log?.text);
+  return `
+    <li class="release-verification-live-output">
+      <details class="release-verification-log" open>
+        <summary>Live verifier output · updates every 2 seconds</summary>
+        ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
+        ${logText ? `<pre>${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
+      </details>
+    </li>
+  `;
+}
+
+function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix, releaseId) {
   const results = run.command_results || [];
   if (!results.length) {
     return "";
@@ -16806,7 +16949,7 @@ function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
           result,
           run,
           teamDisclosureKey(disclosureKeyPrefix, run.id, "command", String(index), "log"),
-        )).join("")}
+        ) + renderReleaseVerificationLiveOutput(run, result, index, releaseId)).join("")}
     </ul>
   `;
 }
@@ -16823,7 +16966,7 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`)}
+              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}

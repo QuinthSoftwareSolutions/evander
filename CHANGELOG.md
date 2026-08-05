@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-05 - Live Release Verification Progress and Logs
+
+- Persisted release-verifier start, command transitions, and worker job IDs as
+  each frozen check runs, so release progress names the active check and retries
+  resume past already-passed commands.
+- Added a directory-owner-only Admin Web tail for the active verifier command;
+  the browser receives a bounded log excerpt through the control plane and never
+  receives the worker bearer credential.
+
 ## 2026-08-05 - Durable Candidate-Correction Successor Recovery
 
 - Made automatic successor-packaging blockers typed, downstream-scoped incidents so

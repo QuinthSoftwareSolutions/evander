@@ -310,6 +310,13 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     )
     assert retry_route.methods == {"POST"}
 
+    verification_live_route = next(
+        route
+        for route in routes
+        if route.path == "/release-packages/{release_package_id}/verification-live"
+    )
+    assert verification_live_route.methods == {"GET", "HEAD"}
+
     blocker_resolve_route = next(
         route
         for route in routes

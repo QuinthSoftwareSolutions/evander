@@ -6,7 +6,11 @@ from typing import Any
 from ..models import ReleaseVerificationCommandResult, TeamState
 from ..repository import TeamStateRepository
 from .commands.outbox import _team_event_outbox_records
-from .domain.release_gates import record_release_verification_result
+from .domain.release_gates import (
+    mark_release_verification_started,
+    record_release_verification_command_progress,
+    record_release_verification_result,
+)
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
@@ -91,6 +95,79 @@ class TeamReleaseGateService:
         result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         return state, result
+
+    def mark_verification_started(
+        self,
+        *,
+        release_package_id: str,
+        verification_run_id: str,
+        candidate_commit_sha: str,
+    ) -> TeamState:
+        return self._repository.update(
+            lambda state: _mark_verification_started(
+                state,
+                release_package_id=release_package_id,
+                verification_run_id=verification_run_id,
+                candidate_commit_sha=candidate_commit_sha,
+            )
+        )
+
+    def record_verification_command_progress(
+        self,
+        *,
+        release_package_id: str,
+        verification_run_id: str,
+        candidate_commit_sha: str,
+        command_index: int,
+        command_result: dict[str, Any],
+    ) -> TeamState:
+        normalized_result = ReleaseVerificationCommandResult.model_validate(command_result)
+        return self._repository.update(
+            lambda state: _record_verification_command_progress(
+                state,
+                release_package_id=release_package_id,
+                verification_run_id=verification_run_id,
+                candidate_commit_sha=candidate_commit_sha,
+                command_index=command_index,
+                command_result=normalized_result,
+            )
+        )
+
+
+def _mark_verification_started(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+) -> TeamState:
+    mark_release_verification_started(
+        state,
+        release_package_id=release_package_id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha=candidate_commit_sha,
+    )
+    return state
+
+
+def _record_verification_command_progress(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+    command_index: int,
+    command_result: ReleaseVerificationCommandResult,
+) -> TeamState:
+    record_release_verification_command_progress(
+        state,
+        release_package_id=release_package_id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha=candidate_commit_sha,
+        command_index=command_index,
+        command_result=command_result,
+    )
+    return state
 
 
 __all__ = ["TeamReleaseGateService"]

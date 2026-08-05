@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import time
 from typing import Any, Protocol
 
@@ -61,6 +61,7 @@ class ReleaseVerificationExecutor(Protocol):
         session_id: str,
         target_dir: str,
         command: ReleaseVerificationCommand,
+        on_started: Callable[[str], None] | None = None,
     ) -> Mapping[str, Any]: ...
 
     def destroy_verifier(self, *, run_id: str, session_id: str) -> None: ...
@@ -118,7 +119,15 @@ class TeamReleaseVerificationRunner:
         if not verification_commands:
             raise ValueError("release verification run has no frozen commands")
 
-        command_results: list[dict[str, Any]] = []
+        state = self._release_gate_service.mark_verification_started(
+            release_package_id=release_package_id,
+            verification_run_id=verification_run_id,
+            candidate_commit_sha=candidate_commit_sha,
+        )
+        run = state.release_verification_runs[verification_run_id]
+        command_results = [item.model_dump(mode="json", exclude_none=True) for item in run.command_results]
+        if len(command_results) != len(verification_commands):
+            raise ValueError("release verification run does not match its frozen command manifest")
         terminal_state = "passed"
         failure_kind: str | None = None
         terminal_error: str | None = None
@@ -148,6 +157,47 @@ class TeamReleaseVerificationRunner:
             )
 
             for index, command in enumerate(verification_commands):
+                existing_result = command_results[index]
+                if existing_result.get("state") == "passed":
+                    continue
+                started_result = {
+                    "name": command.name,
+                    "state": "running",
+                    **(
+                        {"job_id": existing_result["job_id"]}
+                        if existing_result.get("job_id")
+                        else {}
+                    ),
+                }
+                self._release_gate_service.record_verification_command_progress(
+                    release_package_id=release_package_id,
+                    verification_run_id=verification_run_id,
+                    candidate_commit_sha=candidate_commit_sha,
+                    command_index=index,
+                    command_result=started_result,
+                )
+                command_results[index] = started_result
+
+                def _record_started_job(
+                    job_id: str,
+                    *,
+                    _index: int = index,
+                    _command_name: str = command.name,
+                ) -> None:
+                    running_result = {
+                        "name": _command_name,
+                        "state": "running",
+                        "job_id": job_id,
+                    }
+                    self._release_gate_service.record_verification_command_progress(
+                        release_package_id=release_package_id,
+                        verification_run_id=verification_run_id,
+                        candidate_commit_sha=candidate_commit_sha,
+                        command_index=_index,
+                        command_result=running_result,
+                    )
+                    command_results[_index] = running_result
+
                 started = time.monotonic()
                 try:
                     command_output = self._executor.execute_command(
@@ -156,18 +206,30 @@ class TeamReleaseVerificationRunner:
                         session_id=run.session_id,
                         target_dir=target_dir,
                         command=command,
+                        on_started=_record_started_job,
                     )
                 except ReleaseVerificationTimeoutError as exc:
                     duration = time.monotonic() - started
                     error = str(exc) or f"release verification command {command.name!r} timed out"
-                    command_results.append(
-                        {
-                            "name": command.name,
-                            "state": "timed_out",
-                            "duration_seconds": duration,
-                            "log_excerpt": _bounded_verification_log_excerpt(error),
-                        }
+                    result = {
+                        "name": command.name,
+                        "state": "timed_out",
+                        **(
+                            {"job_id": command_results[index]["job_id"]}
+                            if command_results[index].get("job_id")
+                            else {}
+                        ),
+                        "duration_seconds": duration,
+                        "log_excerpt": _bounded_verification_log_excerpt(error),
+                    }
+                    self._release_gate_service.record_verification_command_progress(
+                        release_package_id=release_package_id,
+                        verification_run_id=verification_run_id,
+                        candidate_commit_sha=candidate_commit_sha,
+                        command_index=index,
+                        command_result=result,
                     )
+                    command_results[index] = result
                     terminal_state = "timed_out"
                     failure_kind = "timeout"
                     terminal_error = error
@@ -188,21 +250,26 @@ class TeamReleaseVerificationRunner:
                     if part
                 )
                 excerpt = _bounded_verification_log_excerpt(command_log)
-                command_results.append(
-                    {
-                        "name": command.name,
-                        "state": (
-                            "passed" if success else "timed_out" if command_timed_out else "failed"
-                        ),
-                        "job_id": _optional_text(command_output.get("execution_id")),
-                        "exit_code": command_output.get("exit_code"),
-                        "failure_cause": _optional_text(
-                            command_output.get("failure_cause")
-                        ),
-                        "duration_seconds": duration,
-                        "log_excerpt": excerpt or None,
-                    }
+                result = {
+                    "name": command.name,
+                    "state": "passed" if success else "timed_out" if command_timed_out else "failed",
+                    "job_id": (
+                        _optional_text(command_output.get("execution_id"))
+                        or command_results[index].get("job_id")
+                    ),
+                    "exit_code": command_output.get("exit_code"),
+                    "failure_cause": _optional_text(command_output.get("failure_cause")),
+                    "duration_seconds": duration,
+                    "log_excerpt": excerpt or None,
+                }
+                self._release_gate_service.record_verification_command_progress(
+                    release_package_id=release_package_id,
+                    verification_run_id=verification_run_id,
+                    candidate_commit_sha=candidate_commit_sha,
+                    command_index=index,
+                    command_result=result,
                 )
+                command_results[index] = result
                 if not success:
                     if command_timed_out:
                         terminal_state = "timed_out"

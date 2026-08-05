@@ -53,6 +53,7 @@ from evander_team_addon.providers import (
     TeamRecordGitPromotionEffectProvider,
     TeamVerifyReleaseCandidateEffectProvider,
 )
+from evander_team_addon import api as team_addon_api
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.git_release_service import (
@@ -1198,6 +1199,135 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
     assert ["python", "-m", "live_policy_check"] not in executed_commands
     assert recorded["verification_state"] == "passed"
     assert recorded["command_results"][0]["name"] == "frozen-check"
+
+
+def test_release_verifier_persists_live_command_state_and_worker_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    _executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    progress: list[tuple[str, str | None]] = []
+    original_progress = TeamReleaseGateService.record_verification_command_progress
+
+    def _record_progress(self, **kwargs):
+        result = dict(kwargs["command_result"])
+        progress.append((str(result["state"]), result.get("job_id")))
+        return original_progress(self, **kwargs)
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        callback = getattr(self, "_container_execution_started_callback", None)
+        if command == ["python", "-m", "frozen_check"] and callable(callback):
+            callback("live-worker-job")
+        return {
+            "success": True,
+            "execution_id": "live-worker-job",
+            "exit_code": 0,
+            "stdout": "check complete",
+        }
+
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_command_progress",
+        _record_progress,
+    )
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert progress == [
+        ("running", None),
+        ("running", "live-worker-job"),
+        ("passed", "live-worker-job"),
+    ]
+    run = repo.read().release_verification_runs["verification-1"]
+    assert run.state == "passed"
+    assert run.command_results[0].job_id == "live-worker-job"
+
+
+def test_release_verification_live_payload_returns_bounded_worker_tail_without_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _mark_running(state):
+        run = state.release_verification_runs["verification-1"]
+        run.state = "running"
+        run.current_command_index = 0
+        run.command_results[0] = ReleaseVerificationCommandResult(
+            name="frozen-check",
+            state="running",
+            job_id="worker-job-1",
+        )
+        return state
+
+    state = repo.update(_mark_running)
+    calls: list[dict[str, object]] = []
+
+    class _WorkerClient:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+        def logs_page(self, job_id: str, **kwargs: object):
+            assert job_id == "worker-job-1"
+            assert kwargs == {"mode": "raw", "limit": 160}
+            return "last verifier line", {"returned_lines": 1, "has_more_before": True}
+
+    class _ProviderConfig:
+        def resolve_for_directory(self, directory_path: str):
+            assert directory_path == "root/team-a"
+            return SimpleNamespace(
+                container_worker_base_url="http://worker.internal:11880",
+                container_worker_token_env="TEST_WORKER_TOKEN",
+                container_worker_request_timeout_seconds=12,
+            )
+
+    monkeypatch.setattr(team_addon_api, "ContainerWorkerClient", _WorkerClient)
+
+    payload = team_addon_api._release_verification_live_payload(
+        state,
+        "release-1",
+        "root/team-a",
+        _ProviderConfig(),
+        160,
+    )
+
+    assert payload == {
+        "release_package_id": "release-1",
+        "run": {
+            "id": "verification-1",
+            "state": "running",
+            "attempt_number": 1,
+            "current_command": {
+                "index": 0,
+                "name": "frozen-check",
+                "state": "running",
+            },
+        },
+        "log": {
+            "available": True,
+            "text": "last verifier line",
+            "returned_lines": 1,
+            "has_more_before": True,
+        },
+    }
+    assert calls == [
+        {
+            "base_url": "http://worker.internal:11880",
+            "token_env": "TEST_WORKER_TOKEN",
+            "timeout_seconds": 12.0,
+        }
+    ]
+    assert "TEST_WORKER_TOKEN" not in str(payload)
 
 
 @pytest.mark.parametrize("timeout_mode", ["ssh_exception", "container_nonterminal"])
