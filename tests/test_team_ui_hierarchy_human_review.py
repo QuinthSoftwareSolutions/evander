@@ -426,3 +426,107 @@ def test_deliverable_drill_down_renders_evidence_backed_release_pipeline() -> No
     assert "function deliveryPipelineBlockers(row, release)" in source
     assert "Load exact gate evidence" in source
     assert "releaseDetailCache.get(text(compactRelease.id))" in source
+
+
+def test_delivery_view_surfaces_pending_and_audited_initial_release_decisions() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'initial_release_disposition?.state) === "pending"' in source
+    assert "function renderInitialReleaseDisposition(deliverable)" in source
+    assert "Initial release decision" in source
+    assert "Waiting for the project lead or team manager" in source
+    assert "Not planned for an initial release" in source
+    assert "initialRelease.release_package_id" in source
+
+
+def test_live_release_verification_retries_after_transient_request_failure() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    polling_source = source[
+        source.index("function activeReleaseVerificationRun(") : source.index(
+            "async function loadMyHumanReviews("
+        )
+    ]
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for Team UI polling tests")
+    script = f"""
+      const assert = require("node:assert/strict");
+      const text = (value) => String(value ?? "").trim();
+      const API_BASE = "/api/team";
+      const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
+      const expandedReleaseDetailIds = new Set(["release-1"]);
+      const releaseDetailCache = new Map();
+      const releaseVerificationLiveCache = new Map();
+      const releaseVerificationLivePollTimers = new Map();
+      const state = {{
+        release_packages: {{
+          "release-1": {{
+            id: "release-1",
+            verification_runs: [{{ id: "run-1", state: "running" }}],
+          }},
+        }},
+      }};
+      const scheduled = [];
+      const window = {{
+        setTimeout: (callback, delay) => {{
+          scheduled.push({{ callback, delay }});
+          return scheduled.length;
+        }},
+        clearTimeout: () => {{}},
+      }};
+      const mergeReleaseDetailWithCurrentState = (release) => release;
+      const renderReleaseDetailSurfaces = () => {{}};
+      const responseText = async () => "temporary gateway failure";
+      let requestCount = 0;
+      const teamFetch = async () => {{
+        requestCount += 1;
+        if (requestCount === 1) {{
+          return {{ ok: false }};
+        }}
+        return {{
+          ok: true,
+          json: async () => ({{ run: {{ state: "passed" }} }}),
+        }};
+      }};
+      {polling_source}
+
+      (async () => {{
+        await loadReleaseVerificationLive("release-1");
+        assert.equal(requestCount, 1);
+        assert.equal(scheduled.length, 1);
+        assert.equal(scheduled[0].delay, RELEASE_VERIFICATION_LIVE_POLL_MS);
+        assert.equal(releaseVerificationLivePollTimers.has("release-1"), true);
+        assert.equal(
+          releaseVerificationLiveCache.get("release-1").error,
+          "temporary gateway failure",
+        );
+
+        scheduled.shift().callback();
+        await new Promise((resolve) => setImmediate(resolve));
+
+        assert.equal(requestCount, 2);
+        assert.equal(releaseVerificationLiveCache.get("release-1").error, null);
+        assert.equal(
+          releaseVerificationLiveCache.get("release-1").payload.run.state,
+          "passed",
+        );
+        assert.equal(releaseVerificationLivePollTimers.has("release-1"), false);
+      }})().catch((error) => {{
+        console.error(error);
+        process.exitCode = 1;
+      }});
+    """
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

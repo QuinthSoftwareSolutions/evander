@@ -24,7 +24,12 @@ from evander_team_addon.models import (
     ReleaseVerificationRun,
     ReviewRequest,
     Team,
+    TeamBlocker,
+    TeamBlockerEventType,
     TeamBlockerState,
+    TeamBlockerResolutionScope,
+    TeamBlockerRoute,
+    TeamBlockerSourceKind,
     TeamDispatch,
     TeamDispatchStatus,
     TeamInboxItemState,
@@ -39,12 +44,15 @@ from evander_team_addon.services.candidate_correction_reconciliation_service imp
     CandidateCorrectionReconciliationService,
 )
 from evander_team_addon.services.commands import TeamReviewCommandService
+from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.domain.task_assessment import assess_task
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 CANDIDATE_COMMIT = "c" * 40
 CORRECTION_COMMIT = "e" * 40
+RECOVERY_COMMIT = "a" * 40
 
 
 def _candidate_correction_state(
@@ -370,6 +378,8 @@ def test_invalid_generated_candidate_correction_opens_one_durable_blocker(
     )
     blocker = next(iter(state.blockers.values()))
     assert blocker.state == TeamBlockerState.OPEN
+    assert blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+    assert blocker.resolution_scope == TeamBlockerResolutionScope.DOWNSTREAM
     assert blocker.reason_code == "candidate_correction_successor_failed"
     assert blocker.owner_agent_id == "coder"
     assert "no accepted review" in blocker.details
@@ -381,6 +391,287 @@ def test_invalid_generated_candidate_correction_opens_one_durable_blocker(
     assert replay["changed"] is False
     assert len(repository.read().blockers) == 1
     assert len(repository.list_outbox_records()) == outbox_count
+
+
+def test_downstream_candidate_blocker_does_not_unresolve_correction_and_retries(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review", reviewed=False)
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+
+    blocked = repository.read()
+    assert assess_task(blocked, "correction-task").resolution_status.value == "resolved"
+    deliverable = blocked.deliverables["correction-deliverable"]
+    deliverable.review_request_ids = ["correction-review"]
+    blocked.review_requests["correction-review"] = ReviewRequest(
+        id="correction-review",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=CORRECTION_COMMIT,
+    )
+    repository.update(lambda _state: blocked, expected_revision=blocked.revision)
+
+    retried = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+
+    assert retried["changed"] is True
+    assert len(retried["created_successor_release_package_ids"]) == 1
+    assert next(iter(state.blockers.values())).state == TeamBlockerState.RESOLVED
+
+
+def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification", reviewed=False)
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    blocker = next(iter(state.blockers.values()))
+
+    state, result = TeamAdminService(repository).recover_candidate_correction_successor_as_operator(
+        blocker_id=blocker.id,
+        action="create_verified_replacement",
+        operator_actor_id="jonathan",
+        expected_revision=state.revision,
+    )
+
+    recovery = state.tasks[result["created_recovery_task_id"]]
+    assert recovery.originating_task_id == "correction-task"
+    assert recovery.parent_task_id is None
+    assert recovery.dependency_task_ids == []
+    assert recovery.git_base_branch == "agents/session-coder/correction"
+    assert recovery.git_base_commit_sha == CORRECTION_COMMIT
+    assert state.blockers[blocker.id].state == TeamBlockerState.OPEN
+    recovery_event = state.blocker_events[result["created_blocker_event_id"]]
+    assert recovery_event.event_type == TeamBlockerEventType.PROGRESS
+    assert recovery_event.reference_ids == [recovery.id]
+    assert recovery_event.metadata == {
+        "kind": "candidate_correction_recovery_task_created",
+        "operator_actor_id": "jonathan",
+        "recovery_task_id": recovery.id,
+        "owner_agent_id": "coder",
+        "git_base_branch": "agents/session-coder/correction",
+        "git_base_commit_sha": CORRECTION_COMMIT,
+    }
+    assert state.blockers[blocker.id].last_progress_at == recovery_event.created_at
+
+    progress_event_ids = {
+        event.id
+        for event in state.blocker_events.values()
+        if event.blocker_id == blocker.id
+        and event.event_type == TeamBlockerEventType.PROGRESS
+    }
+    state, replay = TeamAdminService(
+        repository
+    ).recover_candidate_correction_successor_as_operator(
+        blocker_id=blocker.id,
+        action="create_verified_replacement",
+        operator_actor_id="jonathan",
+        expected_revision=state.revision,
+    )
+    assert replay["existing_recovery_task_id"] == recovery.id
+    assert "created_recovery_task_id" not in replay
+    assert progress_event_ids == {
+        event.id
+        for event in state.blocker_events.values()
+        if event.blocker_id == blocker.id
+        and event.event_type == TeamBlockerEventType.PROGRESS
+    }
+
+    with pytest.raises(ValueError, match="does not match task .* pin"):
+        TeamAdminService(repository).create_git_work_context_with_id(
+            context_id="wrong-context",
+            agent_id=recovery.owner_agent_id,
+            task_id=recovery.id,
+            agent_branch="agents/session-coder/recovery",
+            base_branch=recovery.git_base_branch,
+            base_commit="a" * 40,
+            expected_revision=state.revision,
+        )
+
+    state, context_id = TeamAdminService(repository).create_git_work_context_with_id(
+        context_id="pinned-context",
+        agent_id=recovery.owner_agent_id,
+        task_id=recovery.id,
+        agent_branch="agents/session-coder/recovery",
+        base_branch=recovery.git_base_branch,
+        base_commit=CORRECTION_COMMIT,
+        expected_revision=state.revision,
+    )
+    assert state.git_work_contexts[context_id].base_commit == CORRECTION_COMMIT
+
+
+def test_passed_downstream_recovery_deliverable_creates_successor_without_waiver(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded.deliverables["correction-deliverable"].verification = (
+        DeliverableVerification(status="partial", summary="Needs downstream repair.")
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    blocked = repository.read()
+    blocker = next(iter(blocked.blockers.values()))
+
+    recovery_task = AgentTask(
+        id="downstream-recovery-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Repair downstream verifier failure",
+        description="Pinned recovery on the accepted correction.",
+        created_by_actor="system:candidate-correction-recovery",
+        originating_task_id="correction-task",
+        git_base_branch="agents/session-coder/correction",
+        git_base_commit_sha=CORRECTION_COMMIT,
+        deliverable_ids=["downstream-recovery-deliverable"],
+    )
+    recovery_deliverable = Deliverable(
+        id="downstream-recovery-deliverable",
+        task_id=recovery_task.id,
+        producer_agent_id="coder",
+        summary="Verified downstream repair.",
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-coder/downstream-recovery",
+            commit_sha=RECOVERY_COMMIT,
+            submitted_commit_sha=RECOVERY_COMMIT,
+        ),
+        review_manifest=DeliverableReviewManifest(
+            base_commit_sha=CORRECTION_COMMIT,
+            reviewed_commit_sha=RECOVERY_COMMIT,
+            tree_hash="b" * 40,
+            commit_shas=[RECOVERY_COMMIT],
+            changed_paths=["M\tsrc/VerifierRepair.cs"],
+        ),
+        verification=DeliverableVerification(status="passed"),
+        review_request_ids=["downstream-recovery-review"],
+        state=TeamRecordState.ACCEPTED,
+    )
+    blocked.tasks[recovery_task.id] = recovery_task
+    blocked.deliverables[recovery_deliverable.id] = recovery_deliverable
+    blocked.review_requests["downstream-recovery-review"] = ReviewRequest(
+        id="downstream-recovery-review",
+        deliverable_id=recovery_deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=RECOVERY_COMMIT,
+    )
+    repository.update(lambda _state: blocked, expected_revision=blocked.revision)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    successor = next(
+        release
+        for release in state.release_packages.values()
+        if release.supersedes_release_package_id == "release-predecessor"
+    )
+
+    assert result["created_successor_release_package_ids"] == [successor.id]
+    assert successor.deliverable_ids == ["downstream-recovery-deliverable"]
+    assert successor.verification_waivers == []
+    assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_operator_waiver_action_records_reason_and_creates_successor(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded.deliverables["correction-deliverable"].verification = (
+        DeliverableVerification(status="partial", summary="Environment unavailable.")
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    blocker = next(iter(state.blockers.values()))
+
+    state, result = TeamAdminService(
+        repository
+    ).recover_candidate_correction_successor_as_operator(
+        blocker_id=blocker.id,
+        action="authorize_verification_waiver",
+        reason="Focused verifier passed; the full environment is unavailable.",
+        operator_actor_id="jonathan",
+        expected_revision=state.revision,
+    )
+    successor = state.release_packages[result["release_package_id"]]
+
+    assert successor.supersedes_release_package_id == "release-predecessor"
+    assert len(successor.verification_waivers) == 1
+    waiver = successor.verification_waivers[0]
+    assert waiver.actor_kind == "operator"
+    assert waiver.actor_id == "jonathan"
+    assert waiver.reason == (
+        "Focused verifier passed; the full environment is unavailable."
+    )
+    assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_generic_operator_resolution_rejects_typed_candidate_recovery(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review", reviewed=False)
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    blocker = next(iter(state.blockers.values()))
+    blocker.route = TeamBlockerRoute.OPERATOR
+    state = repository.update(lambda _state: state, expected_revision=state.revision)
+
+    with pytest.raises(ValueError, match="candidate-correction successor recovery"):
+        TeamAdminService(repository).resolve_terminal_blocker_as_operator(
+            blocker_id=blocker.id,
+            note="bypass",
+            operator_actor_id="jonathan",
+            expected_revision=state.revision,
+        )
+
+
+def test_existing_successor_resolves_recovery_before_task_readiness_check(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification", reviewed=False)
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    blocked = repository.read()
+    recovery_blocker = next(iter(blocked.blockers.values()))
+    blocked.release_packages["release-existing-successor"] = ReleasePackage(
+        id="release-existing-successor",
+        project_id="project",
+        owner_agent_id="lead",
+        supersedes_release_package_id="release-predecessor",
+        deliverable_ids=["correction-deliverable"],
+        state=TeamRecordState.PENDING,
+    )
+    blocked.blockers["unrelated-task-blocker"] = TeamBlocker(
+        id="unrelated-task-blocker",
+        team_id="team",
+        project_id="project",
+        task_id="correction-task",
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id="unrelated-task-blocker",
+        owner_agent_id="coder",
+        affected_task_ids=["correction-task"],
+        summary="Unrelated task-scoped blocker",
+    )
+    repository.update(lambda _state: blocked, expected_revision=blocked.revision)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+
+    assert result["existing_successor_release_package_ids"] == [
+        "release-existing-successor"
+    ]
+    assert state.blockers[recovery_blocker.id].state == TeamBlockerState.RESOLVED
+    assert state.blockers["unrelated-task-blocker"].state == TeamBlockerState.OPEN
 
 
 def test_accepting_generated_correction_review_creates_successor_atomically(

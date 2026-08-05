@@ -8,6 +8,7 @@ from ...models import (
     AgentProjectAssignmentKind,
     AgentStatus,
     Deliverable,
+    InitialReleaseDispositionState,
     PersistentAgent,
     ReviewProfile,
     RolePermission,
@@ -229,6 +230,26 @@ def _team_ids_with_open_work(state: TeamState) -> set[str]:
         owner = state.agents.get(task.owner_agent_id)
         if owner is not None and owner.team_id is not None:
             team_ids.add(owner.team_id)
+    for deliverable in state.deliverables.values():
+        disposition = deliverable.initial_release_disposition
+        task = state.tasks.get(deliverable.task_id)
+        project = state.projects.get(task.project_id) if task is not None else None
+        if (
+            disposition is None
+            or disposition.state != InitialReleaseDispositionState.PENDING
+            or deliverable.state != TeamRecordState.ACCEPTED
+            or deliverable.superseded_by_deliverable_id is not None
+            or task is None
+            or task.parent_task_id is not None
+            or task.state not in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+            or project is None
+            or any(
+                deliverable.id in release.deliverable_ids
+                for release in state.release_packages.values()
+            )
+        ):
+            continue
+        team_ids.add(project.team_id)
     return team_ids
 
 

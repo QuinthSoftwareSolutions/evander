@@ -434,6 +434,17 @@ def _blocker_project_ids(state: TeamState, blocker: TeamBlocker) -> set[str]:
         project_id = _release_project_id(state, blocker.source_id)
         if project_id is not None:
             project_ids.add(project_id)
+    elif (
+        blocker.source_kind
+        == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+        and blocker.source_id.startswith("candidate-correction-successor:")
+    ):
+        project_id = _release_project_id(
+            state,
+            blocker.source_id.removeprefix("candidate-correction-successor:"),
+        )
+        if project_id is not None:
+            project_ids.add(project_id)
     return project_ids
 
 

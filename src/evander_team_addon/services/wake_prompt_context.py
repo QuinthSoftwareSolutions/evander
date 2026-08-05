@@ -904,6 +904,36 @@ def _compact_manager_fallback_summary(summary: Mapping[str, Any]) -> dict[str, A
         omitted_counts,
         key=lambda item: (_state_rank(item.get("state")), _sort_text(item.get("id"))),
     )
+    row["pending_initial_release_decisions"] = _manager_fallback_limited_rows(
+        [
+            _compact_fields(
+                item,
+                (
+                    "project_id",
+                    "task_id",
+                    "task_title",
+                    "deliverable_id",
+                    "summary",
+                    "producer_agent_id",
+                    "disposition",
+                    "release_policy_configured",
+                    "artifact_ref_count",
+                    "reviewed_commit_sha",
+                    "git_base_branch",
+                ),
+            )
+            for item in _mapping_rows(
+                summary.get("pending_initial_release_decisions")
+            )
+        ],
+        MAX_MANAGER_FALLBACK_ROWS,
+        "pending_initial_release_decisions",
+        omitted_counts,
+        key=lambda item: (
+            _sort_text(item.get("project_id")),
+            _sort_text(item.get("deliverable_id")),
+        ),
+    )
     row["review_requests"] = _manager_fallback_limited_rows(
         [
             _compact_manager_review_request(item)

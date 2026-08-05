@@ -465,6 +465,90 @@ def record_release_verification_result(
     )
 
 
+def mark_release_verification_started(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+) -> ReleaseVerificationRun:
+    """Durably mark a frozen verification run as active before executing it."""
+
+    _release, run = _verification_run_for_progress(
+        state,
+        release_package_id=release_package_id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha=candidate_commit_sha,
+    )
+    if run.state == "pending":
+        run.state = "running"
+        run.updated_at = utc_now()
+    return run
+
+
+def record_release_verification_command_progress(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+    command_index: int,
+    command_result: ReleaseVerificationCommandResult,
+) -> ReleaseVerificationRun:
+    """Persist one command transition without advancing the release gate itself."""
+
+    _release, run = _verification_run_for_progress(
+        state,
+        release_package_id=release_package_id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha=candidate_commit_sha,
+    )
+    if command_index < 0 or command_index >= len(run.command_results):
+        raise ValueError(f"release verification command index {command_index} is out of range")
+    existing = run.command_results[command_index]
+    if existing.name != command_result.name:
+        raise ValueError(
+            f"release verification command {command_index} is {existing.name!r}, not "
+            f"{command_result.name!r}"
+        )
+    if existing.state in {"passed", "failed", "timed_out"} and existing.state != command_result.state:
+        raise ValueError(
+            f"release verification command {command_index} is already terminal "
+            f"({existing.state})"
+        )
+    run.state = "running"
+    run.command_results[command_index] = command_result
+    run.current_command_index = command_index
+    run.updated_at = utc_now()
+    return run
+
+
+def _verification_run_for_progress(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+) -> tuple[ReleasePackage, ReleaseVerificationRun]:
+    release = state.release_packages.get(release_package_id)
+    run = state.release_verification_runs.get(verification_run_id)
+    if release is None or run is None:
+        raise ValueError("release package or verification run does not exist")
+    if release.candidate_commit_sha != candidate_commit_sha:
+        raise ValueError(
+            f"release {release.id} is pinned to {release.candidate_commit_sha}, not "
+            f"{candidate_commit_sha}"
+        )
+    if run.candidate_commit_sha != candidate_commit_sha:
+        raise ValueError(
+            f"verification run {run.id} is pinned to {run.candidate_commit_sha}, not "
+            f"{candidate_commit_sha}"
+        )
+    if run.state in {"passed", "failed", "timed_out"}:
+        raise ValueError(f"release verification run {run.id} is already terminal ({run.state})")
+    return release, run
+
+
 def _materialize_candidate_verification_correction(
     state: TeamState,
     *,

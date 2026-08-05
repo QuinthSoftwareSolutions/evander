@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
+from evander.models import utc_now
 from .git_release_helpers import (
     _empty_git_command_result,
     _git_command_validation_error,
     _release_command_next_action_hints,
+    _team_decide_initial_release_normalized_payload,
     _team_publish_review_branch_normalized_payload,
     _team_recover_release_normalized_payload,
     _team_retry_release_gate_normalized_payload,
@@ -34,6 +36,11 @@ from ..domain.git_common import _normalize_agent_branch_ref
 from ..domain.git_promotion import (
     _apply_git_feature_update,
     _apply_git_review_promotion,
+)
+from ..domain.initial_release import (
+    initial_release_decision_permitted,
+    mark_initial_release_not_planned,
+    reopen_initial_release_decisions,
 )
 from ..domain.project_status import _recalculate_project_status
 from ..domain.release_packages import (
@@ -285,6 +292,109 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             require_active_dispatch=True,
         )
 
+    def decide_initial_release_command(
+        self,
+        *,
+        session_id: str,
+        deliverable_ids: Sequence[str],
+        decision: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        normalized_payload = _team_decide_initial_release_normalized_payload(
+            deliverable_ids=deliverable_ids,
+            decision=decision,
+            reason=reason,
+            handled_inbox_item_ids=normalized_handled_ids,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_decide_initial_release",
+            request_id=normalized_request_id,
+            correlation_id=normalized_payload["correlation_id"],
+            causation_id=normalized_payload["causation_id"],
+            progress_classification="initial_release_decision",
+        )
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, "team_decide_initial_release")
+            selected_ids = list(normalized_payload["deliverable_ids"])
+            unauthorized_ids = [
+                deliverable_id
+                for deliverable_id in selected_ids
+                if not initial_release_decision_permitted(
+                    state,
+                    actor=agent,
+                    deliverable_id=deliverable_id,
+                )
+            ]
+            if unauthorized_ids:
+                raise TeamCommandValidationError(
+                    code="initial_release_decision_forbidden",
+                    message=(
+                        "initial release decisions require the project lead or "
+                        "top-level team manager for: " + ", ".join(unauthorized_ids)
+                    ),
+                    correction_context={"deliverable_ids": unauthorized_ids},
+                )
+            now = utc_now()
+            actor = f"agent:{agent.id}"
+            try:
+                if normalized_payload["decision"] == "not_planned":
+                    updated_ids = mark_initial_release_not_planned(
+                        state,
+                        deliverable_ids=selected_ids,
+                        decided_by_actor=actor,
+                        reason=normalized_payload["reason"],
+                        now=now,
+                    )
+                else:
+                    updated_ids = reopen_initial_release_decisions(
+                        state,
+                        deliverable_ids=selected_ids,
+                        reopened_by_actor=actor,
+                        reason=normalized_payload["reason"],
+                        now=now,
+                    )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="initial_release_decision_invalid",
+                    message=str(exc),
+                    correction_context={"deliverable_ids": selected_ids},
+                ) from None
+            return TeamCommandApplyResult(
+                response_payload={
+                    "decision": normalized_payload["decision"],
+                    "deliverable_ids": updated_ids,
+                    "reason": normalized_payload["reason"],
+                    "progress_made": bool(updated_ids),
+                },
+                created_domain_ids=list(updated_ids),
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+            reject_stale_high_priority_inbox=True,
+        )
+
     def request_release_command(
         self,
         *,
@@ -397,6 +507,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "canonical_branch": normalized_canonical_branch,
                     "summary": normalized_summary,
                     "verification_waivers": normalized_verification_waivers,
+                    "release_requested_by_actor": f"agent:{agent.id}",
                 },
                 result=intent_result,
                 projects_to_recalc=projects_to_recalc,

@@ -14,6 +14,7 @@ from ...models import (
     TaskCompletionKind,
     TaskResolutionStatus,
     TeamBlockerState,
+    TeamBlockerResolutionScope,
     TeamRecordState,
     TeamState,
     TeamTaskKind,
@@ -1251,7 +1252,10 @@ def _reviews_by_task(state: TeamState) -> dict[str, tuple[Any, ...]]:
 def _blockers_by_task(state: TeamState) -> dict[str, tuple[Any, ...]]:
     rows: dict[str, dict[str, Any]] = {}
     for blocker in state.blockers.values():
-        if blocker.state != TeamBlockerState.OPEN:
+        if (
+            blocker.state != TeamBlockerState.OPEN
+            or blocker.resolution_scope == TeamBlockerResolutionScope.DOWNSTREAM
+        ):
             continue
         task_ids: set[str] = set()
         if blocker.task_id in state.tasks:

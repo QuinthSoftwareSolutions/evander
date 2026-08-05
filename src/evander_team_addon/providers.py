@@ -99,6 +99,7 @@ from .mcp import (
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_OUTCOME_KIND_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
+    TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
@@ -6511,6 +6512,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "enqueue prerequisite feature promotions from accepted deliverable "
         "git_refs.review_branch or git_refs.agent_branch before continuing to the "
         "release branch.\n"
+        "- An accepted ordinary root deliverable with "
+        "initial_release_disposition.state=pending remains manager work until it "
+        f"is included in {TEAM_REQUEST_RELEASE_TOOL} or explicitly marked "
+        f"not_planned with {TEAM_DECIDE_INITIAL_RELEASE_TOOL}. Generic inbox "
+        "acknowledgement does not decide its release disposition.\n"
         "- If release_packages shows an existing blocked package, do not submit "
         "another release request with that id; follow the package's "
         f"next_action_hint. Use {TEAM_RECOVER_RELEASE_TOOL} only when that hint "
@@ -6724,6 +6730,11 @@ def _build_prompt(
         "arrays are empty.\n"
         "- Start from manager_fallback_summary.routing_gaps when present; those "
         "rows identify likely assignment or review-routing fixes.\n"
+        "- Also inspect pending_initial_release_decisions. Group only compatible "
+        f"deliverables in {TEAM_REQUEST_RELEASE_TOOL}; split different Git bases. "
+        f"If work is intentionally not for release, call {TEAM_DECIDE_INITIAL_RELEASE_TOOL} "
+        "with decision=not_planned and a concrete reason. Do not merely handle the "
+        "old completion notice.\n"
         "- For reviewer_without_assigned_review_work gaps, create a fresh review "
         f"request with {TEAM_REQUEST_REVIEW_TOOL} for the listed reviewer. Omit "
         "id unless you are choosing a new unique id; never reuse the existing "

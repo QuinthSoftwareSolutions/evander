@@ -21,6 +21,7 @@ from evander_team_addon.models import (
     AgentVoiceProfile,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAgentPolicy,
@@ -34,6 +35,7 @@ from evander_team_addon.models import (
     HumanReviewFinding,
     HumanReviewRequest,
     HumanReviewRequirementSnapshot,
+    InitialReleaseDispositionState,
     ProjectGitConfig,
     ProjectReleasePolicy,
     ReleaseReviewRequirement,
@@ -54,6 +56,7 @@ from evander_team_addon.models import (
     TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerRoute,
+    TeamBlockerResolutionScope,
     TeamBlockerSourceKind,
     TeamBlockerState,
     TeamCase,
@@ -95,6 +98,7 @@ from evander_team_addon.services.domain.review import _review_decision_policy_er
 from evander_team_addon.services.domain.task_assessment import (
     TaskAssessmentBoundaryError,
     TaskAssessmentService,
+    assess_task,
     require_release_scope,
 )
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
@@ -2257,6 +2261,14 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+
+    def _configure_release_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True,
+        )
+        return state
+
+    repo.update(_configure_release_policy)
     _seed_task(repo, task_id="task")
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
     state, submitted = _command_service(repo).submit_deliverable_command(
@@ -2294,6 +2306,12 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     assert state.inbox[notice_id].state == TeamInboxItemState.HANDLED
     assert state.deliverables["deliverable-accept"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.FINISHED
+    initial_release = state.deliverables[
+        "deliverable-accept"
+    ].initial_release_disposition
+    assert initial_release is not None
+    assert initial_release.state == InitialReleaseDispositionState.PENDING
+    assert initial_release.decided_at is None
     decision = state.deliverables["deliverable-accept"].acceptance_decision
     assert decision is not None
     assert decision.decision == "accepted"
@@ -2301,6 +2319,46 @@ def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(
     persisted = repo.read().deliverables["deliverable-accept"]
     assert persisted.acceptance_recipient_agent_id == "lead"
     assert persisted.acceptance_decision == decision
+    assert persisted.initial_release_disposition == initial_release
+
+
+def test_candidate_correction_recovery_does_not_open_initial_release_decision(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _configure_recovery_task(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True,
+        )
+        state.tasks["task"].created_by_actor = "system:candidate-correction-recovery"
+        return state
+
+    _seed_task(repo, task_id="task")
+    repo.update(_configure_recovery_task)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-recovery",
+        task_id="task",
+        summary="Verified candidate recovery.",
+        artifact_refs=["artifact-space:/candidate-recovery"],
+        request_id="request-submit-recovery",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept")
+
+    state, accepted = _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-recovery",
+        decision="accepted",
+        reason="The downstream recovery is verified.",
+        request_id="request-accept-recovery",
+    )
+
+    assert accepted["success"] is True
+    assert submitted["success"] is True
+    assert state.deliverables["deliverable-recovery"].state == TeamRecordState.ACCEPTED
+    assert state.deliverables["deliverable-recovery"].initial_release_disposition is None
 
 
 def test_superior_decision_requires_pending_notice_in_current_dispatch(
@@ -2389,6 +2447,334 @@ def test_direct_acceptance_decision_survives_later_formal_review(
         historical_decision
     )
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_directly_rejected_deliverable_cannot_enter_formal_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit")
+    _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-rejected-review",
+        task_id="task",
+        summary="Needs rework.",
+        artifact_refs=["artifact-space:/rejected-review"],
+        request_id="request-submit-rejected-review",
+    )
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-reject")
+    _command_service(repo).decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-rejected-review",
+        decision="rejected",
+        reason="The direct handoff is not acceptable.",
+        request_id="request-reject-before-review",
+    )
+
+    _lease_review_handoff_dispatch(
+        repo,
+        deliverable_id="deliverable-rejected-review",
+        dispatch_id="dispatch-rejected-formal-review",
+    )
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        id="review-after-direct-rejection",
+        deliverable_id="deliverable-rejected-review",
+        reviewer_agent_id="worker",
+        instructions="Attempt to override the direct rejection.",
+        request_id="request-review-after-direct-rejection",
+    )
+
+    assert requested["success"] is False
+    assert "cannot enter formal review" in requested["errors"][0]["message"]
+    assert "review-after-direct-rejection" not in state.review_requests
+    deliverable = state.deliverables["deliverable-rejected-review"]
+    assert deliverable.state == TeamRecordState.REJECTED
+    assert deliverable.acceptance_decision is not None
+    assert deliverable.acceptance_decision.decision == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("persisted_deliverable_state", "review_state"),
+    [
+        (TeamRecordState.PENDING, TeamRecordState.PENDING),
+        (TeamRecordState.ACCEPTED, TeamRecordState.ACCEPTED),
+        (TeamRecordState.BLOCKED, TeamRecordState.BLOCKED),
+        (TeamRecordState.REJECTED, TeamRecordState.PENDING),
+    ],
+)
+def test_repository_migrates_persisted_direct_rejection_review_overrides(
+    tmp_path: Path,
+    persisted_deliverable_state: TeamRecordState,
+    review_state: TeamRecordState,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="deliverable-rejection-override",
+        task_id="task",
+    )
+    admin = _team_admin_service(repo)
+    admin.record_review_request(
+        review_request_id="review-after-direct-rejection",
+        deliverable_id="deliverable-rejection-override",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+    if review_state != TeamRecordState.PENDING:
+        admin.record_review_decision(
+            review_request_id="review-after-direct-rejection",
+            state=review_state,
+            findings=(
+                ["The formal review environment is unavailable."]
+                if review_state == TeamRecordState.BLOCKED
+                else []
+            ),
+            expected_revision=repo.read().revision,
+        )
+
+    assignment_id = (
+        f"assignment-{persisted_deliverable_state.value}-{review_state.value}"
+    )
+
+    def _seed_assignment_and_exhausted_owner(state):
+        state.inbox[assignment_id] = AgentInboxItem(
+            id=assignment_id,
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={
+                "kind": "review_request",
+                "review_request_id": "review-after-direct-rejection",
+                "deliverable_id": "deliverable-rejection-override",
+            },
+        )
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            no_progress_count=3,
+            next_wake_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_seed_assignment_and_exhausted_owner)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    direct_rejection = {
+        "decision": "rejected",
+        "decided_by_agent_id": "lead",
+        "decided_at": "2026-08-01T12:00:00+00:00",
+        "reason": "The direct handoff requires rework.",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE team_deliverables
+            SET state = ?,
+                acceptance_recipient_agent_id = 'lead',
+                acceptance_decision_json = ?
+            WHERE id = 'deliverable-rejection-override'
+            """,
+            (persisted_deliverable_state.value, json.dumps(direct_rejection)),
+        )
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = ?
+            WHERE key = 'sqlite_schema_version'
+            """,
+            (str(SQLITE_SCHEMA_VERSION - 1),),
+        )
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = ?
+            WHERE key = 'state_schema_version'
+            """,
+            (str(SCHEMA_VERSION - 1),),
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    deliverable = migrated.deliverables["deliverable-rejection-override"]
+    assert deliverable.state == TeamRecordState.REJECTED
+    assert deliverable.acceptance_decision is not None
+    assert deliverable.acceptance_decision.decision == "rejected"
+    review = migrated.review_requests["review-after-direct-rejection"]
+    assert review.state == review_state
+    assert review.retired_at is not None
+    assert review.retired_by == f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
+    assert "authoritative direct rejection" in (review.retirement_reason or "")
+    assert migrated.inbox[assignment_id].state == TeamInboxItemState.HANDLED
+    assert migrated.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    owner_rework = [
+        item
+        for item in migrated.inbox.values()
+        if item.state == TeamInboxItemState.PENDING
+        and item.recipient_agent_id == "backend"
+        and item.payload.get("kind") == "superior_acceptance_rejected"
+        and item.payload.get("deliverable_id") == "deliverable-rejection-override"
+    ]
+    assert len(owner_rework) == 1
+    assert owner_rework[0].payload["reason"] == "The direct handoff requires rework."
+    assert migrated.agent_runtimes["backend"].no_progress_count == 0
+    assert migrated.agent_runtimes["backend"].next_wake_at is None
+    assert all(
+        blocker.source_id != "review-after-direct-rejection"
+        or blocker.state == TeamBlockerState.RESOLVED
+        for blocker in migrated.blockers.values()
+    )
+    assert migrated.projects["project"].status == ProjectStatus.ACTIVE
+
+    retirement_time = review.retired_at
+    reopened = TeamStateRepository(tmp_path).read()
+    assert reopened.review_requests[review.id].retired_at == retirement_time
+    assert len(
+        [
+            item
+            for item in reopened.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.payload.get("kind") == "superior_acceptance_rejected"
+            and item.payload.get("deliverable_id")
+            == "deliverable-rejection-override"
+        ]
+    ) == 1
+
+
+def test_rejection_override_migration_preserves_release_history_and_blocks_reconciliation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="deliverable-published-override",
+        task_id="task",
+    )
+    admin = _team_admin_service(repo)
+    admin.record_review_request(
+        review_request_id="review-published-override",
+        deliverable_id="deliverable-published-override",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+    admin.record_review_decision(
+        review_request_id="review-published-override",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=repo.read().revision,
+    )
+
+    def _seed_release(state):
+        state.release_packages["release-published-override"] = ReleasePackage(
+            id="release-published-override",
+            project_id="project",
+            owner_agent_id="lead",
+            deliverable_ids=["deliverable-published-override"],
+            state=TeamRecordState.ACCEPTED,
+        )
+        return state
+
+    repo.update(_seed_release)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE team_deliverables
+            SET acceptance_recipient_agent_id = 'lead',
+                acceptance_decision_json = ?
+            WHERE id = 'deliverable-published-override'
+            """,
+            (
+                json.dumps(
+                    {
+                        "decision": "rejected",
+                        "decided_by_agent_id": "lead",
+                        "decided_at": "2026-08-01T12:00:00+00:00",
+                        "reason": "The direct handoff requires rework.",
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = ? "
+            "WHERE key = 'sqlite_schema_version'",
+            (str(SQLITE_SCHEMA_VERSION - 1),),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = ? "
+            "WHERE key = 'state_schema_version'",
+            (str(SCHEMA_VERSION - 1),),
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert migrated.release_packages["release-published-override"].state == (
+        TeamRecordState.ACCEPTED
+    )
+    reconciliation_blocker = next(
+        blocker
+        for blocker in migrated.blockers.values()
+        if blocker.source_id
+        == "rejected-acceptance-release:release-published-override"
+    )
+    assert reconciliation_blocker.route == TeamBlockerRoute.OPERATOR
+    assert reconciliation_blocker.state == TeamBlockerState.OPEN
+    assert reconciliation_blocker.reason_code == (
+        "rejected_acceptance_override_reconciliation"
+    )
+    assert migrated.projects["project"].status == ProjectStatus.BLOCKED
+
+
+def test_candidate_successor_blocker_migration_types_downstream_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="candidate-correction-task")
+
+    def _seed_legacy_candidate_blocker(state):
+        state.release_packages["release-rejected-candidate"] = ReleasePackage(
+            id="release-rejected-candidate",
+            project_id="project",
+            owner_agent_id="lead",
+            state=TeamRecordState.REJECTED,
+        )
+        state.blockers["legacy-candidate-successor-blocker"] = TeamBlocker(
+            id="legacy-candidate-successor-blocker",
+            team_id="team",
+            project_id="project",
+            task_id="candidate-correction-task",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id=(
+                "candidate-correction-successor:release-rejected-candidate"
+            ),
+            reason_code="candidate_correction_successor_failed",
+            owner_agent_id="backend",
+            affected_task_ids=["candidate-correction-task"],
+            summary="Legacy automatic successor failure",
+        )
+        return state
+
+    repo.update(_seed_legacy_candidate_blocker)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '48' "
+            "WHERE key = 'sqlite_schema_version'"
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '8' "
+            "WHERE key = 'state_schema_version'"
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+    blocker = migrated.blockers["legacy-candidate-successor-blocker"]
+
+    assert blocker.source_kind == (
+        TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+    )
+    assert blocker.resolution_scope == TeamBlockerResolutionScope.DOWNSTREAM
+    assert assess_task(migrated, "candidate-correction-task").active_blocker_ids == []
 
 
 def test_direct_acceptance_decision_survives_promotion_failure(
@@ -7943,6 +8329,65 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
     assert metadata["state_schema_version"] == str(SCHEMA_VERSION)
+
+
+def test_repository_repairs_rejection_override_during_legacy_json_import(
+    tmp_path: Path,
+) -> None:
+    seed_repo = _seed_hierarchy(tmp_path / "seed")
+    _seed_task(seed_repo, task_id="task")
+    _seed_deliverable(
+        seed_repo,
+        deliverable_id="deliverable-legacy-json-override",
+        task_id="task",
+    )
+    admin = _team_admin_service(seed_repo)
+    admin.record_review_request(
+        review_request_id="review-legacy-json-override",
+        deliverable_id="deliverable-legacy-json-override",
+        reviewer_agent_id="worker",
+        expected_revision=seed_repo.read().revision,
+    )
+    admin.record_review_decision(
+        review_request_id="review-legacy-json-override",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=seed_repo.read().revision,
+    )
+    legacy_payload = seed_repo.read().model_dump(mode="json")
+    legacy_payload["schema_version"] = SCHEMA_VERSION - 1
+    legacy_deliverable = legacy_payload["deliverables"][
+        "deliverable-legacy-json-override"
+    ]
+    legacy_deliverable["acceptance_recipient_agent_id"] = "lead"
+    legacy_deliverable["acceptance_decision"] = {
+        "decision": "rejected",
+        "decided_by_agent_id": "lead",
+        "decided_at": "2026-08-01T12:00:00+00:00",
+        "reason": "The imported direct handoff requires rework.",
+    }
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(legacy_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    imported = TeamStateRepository(tmp_path).read()
+
+    assert imported.deliverables["deliverable-legacy-json-override"].state == (
+        TeamRecordState.REJECTED
+    )
+    assert imported.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    review = imported.review_requests["review-legacy-json-override"]
+    assert review.state == TeamRecordState.ACCEPTED
+    assert review.retired_by == f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
+    assert any(
+        item.state == TeamInboxItemState.PENDING
+        and item.payload.get("kind") == "superior_acceptance_rejected"
+        and item.payload.get("deliverable_id")
+        == "deliverable-legacy-json-override"
+        for item in imported.inbox.values()
+    )
 
 
 def test_repository_backfills_git_base_snapshots_after_legacy_json_import(
@@ -16708,6 +17153,9 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
 
     def _set_review_branch(state):
         state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
+        state.deliverables[
+            "deliverable"
+        ].initial_release_disposition = DeliverableInitialReleaseDisposition()
         return state
 
     repo.update(_set_review_branch)
@@ -16740,6 +17188,11 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     )
     release = state.release_packages["rel-1"]
     assert release.summary == "Release accepted deliverable."
+    disposition = state.deliverables["deliverable"].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.RELEASE_REQUESTED
+    assert disposition.release_package_id == "rel-1"
+    assert disposition.decided_by_actor == "agent:lead"
     feature_promotion_id = result["promotion_event_ids"][0]
     feature_promotion = state.git_promotions[feature_promotion_id]
     assert release.git_promotion_record_ids == [feature_promotion_id]
@@ -16778,6 +17231,109 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert len(repo.list_outbox_records()) == len(outbox_records)
     assert any(
         "already covers this deliverable set" in hint for hint in duplicate["next_action_hints"]
+    )
+
+
+def test_initial_release_not_planned_decision_can_be_reopened_with_audit(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _track_initial_release(state):
+        state.deliverables[
+            "deliverable"
+        ].initial_release_disposition = DeliverableInitialReleaseDisposition()
+        return state
+
+    repo.update(_track_initial_release)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="worker",
+        dispatch_id="dispatch-initial-release-forbidden",
+    )
+    unchanged, forbidden = _command_service(repo).decide_initial_release_command(
+        session_id="session-worker",
+        deliverable_ids=["deliverable"],
+        decision="not_planned",
+        reason="A project member must not make this decision.",
+        request_id="request-initial-release-forbidden",
+    )
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "initial_release_decision_forbidden"
+    assert unchanged.deliverables[
+        "deliverable"
+    ].initial_release_disposition.state == InitialReleaseDispositionState.PENDING
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="manager",
+        dispatch_id="dispatch-initial-release-not-planned",
+    )
+    state, decided = _command_service(repo).decide_initial_release_command(
+        session_id="session-manager",
+        deliverable_ids=["deliverable"],
+        decision="not_planned",
+        reason="This internal-only result is not part of a release.",
+        request_id="request-initial-release-not-planned",
+    )
+
+    assert decided["success"] is True
+    assert decided["decision"] == "not_planned"
+    disposition = state.deliverables["deliverable"].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.NOT_PLANNED
+    assert disposition.decided_by_actor == "agent:manager"
+    assert disposition.reason == "This internal-only result is not part of a release."
+    assert disposition.decided_at is not None
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-initial-release-reopen",
+    )
+    unchanged, release_rejected = _command_service(repo).request_release_command(
+        session_id="session-lead",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        request_id="request-release-while-not-planned",
+    )
+    assert release_rejected["success"] is False
+    assert release_rejected["errors"][0]["code"] == "git_release_request_invalid"
+    assert "reopen the initial release decision" in release_rejected["errors"][0][
+        "message"
+    ]
+    assert unchanged.release_packages == {}
+
+    state, reopened = _command_service(repo).decide_initial_release_command(
+        session_id="session-lead",
+        deliverable_ids=["deliverable"],
+        decision="reopen",
+        reason="The result is now required in the next customer release.",
+        request_id="request-initial-release-reopen",
+    )
+
+    assert reopened["success"] is True
+    assert reopened["decision"] == "reopen"
+    disposition = state.deliverables["deliverable"].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.PENDING
+    assert disposition.decided_at is None
+    assert disposition.decided_by_actor is None
+    assert disposition.reason is None
+    assert disposition.reopened_by_actor == "agent:lead"
+    assert disposition.reopen_reason == (
+        "The result is now required in the next customer release."
+    )
+    assert disposition.reopened_at is not None
+    assert repo.read().deliverables["deliverable"].initial_release_disposition == (
+        disposition
     )
 
 

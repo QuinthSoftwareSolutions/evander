@@ -120,6 +120,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.human-review-checklist-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
+  assert.match(
+    stylesheet,
+    /\.human-review-decision-form \.checkbox-label > input\[type="checkbox"\] \{[\s\S]*?width: 1\.25rem;[\s\S]*?height: 1\.25rem;[\s\S]*?padding: 0;/,
+  );
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
   assert.match(script, /data-review-profile-criteria-editor/);
@@ -3332,6 +3336,15 @@ test("team add-on delivery records lead with human subjects and progressive tech
       summary: longSummary,
       state: "accepted",
       review_request_ids: ["review-rich-1"],
+      initial_release_disposition: {
+        state: "release_requested",
+        created_at: "2026-06-11T09:26:00Z",
+        updated_at: "2026-06-11T09:30:00Z",
+        decided_at: "2026-06-11T09:30:00Z",
+        decided_by_actor: "agent:lead",
+        reason: null,
+        release_package_id: releaseId,
+      },
       git_refs: {
         branch_context_id: "branch-context-rich-1",
         agent_branch: "agents/backend/rich-result",
@@ -3467,6 +3480,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
     "Summary / outcome",
     "Task and producer",
     "Evidence and artifacts",
+    "Initial release decision",
     "Reviews and decision",
     "Lineage / technical details",
   ]) {
@@ -3477,6 +3491,12 @@ test("team add-on delivery records lead with human subjects and progressive tech
   await deliverableCard
     .getByText("artifact-space:delivery/rich-result", { exact: true })
     .waitFor({ state: "visible" });
+  await deliverableCard.getByText("Release Requested", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await deliverableCard.getByText("agent:lead", { exact: true }).waitFor({
+    state: "visible",
+  });
   const deliverableTechnicalDetails = deliverableCard.locator(
     ".deliverable-lineage-group > details.technical-details",
   );
@@ -11580,9 +11600,15 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await page.unroute(decisionEndpoint);
   await decisionForm.waitFor({ state: "visible" });
   await decisionForm.locator('[data-human-checklist-id="smoke-release"]').check();
-  await decisionForm
-    .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
-    .check();
+  const carriedFindingConfirmation = decisionForm.locator(
+    '[data-confirm-finding-id="human-finding-carried-accessibility"]',
+  );
+  const carriedFindingConfirmationBox = await carriedFindingConfirmation.boundingBox();
+  assert.ok(
+    carriedFindingConfirmationBox?.width >= 20 && carriedFindingConfirmationBox?.height >= 20,
+    "carried-finding confirmation checkbox should have a visible 20px target",
+  );
+  await carriedFindingConfirmation.check();
   await decisionForm
     .locator('textarea[name="summary"]')
     .fill("Smoke test passed against the pinned preview.");

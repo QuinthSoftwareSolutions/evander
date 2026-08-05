@@ -340,7 +340,9 @@ def queue_root_task_resolution(
             "summary": "A reviewed root task reached its resolved disposition.",
             "next_action": (
                 "Request a release package for the accepted root deliverable "
-                "and its source lineage."
+                "and its source lineage, or explicitly mark its initial release "
+                "disposition not planned with a reason. Merely handling this "
+                "notice does not resolve the release decision."
                 if release_ready
                 else "Review the root completion and choose the next project action."
             ),
