@@ -36,7 +36,9 @@ from ..domain.agent_access import (
     _supervises,
 )
 from ..domain.case_task import (
+    TaskGitBaseValidationError,
     _apply_goal_update,
+    _set_task_git_base_branch,
     _subordinate_task_finish_allowed,
     _task_deliverable_contract_scope_error,
     _task_graph_edit_error,
@@ -568,6 +570,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
         description: object = _UNSET,
         owner_agent_id: object = _UNSET,
         dependency_task_ids: object = _UNSET,
+        git_base_branch: object = _UNSET,
         integration_boundary: object = _UNSET,
         deliverable_contract: object = _UNSET,
         completion: object = _UNSET,
@@ -585,6 +588,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             description=description,
             owner_agent_id=owner_agent_id,
             dependency_task_ids=dependency_task_ids,
+            git_base_branch=git_base_branch,
             integration_boundary=integration_boundary,
             deliverable_contract=deliverable_contract,
             completion=completion,
@@ -638,6 +642,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 isinstance(new_owner_id, str) and new_owner_id != task.owner_agent_id
             )
             has_dependency_edit = "dependency_task_ids" in normalized_updates
+            has_git_base_edit = "git_base_branch" in normalized_updates
             has_integration_boundary_edit = (
                 "integration_boundary" in normalized_updates
             )
@@ -810,6 +815,22 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                             "new_owner_agent_id": new_owner_id,
                         },
                     )
+            if has_git_base_edit:
+                git_base_permitted = (
+                    is_owner
+                    or _supervises(state_model, agent.id, task.owner_agent_id)
+                    or _is_project_lead_for(state_model, agent.id, task.project_id)
+                    or _is_team_manager(state_model, agent)
+                )
+                if not git_base_permitted:
+                    raise TeamCommandValidationError(
+                        code="task_git_base_not_permitted",
+                        message=(
+                            f"agent {agent.id} is not permitted to edit the Git base "
+                            f"for task {task.id}"
+                        ),
+                        correction_context={"task_id": task.id},
+                    )
             new_dependency_ids: list[str] | None = None
             if has_dependency_edit or has_deliverable_policy_edit:
                 graph_permitted = (
@@ -947,6 +968,20 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 if task.deliverable_contract != next_deliverable_contract:
                     task.deliverable_contract = next_deliverable_contract
                     changed = True
+            if has_git_base_edit:
+                try:
+                    changed = _set_task_git_base_branch(
+                        state_model,
+                        task=task,
+                        git_base_branch=normalized_updates.get("git_base_branch"),
+                        git_default_branch_resolver=self.git_default_branch_resolver,
+                    ) or changed
+                except TaskGitBaseValidationError as exc:
+                    raise TeamCommandValidationError(
+                        code=exc.code,
+                        message=exc.message,
+                        correction_context={"task_id": task.id},
+                    ) from None
             if has_owner_reassignment and isinstance(new_owner_id, str):
                 old_owner_id = task.owner_agent_id
                 finalize_active_git_work_contexts_for_task(

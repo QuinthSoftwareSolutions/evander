@@ -67,9 +67,13 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "redacted_keys": (
         "Request and response field names whose values should be redacted in gateway audit logs."
     ),
+    "ado_organization": (
+        "Azure DevOps organization identifier used to construct the trusted public Azure DevOps "
+        "origin, for example <org>."
+    ),
     "azure_devops_organization_url": (
-        "Base Azure DevOps organization URL used by PR reply and feedback clients, for example "
-        "https://dev.azure.com/<org>."
+        "Legacy Azure DevOps organization URL. Existing dev.azure.com and *.visualstudio.com "
+        "values are migrated to ado_organization."
     ),
     "azure_devops_pat_env": (
         "Name of the host environment variable that holds the Azure DevOps personal access token."

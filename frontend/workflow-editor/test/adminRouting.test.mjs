@@ -32,6 +32,7 @@ test("known admin hashes resolve to their matching tabs", () => {
   assert.equal(tabFromHash("#tool-calls"), "tool-calls");
   assert.equal(tabFromHash("#configuration"), "configuration");
   assert.equal(tabFromHash("#host-directories"), "host-directories");
+  assert.equal(tabFromHash("#git-repositories"), "git-repositories");
 });
 
 test("users hash subpaths resolve to the users admin tab", () => {
@@ -89,7 +90,7 @@ test("admin hashes carry non-empty query parameters", () => {
 test("add-on iframe hash query forwards only bounded deep-link fields", () => {
   const forwarded = new URLSearchParams(
     addonIframeHashQuery(
-      "#addon:team-addon?view=my-human-reviews&human_review_request_id=review%201&directory_path=other&privileged_unlocked=true&unsafe=drop-me",
+      "#addon:team-addon?view=my-human-reviews&human_review_request_id=review%201&conversation_id=conversation-1&directory_path=other&privileged_unlocked=true&unsafe=drop-me",
       "addon:team-addon",
     ),
   );
@@ -97,6 +98,7 @@ test("add-on iframe hash query forwards only bounded deep-link fields", () => {
   assert.deepEqual(Object.fromEntries(forwarded), {
     view: "my-human-reviews",
     human_review_request_id: "review 1",
+    conversation_id: "conversation-1",
   });
   assert.equal(
     addonIframeHashQuery(
@@ -141,7 +143,7 @@ test("built-in tabs belong to one ordered navigation group", () => {
       operations: ["agents", "sessions", "issues", "approvals", "artifacts"],
       automation: ["workflow", "skills"],
       extensions: ["addons", "connectors", "host-directories"],
-      infrastructure: ["vms", "workers"],
+      infrastructure: ["git-repositories", "vms", "workers"],
       governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "users"],
     },
   );

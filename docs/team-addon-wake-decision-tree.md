@@ -327,7 +327,7 @@ escalate the durable incident without retriggering the setup that failed.
 flowchart TD
     start([After normal-agent pass])
 
-    start --> open_work{"Team has open work?<br/>non-terminal tasks or<br/>active deliverables"}
+    start --> open_work{"Team has open work?<br/>non-terminal tasks, active deliverables,<br/>or pending initial-release decisions"}
     open_work -->|No| skip_no_open["No manager fallback"]
     open_work -->|Yes| team_ok{"Team active, not cost-blocked,<br/>and no Team agent has<br/>an active/current tick lease?"}
 
@@ -345,6 +345,16 @@ flowchart TD
     class lease_manager wake;
     class skip_no_open,skip_team,skip_manager,skip_interval skip;
 ```
+
+A newly accepted ordinary root deliverable is tracked as a pending
+initial-release decision when its project has release policy. That durable row
+keeps the Team eligible for manager fallback even if the project lead handled
+the root-resolution inbox notice. The fallback prompt and dispatch carry the
+same bounded deliverable ID set. A release request changes each included row to
+`release_requested`; `team_decide_initial_release` changes it to audited
+`not_planned`. Either transition removes the row from later fallback wakes, and
+an audited `reopen` makes it pending again. Legacy accepted deliverables have no
+disposition row and do not generate retroactive fallback work.
 
 ## Governance-Manager Wake Leasing
 

@@ -401,6 +401,70 @@ async function createAdminPage(t, options = {}) {
       return;
     }
 
+    if (pathname === "/api/admin/git-repositories") {
+      const method = route.request().method();
+      if (method === "GET") {
+        options.gitRepositoryRequests?.push({
+          directoryPath: url.searchParams.get("directory_path"),
+          includeDescendants: url.searchParams.get("include_descendants"),
+        });
+        await route.fulfill(jsonResponse({ repositories: options.gitRepositories ?? [] }));
+        return;
+      }
+      if (method === "POST") {
+        const payload = route.request().postDataJSON();
+        options.gitRepositoryMutations?.push({ action: "register", payload });
+        const repository = {
+          managed_repo_id: "mr_registered",
+          directory_path: payload.directory_path,
+          canonical_repository_identity: "azure_devops:exampleindustry/project/receptionist",
+          canonical_repository_url: payload.repo_source,
+          provider: "azure_devops",
+          display_name: "exampleindustry/Project/Receptionist",
+          default_branch: payload.default_branch ?? "main",
+          host_commit_identity: { name: "Truman Bot", email: "truman@example.com" },
+          bindings: [],
+        };
+        options.gitRepositories = [...(options.gitRepositories ?? []), repository];
+        await route.fulfill(jsonResponse({ repository }));
+        return;
+      }
+    }
+
+    if (pathname.startsWith("/api/admin/git-repositories/")) {
+      const suffix = pathname.slice("/api/admin/git-repositories/".length);
+      const repositoryId = decodeURIComponent(suffix.split("/")[0]);
+      const repository = (options.gitRepositories ?? []).find(
+        (item) => item.managed_repo_id === repositoryId,
+      );
+      const method = route.request().method();
+      if (suffix.endsWith("/refresh") && method === "POST") {
+        options.gitRepositoryMutations?.push({ action: "refresh", repositoryId });
+        await route.fulfill(jsonResponse({ repository: { ...repository, refreshed_at: "2026-08-05T10:00:00Z" } }));
+        return;
+      }
+      if (suffix.endsWith("/host-commit-identity") && method === "PUT") {
+        const payload = route.request().postDataJSON();
+        options.gitRepositoryMutations?.push({ action: "identity", repositoryId, payload });
+        await route.fulfill(jsonResponse({ repository: { ...repository, host_commit_identity: payload } }));
+        return;
+      }
+      if (method === "DELETE") {
+        options.gitRepositoryMutations?.push({ action: "delete", repositoryId });
+        options.gitRepositories = (options.gitRepositories ?? []).filter(
+          (item) => item.managed_repo_id !== repositoryId,
+        );
+        await route.fulfill(jsonResponse({ deleted: true, repository }));
+        return;
+      }
+    }
+
+    if (pathname === "/api/admin/git-repositories/maintenance") {
+      options.gitRepositoryMutations?.push({ action: "maintenance", payload: route.request().postDataJSON() });
+      await route.fulfill(jsonResponse({ maintenance: { success: true } }));
+      return;
+    }
+
     if (pathname === "/api/admin/agents") {
       await route.fulfill(
         jsonResponse({
@@ -516,11 +580,89 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
     await page.locator(".admin-shell-nav-group-label").allTextContents(),
     ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
   );
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 19);
+  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 20);
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small').count(), 0);
 
   await page.getByRole("button", { name: "Agents", exact: true }).hover();
   await assert.doesNotReject(() => page.getByRole("tooltip").getByText("Active and historical execution targets.").waitFor({ state: "visible" }));
+});
+
+test("managed Git page registers and maintains repositories through the Admin API", async (t) => {
+  const gitRepositoryRequests = [];
+  const gitRepositoryMutations = [];
+  const gitRepositories = [
+    {
+      managed_repo_id: "mr_existing",
+      directory_path: "root",
+      canonical_repository_identity: "github:example/existing",
+      canonical_repository_url: "https://github.com/example/existing.git",
+      provider: "github",
+      display_name: "example/existing",
+      default_branch: "main",
+      host_commit_identity: { name: "Truman Bot", email: "truman@example.com" },
+      bindings: [],
+    },
+  ];
+  const { address, page } = await createAdminPage(t, {
+    session: {
+      ...sessionResponse,
+      privileged_operations: { unlocked: true },
+    },
+    adminState: {
+      ...adminStateResponse,
+      privileged_operations: { unlocked: true },
+    },
+    gitRepositories,
+    gitRepositoryRequests,
+    gitRepositoryMutations,
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#git-repositories`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByRole("heading", { level: 1, name: "Managed Git", exact: true }).waitFor({ state: "visible" });
+  assert.deepEqual(gitRepositoryRequests[0], {
+    directoryPath: "root",
+    includeDescendants: "true",
+  });
+
+  await page.getByLabel("Repository source").fill("https://dev.azure.com/exampleindustry/Project/_git/Receptionist");
+  await page.getByLabel("Default branch").fill("main");
+  await page.getByRole("button", { name: "Register repository", exact: true }).click();
+  await page.getByText("Registered exampleindustry/Project/Receptionist.", { exact: true }).waitFor({ state: "visible" });
+  assert.deepEqual(gitRepositoryMutations[0], {
+    action: "register",
+    payload: {
+      directory_path: "root",
+      repo_source: "https://dev.azure.com/exampleindustry/Project/_git/Receptionist",
+      default_branch: "main",
+      refresh: true,
+    },
+  });
+
+  await page.getByRole("button", { name: "Refresh upstream", exact: true }).click();
+  await page.getByText("Refreshed exampleindustry/Project/Receptionist from its upstream.", { exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Run maintenance", exact: true }).click();
+  await page.getByText("Maintenance completed for exampleindustry/Project/Receptionist.", { exact: true }).waitFor({ state: "visible" });
+
+  const identityPanel = page.locator(".managed-git-identity-panel");
+  await identityPanel.getByLabel("Name").fill("Repository Bot");
+  await identityPanel.getByLabel("Email").fill("repository-bot@example.com");
+  await identityPanel.getByRole("button", { name: "Save identity", exact: true }).click();
+  await page.getByText("Updated the host commit identity for exampleindustry/Project/Receptionist.", { exact: true }).waitFor({ state: "visible" });
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete repository", exact: true }).click();
+  await page.getByText("Deleted exampleindustry/Project/Receptionist.", { exact: true }).waitFor({ state: "visible" });
+  assert.deepEqual(gitRepositoryMutations.map((item) => item.action), ["register", "refresh", "maintenance", "identity", "delete"]);
+  assert.deepEqual(gitRepositoryMutations[2].payload, {
+    managed_repo_id: "mr_registered",
+    directory_path: "root",
+  });
+  assert.deepEqual(gitRepositoryMutations[3].payload, {
+    name: "Repository Bot",
+    email: "repository-bot@example.com",
+  });
 });
 
 test("quick navigator filters destinations and supports keyboard navigation", async (t) => {
@@ -966,6 +1108,18 @@ test("Team add-on session navigation opens the selected session", async (t) => {
 
 test("admin shell shows unread user notifications from the header", async (t) => {
   const { address, page } = await createAdminPage(t, {
+    addons: [
+      {
+        addon_id: "team-addon",
+        display_name: "Team Add-on",
+        tab_key: "addon:team-addon",
+        label: "Teams",
+        short_label: "Teams",
+        description: "Team-oriented add-on surface.",
+        api_base_path: "/api/addons/team-addon",
+        ui_path: "/addons/team-addon/",
+      },
+    ],
     notifications: {
       user_id: "admin",
       unread_count: 2,
@@ -977,7 +1131,7 @@ test("admin shell shows unread user notifications from the header", async (t) =>
           source: "team-chat",
           source_id: "chatmsg-1",
           target_url: "#addon:team-addon",
-          metadata: {},
+          metadata: { conversation_id: "conversation-1" },
           created_at: "2026-06-26T10:00:00Z",
           read_at: null,
         },
@@ -994,6 +1148,10 @@ test("admin shell shows unread user notifications from the header", async (t) =>
   await notificationButton.click();
   await assert.doesNotReject(() => page.getByRole("menuitem", { name: /New Team chat message/ }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Miranda: Review is ready").waitFor({ state: "visible" }));
+  await page.getByRole("menuitem", { name: /New Team chat message/ }).click();
+  await page.waitForFunction(
+    () => window.location.hash === "#addon:team-addon?view=chat&conversation_id=conversation-1",
+  );
 });
 
 test("admin shell keeps mobile section access and dashboard content in the first viewport", async (t) => {

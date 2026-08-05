@@ -67,7 +67,7 @@ The runtime then applies safety guards:
 - normal wake interval has elapsed where applicable;
 - no-progress suppression does not block task-only polling.
 
-The manager fallback is last, not first. If a Team has open work but no member obtained a lease, the due Team manager can receive a broad routing summary. It exposes coordination gaps without waking the whole hierarchy.
+The manager fallback is last, not first. If a Team has open work but no member obtained a lease, the due Team manager can receive a broad routing summary. It exposes coordination gaps without waking the whole hierarchy. Open work includes a durable pending initial-release decision for a newly accepted ordinary root deliverable. Handling the project lead's root-resolution notice does not remove that decision. The fallback continues until an authorized lead or manager requests a release or records an audited not-planned reason; reopening that decision makes it eligible again. Historical accepted deliverables remain untracked so upgrades do not create a wake flood.
 
 ![Team agent wake decision flow](../../assets/evander-user-manual/diagrams/13-team-wake-decision.svg)
 
@@ -237,7 +237,8 @@ Stand-down is a durable operational hold, not deletion and not a prompt suggesti
 There are two sources:
 
 - **operator** — set through the Admin surface and revocable only through the operator path;
-- **superior** — set by an authorized direct superior and revocable by the agent that set that superior hold.
+- **superior** — set by an authorized direct superior. The issuing superior can revoke its own
+  direct hold, and a human operator can revoke that direct hold through the Admin surface.
 
 A stand-down has explicit scope. <code>agent</code> pauses only the target;
 <code>subtree</code> pauses the target and reporting descendants. The UI exposes
@@ -263,7 +264,11 @@ scope widening, or other mutation is admitted. This lets an already-running
 turn record its exact terminal evidence without treating the hold as authority
 to continue work.
 
-Revocation clears only the holds the caller is authorized to clear. If another inherited hold remains, the agent stays down. When the last effective hold clears, ready work can be made due for fresh evaluation.
+Human operators can revoke either an operator-issued or agent-issued hold at its
+direct target. An inherited subtree hold must be revoked at that hold's root.
+Agents remain limited to revoking only their own direct superior-issued holds.
+If another inherited hold remains, the agent stays down. When the last effective
+hold clears, ready work can be made due for fresh evaluation.
 
 Use stand-down for a real operational reason: incident containment, unsafe output, cost investigation, credential concern, or explicit operator pause. Preserve the recorded reason and actor.
 

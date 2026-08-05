@@ -69,25 +69,10 @@ test("agent creation posts grants, clears them on directory changes, and enables
   );
 });
 
-test("agent policy edit round-trips grants with directory-scoped options", () => {
-  assert.match(
-    agentsPage,
-    /host_directory_grants: Object\.fromEntries\(/,
-  );
-  assert.match(
-    agentsPage,
-    /hostDirectoryGrants: \{ \.\.\.\(policy\?\.host_directory_grants \?\? \{\}\) \}/,
-  );
-  assert.match(
-    agentsPage,
-    /host_directory_grants: form\.hostDirectoryGrants,/,
-  );
-  assert.match(
-    agentsPage,
-    /loadAgentCreateOptions\(selectedAgent\.directory_path\)[\s\S]*?setEditHostDirectoryOptions\(options\.host_directories \?\? \[\]\)/,
-  );
-  assert.match(agentsPage, /<HostDirectoryGrantSelector/);
-  assert.match(agentsPage, /hostDirectoryToolsForGrants\(nextValue\)/);
+test("agent editing does not duplicate the Sessions host directory grant editor", () => {
+  assert.match(agentsPage, /host_directory_grants: Object\.fromEntries\(/);
+  assert.doesNotMatch(agentsPage, /<HostDirectoryGrantSelector/);
+  assert.doesNotMatch(agentsPage, /host_directory_grants: form\.hostDirectoryGrants,/);
 });
 
 test("session policy edit loads options, round-trips grants, and enables tools", () => {

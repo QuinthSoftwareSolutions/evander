@@ -66,6 +66,7 @@ _TASK_PREPARATION_GENERATION_FIELDS = (
     "description",
     "parent_task_id",
     "originating_task_id",
+    "git_base_branch",
     "dependency_task_ids",
     "cancellation",
 )

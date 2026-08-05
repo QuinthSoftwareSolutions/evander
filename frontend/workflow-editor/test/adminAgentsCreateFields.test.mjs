@@ -22,10 +22,6 @@ const sessionGrantEditors = readFileSync(
   new URL("../src/features/communications/SessionGrantEditors.tsx", import.meta.url),
   "utf8",
 );
-const legacyCommunicationPolicy = readFileSync(
-  new URL("../src/features/communications/legacyCommunicationPolicy.ts", import.meta.url),
-  "utf8",
-);
 const page = [agentsPage, agentCreateDialog, agentCreateShared, sessionGrantEditors].join("\n");
 const types = readFileSync(
   new URL("../src/features/admin/types.ts", import.meta.url),
@@ -127,8 +123,13 @@ test("container Codex usage can switch per agent without transporting credential
     agentCreateDialog,
     /<option value="chatgpt_subscription">ChatGPT subscription<\/option>/,
   );
-  assert.match(agentsPage, /buildPolicyPayload\([\s\S]*?includeCodexAuthMode = false/);
-  assert.match(agentsPage, /payload\.codex_auth_mode =/);
+  const editPayloadSource = sourceBetweenIn(
+    agentsPage,
+    "function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {",
+    "function isActiveStatus(status: string): boolean {",
+  );
+  assert.match(editPayloadSource, /codex_auth_mode:/);
+  assert.doesNotMatch(editPayloadSource, /allowed_tools|model:|ttl_hours|labels:|web_search_enabled|grants|http_targets/);
   assert.doesNotMatch(codexAuthPanel, /accessToken|refreshToken|OPENAI_API_KEY/);
   assert.match(codexAuthPanel, /\/api\/admin\/codex-auth\/device-login/);
   assert.match(codexAuthPanel, /Shared worker ChatGPT subscription account/);
@@ -239,38 +240,28 @@ test("create modal clears directory-scoped grants when the selected directory ch
   );
 });
 
-test("legacy agent conversion uses the current complete communication policy", () => {
-  const conversion = sourceBetweenIn(
+test("agent editing leaves session-owned policy controls on the Sessions page", () => {
+  const editModal = sourceBetweenIn(
     agentsPage,
-    "function convertLegacyAgentCommunicationPolicy() {",
-    "function openPromptForm() {",
+    "{showEditForm && selectedAgent && selectedAgentCodexUsage ? (",
+    "{showSkillInstallForm && selectedAgent ? (",
   );
-
-  for (const field of [
-    "discordChannels",
-    "teamsChannels",
-    "teamsChats",
-    "teamsUsers",
-    "emailMailboxes",
-    "emailFolderAllowlistByMailbox",
-    "allowedTools",
+  assert.match(editModal, /Edit Codex usage/);
+  for (const duplicate of [
+    "Model",
+    "Renew TTL hours",
+    "Labels",
+    "HTTP targets",
+    "Allowed tools",
+    "Connector grants",
+    "Host directory grants",
+    "Web search",
+    "Allowed scripts",
+    "Approval notifications",
+    "Communication targets",
+    "Email mailbox access",
   ]) {
-    assert.match(conversion, new RegExp(`current\\.${field}`));
-  }
-  assert.doesNotMatch(conversion, /selectedAgentPolicy/);
-  assert.match(conversion, /legacyEmailMailboxAccess/);
-  assert.match(agentsPage, /teams_chat_allowlist: hostStringList\(rawPolicy, "teams_chat_allowlist"\)/);
-  assert.match(agentsPage, /teams_user_allowlist: hostStringList\(rawPolicy, "teams_user_allowlist"\)/);
-  assert.match(agentsPage, /email_folder_allowlist_by_mailbox: hostStringListMap/);
-  for (const tool of [
-    "email_create_draft",
-    "email_create_draft_with_attachments",
-    "email_send",
-    "email_send_with_attachments",
-    "email_send_approved",
-    "email_send_approved_with_attachments",
-  ]) {
-    assert.match(legacyCommunicationPolicy, new RegExp(`"${tool}"`));
+    assert.doesNotMatch(editModal, new RegExp(duplicate));
   }
 });
 
@@ -387,15 +378,12 @@ test("create modal exposes model override and structured initial policy controls
   }
 });
 
-test("agent create and edit use the shared structured HTTP target contract", () => {
+test("agent creation uses the shared structured HTTP target contract", () => {
   const payloadSource = buildCreatePayloadSource();
   assert.match(payloadSource, /initialPolicy\.httpTargets\.length > 0/);
   assert.match(payloadSource, /payload\.http_targets = httpTargetsPayload\(initialPolicy\.httpTargets\)/);
   assert.match(agentCreateDialog, /onValidationChange=\{setCreateHttpTargetsValidationError\}/);
-  assert.match(agentsPage, /httpTargetsDraftFromMetadata\(policy\?\.metadata\)/);
-  assert.match(agentsPage, /includeHttpTargets/);
-  assert.match(agentsPage, /payload\.http_targets = httpTargetsPayload\(form\.httpTargets\)/);
-  assert.match(agentsPage, /setHttpTargetsDirty\(true\)/);
+  assert.doesNotMatch(agentsPage, /<HttpTargetsEditor/);
 });
 
 test("create modal groups create capabilities and communication targets", () => {

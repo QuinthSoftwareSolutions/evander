@@ -115,6 +115,36 @@ def _team_request_release_normalized_payload(
     }
 
 
+def _team_decide_initial_release_normalized_payload(
+    *,
+    deliverable_ids: Sequence[str],
+    decision: str,
+    reason: str,
+    handled_inbox_item_ids: Sequence[str],
+    correlation_id: str | None,
+    causation_id: str | None,
+) -> dict[str, Any]:
+    normalized_decision = _required_text(decision, "decision")
+    if normalized_decision not in {"not_planned", "reopen"}:
+        raise ValueError("decision must be not_planned or reopen")
+    normalized_deliverable_ids = _unique_text_list(
+        deliverable_ids,
+        "deliverable_ids",
+    )
+    if not normalized_deliverable_ids:
+        raise ValueError("deliverable_ids must contain at least one deliverable")
+    return {
+        "deliverable_ids": normalized_deliverable_ids,
+        "decision": normalized_decision,
+        "reason": _required_text(reason, "reason"),
+        "handled_inbox_item_ids": sorted(
+            _unique_text_list(handled_inbox_item_ids, "handled_inbox_item_ids")
+        ),
+        "correlation_id": _optional_text(correlation_id),
+        "causation_id": _optional_text(causation_id),
+    }
+
+
 def _team_recover_release_normalized_payload(
     *,
     release_package_id: str,
@@ -241,6 +271,7 @@ __all__ = [
     "_team_publish_review_branch_normalized_payload",
     "_team_update_feature_branch_normalized_payload",
     "_team_request_release_normalized_payload",
+    "_team_decide_initial_release_normalized_payload",
     "_team_recover_release_normalized_payload",
     "_team_retry_release_gate_normalized_payload",
     "_empty_git_command_result",

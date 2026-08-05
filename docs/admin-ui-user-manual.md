@@ -86,7 +86,7 @@ Every Admin UI section uses the same shell:
 - The selected directory is shared by directory-scoped views. It defaults to `root`.
 - Privileged operations are locked by default in the UI. Unlock before creating, deleting,
   starting, stopping, approving, denying, saving policy, or editing workflow state.
-- Deep links use hash routes, for example `/#workflow`, `/#sessions`, `/#tool-calls`,
+- Deep links use hash routes, for example `/#workflow`, `/#sessions`, `/#git-repositories`, `/#tool-calls`,
   `/#connectors`, `/#configuration`, and the host-global `/#addons` page.
 - A deployment banner appears when the host reports an active or stale deployment/update status.
 - The assistant launcher appears in the lower corner when the assistant integration is configured.
@@ -106,8 +106,8 @@ or environment scope.
 5. Empty non-root directories can be deleted with the delete button when privileges are unlocked.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
-Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Connectors, Host Directories, Configuration, Users,
-Workflow, and dashboard panels.
+Approvals, VMs, Issues, Sessions, Git Repositories, MCP Tools, Tool Calls, Connectors, Host
+Directories, Configuration, Users, Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
 
@@ -405,6 +405,28 @@ Common tasks:
 
 Issue VM creation uses the selected issue and the current directory context unless the form
 provides a more specific value.
+
+## Git Repositories
+
+The **Git Repositories** page manages the registry of host-owned managed repositories independently
+of agent-session existence.
+
+Common tasks:
+
+1. Open **Git Repositories** or use the `/#git-repositories` deep link.
+2. Choose the directory that should own or reveal the repository. Search by display name, managed
+   repository ID, canonical URL, provider, branch, or directory; optionally include descendants.
+3. Unlock privileges, enter the canonical source URL or SSH source, optionally set a default branch,
+   and select **Register repository**. Leave upstream refresh enabled unless the source is
+   intentionally unavailable during registration.
+4. Select a repository to inspect its stable ID, directory scope, canonical upstream, default
+   branch, host identity, timestamps, and active bindings.
+5. Use **Refresh upstream** to fetch current refs and **Run maintenance** for repository cleanup.
+6. Use **Save identity** only to change future host-created commit metadata; it does not rewrite
+   history or change agent checkout identities.
+7. Delete only an unbound repository. The backend refuses deletion while active bindings remain.
+
+The page never asks for or exposes upstream credentials: those remain control-plane-owned.
 
 ## Sessions
 

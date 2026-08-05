@@ -32,6 +32,7 @@ from ...models import (
 from ..domain.case_task import (
     _TaskCreationPlan,
     _apply_task_creation_plan,
+    _resolve_task_creation_plan_git_bases,
     _task_creation_batch_graph_errors,
 )
 from ..domain.common import (
@@ -76,6 +77,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
         state: TeamTaskState | str = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
         dependency_task_ids: Sequence[str] | None = None,
         task_kind: str = "support",
         outcome_contract: Mapping[str, Any] | None = None,
@@ -98,6 +100,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             state=state,
             parent_task_id=parent_task_id,
             originating_task_id=originating_task_id,
+            git_base_branch=git_base_branch,
             dependency_task_ids=dependency_task_ids,
             task_kind=task_kind,
             outcome_contract=outcome_contract,
@@ -137,6 +140,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 ),
                 reserved_task_ids=set(),
             )
+            plan = _resolve_task_creation_plan_git_bases(
+                state,
+                [plan],
+                git_default_branch_resolver=self.git_default_branch_resolver,
+            )[0]
             graph_errors = _task_creation_batch_graph_errors(
                 state,
                 [plan],
@@ -239,6 +247,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 )
                 reserved_task_ids.add(plan.task_id)
                 plans.append(plan)
+            plans = _resolve_task_creation_plan_git_bases(
+                state,
+                plans,
+                git_default_branch_resolver=self.git_default_branch_resolver,
+            )
             graph_errors = _task_creation_batch_graph_errors(
                 state,
                 plans,

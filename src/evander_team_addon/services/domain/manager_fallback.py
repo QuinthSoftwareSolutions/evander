@@ -31,6 +31,7 @@ from .common import (
     utc_now,
 )
 from .deliverables import _active_task_deliverables
+from .initial_release import pending_initial_release_deliverables
 from .stand_down import _active_stand_downs_for_agent
 from .task_assessment import task_payload_with_assessment
 from ..wake_prompt_context import MAX_MANAGER_FALLBACK_ROWS
@@ -141,6 +142,16 @@ def _manager_fallback_summary_payload(
         for review in visible_reviews
         if review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
     ]
+    pending_initial_release_rows = [
+        _manager_fallback_initial_release_row(
+            state,
+            deliverable=deliverable,
+        )
+        for deliverable in pending_initial_release_deliverables(
+            state,
+            team_id=team.id,
+        )
+    ]
     reviewer_candidates = _manager_fallback_reviewer_candidates(
         state,
         team_agents=[
@@ -199,6 +210,13 @@ def _manager_fallback_summary_payload(
         failed_action_rows,
         _MANAGER_FALLBACK_FAILED_ACTION_LIMIT,
     )
+    (
+        limited_initial_release_rows,
+        omitted_initial_release_rows,
+    ) = _manager_fallback_limited_rows(
+        pending_initial_release_rows,
+        MAX_MANAGER_FALLBACK_ROWS,
+    )
     if routing_gap_limit is None:
         limited_routing_gaps = list(routing_gaps)
         omitted_routing_gaps = 0
@@ -217,6 +235,7 @@ def _manager_fallback_summary_payload(
             "pending_inbox": omitted_inbox,
             "latest_failed_actions": omitted_failed_actions,
             "routing_gaps": omitted_routing_gaps,
+            "pending_initial_release_decisions": omitted_initial_release_rows,
         }
     )
     return {
@@ -249,6 +268,9 @@ def _manager_fallback_summary_payload(
             "pending_inbox_count": len(visible_pending_inbox),
             "failed_action_count": len(visible_action_records),
             "routing_gap_count": len(routing_gaps),
+            "pending_initial_release_decision_count": len(
+                pending_initial_release_rows
+            ),
         },
         "agents": [
             _manager_fallback_agent_row(
@@ -269,6 +291,7 @@ def _manager_fallback_summary_payload(
         "pending_inbox": limited_inbox,
         "latest_failed_actions": limited_failed_actions,
         "routing_gaps": limited_routing_gaps,
+        "pending_initial_release_decisions": limited_initial_release_rows,
         "omitted_counts": omitted_counts,
     }
 
@@ -289,7 +312,25 @@ def _manager_fallback_summary_has_actionable_work(
             "pending_inbox_count",
             "failed_action_count",
             "routing_gap_count",
+            "pending_initial_release_decision_count",
         )
+    )
+
+
+def _manager_fallback_initial_release_decision_ids(
+    summary: Mapping[str, Any],
+) -> list[str]:
+    rows = summary.get("pending_initial_release_decisions")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
+        return []
+    return sorted(
+        {
+            deliverable_id
+            for row in rows
+            if isinstance(row, Mapping)
+            if (deliverable_id := _optional_text(row.get("deliverable_id")))
+            is not None
+        }
     )
 
 
@@ -456,6 +497,13 @@ def _manager_fallback_review_routing_authority_error(
             f"reviewer/deliverable pair {pair} is no longer an actionable "
             "manager-fallback routing gap: deliverable no longer needs review"
         )
+    if deliverable.review_cohort_id is not None:
+        return (
+            f"reviewer/deliverable pair {pair} is no longer an actionable "
+            "manager-fallback routing gap: deliverable belongs to review cohort "
+            f"{deliverable.review_cohort_id}; retry or replace its blocked cohort "
+            "member instead of creating a new review request"
+        )
     if any(
         review.reviewer_agent_id == reviewer.id
         for review in current_reviews
@@ -573,6 +621,37 @@ def _manager_fallback_git_refs_row(deliverable: Deliverable) -> dict[str, Any]:
             row[field_name] = value
     if refs.promotion_record_ids:
         row["promotion_record_ids"] = list(refs.promotion_record_ids)
+    return row
+
+
+def _manager_fallback_initial_release_row(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+) -> dict[str, Any]:
+    task = state.tasks[deliverable.task_id]
+    project = state.projects[task.project_id]
+    reviewed_commit_sha = (
+        deliverable.review_manifest.reviewed_commit_sha
+        if deliverable.review_manifest is not None
+        else deliverable.git_refs.reviewed_commit_sha
+        or deliverable.git_refs.commit_sha
+    )
+    row: dict[str, Any] = {
+        "project_id": project.id,
+        "task_id": task.id,
+        "task_title": _manager_fallback_short_text(task.title, limit=160),
+        "deliverable_id": deliverable.id,
+        "summary": _manager_fallback_short_text(deliverable.summary),
+        "producer_agent_id": deliverable.producer_agent_id,
+        "disposition": "pending",
+        "release_policy_configured": project.release_policy is not None,
+        "artifact_ref_count": len(deliverable.artifact_refs),
+    }
+    if reviewed_commit_sha is not None:
+        row["reviewed_commit_sha"] = reviewed_commit_sha
+    if task.git_base_branch is not None:
+        row["git_base_branch"] = task.git_base_branch
     return row
 
 
@@ -791,6 +870,11 @@ def _manager_fallback_routing_gaps(
         for deliverable in visible_deliverables
         if (task := tasks_by_id.get(deliverable.task_id)) is not None
         and task.state in _NON_TERMINAL_TASK_STATES
+        # Routing gaps authorize a fresh team_request_review call. Cohort
+        # membership is immutable (sealed or pending recovery), so its review
+        # work must instead proceed through the assigned member or the explicit
+        # blocked-member retry/replacement flow.
+        and deliverable.review_cohort_id is None
         and _manager_fallback_deliverable_needs_review(
             deliverable,
             reviews=reviews_by_deliverable.get(deliverable.id, []),
@@ -1001,6 +1085,7 @@ __all__ = [
     "_manager_fallback_task_visible_for_work",
     "_manager_fallback_summary_payload",
     "_manager_fallback_summary_has_actionable_work",
+    "_manager_fallback_initial_release_decision_ids",
     "_manager_fallback_review_routing_authorities",
     "_manager_fallback_review_routing_authority_error",
     "_manager_fallback_time",
@@ -1011,6 +1096,7 @@ __all__ = [
     "_manager_fallback_task_row",
     "_manager_fallback_deliverable_row",
     "_manager_fallback_git_refs_row",
+    "_manager_fallback_initial_release_row",
     "_manager_fallback_review_row",
     "_manager_fallback_inbox_row",
     "_manager_fallback_inbox_summary",

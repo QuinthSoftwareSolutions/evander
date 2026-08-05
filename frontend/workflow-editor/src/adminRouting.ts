@@ -6,6 +6,7 @@ export type BuiltinAdminTab =
   | "addons"
   | "connectors"
   | "host-directories"
+  | "git-repositories"
   | "skills"
   | "vms"
   | "issues"
@@ -87,6 +88,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "addons", label: "Add-ons", shortLabel: "Add-ons", description: "Enable, disable, and inspect runtime add-ons.", group: "extensions" },
   { key: "connectors", label: "Connectors", shortLabel: "Connect", description: "Configure approved files and REST integrations for agent sessions.", group: "extensions" },
   { key: "host-directories", label: "Host Directories", shortLabel: "Files", description: "Manage directory-scoped host filesystem resources and recovery.", group: "extensions" },
+  { key: "git-repositories", label: "Git Repositories", shortLabel: "Git", description: "Register and manage directory-scoped repositories for agent code transport.", group: "infrastructure" },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details.", group: "infrastructure" },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings.", group: "infrastructure" },
   { key: "tool-visibility", label: "Tool Visibility", shortLabel: "Visibility", description: "Effective tool visibility, transport binding, and denied execution evidence.", group: "governance" },
@@ -110,6 +112,7 @@ const ADDON_TAB_PATTERN = /^addon:[a-z0-9][a-z0-9._-]{0,127}$/;
 const ADDON_IFRAME_HASH_PARAM_NAMES = [
   "view",
   "human_review_request_id",
+  "conversation_id",
 ] as const;
 
 export function tabsForExecutionBackend(

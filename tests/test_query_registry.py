@@ -33,7 +33,10 @@ from evander.workflow.contracts import WorkflowNodeEnvelope
 
 class _ResolverStub:
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
-        return GatewayConfig(runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")))
+        return GatewayConfig(
+            runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")),
+            ado_organization="directory-org",
+        )
 
 
 @dataclass
@@ -803,7 +806,7 @@ def test_pull_request_list_query_provider_resolves_ado_config_and_filters(
     output = provider.execute(resolved_config={"cursor": "cursor-1"})
 
     assert captured["init"] == {
-        "organization_url": "https://dev.azure.com",
+        "organization_url": "https://dev.azure.com/directory-org",
         "project": "default",
         "pat": "secret",
         "timeout_seconds": 30.0,

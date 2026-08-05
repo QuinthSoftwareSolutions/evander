@@ -46,6 +46,12 @@ evander-cli git-repos register \
 Registration is idempotent for the same directory/upstream pair and refreshes canonical refs by
 default. Use `--no-refresh` only when registration must be recorded before the source is reachable.
 
+Admin Web's **Git Repositories** page (`/#git-repositories`) provides the same operator lifecycle
+surface for the selected directory: register a canonical source, inspect the stable repository ID
+and bindings, refresh upstream refs, run maintenance, set a host commit identity, or delete an
+unbound repository. Privileged operations must be unlocked for mutations; the backend retains its
+normal directory-ownership, binding, and credential protections.
+
 ```bash
 evander-cli git-repos list --directory-path root/acme
 evander-cli git-repos show mr_0123456789abcdef0123 --directory-path root/acme/team-a

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
 from typing import Any
 from ...models import (
     AGENT_OPERATOR_ONLY_FIELDS,
     AgentProjectAssignmentKind,
     AgentStatus,
     Deliverable,
+    InitialReleaseDispositionState,
     PersistentAgent,
     ReviewProfile,
     RolePermission,
@@ -175,6 +177,14 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     return payload
 
 
+def agent_role_description_fingerprint(agent_payload: Mapping[str, Any]) -> str:
+    """Return a stable fingerprint for the role description visible to an agent."""
+
+    description = agent_payload.get("role_description")
+    text = description if isinstance(description, str) else ""
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
 def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for subordinate_id in agent.subordinate_agent_ids:
@@ -220,6 +230,26 @@ def _team_ids_with_open_work(state: TeamState) -> set[str]:
         owner = state.agents.get(task.owner_agent_id)
         if owner is not None and owner.team_id is not None:
             team_ids.add(owner.team_id)
+    for deliverable in state.deliverables.values():
+        disposition = deliverable.initial_release_disposition
+        task = state.tasks.get(deliverable.task_id)
+        project = state.projects.get(task.project_id) if task is not None else None
+        if (
+            disposition is None
+            or disposition.state != InitialReleaseDispositionState.PENDING
+            or deliverable.state != TeamRecordState.ACCEPTED
+            or deliverable.superseded_by_deliverable_id is not None
+            or task is None
+            or task.parent_task_id is not None
+            or task.state not in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+            or project is None
+            or any(
+                deliverable.id in release.deliverable_ids
+                for release in state.release_packages.values()
+            )
+        ):
+            continue
+        team_ids.add(project.team_id)
     return team_ids
 
 

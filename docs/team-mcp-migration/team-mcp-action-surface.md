@@ -281,6 +281,7 @@ Arguments:
 | `description` | string | yes | Task description. |
 | `state` | enum | no | `pending`, `in_progress`, `blocked`, or `waiting_for_review`. Defaults to `pending`. |
 | `parent_task_id` | string or null | no | Parent task. Required for agents lacking `create_root_task`. |
+| `git_base_branch` | string or null | no | Durable Git starting branch. Explicit value wins, otherwise a child inherits its parent and a root snapshots the project default. |
 | `dependency_task_ids` | string[] | no | Same-project dependencies. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
@@ -293,6 +294,8 @@ Semantics:
 - Target owner must be within the allowed team/project/supervision boundary.
 - Parent/dependency tasks must belong to the same project and cannot create
   cycles.
+- The Git base can be changed only before any Git work context, deliverable, or
+  promotion exists; later attempts return `git_base_locked`.
 - Returns `task_id`.
 
 ### `team_create_tasks`
@@ -333,6 +336,7 @@ Arguments:
 | `description` | string | no | Owner-only. |
 | `owner_agent_id` | string | no | Claim/reassign non-terminal subordinate work when permitted. |
 | `dependency_task_ids` | string[] | no | Replace dependency edges when graph edit is permitted. |
+| `git_base_branch` | string or null | no | Replace the durable Git starting branch before it locks. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
 
