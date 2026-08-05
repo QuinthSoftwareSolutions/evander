@@ -319,9 +319,9 @@ re-run every systemd, VM inventory, workflow, approval, session, and audit read 
 detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.
 
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
-`/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
-detail view. The Workflow tab remains a first-level navigation item for editing workflow graphs and
-inspecting runtime activity.
+`/#sessions`, `/#git-repositories`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the
+dashboard and open the detail view. The Workflow tab remains a first-level navigation item for
+editing workflow graphs and inspecting runtime activity.
 
 ## Admin Web Authentication
 
@@ -585,6 +585,11 @@ print(signature)
 Evander-managed agent Git uses one bare repository per canonical upstream and directory trust
 boundary. Register the source once, then pass only its `managed_repo_id` through VM, container,
 workflow, and Team surfaces:
+
+Admin Web's **Git Repositories** page manages this registry within the selected directory. After
+unlocking privileged operations, operators can register a canonical source, refresh upstream refs,
+run maintenance, update the host commit identity, or delete an unbound repository. The page also
+lists stable IDs, upstream details, and active bindings independently of agent-session existence.
 
 ```bash
 REPO_JSON="$(

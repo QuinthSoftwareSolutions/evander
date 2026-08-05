@@ -5,6 +5,12 @@
 - Enlarged human-review checklist and carried-finding checkboxes, removing inherited
   form-control padding so their visible controls match their clickable labels.
 
+## 2026-08-05 - Managed Git Administration Page
+
+- Added a **Git Repositories** Admin Web page for directory-scoped managed-Git catalog search and inspection.
+- Let unlocked operators register repositories, refresh upstream refs, run repository maintenance,
+  change host commit identity, and delete unbound repositories without falling back to the CLI.
+
 ## 2026-08-05 - Focused Agent Codex Usage Editor
 
 - Removed session-owned model, expiry, labels, tools, grants, communication access,
