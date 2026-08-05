@@ -13353,6 +13353,12 @@ def test_blocked_review_retry_preserves_attempt_and_reopens_deliverable(
         agent_id="unrelated-manager",
         dispatch_id="dispatch-unrelated-retry",
     )
+
+    def _widen_unrelated_retry_dispatch_scope(state):
+        state.dispatches["dispatch-unrelated-retry"].project_ids = ["project"]
+        return state
+
+    repo.update(_widen_unrelated_retry_dispatch_scope)
     unchanged, forbidden = _command_service(repo).retry_review_command(
         session_id="session-unrelated-manager",
         review_request_id=first_review_id,
@@ -13362,6 +13368,7 @@ def test_blocked_review_retry_preserves_attempt_and_reopens_deliverable(
     )
 
     assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "review_retry_invalid"
     assert "not permitted" in forbidden["errors"][0]["message"]
     assert unchanged.review_requests[first_review_id].superseded_by_review_request_id is None
 
