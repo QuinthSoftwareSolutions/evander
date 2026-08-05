@@ -9795,8 +9795,11 @@ function renderChatAttachment(attachment) {
   const mimeType = text(attachment.mime_type);
   const filename = text(attachment.filename) || "attachment";
   const image = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mimeType);
+  const linkAttributes = image
+    ? ' target="_blank" rel="noopener"'
+    : ` download="${escapeAttr(filename)}"`;
   return `
-    <a class="chat-message-attachment${image ? " is-image" : ""}" href="${escapeAttr(url)}" target="_blank" rel="noopener">
+    <a class="chat-message-attachment${image ? " is-image" : ""}" href="${escapeAttr(url)}"${linkAttributes}>
       ${image ? `<img src="${escapeAttr(url)}" alt="${escapeAttr(filename)}" loading="lazy" />` : `<span class="chat-file-icon" aria-hidden="true">↧</span>`}
       <span><strong>${escapeHtml(filename)}</strong><small>${escapeHtml(formatFileSize(attachment.byte_count))}${mimeType ? ` · ${escapeHtml(mimeType)}` : ""}</small></span>
     </a>
