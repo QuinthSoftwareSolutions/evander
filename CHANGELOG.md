@@ -212,6 +212,13 @@
   Git credential, and reserved the legacy `evander-git` filename so new grants
   cannot be mistaken for migrated broad credentials.
 
+## 2026-08-02 - Team Artifact Import Authorization
+
+- Required imported artifact spaces and published versions to belong to the caller's exact Team,
+  preventing copied deliverable references and default-open grants from exposing cross-team data.
+- Kept same-Team artifacts importable without an explicit deliverable handoff while preserving
+  stricter per-space read grants.
+
 ## 2026-08-02 - Team Recovery Authorization Hardening
 
 - Scoped deliverable-replacement and blocked-review recovery manager authority,
