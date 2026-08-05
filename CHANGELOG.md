@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-02 - Team Recovery Authorization Hardening
+
+- Scoped deliverable-replacement and blocked-review recovery manager authority,
+  reviewer selection, and review-profile validation to the affected project's team.
+
 ## 2026-07-31 - Review Follow-up Fixes
 
 - Kept selected Agent detail views live by merging each fresh polled summary over
