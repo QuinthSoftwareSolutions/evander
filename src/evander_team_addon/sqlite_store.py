@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 48
+SQLITE_SCHEMA_VERSION = 49
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1056,6 +1056,7 @@ class TeamStateSqliteStore:
                     ("originating_task_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
                     ("git_base_branch", "TEXT"),
+                    ("git_base_commit_sha", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -1160,6 +1161,7 @@ class TeamStateSqliteStore:
                 for column_name, definition in (
                     ("reason_code", "TEXT NOT NULL DEFAULT 'unspecified'"),
                     ("reporter_actor", "TEXT"),
+                    ("resolution_scope", "TEXT NOT NULL DEFAULT 'task'"),
                 ):
                     _ensure_column(
                         connection,
@@ -1380,6 +1382,17 @@ class TeamStateSqliteStore:
                     _migrate_task_git_base_snapshots(connection)
                 if previous_schema_version < 46:
                     _migrate_release_canonical_base_snapshots(connection)
+                if previous_schema_version < 49:
+                    connection.execute(
+                        """
+                        UPDATE team_blockers
+                        SET source_kind = 'candidate_correction_successor',
+                            resolution_scope = 'downstream'
+                        WHERE source_kind = 'explicit'
+                          AND source_id LIKE 'candidate-correction-successor:%'
+                          AND reason_code = 'candidate_correction_successor_failed'
+                        """
+                    )
                 if (
                     previous_schema_version < SQLITE_SCHEMA_VERSION
                     or previous_state_schema_version < SCHEMA_VERSION
@@ -2442,6 +2455,7 @@ class TeamStateSqliteStore:
                 "parent_task_id": row["parent_task_id"],
                 "originating_task_id": row["originating_task_id"],
                 "git_base_branch": row["git_base_branch"],
+                "git_base_commit_sha": row["git_base_commit_sha"],
                 "cancellation": (
                     _json_loads(row["cancellation_json"])
                     if row["cancellation_json"] is not None
@@ -2461,11 +2475,12 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    originating_task_id, git_base_branch, cancellation_json, task_kind,
+                    originating_task_id, git_base_branch, git_base_commit_sha,
+                    cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2482,6 +2497,7 @@ class TeamStateSqliteStore:
                     task.get("parent_task_id"),
                     task.get("originating_task_id"),
                     task.get("git_base_branch"),
+                    task.get("git_base_commit_sha"),
                     (
                         _json_dumps(task.get("cancellation"))
                         if task.get("cancellation") is not None
@@ -3046,6 +3062,7 @@ class TeamStateSqliteStore:
                 "reporter_agent_id": row["reporter_agent_id"],
                 "reporter_actor": row["reporter_actor"],
                 "reason_code": row["reason_code"],
+                "resolution_scope": row["resolution_scope"],
                 "affected_task_ids": affected_tasks.get(row["id"], []),
                 "owner_agent_id": row["owner_agent_id"],
                 "delegate_agent_id": row["delegate_agent_id"],
@@ -3071,13 +3088,13 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_blockers(
                     id, team_id, project_id, task_id, source_kind, source_id,
-                    reporter_agent_id, reporter_actor, reason_code,
+                    reporter_agent_id, reporter_actor, reason_code, resolution_scope,
                     owner_agent_id, delegate_agent_id, state, route,
                     summary, details, priority, escalation_depth, active_dispatch_id,
                     follow_up_at, last_progress_at, terminal_reference_ids_json,
                     created_at, updated_at, resolved_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     blocker["id"],
@@ -3089,6 +3106,7 @@ class TeamStateSqliteStore:
                     blocker.get("reporter_agent_id"),
                     blocker.get("reporter_actor"),
                     blocker.get("reason_code", "unspecified"),
+                    blocker.get("resolution_scope", "task"),
                     blocker.get("owner_agent_id"),
                     blocker.get("delegate_agent_id"),
                     blocker.get("state", "open"),
@@ -7470,6 +7488,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     parent_task_id TEXT,
     originating_task_id TEXT,
     git_base_branch TEXT,
+    git_base_commit_sha TEXT,
     cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
@@ -7697,6 +7716,7 @@ CREATE TABLE IF NOT EXISTS team_blockers (
     reporter_agent_id TEXT,
     reporter_actor TEXT,
     reason_code TEXT NOT NULL DEFAULT 'unspecified',
+    resolution_scope TEXT NOT NULL DEFAULT 'task',
     owner_agent_id TEXT,
     delegate_agent_id TEXT,
     state TEXT NOT NULL,

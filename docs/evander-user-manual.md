@@ -7149,6 +7149,17 @@ If Team cannot validate or package the resolved correction, it opens a durable
 blocker for the correction owner rather than waiting for a manager to remember
 the release.
 
+That blocker is a downstream release-recovery incident, not a reason to reopen
+the completed correction task. It therefore does not invalidate the correction
+or tasks that depend on it. In Admin Web, <strong>Retry packaging</strong>
+re-evaluates the current evidence, <strong>Create verified replacement</strong>
+creates dependency-free work pinned to the accepted correction branch and exact
+commit, and <strong>Authorize waiver</strong> records the operator and reason
+before packaging. Generic blocker resolution cannot bypass these actions.
+Reconciliation continues while the incident remains open, accepts a passed
+downstream recovery deliverable, and resolves the incident immediately when a
+direct successor already exists.
+
 The system refuses a cosmetic new release of the same failed deliverables and tree.
 
 ### Retryable process failures

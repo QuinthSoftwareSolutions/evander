@@ -316,6 +316,12 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/blockers/{blocker_id}/resolve"
     )
     assert blocker_resolve_route.methods == {"POST"}
+    candidate_recovery_route = next(
+        route
+        for route in routes
+        if route.path == "/candidate-correction-recoveries/{blocker_id}"
+    )
+    assert candidate_recovery_route.methods == {"POST"}
     review_retire_route = next(
         route
         for route in routes
@@ -5045,6 +5051,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Resume release recovery" in script.text
     assert "data-resolve-terminal-blocker-id" in script.text
     assert "resolveTerminalBlocker" in script.text
+    assert "data-candidate-correction-recovery-id" in script.text
+    assert "recoverCandidateCorrectionSuccessor" in script.text
+    assert "Create verified replacement" in script.text
+    assert "Authorize waiver" in script.text
+    assert "/candidate-correction-recoveries/" in script.text
+    assert '["Git base commit pin", text(task.git_base_commit_sha)]' in script.text
     assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
     assert "teamFetch(`${API_BASE}/costs/backfill`" in script.text
     assert "data-cost-backfill-refresh" in script.text

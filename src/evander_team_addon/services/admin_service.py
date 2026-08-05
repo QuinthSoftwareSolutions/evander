@@ -195,6 +195,9 @@ from .domain.preparation_failures import (
 )
 from .commands.blocker_commands import _prepare_blocker_source_for_resolution
 from .commands.outbox import _team_event_outbox_records
+from .candidate_correction_reconciliation_service import (
+    recover_candidate_correction_successor,
+)
 
 
 def utc_now() -> datetime:
@@ -689,6 +692,16 @@ class TeamAdminService:
                     f"/human-review-requests/{blocker.source_id}/{recovery_action}; "
                     "generic blocker resolution cannot bypass the human-review lifecycle"
                 )
+            if (
+                blocker.source_kind
+                == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            ):
+                raise ValueError(
+                    f"blocker {blocker.id} belongs to candidate-correction successor "
+                    f"recovery; use POST /candidate-correction-recoveries/{blocker.id} "
+                    "with retry, create_verified_replacement, or "
+                    "authorize_verification_waiver"
+                )
             _prepare_blocker_source_for_resolution(
                 state,
                 blocker=blocker,
@@ -728,6 +741,74 @@ class TeamAdminService:
         result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
         return state, result
 
+    def recover_candidate_correction_successor_as_operator(
+        self,
+        *,
+        blocker_id: str,
+        action: str,
+        operator_actor_id: str,
+        reason: str | None = None,
+        owner_agent_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_blocker_id = _required_text(blocker_id, "blocker_id")
+        normalized_action = _required_text(action, "action")
+        if normalized_action not in {
+            "retry",
+            "create_verified_replacement",
+            "authorize_verification_waiver",
+        }:
+            raise ValueError(
+                f"unsupported candidate correction recovery action {action!r}"
+            )
+        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        normalized_reason = _optional_text(reason)
+        normalized_owner_id = _optional_text(owner_agent_id)
+        if (
+            normalized_action == "authorize_verification_waiver"
+            and normalized_reason is None
+        ):
+            raise ValueError("authorize_verification_waiver requires reason")
+        result: dict[str, Any] = {
+            "success": False,
+            "action": normalized_action,
+            "blocker_id": normalized_blocker_id,
+            "operator_actor_id": normalized_actor_id,
+            "events": [],
+        }
+
+        def _mutate(state: TeamState) -> TeamState:
+            recover_candidate_correction_successor(
+                state,
+                blocker_id=normalized_blocker_id,
+                action=normalized_action,
+                operator_actor_id=normalized_actor_id,
+                reason=normalized_reason,
+                owner_agent_id=normalized_owner_id,
+                result=result,
+            )
+            return state
+
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
+        result["revision"] = state.revision
+        result["blocker"] = state.blockers[normalized_blocker_id].model_dump(
+            mode="json"
+        )
+        if recovery_task_id := result.get("recovery_task_id"):
+            result["recovery_task"] = state.tasks[recovery_task_id].model_dump(
+                mode="json"
+            )
+        if release_id := result.get("release_package_id"):
+            result["release_package"] = state.release_packages[release_id].model_dump(
+                mode="json"
+            )
+        return state, result
     def mark_action_feedback_delivered(
         self,
         *,
@@ -1615,6 +1696,17 @@ class TeamAdminService:
                     f"Git work context base {effective_base_branch!r} does not match "
                     f"task {task.id} snapshot {task.git_base_branch!r}"
                 )
+            if task.git_base_commit_sha is not None:
+                if normalized_base_commit is None:
+                    raise ValueError(
+                        f"Git work context for pinned task {task.id} requires "
+                        f"base commit {task.git_base_commit_sha}"
+                    )
+                if normalized_base_commit.casefold() != task.git_base_commit_sha:
+                    raise ValueError(
+                        f"Git work context base commit {normalized_base_commit} does "
+                        f"not match task {task.id} pin {task.git_base_commit_sha}"
+                    )
             effective_context_id = normalized_context_id or _generated_id(
                 prefix="gitctx",
                 labels=[normalized_agent_id, normalized_task_id, normalized_agent_branch],
@@ -2368,6 +2460,7 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         set_git_base_branch: bool = False,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
@@ -2394,6 +2487,7 @@ class TeamAdminService:
             parent_task_id=parent_task_id,
             originating_task_id=originating_task_id,
             git_base_branch=git_base_branch,
+            git_base_commit_sha=git_base_commit_sha,
             set_git_base_branch=set_git_base_branch,
             set_parent_task_id=set_parent_task_id,
             set_case_id=set_case_id,
@@ -2424,6 +2518,7 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         set_git_base_branch: bool = False,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
@@ -2449,6 +2544,14 @@ class TeamAdminService:
             normalized_git_base_branch = validate_branch_name(
                 normalized_git_base_branch
             )
+        normalized_git_base_commit_sha = _optional_text(git_base_commit_sha)
+        if normalized_git_base_commit_sha is not None:
+            normalized_git_base_commit_sha = normalized_git_base_commit_sha.casefold()
+            if len(normalized_git_base_commit_sha) not in {40, 64} or any(
+                char not in "0123456789abcdef"
+                for char in normalized_git_base_commit_sha
+            ):
+                raise ValueError("git_base_commit_sha must be a full Git object ID")
         normalized_dependency_task_ids = (
             _unique_text_list(dependency_task_ids, "dependency_task_ids")
             if dependency_task_ids is not None
@@ -2513,6 +2616,13 @@ class TeamAdminService:
                 ):
                     raise ValueError(
                         f"task {task.id} originating_task_id is immutable after creation"
+                    )
+                if (
+                    normalized_git_base_commit_sha is not None
+                    and normalized_git_base_commit_sha != task.git_base_commit_sha
+                ):
+                    raise ValueError(
+                        f"task {task.id} git_base_commit_sha is immutable after creation"
                     )
                 proposed_parent_task_id = (
                     normalized_parent_task_id
@@ -2726,6 +2836,7 @@ class TeamAdminService:
                         self._resolve_managed_git_default_branch
                     ),
                 ),
+                git_base_commit_sha=normalized_git_base_commit_sha,
                 dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
                 outcome_contract=effective_outcome_contract,

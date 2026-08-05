@@ -2324,6 +2324,34 @@ function bindRecordEditing() {
       return;
     }
 
+    const candidateCorrectionRecoveryButton = event.target.closest(
+      "[data-candidate-correction-recovery-id]",
+    );
+    if (candidateCorrectionRecoveryButton) {
+      event.preventDefault();
+      const action = text(
+        candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryAction,
+      );
+      let reason = null;
+      if (action === "authorize_verification_waiver") {
+        reason = window.prompt(
+          "Why is a verification waiver justified? This reason is recorded on the release.",
+          "",
+        );
+        if (!text(reason)) {
+          setStatus("A verification-waiver reason is required.", "error");
+          return;
+        }
+      }
+      void recoverCandidateCorrectionSuccessor(
+        candidateCorrectionRecoveryButton,
+        candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryId,
+        action,
+        text(reason) || null,
+      );
+      return;
+    }
+
     const resolveBlockerButton = event.target.closest("[data-resolve-terminal-blocker-id]");
     if (resolveBlockerButton) {
       event.preventDefault();
@@ -2811,6 +2839,7 @@ const lockedMutationControlSelectors = [
   ["[data-task-cancel-id]:not(:disabled)", "cancel tasks"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
+  ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -13381,6 +13410,7 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
     ["Git base branch", text(task.git_base_branch)],
+    ["Git base commit pin", text(task.git_base_commit_sha)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Integration boundary", task.integration_boundary ? "Yes" : ""],
     ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
@@ -13602,6 +13632,7 @@ function blockerRoutingLabel(blocker) {
     blocker.owner_agent_id ? `owner ${text(blocker.owner_agent_id)}` : "",
     blocker.delegate_agent_id ? `delegate ${text(blocker.delegate_agent_id)}` : "",
     blocker.route ? `route ${humanizeToken(blocker.route)}` : "",
+    blocker.resolution_scope ? `scope ${humanizeToken(blocker.resolution_scope)}` : "",
     Number.isFinite(Number(blocker.escalation_depth))
       ? `level ${Number(blocker.escalation_depth)}`
       : "",
@@ -13633,6 +13664,31 @@ function releaseRecoveryTaskForBlocker(blocker) {
 }
 
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
+  if (
+    blocker &&
+    text(blocker.state) === "open" &&
+    text(blocker.source_kind) === "candidate_correction_successor"
+  ) {
+    return `
+      <div class="record-actions ${escapeAttr(extraClass)}">
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="retry"
+          ${lockedAttrs("retry candidate correction recovery")}
+        >Retry packaging</button>
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="create_verified_replacement"
+          ${lockedAttrs("create verified replacement tasks")}
+        >Create verified replacement</button>
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="authorize_verification_waiver"
+          ${lockedAttrs("authorize candidate verification waivers")}
+        >Authorize waiver</button>
+      </div>
+    `;
+  }
   if (
     !blocker ||
     text(blocker.state) !== "open" ||
@@ -21227,6 +21283,79 @@ async function resolveTerminalBlocker(button, blockerId, note) {
     setStatus(`Resolved blocker ${normalizedBlockerId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Blocker resolution failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function recoverCandidateCorrectionSuccessor(button, blockerId, action, reason = null) {
+  if (!guardTeamMutation("recover candidate correction successors")) {
+    return;
+  }
+  const normalizedBlockerId = text(blockerId);
+  const normalizedAction = text(action);
+  if (!normalizedBlockerId || !normalizedAction) {
+    setStatus("No candidate-correction recovery action was selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`${humanizeToken(normalizedAction)} for ${normalizedBlockerId}.`, "loading");
+  const endpoint = `/candidate-correction-recoveries/${encodeURIComponent(normalizedBlockerId)}`;
+  try {
+    const payload = { action: normalizedAction };
+    if (text(reason)) {
+      payload.reason = text(reason);
+    }
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", payload),
+      ),
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the recovery and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const body = await response.json();
+    await applyMutationResultPayload(body);
+    restoreFormDrafts(drafts);
+    const recovery = body.candidate_correction_recovery || {};
+    const createdTaskId = text(recovery.created_recovery_task_id);
+    const releaseId = text(
+      recovery.release_package_id ||
+      recovery.created_successor_release_package_ids?.[0] ||
+      recovery.existing_successor_release_package_ids?.[0],
+    );
+    setStatus(
+      releaseId
+        ? `Candidate recovery created or found successor ${releaseId}.`
+        : createdTaskId
+          ? `Created pinned recovery task ${createdTaskId}.`
+          : `Candidate recovery ${humanizeToken(normalizedAction)} completed.`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Candidate correction recovery failed.",
+      "error",
+    );
   } finally {
     if (button.isConnected) {
       button.disabled = false;

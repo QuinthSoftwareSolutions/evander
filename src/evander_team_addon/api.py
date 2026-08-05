@@ -2219,6 +2219,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 parent_task_id=_optional(payload, "parent_task_id"),
                 originating_task_id=_optional(payload, "originating_task_id"),
                 git_base_branch=_optional(payload, "git_base_branch"),
+                git_base_commit_sha=_optional(payload, "git_base_commit_sha"),
                 set_git_base_branch="git_base_branch" in payload,
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
@@ -2550,6 +2551,30 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             extra={"resolved_blocker": result["blocker"]},
+        )
+
+    async def recover_candidate_correction_successor(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        blocker_id = request.path_params["blocker_id"]
+        state, result = (
+            admin_service.recover_candidate_correction_successor_as_operator(
+                blocker_id=blocker_id,
+                action=_required(payload, "action"),
+                reason=_optional(payload, "reason"),
+                owner_agent_id=_optional(payload, "owner_agent_id"),
+                operator_actor_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                expected_revision=_expected_revision(payload),
+            )
+        )
+        return _state_response(
+            request,
+            state,
+            extra={"candidate_correction_recovery": result},
         )
 
     async def create_outcome_kind_definition(
@@ -3762,6 +3787,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/blockers/{blocker_id}/resolve",
             resolve_terminal_blocker,
+            methods=["POST"],
+        ),
+        route(
+            "/candidate-correction-recoveries/{blocker_id}",
+            recover_candidate_correction_successor,
             methods=["POST"],
         ),
         route(

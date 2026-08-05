@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-05 - Durable Candidate-Correction Successor Recovery
+
+- Made automatic successor-packaging blockers typed, downstream-scoped incidents so
+  they no longer invalidate a terminal correction task or recursively stall its dependents.
+- Added Admin Web/API actions to retry packaging, create a dependency-free recovery task
+  pinned to the accepted correction branch and commit, or authorize an audited verification
+  waiver; generic blocker resolution cannot bypass this lifecycle.
+- Let reconciliation retry while its own blocker remains open, consume passed downstream
+  recovery deliverables, and resolve stale blockers when a direct successor already exists.
+- Migrated legacy `candidate-correction-successor:*` blockers and persisted optional immutable
+  task base-commit pins that are enforced when Git work is prepared.
+
 ## 2026-08-05 - Human Review Checkbox Accessibility
 
 - Enlarged human-review checklist and carried-finding checkboxes, removing inherited

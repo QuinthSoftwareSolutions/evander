@@ -1865,6 +1865,20 @@ or older states. A packaging or validation failure opens a durable blocker on
 the correction owner instead of silently returning release responsibility to
 the manager. Initial releases and post-release-feedback successors remain
 explicit requests.
+
+Candidate-correction successor blockers use the typed
+`candidate_correction_successor` source and `downstream` resolution scope. They
+remain visible at project/release level but do not make the already-terminal
+correction task unresolved or propagate through task dependencies. Admin Web
+offers three source-aware actions: retry packaging against current evidence,
+create a dependency-free recovery task pinned to the accepted correction branch
+and full commit SHA, or authorize a verification waiver with an audited reason.
+Generic blocker resolution is refused for this source. Reconciliation keeps
+retrying while its blocker is open, prefers a current accepted downstream
+deliverable with `verification.status: passed`, and checks for an existing
+direct successor before task readiness so interrupted completion resolves the
+blocker without creating another package.
+
 Only timeouts and infrastructure failures leave verification retryable, and only
 a review recorded as process-blocked may be replaced. Release-review decisions
 are immutable: use `rejected` for a candidate defect and reserve `blocked` for a

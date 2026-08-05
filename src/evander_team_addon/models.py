@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -252,12 +252,18 @@ class TeamBlockerSourceKind(str, Enum):
     RELEASE_PACKAGE = "release_package"
     HUMAN_REVIEW_REQUEST = "human_review_request"
     AGENT_EXECUTION_STALL = "agent_execution_stall"
+    CANDIDATE_CORRECTION_SUCCESSOR = "candidate_correction_successor"
     EXPLICIT = "explicit"
 
 
 class TeamBlockerState(str, Enum):
     OPEN = "open"
     RESOLVED = "resolved"
+
+
+class TeamBlockerResolutionScope(str, Enum):
+    TASK = "task"
+    DOWNSTREAM = "downstream"
 
 
 class TeamBlockerRoute(str, Enum):
@@ -1226,6 +1232,7 @@ class AgentTask(TeamModel):
     parent_task_id: str | None = None
     originating_task_id: str | None = None
     git_base_branch: str | None = None
+    git_base_commit_sha: str | None = None
     cancellation: TaskCancellation | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -1258,6 +1265,7 @@ class AgentTask(TeamModel):
         "created_by_actor",
         "parent_task_id",
         "originating_task_id",
+        "git_base_commit_sha",
         mode="before",
     )
     @classmethod
@@ -1269,6 +1277,16 @@ class AgentTask(TeamModel):
     def _git_base_branch(cls, value: object) -> str | None:
         normalized = _optional_text(value)
         return validate_branch_name(normalized) if normalized is not None else None
+
+    @field_validator("git_base_commit_sha")
+    @classmethod
+    def _git_base_commit_sha(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError("git_base_commit_sha must be a full Git object ID")
+        return normalized
 
     @field_validator("dependency_task_ids", mode="before")
     @classmethod
@@ -1290,6 +1308,8 @@ class AgentTask(TeamModel):
             raise ValueError("task cannot originate from itself")
         if self.id in self.dependency_task_ids:
             raise ValueError("task cannot depend on itself")
+        if self.git_base_commit_sha is not None and self.git_base_branch is None:
+            raise ValueError("git_base_commit_sha requires git_base_branch")
         if self.task_kind == TeamTaskKind.OUTCOME and self.outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
         if self.task_kind == TeamTaskKind.SUPPORT and self.outcome_contract is not None:
@@ -1927,6 +1947,7 @@ class TeamBlocker(TeamModel):
     owner_agent_id: str | None = None
     delegate_agent_id: str | None = None
     affected_task_ids: list[str] = Field(default_factory=list)
+    resolution_scope: TeamBlockerResolutionScope = TeamBlockerResolutionScope.TASK
     state: TeamBlockerState = TeamBlockerState.OPEN
     route: TeamBlockerRoute = TeamBlockerRoute.OWNED
     summary: str
@@ -1984,6 +2005,14 @@ class TeamBlocker(TeamModel):
 
     @model_validator(mode="after")
     def _validate_route(self) -> "TeamBlocker":
+        if (
+            self.source_kind
+            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            and self.resolution_scope != TeamBlockerResolutionScope.DOWNSTREAM
+        ):
+            raise ValueError(
+                "candidate correction successor blocker must use downstream scope"
+            )
         if self.route == TeamBlockerRoute.DELEGATED and self.delegate_agent_id is None:
             raise ValueError("delegated blocker requires delegate_agent_id")
         if self.route != TeamBlockerRoute.DELEGATED and self.delegate_agent_id is not None:
@@ -4948,6 +4977,13 @@ class TeamState(TeamModel):
                 TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: blocker.source_id
                 in self.human_review_requests,
                 TeamBlockerSourceKind.AGENT_EXECUTION_STALL: blocker.source_id in self.agents,
+                TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: (
+                    blocker.source_id.startswith("candidate-correction-successor:")
+                    and blocker.source_id.removeprefix(
+                        "candidate-correction-successor:"
+                    )
+                    in self.release_packages
+                ),
                 TeamBlockerSourceKind.EXPLICIT: True,
             }[blocker.source_kind]
             if not source_exists:
@@ -6473,6 +6509,7 @@ def team_state_payload(
             TeamBlockerSourceKind.RELEASE_PACKAGE: "release_packages",
             TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: "human_review_requests",
             TeamBlockerSourceKind.AGENT_EXECUTION_STALL: "agents",
+            TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: None,
             TeamBlockerSourceKind.EXPLICIT: None,
         }[blocker.source_kind]
         if collection_name is not None:
@@ -6481,7 +6518,10 @@ def team_state_payload(
                 source_payload.setdefault("active_blocker_ids", [])
                 if blocker.id not in source_payload["active_blocker_ids"]:
                     source_payload["active_blocker_ids"].append(blocker.id)
-        if blocker.task_id is not None:
+        if (
+            blocker.task_id is not None
+            and blocker.resolution_scope == TeamBlockerResolutionScope.TASK
+        ):
             task_payload = payload["tasks"].get(blocker.task_id)
             if isinstance(task_payload, dict):
                 task_payload.setdefault("active_blocker_ids", [])
@@ -7385,6 +7425,14 @@ def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
                 release_package_id = review.release_package_id
         elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
             release_package_id = blocker.source_id
+        elif (
+            blocker.source_kind
+            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            and blocker.source_id.startswith("candidate-correction-successor:")
+        ):
+            release_package_id = blocker.source_id.removeprefix(
+                "candidate-correction-successor:"
+            )
         detail_parts = [
             f"source {blocker.source_kind.value} {blocker.source_id}",
             f"route {blocker.route.value}",
@@ -7976,6 +8024,19 @@ def _runtime_attention_links(
                 add("review_request_ids", blocker.source_id)
             elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
                 add("release_package_ids", blocker.source_id)
+            elif (
+                blocker.source_kind
+                == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+                and blocker.source_id.startswith(
+                    "candidate-correction-successor:"
+                )
+            ):
+                add(
+                    "release_package_ids",
+                    blocker.source_id.removeprefix(
+                        "candidate-correction-successor:"
+                    ),
+                )
         for promotion_id in list(links.get("promotion_ids", ())):
             promotion = state.git_promotions.get(promotion_id)
             if promotion is None:

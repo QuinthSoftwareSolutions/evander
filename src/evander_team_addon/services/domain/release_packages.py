@@ -567,8 +567,16 @@ def _build_release_package(
         )
         if predecessor is None:
             return branch, commit
-        expected_branch = predecessor_candidate_branch
-        expected_commit = predecessor.candidate_commit_sha
+        downstream_recovery_base = _verification_downstream_recovery_base(
+            state,
+            predecessor=predecessor,
+            deliverable=deliverable,
+        )
+        if downstream_recovery_base is not None:
+            expected_branch, expected_commit = downstream_recovery_base
+        else:
+            expected_branch = predecessor_candidate_branch
+            expected_commit = predecessor.candidate_commit_sha
         if expected_branch is None or expected_commit is None:
             raise ValueError(
                 f"predecessor release {predecessor.id} has no exact rejected "
@@ -1493,6 +1501,79 @@ def _successor_release_request_error(
     return None
 
 
+def _verification_downstream_recovery_base(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    deliverable: Deliverable,
+) -> tuple[str, str] | None:
+    """Return the immutable accepted-correction base for a safe recovery task."""
+
+    gate_failure = predecessor.gate_failure
+    if (
+        gate_failure is None
+        or gate_failure.stage != "verification"
+        or gate_failure.kind != "candidate"
+    ):
+        return None
+    verification_run = state.release_verification_runs.get(
+        gate_failure.source_id or ""
+    )
+    if verification_run is None or verification_run.correction_task_id is None:
+        return None
+    correction_task = state.tasks.get(verification_run.correction_task_id)
+    recovery_task = state.tasks.get(deliverable.task_id)
+    if (
+        correction_task is None
+        or recovery_task is None
+        or recovery_task.originating_task_id != correction_task.id
+        or recovery_task.parent_task_id is not None
+        or recovery_task.dependency_task_ids
+        or deliverable.state != TeamRecordState.ACCEPTED
+        or deliverable.superseded_by_deliverable_id is not None
+        or deliverable.verification is None
+        or deliverable.verification.status != "passed"
+    ):
+        return None
+    try:
+        require_task_resolved(
+            state,
+            recovery_task.id,
+            boundary=(
+                "verified downstream recovery for correction task "
+                f"{correction_task.id}"
+            ),
+        )
+    except TaskAssessmentBoundaryError:
+        return None
+    recovery_branch, recovery_commit = authoritative_deliverable_git_base(
+        state,
+        deliverable=deliverable,
+    )
+    if recovery_branch is None or recovery_commit is None:
+        return None
+    for correction_deliverable in state.deliverables.values():
+        if (
+            correction_deliverable.task_id != correction_task.id
+            or correction_deliverable.state != TeamRecordState.ACCEPTED
+            or correction_deliverable.superseded_by_deliverable_id is not None
+            or correction_deliverable.git_refs.agent_branch != recovery_branch
+        ):
+            continue
+        correction_commit = (
+            correction_deliverable.git_refs.submitted_commit_sha
+            or correction_deliverable.git_refs.commit_sha
+        )
+        if (
+            correction_commit is not None
+            and correction_commit.casefold() == recovery_commit.casefold()
+            and recovery_task.git_base_branch == recovery_branch
+            and deliverable.created_at >= correction_deliverable.created_at
+        ):
+            return recovery_branch, correction_commit
+    return None
+
+
 def _verification_correction_successor_request_error(
     state: TeamState,
     *,
@@ -1551,18 +1632,25 @@ def _verification_correction_successor_request_error(
             "successor correction deliverables are already in predecessor scope: "
             + ", ".join(duplicate_ids)
         )
-    invalid_ids = sorted(
-        deliverable_id
-        for deliverable_id in correction_deliverable_ids
-        if (
-            (deliverable := state.deliverables.get(deliverable_id)) is None
-            or deliverable.task_id != correction_task.id
-        )
-    )
+    invalid_ids: list[str] = []
+    for deliverable_id in correction_deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            invalid_ids.append(deliverable_id)
+            continue
+        if deliverable.task_id == correction_task.id:
+            continue
+        if _verification_downstream_recovery_base(
+            state,
+            predecessor=predecessor,
+            deliverable=deliverable,
+        ) is None:
+            invalid_ids.append(deliverable_id)
     if invalid_ids:
         return (
             f"verification correction task {correction_task.id} did not produce "
-            "correction deliverables: "
+            "correction deliverables or verified dependency-free downstream "
+            "recovery deliverables: "
             + ", ".join(invalid_ids)
         )
     return None

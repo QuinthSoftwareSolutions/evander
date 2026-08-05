@@ -56,6 +56,7 @@ from evander_team_addon.models import (
     TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerRoute,
+    TeamBlockerResolutionScope,
     TeamBlockerSourceKind,
     TeamBlockerState,
     TeamCase,
@@ -97,6 +98,7 @@ from evander_team_addon.services.domain.review import _review_decision_policy_er
 from evander_team_addon.services.domain.task_assessment import (
     TaskAssessmentBoundaryError,
     TaskAssessmentService,
+    assess_task,
     require_release_scope,
 )
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
@@ -2683,6 +2685,57 @@ def test_rejection_override_migration_preserves_release_history_and_blocks_recon
         "rejected_acceptance_override_reconciliation"
     )
     assert migrated.projects["project"].status == ProjectStatus.BLOCKED
+
+
+def test_candidate_successor_blocker_migration_types_downstream_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="candidate-correction-task")
+
+    def _seed_legacy_candidate_blocker(state):
+        state.release_packages["release-rejected-candidate"] = ReleasePackage(
+            id="release-rejected-candidate",
+            project_id="project",
+            owner_agent_id="lead",
+            state=TeamRecordState.REJECTED,
+        )
+        state.blockers["legacy-candidate-successor-blocker"] = TeamBlocker(
+            id="legacy-candidate-successor-blocker",
+            team_id="team",
+            project_id="project",
+            task_id="candidate-correction-task",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id=(
+                "candidate-correction-successor:release-rejected-candidate"
+            ),
+            reason_code="candidate_correction_successor_failed",
+            owner_agent_id="backend",
+            affected_task_ids=["candidate-correction-task"],
+            summary="Legacy automatic successor failure",
+        )
+        return state
+
+    repo.update(_seed_legacy_candidate_blocker)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '48' "
+            "WHERE key = 'sqlite_schema_version'"
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '8' "
+            "WHERE key = 'state_schema_version'"
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+    blocker = migrated.blockers["legacy-candidate-successor-blocker"]
+
+    assert blocker.source_kind == (
+        TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+    )
+    assert blocker.resolution_scope == TeamBlockerResolutionScope.DOWNSTREAM
+    assert assess_task(migrated, "candidate-correction-task").active_blocker_ids == []
 
 
 def test_direct_acceptance_decision_survives_promotion_failure(
