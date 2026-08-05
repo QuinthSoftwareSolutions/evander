@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-05 - Bounded Queued-Prompt Activity Lookup
+
+- Stopped queued-prompt dispatch from materializing the full effect-execution history when the
+  execution repository can query active records directly, keeping post-completion dispatch
+  responsive as execution history grows.
+
 ## 2026-08-05 - Configurable Team Git Identities
 
 - Added project-scoped agent author and committer identities, with an Evander Bot fallback, and reconciled them into both new and retained Team project checkouts.
