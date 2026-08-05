@@ -10,6 +10,7 @@ from ..models import (
     AgentStatus,
     AgentTask,
     ReleasePackage,
+    TeamBlockerEventType,
     TeamBlockerResolutionScope,
     TeamBlockerSourceKind,
     TeamInboxItemState,
@@ -26,6 +27,7 @@ from ..repository import TeamStateConflictError, TeamStateRepository
 from .commands.outbox import _team_event_outbox_records
 from .domain.blockers import (
     active_blockers_for_source,
+    append_blocker_event,
     open_or_get_blocker,
     resolve_active_blockers_for_source,
 )
@@ -774,7 +776,29 @@ def recover_candidate_correction_successor(
             )
             state.tasks[recovery_task.id] = recovery_task
             _mark_agent_work_due(state, agent_id=owner.id, now=effective_now)
+            blocker.last_progress_at = effective_now
+            blocker.updated_at = effective_now
+            blocker_event = append_blocker_event(
+                state,
+                blocker=blocker,
+                event_type=TeamBlockerEventType.PROGRESS,
+                note=(
+                    f"Operator {operator_actor_id} created pinned verification "
+                    f"replacement task {recovery_task.id}."
+                ),
+                reference_ids=[recovery_task.id],
+                metadata={
+                    "kind": "candidate_correction_recovery_task_created",
+                    "operator_actor_id": operator_actor_id,
+                    "recovery_task_id": recovery_task.id,
+                    "owner_agent_id": recovery_task.owner_agent_id,
+                    "git_base_branch": source_branch,
+                    "git_base_commit_sha": source_commit,
+                },
+                now=effective_now,
+            )
             result["created_recovery_task_id"] = recovery_task.id
+            result["created_blocker_event_id"] = blocker_event.id
         else:
             if (
                 recovery_task.originating_task_id != correction_task.id

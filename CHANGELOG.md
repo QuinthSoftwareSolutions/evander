@@ -16,6 +16,9 @@
 - Added Admin Web/API actions to retry packaging, create a dependency-free recovery task
   pinned to the accepted correction branch and commit, or authorize an audited verification
   waiver; generic blocker resolution cannot bypass this lifecycle.
+- Kept a created verification-replacement task visible on its blocker with task, assignee,
+  commit, dispatch, and status details; replaced duplicate creation with a task-board link and
+  recorded creation as durable blocker progress.
 - Let reconciliation retry while its own blocker remains open, consume passed downstream
   recovery deliverables, and resolve stale blockers when a direct successor already exists.
 - Migrated legacy `candidate-correction-successor:*` blockers and persisted optional immutable

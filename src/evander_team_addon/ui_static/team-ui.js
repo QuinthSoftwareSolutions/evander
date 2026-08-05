@@ -2327,6 +2327,17 @@ function bindRecordEditing() {
       return;
     }
 
+    const candidateCorrectionRecoveryTaskButton = event.target.closest(
+      "[data-candidate-correction-recovery-task-id]",
+    );
+    if (candidateCorrectionRecoveryTaskButton) {
+      event.preventDefault();
+      openCandidateCorrectionRecoveryTask(
+        candidateCorrectionRecoveryTaskButton.dataset.candidateCorrectionRecoveryTaskId,
+      );
+      return;
+    }
+
     const candidateCorrectionRecoveryButton = event.target.closest(
       "[data-candidate-correction-recovery-id]",
     );
@@ -13666,12 +13677,113 @@ function releaseRecoveryTaskForBlocker(blocker) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+function candidateCorrectionRecoveryTaskForBlocker(blocker) {
+  if (!blocker || text(blocker.source_kind) !== "candidate_correction_successor") {
+    return null;
+  }
+  const correctionTaskIds = new Set(uniqueTextList([
+    blocker.task_id,
+    ...(blocker.affected_task_ids || []),
+  ]));
+  return values(state.tasks)
+    .filter(
+      (task) =>
+        text(task.created_by_actor) === "system:candidate-correction-recovery" &&
+        correctionTaskIds.has(text(task.originating_task_id)) &&
+        (!blocker.project_id || text(task.project_id) === text(blocker.project_id)),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function latestDispatchForTask(taskId) {
+  const normalizedTaskId = text(taskId);
+  return values(state.dispatches)
+    .filter((dispatch) =>
+      (dispatch.task_ids || []).some((candidateId) => text(candidateId) === normalizedTaskId),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function renderCandidateCorrectionRecoveryStatus(task) {
+  const dispatch = latestDispatchForTask(task.id);
+  const assignee = state.agents?.[text(task.owner_agent_id)];
+  const details = [
+    `Task ${text(task.id)}`,
+    `assigned to ${assignee ? agentLabel(assignee) : text(task.owner_agent_id) || "unassigned"}`,
+    task.git_base_commit_sha ? `pinned commit ${text(task.git_base_commit_sha)}` : "",
+    dispatch ? `dispatch ${humanizeToken(dispatch.status || "unknown")}` : "awaiting dispatch",
+  ].filter(Boolean);
+  return `
+    <div class="candidate-correction-recovery-status" role="status">
+      <div>
+        <strong>Verified replacement task</strong>
+        <span class="state-pill ${escapeAttr(task.state || "pending")}">${escapeHtml(humanizeToken(task.state || "pending"))}</span>
+      </div>
+      <div>${escapeHtml(task.title || task.id)}</div>
+      <div class="meta-line">${escapeHtml(details.join(" - "))}</div>
+    </div>
+  `;
+}
+
+function openCandidateCorrectionRecoveryTask(taskId) {
+  const task = state.tasks?.[text(taskId)];
+  const project = state.projects?.[text(task?.project_id)];
+  if (!task || !project) {
+    setStatus("The verified replacement task is not visible in the current scope.", "warning");
+    return;
+  }
+  resetTaskBoardProjectState();
+  selectedTaskBoardTeamId = text(project.team_id);
+  selectedTaskBoardProjectId = text(project.id);
+  selectedTaskBoardTaskId = text(task.id);
+  if (terminalTaskStates.has(text(task.state))) {
+    taskBoardShowCompleted = true;
+  }
+  prepareSelectedTaskBoardTaskForDisplay();
+  setTeamView("task-board");
+  window.requestAnimationFrame(() => focusSelectedTaskBoardTask());
+}
+
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
   if (
     blocker &&
     text(blocker.state) === "open" &&
     text(blocker.source_kind) === "candidate_correction_successor"
   ) {
+    const recoveryTask = candidateCorrectionRecoveryTaskForBlocker(blocker);
+    if (recoveryTask) {
+      const replacementStillActive = !terminalTaskStates.has(text(recoveryTask.state));
+      return `
+        ${renderCandidateCorrectionRecoveryStatus(recoveryTask)}
+        <div class="record-actions ${escapeAttr(extraClass)}">
+          <button type="button" class="record-action"
+            data-candidate-correction-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+          >View replacement task</button>
+          ${
+            replacementStillActive
+              ? ""
+              : `<button type="button" class="record-action"
+                  data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+                  data-candidate-correction-recovery-action="retry"
+                  ${lockedAttrs("retry candidate correction recovery")}
+                >Retry packaging</button>`
+          }
+          <button type="button" class="record-action"
+            data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+            data-candidate-correction-recovery-action="authorize_verification_waiver"
+            ${lockedAttrs("authorize candidate verification waivers")}
+          >Authorize waiver instead</button>
+        </div>
+      `;
+    }
     return `
       <div class="record-actions ${escapeAttr(extraClass)}">
         <button type="button" class="record-action"
@@ -21480,7 +21592,11 @@ async function recoverCandidateCorrectionSuccessor(button, blockerId, action, re
     await applyMutationResultPayload(body);
     restoreFormDrafts(drafts);
     const recovery = body.candidate_correction_recovery || {};
-    const createdTaskId = text(recovery.created_recovery_task_id);
+    const recoveryTaskId = text(
+      recovery.created_recovery_task_id ||
+      recovery.existing_recovery_task_id ||
+      recovery.recovery_task_id,
+    );
     const releaseId = text(
       recovery.release_package_id ||
       recovery.created_successor_release_package_ids?.[0] ||
@@ -21489,8 +21605,8 @@ async function recoverCandidateCorrectionSuccessor(button, blockerId, action, re
     setStatus(
       releaseId
         ? `Candidate recovery created or found successor ${releaseId}.`
-        : createdTaskId
-          ? `Created pinned recovery task ${createdTaskId}.`
+        : recoveryTaskId
+          ? `Candidate recovery created or found pinned task ${recoveryTaskId}.`
           : `Candidate recovery ${humanizeToken(normalizedAction)} completed.`,
       "ok",
     );

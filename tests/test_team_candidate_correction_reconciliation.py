@@ -25,6 +25,7 @@ from evander_team_addon.models import (
     ReviewRequest,
     Team,
     TeamBlocker,
+    TeamBlockerEventType,
     TeamBlockerState,
     TeamBlockerResolutionScope,
     TeamBlockerRoute,
@@ -445,6 +446,41 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     assert recovery.git_base_branch == "agents/session-coder/correction"
     assert recovery.git_base_commit_sha == CORRECTION_COMMIT
     assert state.blockers[blocker.id].state == TeamBlockerState.OPEN
+    recovery_event = state.blocker_events[result["created_blocker_event_id"]]
+    assert recovery_event.event_type == TeamBlockerEventType.PROGRESS
+    assert recovery_event.reference_ids == [recovery.id]
+    assert recovery_event.metadata == {
+        "kind": "candidate_correction_recovery_task_created",
+        "operator_actor_id": "jonathan",
+        "recovery_task_id": recovery.id,
+        "owner_agent_id": "coder",
+        "git_base_branch": "agents/session-coder/correction",
+        "git_base_commit_sha": CORRECTION_COMMIT,
+    }
+    assert state.blockers[blocker.id].last_progress_at == recovery_event.created_at
+
+    progress_event_ids = {
+        event.id
+        for event in state.blocker_events.values()
+        if event.blocker_id == blocker.id
+        and event.event_type == TeamBlockerEventType.PROGRESS
+    }
+    state, replay = TeamAdminService(
+        repository
+    ).recover_candidate_correction_successor_as_operator(
+        blocker_id=blocker.id,
+        action="create_verified_replacement",
+        operator_actor_id="jonathan",
+        expected_revision=state.revision,
+    )
+    assert replay["existing_recovery_task_id"] == recovery.id
+    assert "created_recovery_task_id" not in replay
+    assert progress_event_ids == {
+        event.id
+        for event in state.blocker_events.values()
+        if event.blocker_id == blocker.id
+        and event.event_type == TeamBlockerEventType.PROGRESS
+    }
 
     with pytest.raises(ValueError, match="does not match task .* pin"):
         TeamAdminService(repository).create_git_work_context_with_id(
