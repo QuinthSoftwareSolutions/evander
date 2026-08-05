@@ -1,10 +1,5 @@
 # Changelog
 
-## 2026-08-02 - Team Recovery Authorization Hardening
-
-- Scoped deliverable-replacement and blocked-review recovery manager authority,
-  reviewer selection, and review-profile validation to the affected project's team.
-
 ## 2026-08-05 - Live Release Verification Progress and Logs
 
 - Persisted release-verifier start, command transitions, and worker job IDs as
@@ -64,27 +59,10 @@
 - Exposed initial-release disposition and audit evidence in Team Delivery while
   leaving legacy accepted deliverables untracked to avoid migration wake floods.
 
-## 2026-08-02 - Rejected Deliverable Review Integrity
-
-- Prevented formal review from overriding a direct superior rejection and added
-  model-level validation that terminally rejected handoffs cannot become accepted.
-- Added an upgrade migration that restores historically overridden rejections,
-  retires their invalid formal-review paths, reopens replacement work, and flags
-  downstream release history for explicit reconciliation.
-
 ## 2026-08-04 - Retained Wake Role-Description Updates
 
 - Included a persistent agent's full updated role description in retained Team
   wake context, while continuing to omit it when unchanged.
-
-## 2026-08-02 - Bound Task Worktree Cleanup
-
-- Bound ignored-file cleanup to an open descriptor for the worktree validated under the
-  repository lock, preventing path replacement and symlink races from redirecting `git clean`.
-- Anchored repository and worktree traversal at the stable session home, refusing symlinked
-  parent components and retaining the validated descriptors through Git cleanup and removal.
-- Refused cleanup when an absent task worktree appears during final validation, so no mutation
-  can proceed without a descriptor bound to the validated directory.
 
 ## 2026-08-04 - Fail-closed Team Chat Authorization
 
@@ -127,12 +105,6 @@
   dashboard while retaining them in its neutral inbox totals and the receiving
   agent and team detail views.
 
-## 2026-08-02 - Team Review Cohort Authorization
-
-- Scoped review-cohort creation by team managers to deliverables belonging to
-  their own team's projects, preventing cross-team cohort mutation and review
-  context disclosure.
-
 ## 2026-08-03 - Browser Voice Reconciliation Context
 
 - Bound browser voice sessions to the authenticated operator, identify transcript
@@ -169,11 +141,6 @@
 
 - Authorized Admin Web agent detail responses against the exact backend record
   returned, including every directory associated with a shared VM.
-
-## 2026-08-02 - Agent Detail Directory Authorization
-
-- Required directory-scoped owner authorization before returning sensitive agent
-  detail records or container execution history from the Admin Web API.
 
 ## 2026-08-03 - Canonical Publication Lineage Repair
 
@@ -222,12 +189,6 @@
   workflow effects, Azure DevOps feedback/completion polling, and Azure Pipelines completion
   polling.
 
-## 2026-08-02 - PR Preflight Provider Target Hardening
-
-- Removed request-level Azure DevOps organization and project overrides from the Admin Web PR
-  integration preflight, ensuring directory-scoped PATs are sent only to directory-configured
-  provider endpoints.
-
 ## 2026-08-03 - Workflow PR Provider Target Hardening
 
 - Prevented pull-request update and tag effects from combining workflow-controlled Azure DevOps
@@ -238,6 +199,45 @@
 - Preserved session-scoped SSH alias blocks when refreshing the host-only worker
   Git credential, and reserved the legacy `evander-git` filename so new grants
   cannot be mistaken for migrated broad credentials.
+
+## 2026-08-02 - Team Recovery Authorization Hardening
+
+- Scoped deliverable-replacement and blocked-review recovery manager authority,
+  reviewer selection, and review-profile validation to the affected project's team.
+
+## 2026-08-02 - Rejected Deliverable Review Integrity
+
+- Prevented formal review from overriding a direct superior rejection and added
+  model-level validation that terminally rejected handoffs cannot become accepted.
+- Added an upgrade migration that restores historically overridden rejections,
+  retires their invalid formal-review paths, reopens replacement work, and flags
+  downstream release history for explicit reconciliation.
+
+## 2026-08-02 - Bound Task Worktree Cleanup
+
+- Bound ignored-file cleanup to an open descriptor for the worktree validated under the
+  repository lock, preventing path replacement and symlink races from redirecting `git clean`.
+- Anchored repository and worktree traversal at the stable session home, refusing symlinked
+  parent components and retaining the validated descriptors through Git cleanup and removal.
+- Refused cleanup when an absent task worktree appears during final validation, so no mutation
+  can proceed without a descriptor bound to the validated directory.
+
+## 2026-08-02 - Team Review Cohort Authorization
+
+- Scoped review-cohort creation by team managers to deliverables belonging to
+  their own team's projects, preventing cross-team cohort mutation and review
+  context disclosure.
+
+## 2026-08-02 - Agent Detail Directory Authorization
+
+- Required directory-scoped owner authorization before returning sensitive agent
+  detail records or container execution history from the Admin Web API.
+
+## 2026-08-02 - PR Preflight Provider Target Hardening
+
+- Removed request-level Azure DevOps organization and project overrides from the Admin Web PR
+  integration preflight, ensuring directory-scoped PATs are sent only to directory-configured
+  provider endpoints.
 
 ## 2026-08-02 - Container Worker Git Credential Isolation
 
@@ -3308,6 +3308,29 @@
 - Routed issue/Git directory normalization through the injected directory path
   port and updated focused service tests for the refactored dependency shape.
 
+## 2026-06-28 - Team Queued Retry Finalization Guard
+
+- Ignored queued prompt retry markers when finalizing Team dispatch leases, so
+  normal queue replay can remove queued records without causing old failed
+  enqueue attempts to close the active dispatch.
+
+## 2026-06-28 - Team Chat Live Lease Guard
+
+- Kept active Team Chat dispatch leases live after `team_reply_to_chat` marks an
+  operator message replied, preventing scheduled or inbox wakes from minting an
+  overlapping dispatch before finalization releases the original lease.
+
+## 2026-06-28 - Evander Manual Operational Corrections
+
+- Corrected Evander user manual guidance for Workers-managed services, Bokio
+  prepared-action approvals, and add-on loader configuration boundaries.
+
+## 2026-06-28 - Team Duplicate Review Progress Accounting
+
+- Classified duplicate-only Team review request commands as non-progress in
+  dispatch activity records, keeping dispatch finalization from resetting
+  no-progress counters when no review or inbox item was created.
+
 ## 2026-06-27 - Workflow Run Report Reader Extraction
 
 - Moved workflow run snapshot, search, detail, graph activity, failure cluster, and conformance report readers out of `AdminService` and into `WorkflowReportsAdminService`.
@@ -3370,29 +3393,6 @@
   low-risk domains through narrower services for skills, workflow reports,
   capacity/health telemetry, model usage, and workflow generation.
 - Added focused unit coverage for the extracted admin service delegation layer.
-
-## 2026-06-28 - Team Queued Retry Finalization Guard
-
-- Ignored queued prompt retry markers when finalizing Team dispatch leases, so
-  normal queue replay can remove queued records without causing old failed
-  enqueue attempts to close the active dispatch.
-
-## 2026-06-28 - Team Chat Live Lease Guard
-
-- Kept active Team Chat dispatch leases live after `team_reply_to_chat` marks an
-  operator message replied, preventing scheduled or inbox wakes from minting an
-  overlapping dispatch before finalization releases the original lease.
-
-## 2026-06-28 - Evander Manual Operational Corrections
-
-- Corrected Evander user manual guidance for Workers-managed services, Bokio
-  prepared-action approvals, and add-on loader configuration boundaries.
-
-## 2026-06-28 - Team Duplicate Review Progress Accounting
-
-- Classified duplicate-only Team review request commands as non-progress in
-  dispatch activity records, keeping dispatch finalization from resetting
-  no-progress counters when no review or inbox item was created.
 
 ## 2026-06-27 - Team Review Request Idempotency
 
@@ -5222,6 +5222,26 @@ material. Newer entries are added incrementally as changes land.
   issue VM bootstrap controls, session approval settings, and approval
   decision panel behavior.
 
+## 2026-06-14 - Scheduled Wake Retry And Cancellation Bounds
+
+- Added a bounded automatic retry policy for one-time scheduled wakes that fail
+  dispatch or remain unconfirmed, including persisted attempt state,
+  configurable retry window/backoff, and terminal failed/missed ledger reasons.
+- Allowed sessions to cancel their own one-time wakes while dispatching,
+  queued, dispatched/awaiting confirmation, failed, or missed/late; completed
+  and already-cancelled wakes remain immutable.
+- Recorded model-unavailable resume failures as specific wake ledger failure
+  reasons instead of generic transient dispatch errors.
+- Reset the automatic retry counters for one-time scheduled wakes when Admin
+  Web or the API retries them, so an exhausted confirmation batch starts fresh
+  while the previous retry state stays available in retry history metadata.
+- Fixed stale `scheduled-wake:*` prompt queue entries so cancelled or exhausted
+  one-time wakes are not delivered later, and retry backoff now starts from the
+  actual dispatch completion time.
+- Documented the one-time wake confirmation retry policy keys, cancellation
+  behavior, and manual retry reset behavior in the operations and configuration
+  references.
+
 ## 2026-06-13 - Admin Agents Status Performance
 
 - Reduced Admin Web all-directory agent status expansion work by using
@@ -5258,26 +5278,6 @@ material. Newer entries are added incrementally as changes land.
   loop execution so in-progress loops resume cleanly after upgrade.
 - Added opt-in PR feedback suppression for comments authored by the configured
   agent identity while leaving agent-authored feedback publishable by default.
-
-## 2026-06-14 - Scheduled Wake Retry And Cancellation Bounds
-
-- Added a bounded automatic retry policy for one-time scheduled wakes that fail
-  dispatch or remain unconfirmed, including persisted attempt state,
-  configurable retry window/backoff, and terminal failed/missed ledger reasons.
-- Allowed sessions to cancel their own one-time wakes while dispatching,
-  queued, dispatched/awaiting confirmation, failed, or missed/late; completed
-  and already-cancelled wakes remain immutable.
-- Recorded model-unavailable resume failures as specific wake ledger failure
-  reasons instead of generic transient dispatch errors.
-- Reset the automatic retry counters for one-time scheduled wakes when Admin
-  Web or the API retries them, so an exhausted confirmation batch starts fresh
-  while the previous retry state stays available in retry history metadata.
-- Fixed stale `scheduled-wake:*` prompt queue entries so cancelled or exhausted
-  one-time wakes are not delivered later, and retry backoff now starts from the
-  actual dispatch completion time.
-- Documented the one-time wake confirmation retry policy keys, cancellation
-  behavior, and manual retry reset behavior in the operations and configuration
-  references.
 
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 
