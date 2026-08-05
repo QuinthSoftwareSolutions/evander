@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-05 - Focused Agent Codex Usage Editor
+
+- Removed session-owned model, expiry, labels, tools, grants, communication access,
+  web search, and HTTP target controls from the Agents page editor; those settings
+  remain editable on the Sessions page.
+- Limited the remaining agent-specific editor to container Codex usage mode and
+  hid the edit action for agents without that setting.
+
 ## 2026-08-02 - Rejected Deliverable Review Integrity
 
 - Prevented formal review from overriding a direct superior rejection and added
