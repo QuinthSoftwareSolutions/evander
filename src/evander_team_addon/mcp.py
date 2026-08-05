@@ -3280,6 +3280,7 @@ def _register_read_tools(
                 artifact_id=artifact_id,
                 session_id=caller.session_id,
                 subject=f"team-agent:{caller.agent_id}",
+                team_id=caller.agent.team_id,
             )
         except (FileNotFoundError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
