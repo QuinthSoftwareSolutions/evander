@@ -6981,7 +6981,7 @@ Accepted task results from one project are combined into the fixed release candi
 
 > <span class="sidebar-kicker">Technical detail</span> **Freezing the internal release candidate**
 >
-> <code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation merges pinned feature commits into the internal release branch and freezes the candidate SHA and tree.
+> <code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation adopts a single dominant pinned commit directly or combines divergent pinned feature commits in one meaningful integration commit, then freezes the candidate SHA and tree.
 
 ### Internal release → canonical
 

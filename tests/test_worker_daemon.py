@@ -793,6 +793,8 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
                 "commit_sha": dependency_commit,
             }
         ],
+        dependency_merge_author_name="Jonathan Quinth",
+        dependency_merge_author_email="operator@example.invalid",
     )
 
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -839,6 +841,20 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
             "dependency_task_id": "task-domain",
         }
     ]
+    identity = subprocess.run(
+        ["git", "show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert prepared.commit_sha == dependency_commit
+    assert identity == [
+        "Worker Test",
+        "test@example.invalid",
+        "Worker Test",
+        "test@example.invalid",
+    ]
 
     (target / "ui.txt").write_text("successor work\n", encoding="utf-8")
     subprocess.run(["git", "add", "ui.txt"], cwd=target, check=True)
@@ -868,6 +884,107 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
         match="dependency Git provenance does not match",
     ):
         daemon.prepare_task_worktree("session-1", without_provenance)
+
+
+def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    base_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_commits: list[str] = []
+    dependency_rows: list[dict[str, str]] = []
+    for suffix in ("domain", "client"):
+        branch = f"agents/predecessor/tasks/{suffix}"
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=source, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=source, check=True)
+        (source / f"{suffix}.txt").write_text(f"accepted {suffix}\n", encoding="utf-8")
+        subprocess.run(["git", "add", f"{suffix}.txt"], cwd=source, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"{suffix} dependency"], cwd=source, check=True)
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dependency_commits.append(commit)
+        dependency_rows.append(
+            {
+                "dependency_task_id": f"task-{suffix}",
+                "deliverable_id": f"deliverable-{suffix}",
+                "branch": branch,
+                "commit_sha": commit,
+            }
+        )
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    prepared = daemon.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name="task-ui-compact",
+            branch="agents/session-1/tasks/task-ui-compact",
+            base_ref="main",
+            dependency_git_sources=dependency_rows,
+            dependency_merge_author_name="Jonathan Quinth",
+            dependency_merge_author_email="operator@example.invalid",
+            dependency_composition_commit_message=(
+                "Compose accepted dependencies for task task-ui"
+            ),
+        ),
+    )
+    target = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / "worktrees"
+        / "repo"
+        / "task-ui-compact"
+    )
+
+    details = subprocess.run(
+        ["git", "show", "-s", "--format=%s%n%P%n%an%n%ae%n%cn%n%ce", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert prepared.base_commit_sha == prepared.commit_sha
+    assert details == [
+        "Compose accepted dependencies for task task-ui",
+        " ".join([base_commit, *dependency_commits]),
+        "Jonathan Quinth",
+        "operator@example.invalid",
+        "Evander Team Dependency Composer",
+        "team-dependencies@evander.invalid",
+    ]
+    assert (target / "domain.txt").read_text(encoding="utf-8") == "accepted domain\n"
+    assert (target / "client.txt").read_text(encoding="utf-8") == "accepted client\n"
 
 
 def test_worker_adopts_only_clean_retained_dependency_history_with_prior_base(

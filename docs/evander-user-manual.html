@@ -13859,8 +13859,9 @@ release candidate.</p>
 the internal release candidate</strong></p>
 <p><code>team_request_release</code> selects accepted deliverables from
 one project. If needed, prerequisite feature promotions are created
-first. Release consolidation merges pinned feature commits into the
-internal release branch and freezes the candidate SHA and tree.</p>
+first. Release consolidation adopts a single dominant pinned commit
+directly or combines divergent pinned feature commits in one meaningful
+integration commit, then freezes the candidate SHA and tree.</p>
 </blockquote>
 <h3 id="internal-release--canonical">Internal release → canonical</h3>
 <p>After every required check and review passes, that fixed candidate

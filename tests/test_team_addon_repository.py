@@ -20171,6 +20171,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "source_branches": ["agents/lead/release-resolved"],
         "expected_source_commits": {"agents/lead/release-resolved": "reviewed-commit"},
         "allowed_changed_paths": ["M\tsrc/reviewed.py"],
+        "commit_message": "Integrate corrections for release rel-1",
         "summary": "Resolved release merge conflict.",
     }
 

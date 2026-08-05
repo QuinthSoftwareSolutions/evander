@@ -33,6 +33,7 @@ from evander_team_addon.models import (
     PersistentAgent,
     Project,
     ProjectGitConfig,
+    ProjectGitIdentity,
     ProjectGoal,
     ProjectReleasePolicy,
     ReleasePackage,
@@ -652,6 +653,8 @@ def test_project_git_config_requires_managed_repo_id() -> None:
     assert config.directory_path == "root/team-a"
     assert config.base_branch is None
     assert config.canonical_release_branch_prefix == "releases/<project-id>/"
+    assert config.agent_author_identity is None
+    assert config.agent_committer_identity is None
 
     with pytest.raises(ValidationError, match="managed_repo_id"):
         ProjectGitConfig.model_validate({})
@@ -671,6 +674,47 @@ def test_project_git_config_requires_managed_repo_id() -> None:
                 "managed_repo_id": "mr_0123456789abcdefabcd",
                 "repo_source": "https://example.invalid/operator-checkout.git",
             }
+        )
+
+
+def test_project_git_config_accepts_distinct_agent_author_and_committer() -> None:
+    config = ProjectGitConfig(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        agent_author_identity=ProjectGitIdentity(
+            name=" Jonathan Quinth ",
+            email=" operator@example.invalid ",
+        ),
+        agent_committer_identity={
+            "name": "Evander Bot",
+            "email": "evander@quinth.se",
+        },
+    )
+
+    assert config.agent_author_identity == ProjectGitIdentity(
+        name="Jonathan Quinth",
+        email="operator@example.invalid",
+    )
+    assert config.agent_committer_identity == ProjectGitIdentity(
+        name="Evander Bot",
+        email="evander@quinth.se",
+    )
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"name": "", "email": "person@example.com"},
+        {"name": "Person", "email": "not-an-email"},
+        {"name": "Person\nInjected", "email": "person@example.com"},
+    ],
+)
+def test_project_git_config_rejects_invalid_agent_identity(
+    identity: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            agent_author_identity=identity,
         )
 
 

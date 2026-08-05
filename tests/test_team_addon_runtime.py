@@ -64,6 +64,7 @@ from evander_team_addon.models import (
     PersistentAgent,
     Project,
     ProjectGitConfig,
+    ProjectGitIdentity,
     ProjectGoal,
     ProjectReleasePolicy,
     ReleaseGateFailure,
@@ -133,6 +134,7 @@ from evander_team_addon.providers import (
     _publish_team_events,
     _prepare_project_repo_task_worktree,
     _project_repo_task_dependency_git_sources,
+    _resolved_project_git_identity,
     _record_dependency_git_preparation_blocker,
     _record_wake_failure,
 )
@@ -188,6 +190,13 @@ ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
     *ORDINARY_TEAM_MCP_TOOL_NAMES,
     *READ_TEAM_MCP_TOOL_NAMES,
 )
+
+
+def test_project_git_identity_defaults_to_evander_bot() -> None:
+    identity = _resolved_project_git_identity(None)
+
+    assert identity.name == "Evander Bot"
+    assert identity.email == "evander@quinth.se"
 
 
 def _command_service(repo: TeamStateRepository) -> TeamEphemeralCommandService:
@@ -6627,6 +6636,14 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
+            agent_author_identity=ProjectGitIdentity(
+                name="Jonathan Quinth",
+                email="operator@example.invalid",
+            ),
+            agent_committer_identity=ProjectGitIdentity(
+                name="Evander Bot",
+                email="evander@quinth.se",
+            ),
         )
         return state
 
@@ -6663,10 +6680,10 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "clone_branch": "main",
             "vm_user": "agent",
             "directory_path": "root",
-            "git_author_name": None,
-            "git_author_email": None,
-            "git_committer_name": None,
-            "git_committer_email": None,
+            "git_author_name": "Jonathan Quinth",
+            "git_author_email": "operator@example.invalid",
+            "git_committer_name": "Evander Bot",
+            "git_committer_email": "evander@quinth.se",
             "git_access_mode": "write",
             "git_access_lifetime": "session",
         }
@@ -6927,6 +6944,10 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
                 "commit_sha": "e" * 40,
             },
         ],
+        dependency_merge_author_identity=ProjectGitIdentity(
+            name="Jonathan Quinth",
+            email="operator@example.invalid",
+        ),
     )
 
     command = str(executor.calls[0]["command"])
@@ -6938,12 +6959,19 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
         check=False,
     )
     assert syntax.returncode == 0, syntax.stderr
+    assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
+    assert "export GIT_AUTHOR_EMAIL=operator@example.invalid" in command
+    assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
+    assert "export GIT_COMMITTER_EMAIL=team-dependencies@evander.invalid" in command
     assert command.index("dependency_branch_0") < command.index("dependency_branch_1")
     assert command.index("dependency_commit_0=") < command.index(
         'if [ -n "$current_dependency_provenance" ]'
     )
     assert f"expected_prior_base={'c' * 40}" in command
     assert "all_dependencies_present=1" in command
+    assert "dependency_commit_message='Compose accepted dependencies for task task-ui'" in command
+    assert 'set -- git -C "$target" commit-tree' in command
+    assert 'reset --hard "$frontier_commit"' in command
 
 
 def test_dependency_git_preparation_failure_routes_blocker_without_lease(
@@ -9644,6 +9672,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["expected_source_commits"] == (
         "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
+    assert effects["team-consolidate-feature-branches"]["commit_message"] == (
+        "${{team-git-promotion-requested.payload.commit_message ?? null}}"
+    )
     assert effects["team-record-feature-promotion"]["type"] == ("effect:team:record-git-promotion")
     assert ("team-git-promotion-feature", "team-consolidate-feature-branches") in edges
     assert ("team-consolidate-feature-branches", "team-record-feature-promotion") in edges
@@ -9679,6 +9710,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     )
     assert recovery_promote["allowed_changed_paths"] == (
         "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
+    )
+    assert recovery_promote["commit_message"] == (
+        "${{team-git-release-recovery-requested.payload.commit_message ?? null}}"
     )
     assert recovery_promote["directory_path"] == (
         "${{team-git-release-recovery-requested.payload.directory_path ?? null}}"

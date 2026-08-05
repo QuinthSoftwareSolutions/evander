@@ -111,10 +111,13 @@ def has_active_enqueue_prompt_for_target(
 
 
 def _list_enqueue_prompt_activity_records(execution_store: Any) -> list[Any]:
+    list_active = getattr(execution_store, "list_active_records", None)
     list_executions = getattr(execution_store, "list_executions", None)
     list_waiting = getattr(execution_store, "list_waiting_records", None)
     read_all = getattr(execution_store, "read_all", None)
-    if callable(list_executions):
+    if callable(list_active):
+        candidates = list_active()
+    elif callable(list_executions):
         candidates = list_executions()
     elif callable(list_waiting):
         candidates = list_waiting(_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE)

@@ -655,6 +655,10 @@ const fieldTooltips = {
   managed_repo_id: "Stable Evander managed repository ID stored with the project.",
   base_branch: "Default base branch captured by newly created root tasks. Existing tasks keep their own snapshot when this changes.",
   canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
+  agent_author_name: "Human or service identity recorded as the author of Team agent commits.",
+  agent_author_email: "Email recorded for the configured Team agent commit author.",
+  agent_committer_name: "Automation identity recorded as the committer of Team agent commits.",
+  agent_committer_email: "Email recorded for the configured Team agent commit committer.",
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -8409,6 +8413,10 @@ function renderTeamInlineProjectForm(teamId) {
           <input type="hidden" name="managed_repo_directory_path" />
           <label>Default base branch for new tasks <input name="base_branch" placeholder="main" /></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+          <label>Agent commit author name <input name="agent_author_name" placeholder="Evander Bot" /></label>
+          <label>Agent commit author email <input name="agent_author_email" placeholder="evander@quinth.se" /></label>
+          <label>Agent commit committer name <input name="agent_committer_name" placeholder="Evander Bot" /></label>
+          <label>Agent commit committer email <input name="agent_committer_email" placeholder="evander@quinth.se" /></label>
         </div>
       </details>
       <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "release-gates"))}>
@@ -14024,6 +14032,8 @@ function renderProjectGit(git) {
   }
   const parts = [`managed ${git.managed_repo_id}`];
   if (git.base_branch) parts.push(`base ${git.base_branch}`);
+  if (git.agent_author_identity) parts.push(`author ${git.agent_author_identity.name}`);
+  if (git.agent_committer_identity) parts.push(`committer ${git.agent_committer_identity.name}`);
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
 }
 
@@ -22085,6 +22095,16 @@ function gitConfigForForm(data) {
       git[field] = value;
     }
   });
+  const authorName = text(data.agent_author_name);
+  const authorEmail = text(data.agent_author_email);
+  if (authorName || authorEmail) {
+    git.agent_author_identity = { name: authorName, email: authorEmail };
+  }
+  const committerName = text(data.agent_committer_name);
+  const committerEmail = text(data.agent_committer_email);
+  if (committerName || committerEmail) {
+    git.agent_committer_identity = { name: committerName, email: committerEmail };
+  }
   return git;
 }
 
@@ -22746,6 +22766,10 @@ function renderEditFields(type, record) {
       <input type="hidden" name="managed_repo_directory_path" value="${escapeAttr(record.git?.directory_path || "root")}" />
       ${textField("Default base branch for new tasks", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
+      ${textField("Agent commit author name", "agent_author_name", record.git?.agent_author_identity?.name || "", { placeholder: "Evander Bot" })}
+      ${textField("Agent commit author email", "agent_author_email", record.git?.agent_author_identity?.email || "", { placeholder: "evander@quinth.se" })}
+      ${textField("Agent commit committer name", "agent_committer_name", record.git?.agent_committer_identity?.name || "", { placeholder: "Evander Bot" })}
+      ${textField("Agent commit committer email", "agent_committer_email", record.git?.agent_committer_identity?.email || "", { placeholder: "evander@quinth.se" })}
       <p class="subheading">Release gates</p>
       ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
         rows: 12,

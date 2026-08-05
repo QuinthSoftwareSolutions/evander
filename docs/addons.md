@@ -846,6 +846,17 @@ Optional inputs are:
 - `project.git.managed_repo_id`
 - `project.git.base_branch` (the default for newly created root tasks) and
   `project.git.canonical_release_branch_prefix`
+- `project.git.agent_author_identity` and `project.git.agent_committer_identity`,
+  each shaped as `{ "name": "...", "email": "..." }`
+
+When the agent identities are omitted, Team checkouts use
+`Evander Bot <evander@quinth.se>` for both roles. Configured identities are
+reconciled into retained checkouts before work resumes. Divergent dependency
+composition creates one commit using the configured project author and the specialized
+`Evander Team Dependency Composer <team-dependencies@evander.invalid>`
+committer; a single or dominant dependency is adopted without an artificial commit.
+Host-side feature, release, and recovery consolidations remain
+governed separately by the managed repository's host commit identity.
 
 The Team Add-on setup, project-create, and project-edit forms include an
 `Import Git repo` action beside the Git fields. It accepts a local checkout or
@@ -1667,8 +1678,9 @@ repeat the same failing setup before inference:
 For a Git-backed task, direct dependency edges also define code inheritance.
 Before exposing the successor worktree, Team resolves every accepted, current
 Git deliverable on those direct dependencies against the server-owned managed
-branch tip, then merges the exact commits in dependency-list and deliverable-ID
-order. The post-composition commit becomes the successor's immutable
+branch tip, then composes the exact commits in dependency-list and deliverable-ID
+order. A single or dominant commit is adopted directly; genuinely divergent inputs
+produce one multi-parent composition commit. The resulting commit becomes the successor's immutable
 `base_commit`, while `dependency_git_sources` records the dependency task,
 deliverable, branch, and commit. A reused pristine worktree may receive this
 composition before its next lease; a worktree with authored or dirty work and
@@ -1992,8 +2004,9 @@ branches to `git_refs`), `effect:team:verify-release-candidate` (create a
 disposable container-worker session, clone by `managed_repo_id`, check out the pinned candidate, run the
 ordered commands, and destroy the session),
 `effect:team:mark-release-published` (publish or block a release package), and
-`effect:team:consolidate-git-branches` (deterministic merge
-of explicitly pinned source SHAs in an operation-scoped detached worktree,
+`effect:team:consolidate-git-branches` (deterministic composition
+of explicitly pinned source SHAs, fast-forwarding when one source contains the
+validated result and otherwise publishing one meaningful multi-parent commit,
 aborting and failing on conflict — never auto-resolving). The central managed
 Git service applies the configured host commit identity, compare-and-swap
 updates the Team target ref, and removes the temporary worktree and operation

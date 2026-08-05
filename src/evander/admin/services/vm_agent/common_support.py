@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from evander.git_ssh_authorized_keys import remove_git_authorized_key_by_public_key_body
+from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
 from evander.managed_git_grants import (
     managed_git_key_name,
     managed_git_ssh_alias,
@@ -369,8 +370,8 @@ class VmAgentAdminSupport:
         normalized_committer_email = str(git_committer_email or "").strip()
         if bool(normalized_committer_name) != bool(normalized_committer_email):
             raise ValueError("git_committer_name and git_committer_email must both be set")
-        git_user_name = normalized_author_name or "Truman Bot"
-        git_user_email = normalized_author_email or "truman@quinth.se"
+        git_user_name = normalized_author_name or DEFAULT_AGENT_GIT_IDENTITY.name
+        git_user_email = normalized_author_email or DEFAULT_AGENT_GIT_IDENTITY.email
         git_identity_config_line = ""
         if normalized_author_name and normalized_author_email:
             git_identity_config_line += (

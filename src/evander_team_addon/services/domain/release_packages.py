@@ -435,6 +435,7 @@ def _apply_git_release_recovery(
         "source_branches": [agent_branch],
         "expected_source_commits": {agent_branch: expected_commit_sha},
         "allowed_changed_paths": (allowed_changed_paths if release.policy_version >= 2 else None),
+        "commit_message": f"Integrate corrections for release {release.id}",
     }
     pinned_recovery_base = _optional_text(
         failed_promotion.base_commit_sha
@@ -1119,6 +1120,9 @@ def _build_release_package(
                 },
                 "target_branch": promotion.target_branch,
                 "task_id": promotion.task_id,
+                "commit_message": (
+                    f"Integrate accepted work for task {promotion.task_id}"
+                ),
             }
             payload.update(_managed_repo_fields(git))
             _emit_git_promotion_event(
@@ -1288,6 +1292,7 @@ def _create_correction_aggregate_promotion(
             branch: commit_sha for _deliverable_id, branch, commit_sha in source_rows
         },
         "target_branch": target_branch,
+        "commit_message": f"Integrate corrections for release {release.id}",
     }
     payload.update(_managed_repo_fields(git))
     _emit_git_promotion_event(result, promotion_id=promotion.id, payload=payload)
@@ -2311,6 +2316,7 @@ def _queue_release_promotion_if_ready(
         "expected_source_commits": _release_expected_feature_commits(state, release),
         "allowed_changed_paths": allowed_changed_paths,
         "target_branch": target_release_branch,
+        "commit_message": f"Assemble release {release.id}",
     }
     payload.update(_managed_repo_fields(git))
     _emit_git_promotion_event(

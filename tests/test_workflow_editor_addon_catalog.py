@@ -198,6 +198,8 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert publish_review_fields["directory_path"]["required"] is False
     assert consolidate_fields["directory_path"]["kind"] == "string"
     assert consolidate_fields["directory_path"]["required"] is False
+    assert consolidate_fields["commit_message"]["kind"] == "string"
+    assert consolidate_fields["commit_message"]["required"] is False
     state_fields = {field["key"]: field for field in read_state["fields"]}
     assert state_fields["include_records"]["kind"] == "boolean"
     assert state_fields["include_records"]["default_value"] is True

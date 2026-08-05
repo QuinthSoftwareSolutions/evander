@@ -56,6 +56,11 @@ from evander.events.provider_models import (
 )
 from evander.events.models import TriggerEvent, WorkflowNodeEnvelope
 from evander.execution import ExecutionBackendKind, ExecutionStatusKind
+from evander.git_identity import (
+    DEFAULT_AGENT_GIT_IDENTITY,
+    TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY,
+    GitIdentity,
+)
 from evander.models import tool_name_value
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
@@ -1728,6 +1733,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 description="Exact approved commit SHA for every source branch.",
                 json_value_type="object",
+            ),
+            _catalog_field(
+                "commit_message",
+                "Commit message",
+                "string",
+                description="Optional message for a consolidation merge commit.",
             ),
         ],
     ),
@@ -4994,6 +5005,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             "required_source_ancestor_commit_sha",
             "expected_source_commits",
             "allowed_changed_paths",
+            "commit_message",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -5041,6 +5053,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 self.runtime_context,
                 _optional_text(payload.get("directory_path")),
             )
+            commit_message = _optional_text(payload.get("commit_message"))
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))
         if not source_branches:
@@ -5063,6 +5076,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 required_source_ancestor_commit_sha=(required_source_ancestor_commit_sha),
                 expected_source_commits=expected_source_commits,
                 allowed_changed_paths=allowed_changed_paths,
+                commit_message=commit_message,
             )
         except Exception as exc:
             return _consolidation_failure(target_branch, str(exc))
@@ -7464,6 +7478,12 @@ def _prepare_project_repo(
     agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
     managed_repo_id = _required_text(_value(git, "managed_repo_id"), "project.git.managed_repo_id")
+    agent_author_identity = _resolved_project_git_identity(
+        _value(git, "agent_author_identity")
+    )
+    agent_committer_identity = _resolved_project_git_identity(
+        _value(git, "agent_committer_identity")
+    )
     clone_branch = _optional_text(_value(git, "base_branch"))
     if clone_branch is None:
         clone_branch = _managed_repository_default_branch(
@@ -7483,6 +7503,10 @@ def _prepare_project_repo(
             managed_repo_id=managed_repo_id,
             clone_branch=clone_branch,
             vm_user="agent",
+            git_author_name=agent_author_identity.name,
+            git_author_email=agent_author_identity.email,
+            git_committer_name=agent_committer_identity.name,
+            git_committer_email=agent_committer_identity.email,
         ),
         context,
     )
@@ -7511,6 +7535,7 @@ def _prepare_project_repo(
         dispatch_id=dispatch_id,
         tasks=tasks,
         base_branch=clone_branch,
+        dependency_merge_author_identity=agent_author_identity,
     )
     if git_work_contexts:
         project_repo["git_work_contexts"] = git_work_contexts
@@ -7582,6 +7607,21 @@ def _project_repo_payload(
     return payload
 
 
+def _resolved_project_git_identity(value: object) -> GitIdentity:
+    if value is None:
+        return DEFAULT_AGENT_GIT_IDENTITY
+    if isinstance(value, Mapping):
+        name = value.get("name")
+        email = value.get("email")
+    else:
+        name = getattr(value, "name", None)
+        email = getattr(value, "email", None)
+    return GitIdentity(
+        name=_required_text(name, "project Git identity name"),
+        email=_required_text(email, "project Git identity email"),
+    )
+
+
 def _create_project_repo_git_work_contexts(
     context: Any,
     repo: TeamStateRepository,
@@ -7594,6 +7634,7 @@ def _create_project_repo_git_work_contexts(
     dispatch_id: str,
     tasks: object,
     base_branch: str | None,
+    dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
 ) -> tuple[Any, list[dict[str, Any]], dict[str, int]]:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
@@ -7699,6 +7740,7 @@ def _create_project_repo_git_work_contexts(
                 pinned_base_commit=pinned_base_commit,
                 pinned_base_tree=pinned_base_tree,
                 dependency_git_sources=composition_git_sources,
+                dependency_merge_author_identity=dependency_merge_author_identity,
             )
             context_id = _project_repo_git_work_context_id(
                 agent_id=agent_id,
@@ -8221,6 +8263,7 @@ def _prepare_project_repo_task_worktree(
     pinned_base_commit: str | None = None,
     pinned_base_tree: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
+    dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
 ) -> tuple[str, str | None]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
@@ -8237,6 +8280,15 @@ def _prepare_project_repo_task_worktree(
     )
     execution_backend = _optional_text(project_repo.get("execution_backend")) or selected_backend
     if execution_backend == "container_worker_vm":
+        dependency_composition_kwargs = (
+            {
+                "dependency_composition_commit_message": (
+                    f"Compose accepted dependencies for task {task_id}"
+                )
+            }
+            if dependency_git_sources
+            else {}
+        )
         try:
             record = container_backend(context, config).prepare_task_worktree(
                 session_id=session_id,
@@ -8247,6 +8299,9 @@ def _prepare_project_repo_task_worktree(
                 expected_base_commit_sha=pinned_base_commit or prior_base_commit,
                 expected_base_tree_hash=pinned_base_tree,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
+                dependency_merge_author_name=dependency_merge_author_identity.name,
+                dependency_merge_author_email=dependency_merge_author_identity.email,
+                **dependency_composition_kwargs,
             )
         except Exception as exc:
             if dependency_git_sources or pinned_base_commit is not None:
@@ -8309,11 +8364,24 @@ def _prepare_project_repo_task_worktree(
         separators=(",", ":"),
     )
     quoted_dependency_provenance = shlex.quote(dependency_provenance_json)
+    quoted_dependency_author_name = shlex.quote(dependency_merge_author_identity.name)
+    quoted_dependency_author_email = shlex.quote(dependency_merge_author_identity.email)
+    quoted_dependency_committer_name = shlex.quote(
+        TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name
+    )
+    quoted_dependency_committer_email = shlex.quote(
+        TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email
+    )
+    quoted_dependency_commit_message = shlex.quote(
+        f"Compose accepted dependencies for task {task_id}"
+    )
     lock_path = f"/home/agent/.evander/locks/task-worktree-{repo_name}.lock"
     quoted_lock = shlex.quote(lock_path)
     dependency_assignment_lines: list[str] = []
     dependency_fetch_lines: list[str] = []
+    dependency_frontier_lines: list[str] = []
     dependency_merge_lines: list[str] = []
+    dependency_parent_lines: list[str] = []
     dependency_verify_lines: list[str] = []
     dependency_adoption_lines: list[str] = []
     for index, source in enumerate(dependency_git_sources):
@@ -8346,17 +8414,37 @@ def _prepare_project_repo_task_worktree(
         )
         dependency_merge_lines.extend(
             (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
                 (
-                    f'if ! git -C "$target" merge --no-ff --no-edit '
+                    f'  if ! git -C "$target" merge --no-ff -m '
+                    f'"Temporary Team dependency integration" '
                     f'"$dependency_commit_{index}"; then'
                 ),
-                '  git -C "$target" merge --abort >/dev/null 2>&1 || true',
-                '  git -C "$target" reset --hard "$head_before" >/dev/null',
+                '    git -C "$target" merge --abort >/dev/null 2>&1 || true',
+                '    git -C "$target" reset --hard "$head_before" >/dev/null',
                 (
-                    f"  echo dependency Git composition conflict for task "
+                    f"    echo dependency Git composition conflict for task "
                     f"{source_task} deliverable {source_deliverable} >&2"
                 ),
-                "  exit 1",
+                "    exit 1",
+                "  fi",
+                "fi",
+            )
+        )
+        dependency_frontier_lines.extend(
+            (
+                f"dependency_needed_{index}=1",
+                (
+                    f'if git -C "$target" merge-base --is-ancestor '
+                    f'"$dependency_commit_{index}" "$head_before"; then '
+                    f"dependency_needed_{index}=0; fi"
+                ),
+            )
+        )
+        dependency_parent_lines.extend(
+            (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
+                f'  set -- "$@" -p "$dependency_commit_{index}"',
                 "fi",
             )
         )
@@ -8370,12 +8458,47 @@ def _prepare_project_repo_task_worktree(
                 "all_dependencies_present=0; fi"
             )
         )
+    for index, _source in enumerate(dependency_git_sources):
+        for other_index, _other_source in enumerate(dependency_git_sources):
+            if index == other_index:
+                continue
+            if other_index < index:
+                dependency_frontier_lines.extend(
+                    (
+                        f'if [ "$dependency_needed_{index}" = 1 ] '
+                        f'&& [ "$dependency_commit_{index}" = '
+                        f'"$dependency_commit_{other_index}" ]; then',
+                        f"  dependency_needed_{index}=0",
+                        "fi",
+                    )
+                )
+            dependency_frontier_lines.extend(
+                (
+                    f'if [ "$dependency_needed_{index}" = 1 ] '
+                    f'&& [ "$dependency_commit_{index}" != '
+                    f'"$dependency_commit_{other_index}" ] '
+                    f'&& git -C "$target" merge-base --is-ancestor '
+                    f'"$dependency_commit_{index}" "$dependency_commit_{other_index}"; then',
+                    f"  dependency_needed_{index}=0",
+                    "fi",
+                )
+            )
+    dependency_frontier_lines.extend(("frontier_count=0", 'frontier_commit=""'))
+    for index, _source in enumerate(dependency_git_sources):
+        dependency_frontier_lines.extend(
+            (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
+                "  frontier_count=$((frontier_count + 1))",
+                f'  frontier_commit="$dependency_commit_{index}"',
+                "fi",
+            )
+        )
     command_lines = [
         "set -eu",
-        "export GIT_AUTHOR_NAME='Evander Team Dependency Composer'",
-        "export GIT_AUTHOR_EMAIL='team-dependencies@evander.invalid'",
-        "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'",
-        "export GIT_COMMITTER_EMAIL='team-dependencies@evander.invalid'",
+        f"export GIT_AUTHOR_NAME={quoted_dependency_author_name}",
+        f"export GIT_AUTHOR_EMAIL={quoted_dependency_author_email}",
+        f"export GIT_COMMITTER_NAME={quoted_dependency_committer_name}",
+        f"export GIT_COMMITTER_EMAIL={quoted_dependency_committer_email}",
         "export GIT_MERGE_AUTOEDIT=no",
         f"target={quoted_target}",
         f"branch={quoted_branch}",
@@ -8385,6 +8508,7 @@ def _prepare_project_repo_task_worktree(
         f"pinned_base_commit={quoted_pinned_base}",
         f"pinned_base_tree={quoted_pinned_tree}",
         f"expected_dependency_provenance={quoted_dependency_provenance}",
+        f"dependency_commit_message={quoted_dependency_commit_message}",
         f"lock={quoted_lock}",
         'mkdir -p "$(dirname "$lock")"',
         'exec 9>"$lock"',
@@ -8463,7 +8587,22 @@ def _prepare_project_repo_task_worktree(
             '    if [ "$created" != 1 ]; then test -n "$configured_base"; '
             'test "$head_before" = "$configured_base"; fi'
         ),
-        *[f"    {line}" for line in dependency_merge_lines],
+        *[f"    {line}" for line in dependency_frontier_lines],
+        '    if [ "$frontier_count" = 1 ] && git -C "$target" merge-base '
+        '--is-ancestor "$head_before" "$frontier_commit"; then',
+        '      git -C "$target" reset --hard "$frontier_commit" >/dev/null',
+        "    else",
+        *[f"      {line}" for line in dependency_merge_lines],
+        '      result_tree="$(git -C "$target" rev-parse HEAD^{tree})"',
+        '      set -- git -C "$target" commit-tree "$result_tree" -p "$head_before"',
+        *[f"      {line}" for line in dependency_parent_lines],
+        '      set -- "$@" -m "$dependency_commit_message"',
+        '      if ! composed_commit="$("$@")"; then',
+        '        git -C "$target" reset --hard "$head_before" >/dev/null',
+        "        exit 1",
+        "      fi",
+        '      git -C "$target" reset --hard "$composed_commit" >/dev/null',
+        "    fi",
         '    composed_base="$(git -C "$target" rev-parse HEAD)"',
         (
             '    git -C "$target" config --worktree '

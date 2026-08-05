@@ -39,6 +39,10 @@ from evander.session_artifacts import (
     read_artifact_text_no_follow,
 )
 from evander.git_ssh_authorized_keys import public_key_body_from_line
+from evander.git_identity import (
+    DEFAULT_AGENT_GIT_IDENTITY,
+    TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY,
+)
 from evander.managed_git_grants import managed_git_ssh_alias
 from evander.execution.task_worktree_cleanup import (
     cleanup_task_worktree as cleanup_task_worktree_checkout,
@@ -1272,6 +1276,16 @@ class WorkerDaemon:
             created=created,
             base_commit_sha=base_commit_sha,
             env=env,
+            dependency_merge_author_name=(
+                request.dependency_merge_author_name or DEFAULT_AGENT_GIT_IDENTITY.name
+            ),
+            dependency_merge_author_email=(
+                request.dependency_merge_author_email or DEFAULT_AGENT_GIT_IDENTITY.email
+            ),
+            dependency_composition_commit_message=(
+                request.dependency_composition_commit_message
+                or "Compose accepted Team dependencies"
+            ),
         )
         if base_commit_sha is not None:
             subprocess.run(
@@ -1305,8 +1319,11 @@ class WorkerDaemon:
         created: bool,
         base_commit_sha: str | None,
         env: dict[str, str],
+        dependency_merge_author_name: str,
+        dependency_merge_author_email: str,
+        dependency_composition_commit_message: str,
     ) -> str | None:
-        """Merge exact dependency commits before exposing a task worktree.
+        """Compose exact dependency commits before exposing a task worktree.
 
         The compact JSON stored in worktree-local Git configuration is immutable
         provenance. A reused checkout must name precisely the same sources; an
@@ -1473,38 +1490,124 @@ class WorkerDaemon:
                 "does not already contain every accepted dependency commit; "
                 "preserve it for explicit recovery"
             )
-        try:
-            for source in expected_rows:
-                expected_commit = str(source["commit_sha"])
-                merge = subprocess.run(
-                    ["git", "merge", "--no-ff", "--no-edit", expected_commit],
+        def is_ancestor(ancestor: str, descendant: str) -> bool:
+            return (
+                subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", ancestor, descendant],
                     cwd=target_dir,
-                    env={
-                        **env,
-                        "GIT_AUTHOR_NAME": "Evander Team Dependency Composer",
-                        "GIT_AUTHOR_EMAIL": "team-dependencies@evander.invalid",
-                        "GIT_COMMITTER_NAME": "Evander Team Dependency Composer",
-                        "GIT_COMMITTER_EMAIL": "team-dependencies@evander.invalid",
-                        "GIT_MERGE_AUTOEDIT": "no",
-                    },
+                    env=env,
                     check=False,
                     capture_output=True,
                     text=True,
+                ).returncode
+                == 0
+            )
+
+        frontier_rows: list[dict[str, Any]] = []
+        seen_frontier_commits: set[str] = set()
+        for source in expected_rows:
+            expected_commit = str(source["commit_sha"])
+            if expected_commit in seen_frontier_commits or is_ancestor(
+                expected_commit, head_before
+            ):
+                continue
+            if any(
+                expected_commit != str(other["commit_sha"])
+                and is_ancestor(expected_commit, str(other["commit_sha"]))
+                for other in expected_rows
+            ):
+                continue
+            frontier_rows.append(source)
+            seen_frontier_commits.add(expected_commit)
+
+        composition_env = {
+            **env,
+            "GIT_AUTHOR_NAME": dependency_merge_author_name,
+            "GIT_AUTHOR_EMAIL": dependency_merge_author_email,
+            "GIT_COMMITTER_NAME": TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name,
+            "GIT_COMMITTER_EMAIL": TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email,
+            "GIT_MERGE_AUTOEDIT": "no",
+        }
+        try:
+            if len(frontier_rows) == 1 and is_ancestor(
+                head_before, str(frontier_rows[0]["commit_sha"])
+            ):
+                subprocess.run(
+                    ["git", "reset", "--hard", str(frontier_rows[0]["commit_sha"])],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 )
-                if merge.returncode != 0:
-                    subprocess.run(
-                        ["git", "merge", "--abort"],
+            elif frontier_rows:
+                for source in frontier_rows:
+                    expected_commit = str(source["commit_sha"])
+                    merge = subprocess.run(
+                        [
+                            "git",
+                            "merge",
+                            "--no-ff",
+                            "-m",
+                            f"Temporary Team integration of {source['dependency_task_id']}",
+                            expected_commit,
+                        ],
                         cwd=target_dir,
-                        env=env,
+                        env=composition_env,
                         check=False,
                         capture_output=True,
                         text=True,
                     )
-                    raise ValueError(
-                        "dependency Git composition conflict for dependency "
-                        f"{source['dependency_task_id']} deliverable "
-                        f"{source['deliverable_id']}"
+                    if merge.returncode != 0:
+                        subprocess.run(
+                            ["git", "merge", "--abort"],
+                            cwd=target_dir,
+                            env=env,
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                        )
+                        raise ValueError(
+                            "dependency Git composition conflict for dependency "
+                            f"{source['dependency_task_id']} deliverable "
+                            f"{source['deliverable_id']}"
+                        )
+                result_tree = (
+                    subprocess.run(
+                        ["git", "rev-parse", "HEAD^{tree}"],
+                        cwd=target_dir,
+                        env=env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
                     )
+                    .stdout.strip()
+                    .casefold()
+                )
+                commit_command = ["git", "commit-tree", result_tree, "-p", head_before]
+                for source in frontier_rows:
+                    commit_command.extend(("-p", str(source["commit_sha"])))
+                commit_command.extend(("-m", dependency_composition_commit_message))
+                composed_commit = (
+                    subprocess.run(
+                        commit_command,
+                        cwd=target_dir,
+                        env=composition_env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    .stdout.strip()
+                    .casefold()
+                )
+                subprocess.run(
+                    ["git", "reset", "--hard", composed_commit],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
         except Exception:
             subprocess.run(
                 ["git", "reset", "--hard", head_before],

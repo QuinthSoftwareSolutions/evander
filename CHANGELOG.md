@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-08-06 - Complete Team Git Configuration Surfaces
+
+- Exposed agent author and committer identities in the primary Projects-page creation form so
+  operators can apply project Git identities before the first checkout.
+- Exposed consolidation commit messages in the workflow editor inspector catalog.
+
+## 2026-08-05 - Compact Team Git Integration History
+
+- Fast-forwarded Team promotions and dependency preparation when one reviewed commit already
+  contains the complete validated change set, avoiding redundant merge commits.
+- Collapsed genuinely divergent inputs into one meaningful multi-parent integration commit while
+  preserving exact reviewed-commit ancestry, provenance, manifest checks, and configured Git
+  identities across VM and container-worker backends.
+
+## 2026-08-05 - Bounded Queued-Prompt Activity Lookup
+
+- Stopped queued-prompt dispatch from materializing the full effect-execution history when the
+  execution repository can query active records directly, keeping post-completion dispatch
+  responsive as execution history grows.
+
+## 2026-08-05 - Configurable Team Git Identities
+
+- Added project-scoped agent author and committer identities, with an Evander Bot fallback, and reconciled them into both new and retained Team project checkouts.
+- Attributed dependency-composition merges to the project author while retaining `Evander Team Dependency Composer` as the specialized committer across VM and container-worker backends.
+
 ## 2026-08-05 - Direct Team Chat File Downloads
 
 - Made ordinary clicks on non-image Team Chat attachments download the selected file directly, while image attachments retain their new-tab preview behavior.

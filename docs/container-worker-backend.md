@@ -827,9 +827,11 @@ only for their corresponding managed repository beneath that prefix.
 
 Task-worktree cleanup requires the deterministic target path, branch, and full expected commit.
 Task-worktree preparation may also carry ordered `dependency_git_sources`. The worker fetches
-each named managed branch, requires its tip to equal the accepted full commit ID, merges those
-commits before task work begins, and records compact immutable provenance in worktree-local Git
-configuration. Reuse requires the same provenance; conflicts roll the clean checkout back to its
+each named managed branch, requires its tip to equal the accepted full commit ID, and composes
+those commits before task work begins. A single or dominant commit is adopted directly; divergent
+inputs produce one multi-parent commit using the optional composition subject and author identity.
+The worker records compact immutable provenance in worktree-local Git configuration. Reuse
+requires the same provenance; conflicts roll the clean checkout back to its
 pre-composition base and return an error instead of exposing partial dependency state.
 The worker serializes preparation and cleanup for the session repository, rejects tracked changes,
 non-ignored untracked files, unexpected branches, commits, paths, or registrations, then repeats

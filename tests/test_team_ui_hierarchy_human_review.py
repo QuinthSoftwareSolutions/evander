@@ -232,6 +232,22 @@ def test_task_board_distinguishes_dependency_waits_from_assigned_blockers() -> N
     assert "if (taskBoardWaitsOnDependencies(task) && dependencyWaitIds.length)" in source
 
 
+def test_project_git_editor_exposes_distinct_agent_commit_identities() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+
+    for field_name in (
+        "agent_author_name",
+        "agent_author_email",
+        "agent_committer_name",
+        "agent_committer_email",
+    ):
+        assert f'name="{field_name}"' in source
+    assert "git.agent_author_identity = { name: authorName, email: authorEmail };" in source
+    assert "git.agent_committer_identity = { name: committerName, email: committerEmail };" in source
+
+
 def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
     source = (
         ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"

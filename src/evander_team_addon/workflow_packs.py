@@ -491,6 +491,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "allowed_changed_paths": (
                     "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
                 ),
+                "commit_message": (
+                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
+                ),
             },
             {
                 "id": "team-record-feature-promotion",
@@ -546,6 +549,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 ),
                 "allowed_changed_paths": (
                     "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
+                "commit_message": (
+                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
                 ),
             },
             {
@@ -608,6 +614,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 ),
                 "allowed_changed_paths": (
                     "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
+                "commit_message": (
+                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
                 ),
             },
             {
@@ -684,6 +693,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 ),
                 "allowed_changed_paths": (
                     "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
+                ),
+                "commit_message": (
+                    "${{team-git-release-recovery-requested.payload.commit_message ?? null}}"
                 ),
             },
             {
