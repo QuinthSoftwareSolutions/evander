@@ -12,6 +12,10 @@
 
 - Prevented formal review from overriding a direct superior rejection and added
   model-level validation that terminally rejected handoffs cannot become accepted.
+- Added an upgrade migration that restores historically overridden rejections,
+  retires their invalid formal-review paths, reopens replacement work, and flags
+  downstream release history for explicit reconciliation.
+
 ## 2026-08-04 - Retained Wake Role-Description Updates
 
 - Included a persistent agent's full updated role description in retained Team

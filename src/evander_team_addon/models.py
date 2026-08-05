@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",

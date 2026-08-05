@@ -2437,6 +2437,237 @@ def test_directly_rejected_deliverable_cannot_enter_formal_review(
     assert deliverable.acceptance_decision.decision == "rejected"
 
 
+@pytest.mark.parametrize(
+    ("persisted_deliverable_state", "review_state"),
+    [
+        (TeamRecordState.PENDING, TeamRecordState.PENDING),
+        (TeamRecordState.ACCEPTED, TeamRecordState.ACCEPTED),
+        (TeamRecordState.BLOCKED, TeamRecordState.BLOCKED),
+        (TeamRecordState.REJECTED, TeamRecordState.PENDING),
+    ],
+)
+def test_repository_migrates_persisted_direct_rejection_review_overrides(
+    tmp_path: Path,
+    persisted_deliverable_state: TeamRecordState,
+    review_state: TeamRecordState,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="deliverable-rejection-override",
+        task_id="task",
+    )
+    admin = _team_admin_service(repo)
+    admin.record_review_request(
+        review_request_id="review-after-direct-rejection",
+        deliverable_id="deliverable-rejection-override",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+    if review_state != TeamRecordState.PENDING:
+        admin.record_review_decision(
+            review_request_id="review-after-direct-rejection",
+            state=review_state,
+            findings=(
+                ["The formal review environment is unavailable."]
+                if review_state == TeamRecordState.BLOCKED
+                else []
+            ),
+            expected_revision=repo.read().revision,
+        )
+
+    assignment_id = (
+        f"assignment-{persisted_deliverable_state.value}-{review_state.value}"
+    )
+
+    def _seed_assignment_and_exhausted_owner(state):
+        state.inbox[assignment_id] = AgentInboxItem(
+            id=assignment_id,
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={
+                "kind": "review_request",
+                "review_request_id": "review-after-direct-rejection",
+                "deliverable_id": "deliverable-rejection-override",
+            },
+        )
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            no_progress_count=3,
+            next_wake_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_seed_assignment_and_exhausted_owner)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    direct_rejection = {
+        "decision": "rejected",
+        "decided_by_agent_id": "lead",
+        "decided_at": "2026-08-01T12:00:00+00:00",
+        "reason": "The direct handoff requires rework.",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE team_deliverables
+            SET state = ?,
+                acceptance_recipient_agent_id = 'lead',
+                acceptance_decision_json = ?
+            WHERE id = 'deliverable-rejection-override'
+            """,
+            (persisted_deliverable_state.value, json.dumps(direct_rejection)),
+        )
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = ?
+            WHERE key = 'sqlite_schema_version'
+            """,
+            (str(SQLITE_SCHEMA_VERSION - 1),),
+        )
+        connection.execute(
+            """
+            UPDATE team_state_metadata
+            SET value = ?
+            WHERE key = 'state_schema_version'
+            """,
+            (str(SCHEMA_VERSION - 1),),
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    deliverable = migrated.deliverables["deliverable-rejection-override"]
+    assert deliverable.state == TeamRecordState.REJECTED
+    assert deliverable.acceptance_decision is not None
+    assert deliverable.acceptance_decision.decision == "rejected"
+    review = migrated.review_requests["review-after-direct-rejection"]
+    assert review.state == review_state
+    assert review.retired_at is not None
+    assert review.retired_by == f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
+    assert "authoritative direct rejection" in (review.retirement_reason or "")
+    assert migrated.inbox[assignment_id].state == TeamInboxItemState.HANDLED
+    assert migrated.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    owner_rework = [
+        item
+        for item in migrated.inbox.values()
+        if item.state == TeamInboxItemState.PENDING
+        and item.recipient_agent_id == "backend"
+        and item.payload.get("kind") == "superior_acceptance_rejected"
+        and item.payload.get("deliverable_id") == "deliverable-rejection-override"
+    ]
+    assert len(owner_rework) == 1
+    assert owner_rework[0].payload["reason"] == "The direct handoff requires rework."
+    assert migrated.agent_runtimes["backend"].no_progress_count == 0
+    assert migrated.agent_runtimes["backend"].next_wake_at is None
+    assert all(
+        blocker.source_id != "review-after-direct-rejection"
+        or blocker.state == TeamBlockerState.RESOLVED
+        for blocker in migrated.blockers.values()
+    )
+    assert migrated.projects["project"].status == ProjectStatus.ACTIVE
+
+    retirement_time = review.retired_at
+    reopened = TeamStateRepository(tmp_path).read()
+    assert reopened.review_requests[review.id].retired_at == retirement_time
+    assert len(
+        [
+            item
+            for item in reopened.inbox.values()
+            if item.state == TeamInboxItemState.PENDING
+            and item.payload.get("kind") == "superior_acceptance_rejected"
+            and item.payload.get("deliverable_id")
+            == "deliverable-rejection-override"
+        ]
+    ) == 1
+
+
+def test_rejection_override_migration_preserves_release_history_and_blocks_reconciliation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="deliverable-published-override",
+        task_id="task",
+    )
+    admin = _team_admin_service(repo)
+    admin.record_review_request(
+        review_request_id="review-published-override",
+        deliverable_id="deliverable-published-override",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+    admin.record_review_decision(
+        review_request_id="review-published-override",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=repo.read().revision,
+    )
+
+    def _seed_release(state):
+        state.release_packages["release-published-override"] = ReleasePackage(
+            id="release-published-override",
+            project_id="project",
+            owner_agent_id="lead",
+            deliverable_ids=["deliverable-published-override"],
+            state=TeamRecordState.ACCEPTED,
+        )
+        return state
+
+    repo.update(_seed_release)
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE team_deliverables
+            SET acceptance_recipient_agent_id = 'lead',
+                acceptance_decision_json = ?
+            WHERE id = 'deliverable-published-override'
+            """,
+            (
+                json.dumps(
+                    {
+                        "decision": "rejected",
+                        "decided_by_agent_id": "lead",
+                        "decided_at": "2026-08-01T12:00:00+00:00",
+                        "reason": "The direct handoff requires rework.",
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = ? "
+            "WHERE key = 'sqlite_schema_version'",
+            (str(SQLITE_SCHEMA_VERSION - 1),),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = ? "
+            "WHERE key = 'state_schema_version'",
+            (str(SCHEMA_VERSION - 1),),
+        )
+
+    migrated = TeamStateRepository(tmp_path).read()
+
+    assert migrated.release_packages["release-published-override"].state == (
+        TeamRecordState.ACCEPTED
+    )
+    reconciliation_blocker = next(
+        blocker
+        for blocker in migrated.blockers.values()
+        if blocker.source_id
+        == "rejected-acceptance-release:release-published-override"
+    )
+    assert reconciliation_blocker.route == TeamBlockerRoute.OPERATOR
+    assert reconciliation_blocker.state == TeamBlockerState.OPEN
+    assert reconciliation_blocker.reason_code == (
+        "rejected_acceptance_override_reconciliation"
+    )
+    assert migrated.projects["project"].status == ProjectStatus.BLOCKED
+
+
 def test_direct_acceptance_decision_survives_promotion_failure(
     tmp_path: Path,
 ) -> None:
@@ -7989,6 +8220,65 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
     assert metadata["state_schema_version"] == str(SCHEMA_VERSION)
+
+
+def test_repository_repairs_rejection_override_during_legacy_json_import(
+    tmp_path: Path,
+) -> None:
+    seed_repo = _seed_hierarchy(tmp_path / "seed")
+    _seed_task(seed_repo, task_id="task")
+    _seed_deliverable(
+        seed_repo,
+        deliverable_id="deliverable-legacy-json-override",
+        task_id="task",
+    )
+    admin = _team_admin_service(seed_repo)
+    admin.record_review_request(
+        review_request_id="review-legacy-json-override",
+        deliverable_id="deliverable-legacy-json-override",
+        reviewer_agent_id="worker",
+        expected_revision=seed_repo.read().revision,
+    )
+    admin.record_review_decision(
+        review_request_id="review-legacy-json-override",
+        state=TeamRecordState.ACCEPTED,
+        expected_revision=seed_repo.read().revision,
+    )
+    legacy_payload = seed_repo.read().model_dump(mode="json")
+    legacy_payload["schema_version"] = SCHEMA_VERSION - 1
+    legacy_deliverable = legacy_payload["deliverables"][
+        "deliverable-legacy-json-override"
+    ]
+    legacy_deliverable["acceptance_recipient_agent_id"] = "lead"
+    legacy_deliverable["acceptance_decision"] = {
+        "decision": "rejected",
+        "decided_by_agent_id": "lead",
+        "decided_at": "2026-08-01T12:00:00+00:00",
+        "reason": "The imported direct handoff requires rework.",
+    }
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(legacy_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    imported = TeamStateRepository(tmp_path).read()
+
+    assert imported.deliverables["deliverable-legacy-json-override"].state == (
+        TeamRecordState.REJECTED
+    )
+    assert imported.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    review = imported.review_requests["review-legacy-json-override"]
+    assert review.state == TeamRecordState.ACCEPTED
+    assert review.retired_by == f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
+    assert any(
+        item.state == TeamInboxItemState.PENDING
+        and item.payload.get("kind") == "superior_acceptance_rejected"
+        and item.payload.get("deliverable_id")
+        == "deliverable-legacy-json-override"
+        for item in imported.inbox.values()
+    )
 
 
 def test_repository_backfills_git_base_snapshots_after_legacy_json_import(
