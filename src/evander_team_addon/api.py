@@ -46,6 +46,10 @@ from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
+from evander.execution.container_worker_client import (
+    ContainerWorkerClient,
+    ContainerWorkerClientError,
+)
 from evander.email.http_utils import ProviderRequestError
 from evander.models import utc_now
 from evander.voice_sessions import (
@@ -2219,6 +2223,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 parent_task_id=_optional(payload, "parent_task_id"),
                 originating_task_id=_optional(payload, "originating_task_id"),
                 git_base_branch=_optional(payload, "git_base_branch"),
+                git_base_commit_sha=_optional(payload, "git_base_commit_sha"),
                 set_git_base_branch="git_base_branch" in payload,
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
@@ -2550,6 +2555,30 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             extra={"resolved_blocker": result["blocker"]},
+        )
+
+    async def recover_candidate_correction_successor(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        blocker_id = request.path_params["blocker_id"]
+        state, result = (
+            admin_service.recover_candidate_correction_successor_as_operator(
+                blocker_id=blocker_id,
+                action=_required(payload, "action"),
+                reason=_optional(payload, "reason"),
+                owner_agent_id=_optional(payload, "owner_agent_id"),
+                operator_actor_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                expected_revision=_expected_revision(payload),
+            )
+        )
+        return _state_response(
+            request,
+            state,
+            extra={"candidate_correction_recovery": result},
         )
 
     async def create_outcome_kind_definition(
@@ -3373,6 +3402,38 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 payload["candidate_checkout"] = candidate_checkout
         return JSONResponse(payload)
 
+    async def get_release_verification_live(request: Request) -> JSONResponse:
+        state = repository.read()
+        release = state.release_packages.get(request.path_params["release_package_id"])
+        if release is None:
+            return JSONResponse({"error": "release package not found"}, status_code=404)
+        project = state.projects.get(release.project_id)
+        directory_path = (
+            project.git.directory_path
+            if project is not None and project.git is not None
+            else "root"
+        )
+        if not _auth_can(
+            context.auth,
+            request,
+            ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return JSONResponse(
+                {"error": "Live verification output is restricted to directory owners."},
+                status_code=403,
+            )
+        runtime = _runtime_from_context(context)
+        payload = await run_in_threadpool(
+            _release_verification_live_payload,
+            state,
+            release.id,
+            directory_path,
+            runtime.provider_config,
+            _release_verification_live_log_limit(request),
+        )
+        return JSONResponse(payload)
+
     async def list_git_promotions(_request: Request) -> JSONResponse:
         state = repository.read()
         return JSONResponse(
@@ -3765,6 +3826,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         route(
+            "/candidate-correction-recoveries/{blocker_id}",
+            recover_candidate_correction_successor,
+            methods=["POST"],
+        ),
+        route(
             "/outcome-kinds",
             create_outcome_kind_definition,
             methods=["POST"],
@@ -3857,6 +3923,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "/release-packages/{release_package_id}/retry-gate",
             retry_release_gate,
             methods=["POST"],
+        ),
+        route(
+            "/release-packages/{release_package_id}/verification-live",
+            get_release_verification_live,
+            methods=["GET"],
         ),
         route(
             "/release-packages/{release_package_id}",
@@ -4144,6 +4215,114 @@ def _runtime_from_context(context: AddonContext) -> Any:
     if runtime is None:
         raise RuntimeError("Admin runtime is unavailable")
     return runtime
+
+
+def _release_verification_live_log_limit(request: Request) -> int:
+    raw_limit = request.query_params.get("limit", "160")
+    try:
+        parsed = int(raw_limit)
+    except (TypeError, ValueError):
+        return 160
+    return max(20, min(parsed, 400))
+
+
+def _release_verification_live_payload(
+    state: TeamState,
+    release_package_id: str,
+    directory_path: str,
+    provider_config: Any,
+    limit: int,
+) -> dict[str, Any]:
+    """Read a bounded worker-log tail without ever returning worker credentials."""
+
+    release = state.release_packages.get(release_package_id)
+    if release is None:
+        raise ValueError("release package not found")
+    runs = [
+        state.release_verification_runs[run_id]
+        for run_id in release.verification_run_ids
+        if run_id in state.release_verification_runs
+        and state.release_verification_runs[run_id].superseded_by_verification_run_id is None
+    ]
+    runs.sort(key=lambda run: (run.attempt_number, run.created_at, run.id), reverse=True)
+    run = runs[0] if runs else None
+    if run is None:
+        return {
+            "release_package_id": release.id,
+            "run": None,
+            "log": {"available": False, "message": "No verification run has been created."},
+        }
+    command_index = (
+        min(max(run.current_command_index, 0), len(run.command_results) - 1)
+        if run.command_results
+        else 0
+    )
+    command = run.command_results[command_index] if run.command_results else None
+    run_payload: dict[str, Any] = {
+        "id": run.id,
+        "state": run.state,
+        "attempt_number": run.attempt_number,
+        "current_command": (
+            {
+                "index": command_index,
+                "name": command.name,
+                "state": command.state,
+            }
+            if command is not None
+            else None
+        ),
+    }
+    if run.state != "running" or command is None or not command.job_id:
+        return {
+            "release_package_id": release.id,
+            "run": run_payload,
+            "log": {
+                "available": False,
+                "message": (
+                    "Waiting for the verifier to start the current command."
+                    if run.state == "running"
+                    else "The verifier is not currently running."
+                ),
+            },
+        }
+    try:
+        config = provider_config.resolve_for_directory(directory_path)
+        worker_url = str(getattr(config, "container_worker_base_url", "") or "").strip()
+        if not worker_url:
+            raise ValueError("container worker is not configured")
+        worker_client = ContainerWorkerClient(
+            base_url=worker_url,
+            token_env=str(
+                getattr(config, "container_worker_token_env", "EVANDER_WORKER_TOKEN")
+            ),
+            timeout_seconds=float(
+                getattr(config, "container_worker_request_timeout_seconds", 30.0)
+            ),
+        )
+        log_text, metadata = worker_client.logs_page(
+            command.job_id,
+            mode="raw",
+            limit=limit,
+        )
+    except (ContainerWorkerClientError, ValueError, TypeError, AttributeError):
+        return {
+            "release_package_id": release.id,
+            "run": run_payload,
+            "log": {
+                "available": False,
+                "message": "Live verifier output is temporarily unavailable.",
+            },
+        }
+    return {
+        "release_package_id": release.id,
+        "run": run_payload,
+        "log": {
+            "available": True,
+            "text": log_text,
+            "returned_lines": metadata.get("returned_lines"),
+            "has_more_before": bool(metadata.get("has_more_before")),
+        },
+    }
 
 
 def _team_state_payload_for_request(

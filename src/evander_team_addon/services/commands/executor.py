@@ -24,6 +24,7 @@ from .types import (
 )
 from ...models import (
     AgentStatus,
+    InitialReleaseDispositionState,
     TaskAssessmentReadiness,
     TeamBlockerSourceKind,
     TeamBlockerRoute,
@@ -383,6 +384,16 @@ class TeamCommandExecutor:
                 - request_review_routing_project_ids
             ),
         )
+        if (
+            resolved.context.tool_name
+            in {"team_request_release", "team_decide_initial_release"}
+            and dispatch.cause_kind == "manager_fallback"
+        ):
+            _validate_manager_fallback_initial_release_scope(
+                state,
+                dispatch=dispatch,
+                payload=normalized_payload,
+            )
         _validate_dispatch_managed_repo_scope(
             dispatch=dispatch,
             managed_repo_ids=targets["managed_repo_ids"],
@@ -1019,6 +1030,7 @@ _PROJECT_SCOPE_TOOLS = frozenset(
         "team_publish_review_branch",
         "team_update_feature_branch",
         "team_request_release",
+        "team_decide_initial_release",
         "team_recover_release",
         "team_retry_release_gate",
         "team_retry_review",
@@ -1936,6 +1948,49 @@ def _validate_dispatch_inbox_scope(
                     "inbox_item_id": inbox_id,
                 },
             )
+
+
+def _validate_manager_fallback_initial_release_scope(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    payload: Mapping[str, Any],
+) -> None:
+    requested_ids = set(_text_sequence(payload.get("deliverable_ids")))
+    allowed_ids = set(dispatch.initial_release_decision_deliverable_ids)
+    missing = sorted(requested_ids - allowed_ids)
+    if not requested_ids or missing:
+        raise _dispatch_scope_error(
+            dispatch,
+            scope_kind="initial release deliverable",
+            requested_ids=missing or sorted(requested_ids) or ["none"],
+            allowed_ids=dispatch.initial_release_decision_deliverable_ids,
+        )
+    stale: list[str] = []
+    for deliverable_id in sorted(requested_ids):
+        deliverable = state.deliverables.get(deliverable_id)
+        disposition = (
+            deliverable.initial_release_disposition
+            if deliverable is not None
+            else None
+        )
+        if (
+            disposition is None
+            or disposition.state != InitialReleaseDispositionState.PENDING
+        ):
+            stale.append(deliverable_id)
+    if stale:
+        raise TeamCommandValidationError(
+            code="dispatch_scope_stale",
+            message=(
+                "initial release decisions are no longer pending for: "
+                + ", ".join(stale)
+            ),
+            correction_context={
+                "dispatch_id": dispatch.id,
+                "deliverable_ids": stale,
+            },
+        )
 
 
 def _validate_dispatch_project_scope(

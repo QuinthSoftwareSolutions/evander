@@ -310,12 +310,25 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     )
     assert retry_route.methods == {"POST"}
 
+    verification_live_route = next(
+        route
+        for route in routes
+        if route.path == "/release-packages/{release_package_id}/verification-live"
+    )
+    assert verification_live_route.methods == {"GET", "HEAD"}
+
     blocker_resolve_route = next(
         route
         for route in routes
         if route.path == "/blockers/{blocker_id}/resolve"
     )
     assert blocker_resolve_route.methods == {"POST"}
+    candidate_recovery_route = next(
+        route
+        for route in routes
+        if route.path == "/candidate-correction-recoveries/{blocker_id}"
+    )
+    assert candidate_recovery_route.methods == {"POST"}
     review_retire_route = next(
         route
         for route in routes
@@ -5045,6 +5058,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Resume release recovery" in script.text
     assert "data-resolve-terminal-blocker-id" in script.text
     assert "resolveTerminalBlocker" in script.text
+    assert "data-candidate-correction-recovery-id" in script.text
+    assert "recoverCandidateCorrectionSuccessor" in script.text
+    assert "candidateCorrectionRecoveryTaskForBlocker" in script.text
+    assert "data-candidate-correction-recovery-task-id" in script.text
+    assert "View replacement task" in script.text
+    assert "Create verified replacement" in script.text
+    assert "Authorize waiver instead" in script.text
+    assert "existing_recovery_task_id" in script.text
+    assert "/candidate-correction-recoveries/" in script.text
+    assert '["Git base commit pin", text(task.git_base_commit_sha)]' in script.text
     assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
     assert "teamFetch(`${API_BASE}/costs/backfill`" in script.text
     assert "data-cost-backfill-refresh" in script.text
@@ -5141,6 +5164,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".cost-counter--warning" in stylesheet.text
     assert ".team-cost-blocked-notice" in stylesheet.text
     assert ".state-pill.neutral" in stylesheet.text
+    assert ".candidate-correction-recovery-status" in stylesheet.text
 
     org_flow_script = enabled.get("/addons/team-addon/team-org-flow.js")
     assert org_flow_script.status_code == 200

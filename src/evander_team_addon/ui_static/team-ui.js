@@ -435,6 +435,9 @@ let humanReviewQueue = {
 };
 const releaseDetailCache = new Map();
 const expandedReleaseDetailIds = new Set();
+const releaseVerificationLiveCache = new Map();
+const releaseVerificationLivePollTimers = new Map();
+const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
 const postReleaseReportResults = new Map();
 const runtimeAttentionFilters = {
   kind: "all",
@@ -2324,6 +2327,45 @@ function bindRecordEditing() {
       return;
     }
 
+    const candidateCorrectionRecoveryTaskButton = event.target.closest(
+      "[data-candidate-correction-recovery-task-id]",
+    );
+    if (candidateCorrectionRecoveryTaskButton) {
+      event.preventDefault();
+      openCandidateCorrectionRecoveryTask(
+        candidateCorrectionRecoveryTaskButton.dataset.candidateCorrectionRecoveryTaskId,
+      );
+      return;
+    }
+
+    const candidateCorrectionRecoveryButton = event.target.closest(
+      "[data-candidate-correction-recovery-id]",
+    );
+    if (candidateCorrectionRecoveryButton) {
+      event.preventDefault();
+      const action = text(
+        candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryAction,
+      );
+      let reason = null;
+      if (action === "authorize_verification_waiver") {
+        reason = window.prompt(
+          "Why is a verification waiver justified? This reason is recorded on the release.",
+          "",
+        );
+        if (!text(reason)) {
+          setStatus("A verification-waiver reason is required.", "error");
+          return;
+        }
+      }
+      void recoverCandidateCorrectionSuccessor(
+        candidateCorrectionRecoveryButton,
+        candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryId,
+        action,
+        text(reason) || null,
+      );
+      return;
+    }
+
     const resolveBlockerButton = event.target.closest("[data-resolve-terminal-blocker-id]");
     if (resolveBlockerButton) {
       event.preventDefault();
@@ -2811,6 +2853,7 @@ const lockedMutationControlSelectors = [
   ["[data-task-cancel-id]:not(:disabled)", "cancel tasks"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
+  ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -5051,6 +5094,9 @@ function renderReviewDeliveryWorkspace() {
 function deliveryRowNeedsAttention(row) {
   if (!isCurrentDeliverable(row.deliverable)) {
     return false;
+  }
+  if (text(row.deliverable?.initial_release_disposition?.state) === "pending") {
+    return true;
   }
   if (
     currentDeliveryReleasePackages(row.releasePackages).some(
@@ -13378,6 +13424,7 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
     ["Git base branch", text(task.git_base_branch)],
+    ["Git base commit pin", text(task.git_base_commit_sha)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Integration boundary", task.integration_boundary ? "Yes" : ""],
     ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
@@ -13599,6 +13646,7 @@ function blockerRoutingLabel(blocker) {
     blocker.owner_agent_id ? `owner ${text(blocker.owner_agent_id)}` : "",
     blocker.delegate_agent_id ? `delegate ${text(blocker.delegate_agent_id)}` : "",
     blocker.route ? `route ${humanizeToken(blocker.route)}` : "",
+    blocker.resolution_scope ? `scope ${humanizeToken(blocker.resolution_scope)}` : "",
     Number.isFinite(Number(blocker.escalation_depth))
       ? `level ${Number(blocker.escalation_depth)}`
       : "",
@@ -13629,7 +13677,133 @@ function releaseRecoveryTaskForBlocker(blocker) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+function candidateCorrectionRecoveryTaskForBlocker(blocker) {
+  if (!blocker || text(blocker.source_kind) !== "candidate_correction_successor") {
+    return null;
+  }
+  const correctionTaskIds = new Set(uniqueTextList([
+    blocker.task_id,
+    ...(blocker.affected_task_ids || []),
+  ]));
+  return values(state.tasks)
+    .filter(
+      (task) =>
+        text(task.created_by_actor) === "system:candidate-correction-recovery" &&
+        correctionTaskIds.has(text(task.originating_task_id)) &&
+        (!blocker.project_id || text(task.project_id) === text(blocker.project_id)),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function latestDispatchForTask(taskId) {
+  const normalizedTaskId = text(taskId);
+  return values(state.dispatches)
+    .filter((dispatch) =>
+      (dispatch.task_ids || []).some((candidateId) => text(candidateId) === normalizedTaskId),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function renderCandidateCorrectionRecoveryStatus(task) {
+  const dispatch = latestDispatchForTask(task.id);
+  const assignee = state.agents?.[text(task.owner_agent_id)];
+  const details = [
+    `Task ${text(task.id)}`,
+    `assigned to ${assignee ? agentLabel(assignee) : text(task.owner_agent_id) || "unassigned"}`,
+    task.git_base_commit_sha ? `pinned commit ${text(task.git_base_commit_sha)}` : "",
+    dispatch ? `dispatch ${humanizeToken(dispatch.status || "unknown")}` : "awaiting dispatch",
+  ].filter(Boolean);
+  return `
+    <div class="candidate-correction-recovery-status" role="status">
+      <div>
+        <strong>Verified replacement task</strong>
+        <span class="state-pill ${escapeAttr(task.state || "pending")}">${escapeHtml(humanizeToken(task.state || "pending"))}</span>
+      </div>
+      <div>${escapeHtml(task.title || task.id)}</div>
+      <div class="meta-line">${escapeHtml(details.join(" - "))}</div>
+    </div>
+  `;
+}
+
+function openCandidateCorrectionRecoveryTask(taskId) {
+  const task = state.tasks?.[text(taskId)];
+  const project = state.projects?.[text(task?.project_id)];
+  if (!task || !project) {
+    setStatus("The verified replacement task is not visible in the current scope.", "warning");
+    return;
+  }
+  resetTaskBoardProjectState();
+  selectedTaskBoardTeamId = text(project.team_id);
+  selectedTaskBoardProjectId = text(project.id);
+  selectedTaskBoardTaskId = text(task.id);
+  if (terminalTaskStates.has(text(task.state))) {
+    taskBoardShowCompleted = true;
+  }
+  prepareSelectedTaskBoardTaskForDisplay();
+  setTeamView("task-board");
+  window.requestAnimationFrame(() => focusSelectedTaskBoardTask());
+}
+
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
+  if (
+    blocker &&
+    text(blocker.state) === "open" &&
+    text(blocker.source_kind) === "candidate_correction_successor"
+  ) {
+    const recoveryTask = candidateCorrectionRecoveryTaskForBlocker(blocker);
+    if (recoveryTask) {
+      const replacementStillActive = !terminalTaskStates.has(text(recoveryTask.state));
+      return `
+        ${renderCandidateCorrectionRecoveryStatus(recoveryTask)}
+        <div class="record-actions ${escapeAttr(extraClass)}">
+          <button type="button" class="record-action"
+            data-candidate-correction-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+          >View replacement task</button>
+          ${
+            replacementStillActive
+              ? ""
+              : `<button type="button" class="record-action"
+                  data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+                  data-candidate-correction-recovery-action="retry"
+                  ${lockedAttrs("retry candidate correction recovery")}
+                >Retry packaging</button>`
+          }
+          <button type="button" class="record-action"
+            data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+            data-candidate-correction-recovery-action="authorize_verification_waiver"
+            ${lockedAttrs("authorize candidate verification waivers")}
+          >Authorize waiver instead</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="record-actions ${escapeAttr(extraClass)}">
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="retry"
+          ${lockedAttrs("retry candidate correction recovery")}
+        >Retry packaging</button>
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="create_verified_replacement"
+          ${lockedAttrs("create verified replacement tasks")}
+        >Create verified replacement</button>
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="authorize_verification_waiver"
+          ${lockedAttrs("authorize candidate verification waivers")}
+        >Authorize waiver</button>
+      </div>
+    `;
+  }
   if (
     !blocker ||
     text(blocker.state) !== "open" ||
@@ -14949,6 +15123,7 @@ function renderDeliverableEvidence(deliverable) {
 
 function renderDeliverableTechnicalDetails(deliverable) {
   const gitRefs = deliverable.git_refs || {};
+  const initialRelease = deliverable.initial_release_disposition || {};
   return renderTechnicalDetails([
     ["Deliverable ID", deliverable.id],
     ["Task ID", deliverable.task_id],
@@ -14965,9 +15140,31 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
+    ["Initial release package ID", initialRelease.release_package_id],
   ], {
     disclosureKey: teamDisclosureKey("deliverable", deliverable.id, "technical"),
   });
+}
+
+function renderInitialReleaseDisposition(deliverable) {
+  const disposition = deliverable.initial_release_disposition;
+  if (!disposition) {
+    return "";
+  }
+  const dispositionState = text(disposition.state || "pending");
+  return `
+    <section class="deliverable-detail-group deliverable-initial-release-disposition">
+      <h4>Initial release decision</h4>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Disposition</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(dispositionState)}">${escapeHtml(humanizeToken(dispositionState))}</span></div></div>
+        ${disposition.decided_by_actor ? `<div><div class="delivery-detail-label">Decided by</div><div class="delivery-detail-value">${escapeHtml(disposition.decided_by_actor)}</div></div>` : ""}
+        ${disposition.decided_at ? `<div><div class="delivery-detail-label">Decided</div><div class="delivery-detail-value">${renderRecordDate(disposition.decided_at)}</div></div>` : ""}
+        ${disposition.release_package_id ? `<div><div class="delivery-detail-label">Release package</div><div class="delivery-detail-value">${renderIdentifierCopy(disposition.release_package_id, { label: "Copy ID" })}</div></div>` : ""}
+      </div>
+      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${escapeHtml(disposition.reason)}</p>` : ""}
+      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${escapeHtml(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
+    </section>
+  `;
 }
 
 function renderDeliverableCard(deliverable, { compact = false } = {}) {
@@ -15006,6 +15203,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
             <h4>Evidence and artifacts</h4>
             ${renderDeliverableEvidence(deliverable)}
           </section>
+          ${renderInitialReleaseDisposition(deliverable)}
           <section class="deliverable-detail-group">
             <h4>Reviews and decision</h4>
             ${reviewIds.length ? renderReviewSummary(reviewIds) : `<p class="empty-state">No reviews recorded.</p>`}
@@ -16060,12 +16258,21 @@ function releaseProgressStages(release) {
     stages.push({ label: "Automated verification", state: "not-applicable", detail: "No automated checks required" });
   } else {
     const runStates = verificationRuns.map((run) => text(run.state));
-    const failed = runStates.some((stateValue) => ["failed", "blocked", "rejected"].includes(stateValue));
+    const failed = runStates.some((stateValue) => ["failed", "timed_out", "blocked", "rejected"].includes(stateValue));
     const completed = runStates.length && runStates.every((stateValue) => ["passed", "succeeded", "accepted"].includes(stateValue));
+    const runningRun = verificationRuns.find((run) => text(run.state) === "running");
+    const currentCommandIndex = Number(runningRun?.current_command_index || 0);
+    const currentCommand = runningRun?.command_results?.[currentCommandIndex]
+      || runningRun?.command_results?.find((result) => text(result.state) === "running");
+    const runningDetail = currentCommand?.name
+      ? `Running: ${text(currentCommand.name)}`
+      : runningRun
+        ? "Preparing verifier"
+        : "";
     stages.push({
       label: "Automated verification",
       state: failed ? "blocked" : completed ? "complete" : "pending",
-      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
+      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : runningDetail || `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
     });
   }
 
@@ -16403,7 +16610,9 @@ function renderCachedReleaseDetail(releaseId) {
   if (cached.error) {
     return `<div class="release-review-detail task-invalid-warning">${escapeHtml(cached.error)}</div>`;
   }
-  return renderReleaseDetail(cached.release);
+  const release = mergeReleaseDetailWithCurrentState(cached.release);
+  ensureReleaseVerificationLivePolling(release);
+  return renderReleaseDetail(release);
 }
 
 async function toggleReleaseDetail(releaseId) {
@@ -16412,6 +16621,7 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
+    clearReleaseVerificationLivePolling(releaseId);
     openTeamDisclosures.delete(
       teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
     );
@@ -16426,6 +16636,8 @@ async function toggleReleaseDetail(releaseId) {
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
     await loadReleaseDetail(releaseId);
+  } else {
+    ensureReleaseVerificationLivePolling(mergeReleaseDetailWithCurrentState(cached.release));
   }
 }
 
@@ -16453,6 +16665,117 @@ async function loadReleaseDetail(releaseId) {
       error: error instanceof Error ? error.message : "Release detail could not be loaded.",
       release: null,
     });
+  }
+  renderReleaseDetailSurfaces();
+}
+
+function mergeReleaseDetailWithCurrentState(release) {
+  const current = state.release_packages?.[text(release?.id)];
+  if (!current) {
+    return release;
+  }
+  return {
+    ...release,
+    state: current.state ?? release.state,
+    error: current.error ?? release.error,
+    updated_at: current.updated_at ?? release.updated_at,
+    manifest: current.manifest ?? release.manifest,
+    verification_runs: current.verification_runs ?? release.verification_runs,
+  };
+}
+
+function activeReleaseVerificationRun(release) {
+  return (release?.verification_runs || []).find(
+    (run) => !run.superseded_by_verification_run_id && text(run.state) === "running",
+  ) || null;
+}
+
+function releaseVerificationRunStillActive(releaseId) {
+  const normalizedId = text(releaseId);
+  const detailedRelease = releaseDetailCache.get(normalizedId)?.release;
+  const release = detailedRelease
+    ? mergeReleaseDetailWithCurrentState(detailedRelease)
+    : state.release_packages?.[normalizedId];
+  return Boolean(activeReleaseVerificationRun(release));
+}
+
+function clearReleaseVerificationLivePolling(releaseId) {
+  const normalizedId = text(releaseId);
+  const timer = releaseVerificationLivePollTimers.get(normalizedId);
+  if (timer) {
+    window.clearTimeout(timer);
+  }
+  releaseVerificationLivePollTimers.delete(normalizedId);
+  releaseVerificationLiveCache.delete(normalizedId);
+}
+
+function ensureReleaseVerificationLivePolling(release) {
+  const releaseId = text(release?.id);
+  if (!releaseId || !expandedReleaseDetailIds.has(releaseId)) {
+    return;
+  }
+  if (!activeReleaseVerificationRun(release)) {
+    clearReleaseVerificationLivePolling(releaseId);
+    return;
+  }
+  const cached = releaseVerificationLiveCache.get(releaseId);
+  if (!cached || (!cached.loading && !cached.payload && !cached.error)) {
+    void loadReleaseVerificationLive(releaseId);
+  }
+}
+
+function scheduleReleaseVerificationLivePoll(releaseId, payload, retryWhileActive = false) {
+  const normalizedId = text(releaseId);
+  const previous = releaseVerificationLivePollTimers.get(normalizedId);
+  if (previous) {
+    window.clearTimeout(previous);
+  }
+  if (
+    !expandedReleaseDetailIds.has(normalizedId)
+    || (
+      text(payload?.run?.state) !== "running"
+      && !(retryWhileActive && releaseVerificationRunStillActive(normalizedId))
+    )
+  ) {
+    releaseVerificationLivePollTimers.delete(normalizedId);
+    return;
+  }
+  releaseVerificationLivePollTimers.set(normalizedId, window.setTimeout(() => {
+    releaseVerificationLivePollTimers.delete(normalizedId);
+    void loadReleaseVerificationLive(normalizedId);
+  }, RELEASE_VERIFICATION_LIVE_POLL_MS));
+}
+
+async function loadReleaseVerificationLive(releaseId) {
+  const normalizedId = text(releaseId);
+  const existing = releaseVerificationLiveCache.get(normalizedId);
+  if (existing?.loading) {
+    return;
+  }
+  releaseVerificationLiveCache.set(normalizedId, {
+    loading: true,
+    error: null,
+    payload: existing?.payload || null,
+  });
+  renderReleaseDetailSurfaces();
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(normalizedId)}/verification-live?limit=160`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    releaseVerificationLiveCache.set(normalizedId, { loading: false, error: null, payload });
+    scheduleReleaseVerificationLivePoll(normalizedId, payload);
+  } catch (error) {
+    releaseVerificationLiveCache.set(normalizedId, {
+      loading: false,
+      error: error instanceof Error ? error.message : "Live verifier output could not be loaded.",
+      payload: existing?.payload || null,
+    });
+    scheduleReleaseVerificationLivePoll(normalizedId, existing?.payload, true);
   }
   renderReleaseDetailSurfaces();
 }
@@ -16711,7 +17034,35 @@ function renderReleaseVerificationCommandResult(
   `;
 }
 
-function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
+function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
+  if (text(run.state) !== "running" || text(result.state) !== "running") {
+    return "";
+  }
+  const live = releaseVerificationLiveCache.get(text(releaseId));
+  const liveRun = live?.payload?.run;
+  const liveCommand = liveRun?.current_command;
+  const matchesCurrentCommand = text(liveRun?.id) === text(run.id)
+    && Number(liveCommand?.index) === index;
+  if (!matchesCurrentCommand && !live?.loading && !live?.error) {
+    return "";
+  }
+  const log = live?.payload?.log;
+  const message = live?.error
+    || log?.message
+    || (live?.loading ? "Connecting to the live verifier output." : "Waiting for verifier output.");
+  const logText = text(log?.text);
+  return `
+    <li class="release-verification-live-output">
+      <details class="release-verification-log" open>
+        <summary>Live verifier output · updates every 2 seconds</summary>
+        ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
+        ${logText ? `<pre>${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
+      </details>
+    </li>
+  `;
+}
+
+function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix, releaseId) {
   const results = run.command_results || [];
   if (!results.length) {
     return "";
@@ -16723,7 +17074,7 @@ function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
           result,
           run,
           teamDisclosureKey(disclosureKeyPrefix, run.id, "command", String(index), "log"),
-        )).join("")}
+        ) + renderReleaseVerificationLiveOutput(run, result, index, releaseId)).join("")}
     </ul>
   `;
 }
@@ -16740,7 +17091,7 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`)}
+              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}
@@ -18479,6 +18830,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
       <h4>Evidence and artifacts</h4>
       ${renderDeliverableEvidence(deliverable)}
     </section>
+    ${renderInitialReleaseDisposition(deliverable)}
     <section class="deliverable-detail-group delivery-row-reviews">
       <h4>Reviews and decision</h4>
       ${reviewIds.length ? renderReviewSummary(reviewIds, { interactive: true }) : `<p class="empty-state">No reviews recorded.</p>`}
@@ -18601,6 +18953,34 @@ function deliverablePipelineStages(row, release) {
     deliverableAcceptanceStage(row),
   ];
   if (!release) {
+    const disposition = row.deliverable.initial_release_disposition;
+    const dispositionState = text(disposition?.state);
+    if (dispositionState === "pending") {
+      stages.push({
+        label: "Initial release decision",
+        state: "waiting",
+        detail: "Waiting for the project lead or team manager to request a release or mark it not planned",
+      });
+      return stages;
+    }
+    if (dispositionState === "not_planned") {
+      stages.push({
+        label: "Initial release decision",
+        state: "complete",
+        detail: disposition.reason
+          ? `Not planned for an initial release: ${disposition.reason}`
+          : "Not planned for an initial release",
+      });
+      return stages;
+    }
+    if (dispositionState === "release_requested") {
+      stages.push({
+        label: "Release inclusion",
+        state: "blocked",
+        detail: `Recorded release package ${text(disposition.release_package_id) || "is"} unavailable`,
+      });
+      return stages;
+    }
     stages.push({
       label: "Release inclusion",
       state: "waiting",
@@ -21171,6 +21551,83 @@ async function resolveTerminalBlocker(button, blockerId, note) {
     setStatus(`Resolved blocker ${normalizedBlockerId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Blocker resolution failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function recoverCandidateCorrectionSuccessor(button, blockerId, action, reason = null) {
+  if (!guardTeamMutation("recover candidate correction successors")) {
+    return;
+  }
+  const normalizedBlockerId = text(blockerId);
+  const normalizedAction = text(action);
+  if (!normalizedBlockerId || !normalizedAction) {
+    setStatus("No candidate-correction recovery action was selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`${humanizeToken(normalizedAction)} for ${normalizedBlockerId}.`, "loading");
+  const endpoint = `/candidate-correction-recoveries/${encodeURIComponent(normalizedBlockerId)}`;
+  try {
+    const payload = { action: normalizedAction };
+    if (text(reason)) {
+      payload.reason = text(reason);
+    }
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", payload),
+      ),
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the recovery and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const body = await response.json();
+    await applyMutationResultPayload(body);
+    restoreFormDrafts(drafts);
+    const recovery = body.candidate_correction_recovery || {};
+    const recoveryTaskId = text(
+      recovery.created_recovery_task_id ||
+      recovery.existing_recovery_task_id ||
+      recovery.recovery_task_id,
+    );
+    const releaseId = text(
+      recovery.release_package_id ||
+      recovery.created_successor_release_package_ids?.[0] ||
+      recovery.existing_successor_release_package_ids?.[0],
+    );
+    setStatus(
+      releaseId
+        ? `Candidate recovery created or found successor ${releaseId}.`
+        : recoveryTaskId
+          ? `Candidate recovery created or found pinned task ${recoveryTaskId}.`
+          : `Candidate recovery ${humanizeToken(normalizedAction)} completed.`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Candidate correction recovery failed.",
+      "error",
+    );
   } finally {
     if (button.isConnected) {
       button.disabled = false;

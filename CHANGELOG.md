@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-08-05 - Live Release Verification Progress and Logs
+
+- Persisted release-verifier start, command transitions, and worker job IDs as
+  each frozen check runs, so release progress names the active check and retries
+  resume past already-passed commands.
+- Added a directory-owner-only Admin Web tail for the active verifier command;
+  the browser receives a bounded log excerpt through the control plane and never
+  receives the worker bearer credential.
+- Finalized restarted verification effects from persisted terminal command outcomes,
+  preserving candidate, infrastructure, and timeout classification, and kept live
+  output polling after transient request failures while the run remains active.
+
+## 2026-08-05 - Durable Candidate-Correction Successor Recovery
+
+- Made automatic successor-packaging blockers typed, downstream-scoped incidents so
+  they no longer invalidate a terminal correction task or recursively stall its dependents.
+- Added Admin Web/API actions to retry packaging, create a dependency-free recovery task
+  pinned to the accepted correction branch and commit, or authorize an audited verification
+  waiver; generic blocker resolution cannot bypass this lifecycle.
+- Kept a created verification-replacement task visible on its blocker with task, assignee,
+  commit, dispatch, and status details; replaced duplicate creation with a task-board link and
+  recorded creation as durable blocker progress.
+- Let reconciliation retry while its own blocker remains open, consume passed downstream
+  recovery deliverables, and resolve stale blockers when a direct successor already exists.
+- Migrated legacy `candidate-correction-successor:*` blockers and persisted optional immutable
+  task base-commit pins that are enforced when Git work is prepared.
+- Excluded candidate-correction recovery deliverables from ordinary initial-release tracking so
+  they remain attached to the rejected release lineage during successor reconciliation.
+
+## 2026-08-05 - Human Review Checkbox Accessibility
+
+- Enlarged human-review checklist and carried-finding checkboxes, removing inherited
+  form-control padding so their visible controls match their clickable labels.
+
+## 2026-08-05 - Managed Git Administration Page
+
+- Added a **Git Repositories** Admin Web page for directory-scoped managed-Git catalog search and inspection.
+- Let unlocked operators register repositories, refresh upstream refs, run repository maintenance,
+  change host commit identity, and delete unbound repositories without falling back to the CLI.
+
+## 2026-08-05 - Focused Agent Codex Usage Editor
+
+- Removed session-owned model, expiry, labels, tools, grants, communication access,
+  web search, and HTTP target controls from the Agents page editor; those settings
+  remain editable on the Sessions page.
+- Limited the remaining agent-specific editor to container Codex usage mode and
+  hid the edit action for agents without that setting.
+
+## 2026-08-05 - Durable Initial Release Decisions
+
+- Tracked newly accepted ordinary root deliverables in release-configured
+  projects as durable pending initial-release decisions without automatically
+  creating the first release package.
+- Added exact-scope manager-fallback recovery until a project lead or Team
+  manager requests a release or records an audited not-planned reason, with an
+  audited reopen path and compatible-deliverable batching guidance.
+- Exposed initial-release disposition and audit evidence in Team Delivery while
+  leaving legacy accepted deliverables untracked to avoid migration wake floods.
+
+## 2026-08-02 - Rejected Deliverable Review Integrity
+
+- Prevented formal review from overriding a direct superior rejection and added
+  model-level validation that terminally rejected handoffs cannot become accepted.
+- Added an upgrade migration that restores historically overridden rejections,
+  retires their invalid formal-review paths, reopens replacement work, and flags
+  downstream release history for explicit reconciliation.
+
 ## 2026-08-04 - Retained Wake Role-Description Updates
 
 - Included a persistent agent's full updated role description in retained Team

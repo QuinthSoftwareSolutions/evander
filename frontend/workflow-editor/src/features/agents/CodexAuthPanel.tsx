@@ -178,8 +178,7 @@ export function CodexAuthPanel({
         {selectedAgentStillMetered ? (
           <div className="callout warning-callout">
             The shared account is signed in, but <strong>{selectedAgentUsage.agentLabel}</strong> is
-            still using Metered API. Change that agent&apos;s Codex usage in Edit policy to use the
-            subscription.
+            still using Metered API. Open Edit Codex usage for that agent to use the subscription.
           </div>
         ) : null}
         {status?.signed_in ? (

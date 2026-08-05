@@ -91,6 +91,9 @@ const OperationsDashboard = lazy(() =>
 const IssuesPage = lazy(() =>
   import("./features/issues/IssuesPage").then(({ IssuesPage }) => ({ default: IssuesPage })),
 );
+const ManagedGitRepositoriesPage = lazy(() =>
+  import("./features/managedGit/ManagedGitRepositoriesPage").then(({ ManagedGitRepositoriesPage }) => ({ default: ManagedGitRepositoriesPage })),
+);
 const McpToolsPage = lazy(() =>
   import("./features/mcpTools/McpToolsPage").then(({ McpToolsPage }) => ({ default: McpToolsPage })),
 );
@@ -2266,6 +2269,11 @@ export default function AdminRoot() {
                 <SkillsPage />
               ) : renderedTab === "issues" ? (
                 <IssuesPage />
+              ) : renderedTab === "git-repositories" ? (
+                <ManagedGitRepositoriesPage
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  privilegedUnlocked={privilegeUnlocked}
+                />
               ) : renderedTab === "configuration" ? (
                 <ConfigurationScreen />
               ) : renderedTab === "connectors" ? (

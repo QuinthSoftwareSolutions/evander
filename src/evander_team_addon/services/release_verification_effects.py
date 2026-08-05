@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 import subprocess
 from typing import Any, Protocol
@@ -157,6 +157,7 @@ class EffectReleaseVerificationExecutor:
         session_id: str,
         target_dir: str,
         command: ReleaseVerificationCommand,
+        on_started: Callable[[str], None] | None = None,
     ) -> Mapping[str, Any]:
         provider = AgentExecEffectProvider()
         provider.initialize(
@@ -172,6 +173,7 @@ class EffectReleaseVerificationExecutor:
             ),
             self._runtime_context,
         )
+        provider.set_container_execution_started_callback(on_started)
         return _execute_provider(provider)
 
     def destroy_verifier(self, *, run_id: str, session_id: str) -> None:

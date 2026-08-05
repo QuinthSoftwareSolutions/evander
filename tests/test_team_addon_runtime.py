@@ -54,15 +54,18 @@ from evander_team_addon.models import (
     AgentVoiceProfile,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableInitialReleaseDisposition,
     EphemeralAgentPolicy,
     EphemeralAssignment,
     GitWorkContext,
     GitWorkContextState,
     GitPromotionRecord,
+    InitialReleaseDispositionState,
     PersistentAgent,
     Project,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
     ReleaseGateFailure,
     ReleasePackage,
     ReleaseVerificationRun,
@@ -166,6 +169,7 @@ from evander_team_addon.services.worktree_cleanup_service import (
 )
 from evander_team_addon.services.commands import (
     TeamEphemeralCommandService,
+    TeamGitReleaseCommandService,
     TeamReviewCommandService,
     TeamTaskUpdateCommandService,
 )
@@ -5277,9 +5281,9 @@ def test_manager_fallback_skips_finished_task_deliverable_without_actionable_wor
 
     def _make_task_terminal_without_review(state: TeamState) -> TeamState:
         state.tasks["task"].state = TeamTaskState.FINISHED
-        state.deliverables[
-            "deliverable-feature"
-        ].git_refs.feature_branch = "team/team/features/task-backend"
+        deliverable = state.deliverables["deliverable-feature"]
+        deliverable.state = TeamRecordState.ACCEPTED
+        deliverable.git_refs.feature_branch = "team/team/features/task-backend"
         for item in state.inbox.values():
             item.state = TeamInboxItemState.HANDLED
         return state
@@ -5292,6 +5296,101 @@ def test_manager_fallback_skips_finished_task_deliverable_without_actionable_wor
     manager_runtime = state.agent_runtimes.get("manager")
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
     assert manager_runtime is None or manager_runtime.wake_reason is None
+    assert (
+        state.deliverables["deliverable-feature"].initial_release_disposition
+        is None
+    )
+
+
+def test_manager_fallback_owns_pending_initial_release_until_audited_decision(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    decision_created_at = datetime.now(UTC)
+
+    def _seed_pending_initial_release(state: TeamState) -> TeamState:
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True,
+        )
+        state.tasks["task"].state = TeamTaskState.FINISHED
+        state.deliverables["deliverable-initial-release"] = Deliverable(
+            id="deliverable-initial-release",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="Accepted root work awaiting an initial release decision.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                feature_branch="team/team/features/task-backend",
+                commit_sha="feedface",
+            ),
+            initial_release_disposition=DeliverableInitialReleaseDisposition(
+                created_at=decision_created_at,
+                updated_at=decision_created_at,
+            ),
+            created_at=decision_created_at,
+        )
+        state.tasks["task"].deliverable_ids = ["deliverable-initial-release"]
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_seed_pending_initial_release)
+    lease = _lease_manager_fallback(repo, now=decision_created_at)
+
+    assert lease["reason"] == "manager_fallback"
+    assert lease["dispatch"]["initial_release_decision_deliverable_ids"] == [
+        "deliverable-initial-release"
+    ]
+    assert lease["dispatch"]["project_ids"] == ["project"]
+    context = _team_context_from_prompt(_build_prompt(lease))
+    assert context["manager_fallback_summary"][
+        "pending_initial_release_decisions"
+    ] == [
+        {
+            "artifact_ref_count": 0,
+            "deliverable_id": "deliverable-initial-release",
+            "disposition": "pending",
+            "producer_agent_id": "backend",
+            "project_id": "project",
+            "release_policy_configured": True,
+            "reviewed_commit_sha": "feedface",
+            "summary": "Accepted root work awaiting an initial release decision.",
+            "task_id": "task",
+            "task_title": "Build backend",
+        }
+    ]
+
+    state, result = TeamGitReleaseCommandService(
+        repo
+    ).decide_initial_release_command(
+        session_id="session-manager",
+        deliverable_ids=["deliverable-initial-release"],
+        decision="not_planned",
+        reason="This result is intentionally internal-only.",
+        request_id="request-manager-initial-release-decision",
+    )
+
+    assert result["success"] is True
+    disposition = state.deliverables[
+        "deliverable-initial-release"
+    ].initial_release_disposition
+    assert disposition is not None
+    assert disposition.state == InitialReleaseDispositionState.NOT_PLANNED
+    assert disposition.decided_by_actor == "agent:manager"
+    assert disposition.reason == "This result is intentionally internal-only."
+
+    state, finalized = _team_runtime_service(
+        repo
+    ).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=lease["dispatch"]["id"],
+    )
+    assert finalized["success"] is True
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=decision_created_at + timedelta(hours=1),
+    )
+    assert leases == []
+    assert state.agent_runtimes["manager"].active_dispatch_id is None
 
 
 def test_manager_fallback_does_not_route_superior_acceptance_for_review(

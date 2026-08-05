@@ -16,7 +16,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("agents structured policy round-trips labels and HTTP targets", async (t) => {
+test("agents edit dialog only round-trips agent-specific Codex usage", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -38,7 +38,7 @@ test("agents structured policy round-trips labels and HTTP targets", async (t) =
   const patchBodies = [];
   const agentRecord = {
     agent_id: "agent-1",
-    backend: "libvirt_vm",
+    backend: "container_worker_vm",
     target_name: "Dispatch agent",
     session_id: "session-1",
     directory_path: "root/team",
@@ -48,12 +48,20 @@ test("agents structured policy round-trips labels and HTTP targets", async (t) =
     updated_at: "2026-05-18T10:01:00Z",
     host: {
       state: "running",
+      codex_usage: {
+        agent_provider: "codex",
+        effective_codex_auth_mode: "chatgpt_subscription",
+        codex_auth_mode_source: "session_override",
+      },
       labels: {
         "vm-type": "issue",
       },
       session_policy: {
         session_id: "session-1",
         model: "gpt-5.4",
+        codex_auth_mode: "chatgpt_subscription",
+        effective_codex_auth_mode: "chatgpt_subscription",
+        codex_auth_mode_source: "session_override",
         expires_at: "2026-05-18T12:00:00Z",
         allowed_tools: ["prompt_agent"],
         approval_required_tools: [],
@@ -239,24 +247,8 @@ test("agents structured policy round-trips labels and HTTP targets", async (t) =
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         patchBodies.push(body);
-        assert.deepEqual(body.labels, { team: "ops" });
-        assert.deepEqual(body.allowed_tools, ["prompt_agent"]);
-        assert.deepEqual(body.allowed_script_names, ["collect-logs"]);
-        assert.deepEqual(body.discord_channels, []);
-        assert.deepEqual(body.teams_channel_allowlist, []);
-        assert.deepEqual(body.email_mailboxes, []);
-        assert.deepEqual(body.email_folders, []);
-        assert.deepEqual(body.http_targets, {
-          targets: {
-            api: {
-              base_url: "https://api.example.test/v2",
-              metadata: {
-                owner: "workflow",
-              },
-            },
-          },
-        });
-        await route.fulfill(jsonResponse({ message: "Updated agent policy.", target_name: "Dispatch agent" }));
+        assert.deepEqual(body, { codex_auth_mode: "metered_api" });
+        await route.fulfill(jsonResponse({ message: "Updated Codex usage.", target_name: "Dispatch agent" }));
         return;
       }
       await route.continue();
@@ -274,61 +266,36 @@ test("agents structured policy round-trips labels and HTTP targets", async (t) =
   await page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" });
   await page.locator(".agent-list-item.selected").waitFor({ state: "visible" });
 
-  const editButton = page.getByRole("button", { name: "Edit policy" });
+  const editButton = page.getByRole("button", { name: "Edit Codex usage" });
   await editButton.click();
-  const editDialog = page.locator(".modal-card[aria-label='Edit agent policy']");
+  const editDialog = page.locator(".modal-card[aria-label='Edit Codex usage']");
   await editDialog.waitFor({ state: "visible" });
 
-  const labelsField = editDialog.locator(".field-stack").filter({ hasText: "Labels" });
-  assert.equal(await labelsField.locator("textarea").count(), 0);
-  for (const label of [
+  for (const duplicate of [
+    "Model",
+    "Renew TTL hours",
+    "Labels",
+    "HTTP targets",
     "Allowed tools",
+    "Connector grants",
+    "Host directory grants",
+    "Web search",
     "Allowed scripts",
-    "Discord channels or targets",
-    "Teams targets",
-    "Email mailboxes",
-    "Email folders",
+    "Approval notifications",
+    "Communication targets",
+    "Email mailbox access",
   ]) {
     assert.equal(
-      await editDialog.locator(".field-stack").filter({ hasText: label }).locator("textarea").count(),
+      await editDialog.getByText(duplicate, { exact: true }).count(),
       0,
-      `${label} should use structured controls instead of a textarea`,
+      `${duplicate} should only be editable on Sessions`,
     );
   }
 
-  const firstRow = labelsField.locator(".structured-input-row").first();
-  await firstRow.locator("input").nth(1).fill("ops");
-  const scriptsField = editDialog.locator(".field-stack").filter({ hasText: "Allowed scripts" });
-  await scriptsField.getByRole("button", { name: "Add script" }).click();
-  await scriptsField.locator(".structured-input-row").first().locator("input").fill("collect-logs");
-  const httpTargetsField = editDialog.locator(".field-stack").filter({ hasText: "HTTP targets" });
-  const httpTargetInputs = httpTargetsField.locator(".http-target-row input");
-  assert.equal(await httpTargetInputs.nth(0).inputValue(), "api");
-  assert.equal(await httpTargetInputs.nth(1).inputValue(), "https://api.example.test/v1");
-  await httpTargetInputs.nth(1).fill("https://api.example.test/v2/");
+  const usageSelect = editDialog.getByRole("combobox", { name: "Codex usage" });
+  assert.equal(await usageSelect.inputValue(), "chatgpt_subscription");
+  await usageSelect.selectOption("metered_api");
   await editDialog.getByRole("button", { name: "Save" }).click();
-  await page.locator(".modal-card[aria-label='Edit agent policy']").waitFor({ state: "hidden" });
+  await page.locator(".modal-card[aria-label='Edit Codex usage']").waitFor({ state: "hidden" });
   assert.equal(patchBodies.length, 1);
-
-  await editButton.click();
-  await editDialog.waitFor({ state: "visible" });
-  await labelsField.getByRole("button", { name: "Add label" }).click();
-  const duplicateRow = labelsField.locator(".structured-input-row").nth(1);
-  await duplicateRow.locator("input").nth(0).fill("team");
-  await duplicateRow.locator("input").nth(1).fill("ops");
-  await editDialog.getByRole("button", { name: "Save" }).click();
-  await page.locator(".callout.error-callout").filter({ hasText: "Labels contains duplicate key 'team'." }).first().waitFor({ state: "visible" });
-  assert.equal(patchBodies.length, 1);
-
-  await editDialog.getByRole("button", { name: "Close" }).click();
-  await page.getByRole("button", { name: "Create", exact: true }).click();
-  const createDialog = page.locator(".modal-card[aria-label='Create agent']");
-  await createDialog.waitFor({ state: "visible" });
-  const createHttpTargets = createDialog.locator(".field-stack").filter({ hasText: "HTTP targets" });
-  await createHttpTargets.getByRole("button", { name: "Add target" }).click();
-  const createTargetInputs = createHttpTargets.locator(".http-target-row input");
-  await createTargetInputs.nth(0).fill("docs");
-  await createTargetInputs.nth(1).fill("https://docs.example.test/");
-  assert.equal(await createTargetInputs.nth(0).inputValue(), "docs");
-  assert.equal(await createTargetInputs.nth(1).inputValue(), "https://docs.example.test/");
 });

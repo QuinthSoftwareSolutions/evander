@@ -609,6 +609,28 @@ def _prepare_blocker_source_for_resolution(
 ) -> None:
     """Restore the source lifecycle instead of blindly resolving its blocker."""
 
+    if (
+        blocker.source_kind
+        == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+    ):
+        raise TeamCommandValidationError(
+            code="candidate_correction_recovery_command_required",
+            message=(
+                "candidate-correction successor blockers require the typed "
+                "retry, verified-replacement, or verification-waiver recovery; "
+                "generic blocker resolution cannot bypass that lifecycle"
+            ),
+            correction_context={
+                "blocker_id": blocker.id,
+                "source_id": blocker.source_id,
+                "recovery_actions": [
+                    "retry",
+                    "create_verified_replacement",
+                    "authorize_verification_waiver",
+                ],
+            },
+        )
+
     if blocker.source_kind == TeamBlockerSourceKind.TASK:
         task = state.tasks.get(blocker.source_id)
         if task is not None and task.state == TeamTaskState.BLOCKED:
