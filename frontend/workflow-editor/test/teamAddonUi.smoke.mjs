@@ -120,6 +120,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.human-review-checklist-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
+  assert.match(
+    stylesheet,
+    /\.human-review-decision-form \.checkbox-label > input\[type="checkbox"\] \{[\s\S]*?width: 1\.25rem;[\s\S]*?height: 1\.25rem;[\s\S]*?padding: 0;/,
+  );
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
   assert.match(script, /data-review-profile-criteria-editor/);
@@ -11596,9 +11600,15 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await page.unroute(decisionEndpoint);
   await decisionForm.waitFor({ state: "visible" });
   await decisionForm.locator('[data-human-checklist-id="smoke-release"]').check();
-  await decisionForm
-    .locator('[data-confirm-finding-id="human-finding-carried-accessibility"]')
-    .check();
+  const carriedFindingConfirmation = decisionForm.locator(
+    '[data-confirm-finding-id="human-finding-carried-accessibility"]',
+  );
+  const carriedFindingConfirmationBox = await carriedFindingConfirmation.boundingBox();
+  assert.ok(
+    carriedFindingConfirmationBox?.width >= 20 && carriedFindingConfirmationBox?.height >= 20,
+    "carried-finding confirmation checkbox should have a visible 20px target",
+  );
+  await carriedFindingConfirmation.check();
   await decisionForm
     .locator('textarea[name="summary"]')
     .fill("Smoke test passed against the pinned preview.");

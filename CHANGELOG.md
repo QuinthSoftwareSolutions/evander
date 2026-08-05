@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-05 - Human Review Checkbox Accessibility
+
+- Enlarged human-review checklist and carried-finding checkboxes, removing inherited
+  form-control padding so their visible controls match their clickable labels.
+
 ## 2026-08-05 - Focused Agent Codex Usage Editor
 
 - Removed session-owned model, expiry, labels, tools, grants, communication access,

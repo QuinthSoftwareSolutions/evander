@@ -6680,6 +6680,17 @@ label textarea {
   gap: 0.4rem;
 }
 
+.human-review-decision-form .checkbox-label > input[type="checkbox"] {
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  min-width: 1.25rem;
+  margin: 0.1rem 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .human-review-findings-editor {
   display: grid;
   gap: 0.5rem;
