@@ -6,6 +6,12 @@
   linked to one pull request with their normalized assignee identities for
   workflow-controlled commit authorship and routing.
 
+## 2026-08-05 - Manager Fallback Role-Description Delivery
+
+- Included role-description change metadata and its SHA-256 fingerprint in
+  manager-fallback leases, allowing successful fallback resumes to record the
+  delivered role context instead of failing post-resume.
+
 ## 2026-08-05 - Live Release Verification Progress and Logs
 
 - Persisted release-verifier start, command transitions, and worker job IDs as
