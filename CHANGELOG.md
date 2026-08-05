@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-05 - Direct Team Chat File Downloads
+
+- Made ordinary clicks on non-image Team Chat attachments download the selected file directly, while image attachments retain their new-tab preview behavior.
+
 ## 2026-08-05 - Pull Request Work-Item Workflow Query
 
 - Added Azure DevOps `query:pull-request:work-items`, which returns work items

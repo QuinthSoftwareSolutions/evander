@@ -4979,6 +4979,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert script.headers["cache-control"] == "no-cache"
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
     assert "createTeamMailController" in script.text
+    assert 'const linkAttributes = image' in script.text
+    assert 'download="${escapeAttr(filename)}"' in script.text
 
     mail_script = enabled.get("/addons/team-addon/team-mail.js")
     assert mail_script.status_code == 200
