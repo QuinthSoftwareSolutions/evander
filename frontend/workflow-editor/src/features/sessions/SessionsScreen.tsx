@@ -213,6 +213,7 @@ type ManagedGitGrant = {
 type ManagedGitRepository = {
   managed_repo_id: string;
   display_name?: string;
+  canonical_repository_url?: string;
   directory_path?: string;
 };
 
@@ -1540,6 +1541,19 @@ export function SessionsScreen() {
     return listItem;
   }, [detail?.session, response?.items, selectedSessionId]);
 
+  const gitRepositoriesById = useMemo(
+    () => new Map(gitRepositories.map((repository) => [repository.managed_repo_id, repository])),
+    [gitRepositories],
+  );
+  const sortedGitGrants = useMemo(
+    () => [...(detail?.git_grants ?? [])].sort((left, right) => {
+      const leftName = gitRepositoriesById.get(left.managed_repo_id)?.display_name?.trim() || left.managed_repo_id;
+      const rightName = gitRepositoriesById.get(right.managed_repo_id)?.display_name?.trim() || right.managed_repo_id;
+      return sessionListCollator.compare(leftName, rightName);
+    }),
+    [detail?.git_grants, gitRepositoriesById],
+  );
+
   const visibleWakeScheduleItems = useMemo(
     () => filterVisibleWakeSchedules(detail?.wake_schedules ?? [], {
       showPastOneTime: showPastOneTimeWakeSchedules,
@@ -2416,31 +2430,50 @@ export function SessionsScreen() {
               </div>
             </article>
             <article className="panel">
-              <div className="panel-header">
-                <h3>Repository access</h3>
-                <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
-              </div>
-              <div className="panel-body stack-layout">
-                {(detail?.git_grants ?? []).length > 0 ? (
-                  <div className="feature-list">
-                    {(detail?.git_grants ?? []).map((grant) => (
-                      <div className="feature-list-item" key={grant.managed_repo_id}>
-                        <div>
-                          <strong>{grant.managed_repo_id}</strong>
-                          <div className="panel-meta">
-                            {grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="admin-shell-button admin-shell-button-muted"
-                          onClick={() => void revokeGitGrant(grant)}
-                          disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
-                        >
-                          {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
-                        </button>
-                      </div>
-                    ))}
+              <details className="compact-disclosure session-repository-access">
+                <summary className="compact-disclosure-summary feature-list-title-row">
+                  <h3>Repository access</h3>
+                  <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
+                </summary>
+                <div className="panel-body stack-layout">
+                {sortedGitGrants.length > 0 ? (
+                  <div className="session-git-grant-table-wrap">
+                    <table className="session-git-grant-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Repository ID</th>
+                          <th scope="col">Name</th>
+                          <th scope="col">URL</th>
+                          <th scope="col">Access</th>
+                          <th scope="col"><span className="sr-only">Actions</span></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedGitGrants.map((grant) => {
+                          const repository = gitRepositoriesById.get(grant.managed_repo_id);
+                          const displayName = repository?.display_name?.trim();
+                          const canonicalUrl = repository?.canonical_repository_url?.trim();
+                          return (
+                            <tr key={grant.managed_repo_id}>
+                              <td><code>{grant.managed_repo_id}</code></td>
+                              <td>{displayName || "Unavailable"}</td>
+                              <td className="session-git-grant-url">{canonicalUrl || "Unavailable"}</td>
+                              <td>{grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}</td>
+                              <td className="session-git-grant-action">
+                                <button
+                                  type="button"
+                                  className="admin-shell-button admin-shell-button-muted"
+                                  onClick={() => void revokeGitGrant(grant)}
+                                  disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
+                                >
+                                  {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 ) : (
                   <div className="empty-state">No managed repository grants.</div>
@@ -2494,7 +2527,8 @@ export function SessionsScreen() {
                 <p className="panel-meta">
                   Read-only session grants support repeated clone, fetch, and pull. Revocation leaves existing checkout files in place.
                 </p>
-              </div>
+                </div>
+              </details>
             </article>
             {selectedSession.container_lifecycle ? (
               <article className="panel">

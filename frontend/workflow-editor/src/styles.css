@@ -5922,6 +5922,55 @@ select {
   min-width: 0;
 }
 
+.session-git-grant-table-wrap {
+  overflow-x: auto;
+}
+
+.session-git-grant-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.session-git-grant-table th,
+.session-git-grant-table td {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.session-git-grant-table th {
+  padding: 0 0.55rem 0.4rem;
+  color: #6d5c4c;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.session-git-grant-table td {
+  padding: 0.55rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.session-git-grant-table code,
+.session-git-grant-url {
+  overflow-wrap: anywhere;
+}
+
+.session-git-grant-action {
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+:root[data-theme="dark"] .session-git-grant-table th {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .session-git-grant-table td {
+  border-top-color: rgba(125, 170, 190, 0.16);
+}
+
 .host-directory-add {
   display: grid;
   gap: 0.55rem;
