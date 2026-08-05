@@ -1135,11 +1135,20 @@ class TeamRuntimeService:
                     state_model.blockers[blocker_id].model_dump(mode="json")
                     for blocker_id in durable_dispatch.blocker_ids
                 ]
+                manager_payload = _agent_payload(state_model, manager)
+                role_description_fingerprint = agent_role_description_fingerprint(
+                    manager_payload
+                )
                 teams_with_lease.add(team.id)
                 leases.append(
                     {
-                        "agent": _agent_payload(state_model, manager),
+                        "agent": manager_payload,
                         "runtime": manager_runtime.model_dump(mode="json"),
+                        "role_description_changed": (
+                            manager_runtime.last_delivered_role_description_fingerprint
+                            != role_description_fingerprint
+                        ),
+                        "role_description_fingerprint": role_description_fingerprint,
                         "dispatch_id": dispatch_id,
                         "has_prior_successful_wake": has_prior_successful_wake,
                         "reason": "manager_fallback",

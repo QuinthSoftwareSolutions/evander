@@ -956,6 +956,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
 | `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `ado_organization`, `project`, `include_reviewers`, `include_commits`, `outputs` |
+| `query:pull-request:work-items` | `provider`, `repo`, `pr_id` | `directory_path`, `ado_organization`, `project`, `outputs` |
 | `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `ado_organization`, `project`, `cursor`, `outputs` |
 | `query:communication:messages` | `communication_target_id` | `directory_path`, `limit`, `cursor`, `before_cursor`, `thread_id`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
@@ -992,7 +993,7 @@ For ADO work-item discovery, `query_mode=structured_filters` uses the structured
 while `query_mode=manual_wiql` uses the explicit WIQL text and ignores structured filters. Omitted
 `query_mode` preserves legacy behavior by inferring Manual WIQL when `wiql` is set.
 
-`query:pull-request:get`, `query:pull-request:list`, `query:pull-request:feedback`,
+`query:pull-request:get`, `query:pull-request:work-items`, `query:pull-request:list`, `query:pull-request:feedback`,
 `effect:pull-request:update`, `effect:pull-request:add-tag`, and
 `effect:pull-request:remove-tag` accept Azure DevOps `provider` as
 `azure_devops`, `azure-devops`, or `ado`. `query:pull-request:get` also accepts
@@ -1008,7 +1009,10 @@ public Azure DevOps URLs and are migrated to that identifier. GitHub uses direct
 `github_token_env` when configured and can fetch public data without a token.
 Set `include_commits=true` to fetch commit details and `include_reviewers=true`
 to fetch review API data; `include_reviewers=false` returns an empty reviewer
-list. `query:pull-request:feedback` fetches normalized feedback for one
+list. `query:pull-request:work-items` is Azure DevOps-only and returns the linked
+`work_items` in PR-link order, each with its work-item ID, title, URL, and normalized
+assignee identity when one is assigned. It does not persist cursor or workflow state.
+`query:pull-request:feedback` fetches normalized feedback for one
 provider/repo/PR stream and returns `feedback` plus `next_cursor`; workflows own
 where that cursor is stored.
 

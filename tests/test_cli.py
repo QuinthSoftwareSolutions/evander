@@ -1281,8 +1281,8 @@ def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_wit
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "written=0 skipped=1 unchanged=6" in result.output
-    assert "skipped: policy" in result.output
+    assert "written=0 skipped=2 unchanged=5" in result.output
+    assert "skipped: policy, providers" in result.output
     policy_payload = json.loads(
         (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(
             encoding="utf-8"
@@ -1319,7 +1319,8 @@ def test_migrate_global_config_to_root_overwrites_when_requested(tmp_path: Path)
     )
 
     assert result.exit_code == 0
-    assert "written=1 skipped=0 unchanged=6" in result.output
+    assert "written=2 skipped=0 unchanged=5" in result.output
+    assert "written: policy, providers" in result.output
     policy_payload = json.loads(
         (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(
             encoding="utf-8"

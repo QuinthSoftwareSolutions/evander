@@ -178,6 +178,7 @@ unknown field is ignored.
 | MCP Tools | Which directory policy controls approval and denial for each tool? |
 | Connectors | Which named host-side integrations and operations are available in this directory? |
 | Host Directories | Which approved host roots, agent capabilities, health checks, and quarantined entries are managed here? |
+| Git Repositories | Which managed repositories are registered, when were they refreshed, and what host commit identity do they use? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |

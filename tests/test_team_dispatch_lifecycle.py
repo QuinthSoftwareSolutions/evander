@@ -1055,6 +1055,46 @@ def test_project_lead_links_accepted_cross_task_replacement_from_inbox_scope(
         return state
 
     repository.update(_add_replacement_handoff)
+    admin.create_team(
+        team_id="unrelated-team",
+        name="Unrelated Team",
+        manager_agent_id="unrelated-manager",
+        manager_session_id="session-unrelated-manager",
+        expected_revision=repository.read().revision,
+    )
+
+    admin.create_operator_directive(
+        team_id="unrelated-team",
+        message="Establish an active adversarial dispatch lease.",
+        expected_revision=repository.read().revision,
+    )
+    _state, unrelated_leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="unrelated-manager",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(unrelated_leases) == 1
+    unrelated_dispatch_id = unrelated_leases[0]["dispatch_id"]
+
+    def _widen_unrelated_manager_dispatch_scope(state):
+        state.dispatches[unrelated_dispatch_id].project_ids = ["project"]
+        return state
+
+    repository.update(_widen_unrelated_manager_dispatch_scope)
+    unchanged, forbidden = TeamDeliverableSubmissionCommandService(
+        repository
+    ).link_deliverable_replacement_command(
+        session_id="session-unrelated-manager",
+        predecessor_deliverable_id="rejected-deliverable",
+        replacement_deliverable_id="accepted-replacement",
+        reason="Cross the team boundary.",
+        request_id="unrelated-manager-links-replacement",
+    )
+
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "deliverable_replacement_forbidden"
+    assert unchanged.deliverables["rejected-deliverable"].superseded_by_deliverable_id is None
+
     _state, leases = TeamRuntimeService(repository).lease_due_agents(
         agent_id="lead",
         now=LEASE_NOW,

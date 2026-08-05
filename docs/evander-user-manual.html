@@ -14070,6 +14070,17 @@ interrupted or older states and recognizes an existing direct successor
 instead of duplicating it. If Team cannot validate or package the
 resolved correction, it opens a durable blocker for the correction owner
 rather than waiting for a manager to remember the release.</p>
+<p>That blocker is a downstream release-recovery incident, not a reason
+to reopen the completed correction task. It therefore does not
+invalidate the correction or tasks that depend on it. In Admin Web,
+<strong>Retry packaging</strong> re-evaluates the current evidence,
+<strong>Create verified replacement</strong> creates dependency-free
+work pinned to the accepted correction branch and exact commit, and
+<strong>Authorize waiver</strong> records the operator and reason before
+packaging. Generic blocker resolution cannot bypass these actions.
+Reconciliation continues while the incident remains open, accepts a
+passed downstream recovery deliverable, and resolves the incident
+immediately when a direct successor already exists.</p>
 <p>The system refuses a cosmetic new release of the same failed
 deliverables and tree.</p>
 <h3 id="retryable-process-failures">Retryable process failures</h3>
@@ -17021,29 +17032,34 @@ this directory?</td>
 quarantined entries are managed here?</td>
 </tr>
 <tr class="even">
+<td>Git Repositories</td>
+<td>Which managed repositories are registered, when were they refreshed,
+and what host commit identity do they use?</td>
+</tr>
+<tr class="odd">
 <td>Tool Calls</td>
 <td>What was invoked, allowed, denied, or failed?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Configuration</td>
 <td>Which host and directory-scoped values resolve here?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Reports</td>
 <td>What happened during orchestration and operations, including effects
 and gates?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Users &amp; Groups</td>
 <td>Who can authenticate, and which groups/permissions govern operator
 access?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Workers</td>
 <td>Which host/background systemd workers are configured, active, or
 reporting journal errors?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Workflow</td>
 <td>Which pack revision is active, what do its graphs define, and what
 is the runtime activity?</td>

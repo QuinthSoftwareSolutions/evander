@@ -7151,14 +7151,13 @@ the release.
 
 That blocker is a downstream release-recovery incident, not a reason to reopen
 the completed correction task. It therefore does not invalidate the correction
-or tasks that depend on it. In Admin Web, <strong>Retry packaging</strong>
-re-evaluates the current evidence, <strong>Create verified replacement</strong>
-creates dependency-free work pinned to the accepted correction branch and exact
-commit, and <strong>Authorize waiver</strong> records the operator and reason
-before packaging. Generic blocker resolution cannot bypass these actions.
-Reconciliation continues while the incident remains open, accepts a passed
-downstream recovery deliverable, and resolves the incident immediately when a
-direct successor already exists.
+or tasks that depend on it. In Admin Web, **Retry packaging** re-evaluates the
+current evidence, **Create verified replacement** creates dependency-free work
+pinned to the accepted correction branch and exact commit, and **Authorize
+waiver** records the operator and reason before packaging. Generic blocker
+resolution cannot bypass these actions. Reconciliation continues while the
+incident remains open, accepts a passed downstream recovery deliverable, and
+resolves the incident immediately when a direct successor already exists.
 
 The system refuses a cosmetic new release of the same failed deliverables and tree.
 
@@ -8655,6 +8654,7 @@ unknown field is ignored.
 | MCP Tools | Which directory policy controls approval and denial for each tool? |
 | Connectors | Which named host-side integrations and operations are available in this directory? |
 | Host Directories | Which approved host roots, agent capabilities, health checks, and quarantined entries are managed here? |
+| Git Repositories | Which managed repositories are registered, when were they refreshed, and what host commit identity do they use? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |

@@ -327,6 +327,30 @@ class PullRequestGetQueryDefinition(QueryDefinition):
         return value
 
 
+class PullRequestWorkItemsQueryDefinition(QueryDefinition):
+    type: Literal["query:pull-request:work-items"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip()
+            if normalized in {"ado", "azure-devops", "azure_devops"}:
+                return "azure_devops"
+        return value
+
+
 class SemanticStoreStatusQueryDefinition(QueryDefinition):
     type: Literal["query:semantic:store-status"]
     collection_name: ConfigValue | None = None
