@@ -49,6 +49,7 @@ from evander.admin.web.rbac import (
     AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
     OWNER_GROUP_ID,
+    TEAM_CHATS_MUTATE_PERMISSION,
     TEAM_CHATS_READ_ALL_PERMISSION,
     WORKFLOW_PACKS_MANAGE_PERMISSION,
     WORKFLOW_MAINTAINER_GROUP_ID,
@@ -9706,6 +9707,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
         WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_MUTATE_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
     }
     assert session.json()["permissions"] == session.json()["effective_permissions"]
@@ -9718,6 +9720,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
         WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_MUTATE_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
     }
 

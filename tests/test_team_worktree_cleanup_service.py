@@ -92,7 +92,10 @@ def _seed_cleanup_state(
         lead_agent_id="lead",
         lead_session_id="session-lead",
         goals=[ProjectGoal(id="goal", description="Ship work")],
-        git=ProjectGitConfig(managed_repo_id=_MANAGED_REPO_ID),
+        git=ProjectGitConfig(
+            managed_repo_id=_MANAGED_REPO_ID,
+            base_branch="main",
+        ),
         expected_revision=1,
     )
     admin.create_role(
