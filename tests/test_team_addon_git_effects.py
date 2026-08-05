@@ -2209,6 +2209,7 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
             required_source_ancestor_commit_sha="a" * 40,
             expected_source_commits={"team/team/features/task-backend": "b" * 40},
             allowed_changed_paths=["src/backend.py"],
+            commit_message="Assemble release release-1",
         ),
         EffectRuntimeContext(admin_service=admin, metadata={"directory_path": "root"}),
     )
@@ -2227,6 +2228,7 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
                 "required_source_ancestor_commit_sha": "a" * 40,
                 "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
             "allowed_changed_paths": ["src/backend.py"],
+            "commit_message": "Assemble release release-1",
         }
     ]
 

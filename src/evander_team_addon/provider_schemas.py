@@ -373,6 +373,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     required_source_ancestor_commit_sha: ConfigValue | None = None
     expected_source_commits: ConfigValue
     allowed_changed_paths: ConfigValue | None = None
+    commit_message: ConfigValue | None = None
 
     @field_validator("source_branches")
     @classmethod

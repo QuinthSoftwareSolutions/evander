@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-05 - Compact Team Git Integration History
+
+- Fast-forwarded Team promotions and dependency preparation when one reviewed commit already
+  contains the complete validated change set, avoiding redundant merge commits.
+- Collapsed genuinely divergent inputs into one meaningful multi-parent integration commit while
+  preserving exact reviewed-commit ancestry, provenance, manifest checks, and configured Git
+  identities across VM and container-worker backends.
+
 ## 2026-08-05 - Bounded Queued-Prompt Activity Lookup
 
 - Stopped queued-prompt dispatch from materializing the full effect-execution history when the

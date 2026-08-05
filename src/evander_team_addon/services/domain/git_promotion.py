@@ -425,6 +425,7 @@ def _apply_git_feature_update(
         "expected_source_commits": expected_source_commits,
         "target_branch": target_branch,
         "task_id": task_id,
+        "commit_message": f"Integrate accepted work for task {task_id}",
     }
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
     return promotion_id

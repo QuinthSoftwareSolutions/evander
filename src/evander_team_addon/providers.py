@@ -4999,6 +4999,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             "required_source_ancestor_commit_sha",
             "expected_source_commits",
             "allowed_changed_paths",
+            "commit_message",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -5046,6 +5047,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 self.runtime_context,
                 _optional_text(payload.get("directory_path")),
             )
+            commit_message = _optional_text(payload.get("commit_message"))
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))
         if not source_branches:
@@ -5068,6 +5070,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 required_source_ancestor_commit_sha=(required_source_ancestor_commit_sha),
                 expected_source_commits=expected_source_commits,
                 allowed_changed_paths=allowed_changed_paths,
+                commit_message=commit_message,
             )
         except Exception as exc:
             return _consolidation_failure(target_branch, str(exc))
@@ -8271,6 +8274,15 @@ def _prepare_project_repo_task_worktree(
     )
     execution_backend = _optional_text(project_repo.get("execution_backend")) or selected_backend
     if execution_backend == "container_worker_vm":
+        dependency_composition_kwargs = (
+            {
+                "dependency_composition_commit_message": (
+                    f"Compose accepted dependencies for task {task_id}"
+                )
+            }
+            if dependency_git_sources
+            else {}
+        )
         try:
             record = container_backend(context, config).prepare_task_worktree(
                 session_id=session_id,
@@ -8283,6 +8295,7 @@ def _prepare_project_repo_task_worktree(
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
                 dependency_merge_author_name=dependency_merge_author_identity.name,
                 dependency_merge_author_email=dependency_merge_author_identity.email,
+                **dependency_composition_kwargs,
             )
         except Exception as exc:
             if dependency_git_sources or pinned_base_commit is not None:
@@ -8353,11 +8366,16 @@ def _prepare_project_repo_task_worktree(
     quoted_dependency_committer_email = shlex.quote(
         TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email
     )
+    quoted_dependency_commit_message = shlex.quote(
+        f"Compose accepted dependencies for task {task_id}"
+    )
     lock_path = f"/home/agent/.evander/locks/task-worktree-{repo_name}.lock"
     quoted_lock = shlex.quote(lock_path)
     dependency_assignment_lines: list[str] = []
     dependency_fetch_lines: list[str] = []
+    dependency_frontier_lines: list[str] = []
     dependency_merge_lines: list[str] = []
+    dependency_parent_lines: list[str] = []
     dependency_verify_lines: list[str] = []
     dependency_adoption_lines: list[str] = []
     for index, source in enumerate(dependency_git_sources):
@@ -8390,17 +8408,37 @@ def _prepare_project_repo_task_worktree(
         )
         dependency_merge_lines.extend(
             (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
                 (
-                    f'if ! git -C "$target" merge --no-ff --no-edit '
+                    f'  if ! git -C "$target" merge --no-ff -m '
+                    f'"Temporary Team dependency integration" '
                     f'"$dependency_commit_{index}"; then'
                 ),
-                '  git -C "$target" merge --abort >/dev/null 2>&1 || true',
-                '  git -C "$target" reset --hard "$head_before" >/dev/null',
+                '    git -C "$target" merge --abort >/dev/null 2>&1 || true',
+                '    git -C "$target" reset --hard "$head_before" >/dev/null',
                 (
-                    f"  echo dependency Git composition conflict for task "
+                    f"    echo dependency Git composition conflict for task "
                     f"{source_task} deliverable {source_deliverable} >&2"
                 ),
-                "  exit 1",
+                "    exit 1",
+                "  fi",
+                "fi",
+            )
+        )
+        dependency_frontier_lines.extend(
+            (
+                f"dependency_needed_{index}=1",
+                (
+                    f'if git -C "$target" merge-base --is-ancestor '
+                    f'"$dependency_commit_{index}" "$head_before"; then '
+                    f"dependency_needed_{index}=0; fi"
+                ),
+            )
+        )
+        dependency_parent_lines.extend(
+            (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
+                f'  set -- "$@" -p "$dependency_commit_{index}"',
                 "fi",
             )
         )
@@ -8412,6 +8450,41 @@ def _prepare_project_repo_task_worktree(
                 f'if ! git -C "$target" merge-base --is-ancestor '
                 f'"$dependency_commit_{index}" "$head_before"; then '
                 "all_dependencies_present=0; fi"
+            )
+        )
+    for index, _source in enumerate(dependency_git_sources):
+        for other_index, _other_source in enumerate(dependency_git_sources):
+            if index == other_index:
+                continue
+            if other_index < index:
+                dependency_frontier_lines.extend(
+                    (
+                        f'if [ "$dependency_needed_{index}" = 1 ] '
+                        f'&& [ "$dependency_commit_{index}" = '
+                        f'"$dependency_commit_{other_index}" ]; then',
+                        f"  dependency_needed_{index}=0",
+                        "fi",
+                    )
+                )
+            dependency_frontier_lines.extend(
+                (
+                    f'if [ "$dependency_needed_{index}" = 1 ] '
+                    f'&& [ "$dependency_commit_{index}" != '
+                    f'"$dependency_commit_{other_index}" ] '
+                    f'&& git -C "$target" merge-base --is-ancestor '
+                    f'"$dependency_commit_{index}" "$dependency_commit_{other_index}"; then',
+                    f"  dependency_needed_{index}=0",
+                    "fi",
+                )
+            )
+    dependency_frontier_lines.extend(("frontier_count=0", 'frontier_commit=""'))
+    for index, _source in enumerate(dependency_git_sources):
+        dependency_frontier_lines.extend(
+            (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
+                "  frontier_count=$((frontier_count + 1))",
+                f'  frontier_commit="$dependency_commit_{index}"',
+                "fi",
             )
         )
     command_lines = [
@@ -8429,6 +8502,7 @@ def _prepare_project_repo_task_worktree(
         f"pinned_base_commit={quoted_pinned_base}",
         f"pinned_base_tree={quoted_pinned_tree}",
         f"expected_dependency_provenance={quoted_dependency_provenance}",
+        f"dependency_commit_message={quoted_dependency_commit_message}",
         f"lock={quoted_lock}",
         'mkdir -p "$(dirname "$lock")"',
         'exec 9>"$lock"',
@@ -8507,7 +8581,22 @@ def _prepare_project_repo_task_worktree(
             '    if [ "$created" != 1 ]; then test -n "$configured_base"; '
             'test "$head_before" = "$configured_base"; fi'
         ),
-        *[f"    {line}" for line in dependency_merge_lines],
+        *[f"    {line}" for line in dependency_frontier_lines],
+        '    if [ "$frontier_count" = 1 ] && git -C "$target" merge-base '
+        '--is-ancestor "$head_before" "$frontier_commit"; then',
+        '      git -C "$target" reset --hard "$frontier_commit" >/dev/null',
+        "    else",
+        *[f"      {line}" for line in dependency_merge_lines],
+        '      result_tree="$(git -C "$target" rev-parse HEAD^{tree})"',
+        '      set -- git -C "$target" commit-tree "$result_tree" -p "$head_before"',
+        *[f"      {line}" for line in dependency_parent_lines],
+        '      set -- "$@" -m "$dependency_commit_message"',
+        '      if ! composed_commit="$("$@")"; then',
+        '        git -C "$target" reset --hard "$head_before" >/dev/null',
+        "        exit 1",
+        "      fi",
+        '      git -C "$target" reset --hard "$composed_commit" >/dev/null',
+        "    fi",
         '    composed_base="$(git -C "$target" rev-parse HEAD)"',
         (
             '    git -C "$target" config --worktree '

@@ -295,6 +295,7 @@ class ContainerWorkerVmExecutionBackend:
         dependency_git_sources: list[dict[str, str]] | None = None,
         dependency_merge_author_name: str | None = None,
         dependency_merge_author_email: str | None = None,
+        dependency_composition_commit_message: str | None = None,
     ) -> WorkerTaskWorktreeRecord:
         return self.client.prepare_task_worktree(
             session_id,
@@ -311,6 +312,9 @@ class ContainerWorkerVmExecutionBackend:
                 ],
                 dependency_merge_author_name=dependency_merge_author_name,
                 dependency_merge_author_email=dependency_merge_author_email,
+                dependency_composition_commit_message=(
+                    dependency_composition_commit_message
+                ),
             ),
         )
 

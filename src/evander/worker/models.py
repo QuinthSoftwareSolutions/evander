@@ -378,6 +378,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
     dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
     dependency_merge_author_name: str | None = None
     dependency_merge_author_email: str | None = None
+    dependency_composition_commit_message: str | None = None
 
     @field_validator("repo_name", "worktree_name", mode="before")
     @classmethod
@@ -419,6 +420,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
     @field_validator(
         "dependency_merge_author_name",
         "dependency_merge_author_email",
+        "dependency_composition_commit_message",
         mode="before",
     )
     @classmethod
@@ -428,7 +430,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
         text = str(value).strip()
         if not text:
             return None
-        if "\n" in text or "\r" in text:
+        if any(character in text for character in ("\0", "\n", "\r")):
             raise ValueError(f"{info.field_name} must be single-line text")
         return text
 

@@ -6969,6 +6969,9 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     )
     assert f"expected_prior_base={'c' * 40}" in command
     assert "all_dependencies_present=1" in command
+    assert "dependency_commit_message='Compose accepted dependencies for task task-ui'" in command
+    assert 'set -- git -C "$target" commit-tree' in command
+    assert 'reset --hard "$frontier_commit"' in command
 
 
 def test_dependency_git_preparation_failure_routes_blocker_without_lease(
@@ -9669,6 +9672,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["expected_source_commits"] == (
         "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
+    assert effects["team-consolidate-feature-branches"]["commit_message"] == (
+        "${{team-git-promotion-requested.payload.commit_message ?? null}}"
+    )
     assert effects["team-record-feature-promotion"]["type"] == ("effect:team:record-git-promotion")
     assert ("team-git-promotion-feature", "team-consolidate-feature-branches") in edges
     assert ("team-consolidate-feature-branches", "team-record-feature-promotion") in edges
@@ -9704,6 +9710,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     )
     assert recovery_promote["allowed_changed_paths"] == (
         "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
+    )
+    assert recovery_promote["commit_message"] == (
+        "${{team-git-release-recovery-requested.payload.commit_message ?? null}}"
     )
     assert recovery_promote["directory_path"] == (
         "${{team-git-release-recovery-requested.payload.directory_path ?? null}}"
