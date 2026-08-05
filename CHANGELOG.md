@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-05 - Pull Request Work-Item Workflow Query
+
+- Added Azure DevOps `query:pull-request:work-items`, which returns work items
+  linked to one pull request with their normalized assignee identities for
+  workflow-controlled commit authorship and routing.
+
 ## 2026-08-05 - Live Release Verification Progress and Logs
 
 - Persisted release-verifier start, command transitions, and worker job IDs as

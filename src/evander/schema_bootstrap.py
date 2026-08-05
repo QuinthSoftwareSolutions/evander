@@ -1529,6 +1529,26 @@ _QUERY_OUTPUT_SCHEMAS = {
         "commits": {"type": "array"},
         "raw": {"type": "object"},
     },
+    "query:pull-request:work-items": {
+        "provider": {"type": "string"},
+        "repo": {"type": "string"},
+        "pr_id": {"type": "string"},
+        "work_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "work_item_id": {"type": "string"},
+                    "title": {"type": ["string", "null"]},
+                    "url": {"type": ["string", "null"]},
+                    "assignee": {"type": ["object", "null"]},
+                    "raw": {"type": "object"},
+                },
+            },
+        },
+        "count": {"type": "integer"},
+        "raw": {"type": "object"},
+    },
     "query:semantic:store-status": {
         "success": {"type": "boolean"},
         "provider": {"type": "string"},

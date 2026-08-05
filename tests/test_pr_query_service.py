@@ -334,6 +334,112 @@ def test_azure_query_provider_get_pull_request_keeps_raw_commits(
     assert isinstance(result.raw.get("commits"), list)
 
 
+def test_azure_query_provider_get_pull_request_work_items_resolves_assignees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"].startswith("Basic ")
+        assert request.url.params["api-version"] == "7.1"
+        if request.method == "GET":
+            assert request.url.path.endswith(
+                "/_apis/git/repositories/repo-1/pullRequests/17/workitems"
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"id": "101", "url": "https://dev.azure.test/workitems/101"},
+                        {"id": "202", "url": "https://dev.azure.test/workitems/202"},
+                    ]
+                },
+            )
+
+        assert request.method == "POST"
+        assert request.url.path.endswith("/_apis/wit/workitemsbatch")
+        assert json.loads(request.content) == {
+            "ids": [101, 202],
+            "fields": ["System.Id", "System.Title", "System.AssignedTo"],
+            "errorPolicy": "Omit",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 202,
+                        "url": "https://dev.azure.test/_apis/wit/workItems/202",
+                        "fields": {"System.Title": "Unassigned work"},
+                    },
+                    {
+                        "id": 101,
+                        "url": "https://dev.azure.test/_apis/wit/workItems/101",
+                        "fields": {
+                            "System.Title": "Assigned work",
+                            "System.AssignedTo": {
+                                "id": "user-1",
+                                "displayName": "Ada Lovelace",
+                                "uniqueName": "ada@example.com",
+                            },
+                        },
+                    },
+                ]
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.test/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.get_pull_request_work_items(repo="repo-1", pr_id="17")
+
+    assert len(requests) == 2
+    assert result.provider == "azure_devops"
+    assert result.repo == "repo-1"
+    assert result.pr_id == "17"
+    assert result.count == 2
+    assert [item.work_item_id for item in result.work_items] == ["101", "202"]
+    assert result.work_items[0].title == "Assigned work"
+    assert result.work_items[0].assignee is not None
+    assert result.work_items[0].assignee.display_name == "Ada Lovelace"
+    assert result.work_items[0].assignee.email == "ada@example.com"
+    assert result.work_items[1].title == "Unassigned work"
+    assert result.work_items[1].assignee is None
+    assert result.raw["references"][0]["id"] == "101"
+
+
+def test_azure_query_provider_get_pull_request_work_items_skips_detail_lookup_when_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path.endswith(
+            "/_apis/git/repositories/repo-1/pullRequests/17/workitems"
+        )
+        return httpx.Response(200, json={"value": []})
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.test/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.get_pull_request_work_items(repo="repo-1", pr_id="17")
+
+    assert len(requests) == 1
+    assert result.count == 0
+    assert result.work_items == []
+
+
 def test_github_query_provider_get_pull_request_uses_base_payload_without_optional_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
