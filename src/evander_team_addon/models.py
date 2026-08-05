@@ -646,11 +646,38 @@ class Team(TeamModel):
         return _unique_text_list(value, "project_ids")
 
 
+class ProjectGitIdentity(TeamModel):
+    name: str
+    email: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, value: object) -> str:
+        normalized = _required_text(value, "name")
+        if "\n" in normalized or "\r" in normalized:
+            raise ValueError("name must be single-line text")
+        return normalized
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _email(cls, value: object) -> str:
+        normalized = _required_text(value, "email")
+        if (
+            "\n" in normalized
+            or "\r" in normalized
+            or re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", normalized) is None
+        ):
+            raise ValueError("email must be a valid email address")
+        return normalized
+
+
 class ProjectGitConfig(TeamModel):
     managed_repo_id: str
     directory_path: str = "root"
     base_branch: str | None = None
     canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
+    agent_author_identity: ProjectGitIdentity | None = None
+    agent_committer_identity: ProjectGitIdentity | None = None
 
     @field_validator("managed_repo_id", mode="before")
     @classmethod

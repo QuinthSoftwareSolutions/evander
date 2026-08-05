@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-05 - Configurable Team Git Identities
+
+- Added project-scoped agent author and committer identities, with an Evander Bot fallback, and reconciled them into both new and retained Team project checkouts.
+- Attributed dependency-composition merges to the project author while retaining `Evander Team Dependency Composer` as the specialized committer across VM and container-worker backends.
+
 ## 2026-08-05 - Direct Team Chat File Downloads
 
 - Made ordinary clicks on non-image Team Chat attachments download the selected file directly, while image attachments retain their new-tab preview behavior.

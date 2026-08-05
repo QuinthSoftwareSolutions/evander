@@ -376,6 +376,8 @@ class WorkerTaskWorktreeRequest(BaseModel):
     expected_base_commit_sha: str | None = None
     expected_base_tree_hash: str | None = None
     dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
+    dependency_merge_author_name: str | None = None
+    dependency_merge_author_email: str | None = None
 
     @field_validator("repo_name", "worktree_name", mode="before")
     @classmethod
@@ -413,6 +415,31 @@ class WorkerTaskWorktreeRequest(BaseModel):
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
             raise ValueError("expected_base_tree_hash must be a full Git object ID")
         return text
+
+    @field_validator(
+        "dependency_merge_author_name",
+        "dependency_merge_author_email",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_identity_field(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if "\n" in text or "\r" in text:
+            raise ValueError(f"{info.field_name} must be single-line text")
+        return text
+
+    @model_validator(mode="after")
+    def validate_dependency_merge_author(self) -> "WorkerTaskWorktreeRequest":
+        if bool(self.dependency_merge_author_name) != bool(self.dependency_merge_author_email):
+            raise ValueError(
+                "dependency_merge_author_name and dependency_merge_author_email "
+                "must both be set"
+            )
+        return self
 
 
 class WorkerTaskWorktreeRecord(BaseModel):

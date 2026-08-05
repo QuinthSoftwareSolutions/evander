@@ -6989,7 +6989,17 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
-            "git": {"managed_repo_id": "mr_0123456789abcdefabcd"},
+            "git": {
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "agent_author_identity": {
+                    "name": "Jonathan Quinth",
+                    "email": "operator@example.invalid",
+                },
+                "agent_committer_identity": {
+                    "name": "Evander Bot",
+                    "email": "evander@quinth.se",
+                },
+            },
             "release_policy": {
                 "allow_ungated": True,
                 "resource_limits": {
@@ -7005,6 +7015,10 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert response.json()["projects"]["project"]["git"]["managed_repo_id"] == (
         "mr_0123456789abcdefabcd"
     )
+    assert response.json()["projects"]["project"]["git"]["agent_author_identity"] == {
+        "name": "Jonathan Quinth",
+        "email": "operator@example.invalid",
+    }
     assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
         "memory": "6g",
         "cpus": 4.0,
@@ -7017,6 +7031,14 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "git": {
                 "managed_repo_id": "mr_0123456789abcdefabcd",
                 "base_branch": "develop",
+                "agent_author_identity": {
+                    "name": "Jonathan Quinth",
+                    "email": "operator@example.invalid",
+                },
+                "agent_committer_identity": {
+                    "name": "Evander Bot",
+                    "email": "evander@quinth.se",
+                },
             },
             "expected_revision": 4,
         },
@@ -7025,6 +7047,10 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     git = response.json()["projects"]["project"]["git"]
     assert git["managed_repo_id"] == "mr_0123456789abcdefabcd"
     assert git["base_branch"] == "develop"
+    assert git["agent_committer_identity"] == {
+        "name": "Evander Bot",
+        "email": "evander@quinth.se",
+    }
     assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
         "memory": "6g",
         "cpus": 4.0,

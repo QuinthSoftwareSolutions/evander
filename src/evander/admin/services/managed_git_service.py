@@ -50,6 +50,7 @@ from evander.admin.services.managed_git_worktree_service import (
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.consultations import consultation_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
 from evander.managed_git_grants import (
     LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS,
     MANAGED_GIT_GRANTS_METADATA_KEY,
@@ -62,8 +63,8 @@ from evander.storage import JsonObjectStore
 
 REGISTRY_SCHEMA = "evander.managed-git-repositories/v1"
 REGISTRY_FILENAME = "managed-git-repositories.json"
-DEFAULT_HOST_COMMIT_NAME = "Truman Bot"
-DEFAULT_HOST_COMMIT_EMAIL = "truman@quinth.se"
+DEFAULT_HOST_COMMIT_NAME = DEFAULT_AGENT_GIT_IDENTITY.name
+DEFAULT_HOST_COMMIT_EMAIL = DEFAULT_AGENT_GIT_IDENTITY.email
 DEFAULT_GIT_OPERATION_TIMEOUT_SECONDS = 5 * 60
 _RESERVED_BRANCH_ROOTS = frozenset({"agents", "review", "team"})
 _LEGACY_MANAGED_GIT_FIELDS = frozenset(

@@ -930,11 +930,13 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
             ),
             "branch": "agents/session-backend/tasks/task-12345678",
             "base_ref": "team/team/releases/release-1234",
-            "expected_base_commit_sha": _BASE_COMMIT,
-            "expected_base_tree_hash": "3" * 40,
-            "dependency_git_sources": [],
-        }
-    ]
+                "expected_base_commit_sha": _BASE_COMMIT,
+                "expected_base_tree_hash": "3" * 40,
+                "dependency_git_sources": [],
+                "dependency_merge_author_name": "Evander Bot",
+                "dependency_merge_author_email": "evander@quinth.se",
+            }
+        ]
 
 
 def test_candidate_correction_branch_is_scoped_to_the_pinned_candidate() -> None:

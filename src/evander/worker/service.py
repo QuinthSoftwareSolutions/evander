@@ -39,6 +39,10 @@ from evander.session_artifacts import (
     read_artifact_text_no_follow,
 )
 from evander.git_ssh_authorized_keys import public_key_body_from_line
+from evander.git_identity import (
+    DEFAULT_AGENT_GIT_IDENTITY,
+    TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY,
+)
 from evander.managed_git_grants import managed_git_ssh_alias
 from evander.execution.task_worktree_cleanup import (
     cleanup_task_worktree as cleanup_task_worktree_checkout,
@@ -1272,6 +1276,12 @@ class WorkerDaemon:
             created=created,
             base_commit_sha=base_commit_sha,
             env=env,
+            dependency_merge_author_name=(
+                request.dependency_merge_author_name or DEFAULT_AGENT_GIT_IDENTITY.name
+            ),
+            dependency_merge_author_email=(
+                request.dependency_merge_author_email or DEFAULT_AGENT_GIT_IDENTITY.email
+            ),
         )
         if base_commit_sha is not None:
             subprocess.run(
@@ -1305,6 +1315,8 @@ class WorkerDaemon:
         created: bool,
         base_commit_sha: str | None,
         env: dict[str, str],
+        dependency_merge_author_name: str,
+        dependency_merge_author_email: str,
     ) -> str | None:
         """Merge exact dependency commits before exposing a task worktree.
 
@@ -1481,10 +1493,10 @@ class WorkerDaemon:
                     cwd=target_dir,
                     env={
                         **env,
-                        "GIT_AUTHOR_NAME": "Evander Team Dependency Composer",
-                        "GIT_AUTHOR_EMAIL": "team-dependencies@evander.invalid",
-                        "GIT_COMMITTER_NAME": "Evander Team Dependency Composer",
-                        "GIT_COMMITTER_EMAIL": "team-dependencies@evander.invalid",
+                        "GIT_AUTHOR_NAME": dependency_merge_author_name,
+                        "GIT_AUTHOR_EMAIL": dependency_merge_author_email,
+                        "GIT_COMMITTER_NAME": TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name,
+                        "GIT_COMMITTER_EMAIL": TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email,
                         "GIT_MERGE_AUTOEDIT": "no",
                     },
                     check=False,

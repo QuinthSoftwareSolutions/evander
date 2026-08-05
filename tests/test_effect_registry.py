@@ -6699,6 +6699,51 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
     assert "git config evander.gitCommitterName 'Truman Bot'" in command
 
 
+def test_git_honors_separate_agent_author_and_committer_config(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    for key, value in (
+        ("user.name", "Jonathan Quinth"),
+        ("user.email", "operator@example.invalid"),
+        ("author.name", "Jonathan Quinth"),
+        ("author.email", "operator@example.invalid"),
+        ("committer.name", "Evander Bot"),
+        ("committer.email", "evander@quinth.se"),
+    ):
+        subprocess.run(["git", "config", key, value], cwd=checkout, check=True)
+    (checkout / "README.md").write_text("identity\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "identity"], cwd=checkout, check=True)
+
+    identity = subprocess.run(
+        ["git", "show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert identity == [
+        "Jonathan Quinth",
+        "operator@example.invalid",
+        "Evander Bot",
+        "evander@quinth.se",
+    ]
+
+
+def test_agent_clone_container_default_identity_is_evander_bot() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        target_dir="/home/agent/repos/repo",
+        repo_source="/home/agent/repos/source",
+        remote_url="/home/agent/repos/source",
+        clone_branch="main",
+    )
+
+    assert "git config user.name 'Evander Bot'" in command
+    assert "git config user.email evander@quinth.se" in command
+
+
 def test_agent_clone_container_fails_before_worker_when_managed_clone_resolution_fails(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

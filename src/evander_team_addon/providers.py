@@ -56,6 +56,11 @@ from evander.events.provider_models import (
 )
 from evander.events.models import TriggerEvent, WorkflowNodeEnvelope
 from evander.execution import ExecutionBackendKind, ExecutionStatusKind
+from evander.git_identity import (
+    DEFAULT_AGENT_GIT_IDENTITY,
+    TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY,
+    GitIdentity,
+)
 from evander.models import tool_name_value
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
@@ -7464,6 +7469,12 @@ def _prepare_project_repo(
     agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
     managed_repo_id = _required_text(_value(git, "managed_repo_id"), "project.git.managed_repo_id")
+    agent_author_identity = _resolved_project_git_identity(
+        _value(git, "agent_author_identity")
+    )
+    agent_committer_identity = _resolved_project_git_identity(
+        _value(git, "agent_committer_identity")
+    )
     clone_branch = _optional_text(_value(git, "base_branch"))
     if clone_branch is None:
         clone_branch = _managed_repository_default_branch(
@@ -7483,6 +7494,10 @@ def _prepare_project_repo(
             managed_repo_id=managed_repo_id,
             clone_branch=clone_branch,
             vm_user="agent",
+            git_author_name=agent_author_identity.name,
+            git_author_email=agent_author_identity.email,
+            git_committer_name=agent_committer_identity.name,
+            git_committer_email=agent_committer_identity.email,
         ),
         context,
     )
@@ -7511,6 +7526,7 @@ def _prepare_project_repo(
         dispatch_id=dispatch_id,
         tasks=tasks,
         base_branch=clone_branch,
+        dependency_merge_author_identity=agent_author_identity,
     )
     if git_work_contexts:
         project_repo["git_work_contexts"] = git_work_contexts
@@ -7582,6 +7598,21 @@ def _project_repo_payload(
     return payload
 
 
+def _resolved_project_git_identity(value: object) -> GitIdentity:
+    if value is None:
+        return DEFAULT_AGENT_GIT_IDENTITY
+    if isinstance(value, Mapping):
+        name = value.get("name")
+        email = value.get("email")
+    else:
+        name = getattr(value, "name", None)
+        email = getattr(value, "email", None)
+    return GitIdentity(
+        name=_required_text(name, "project Git identity name"),
+        email=_required_text(email, "project Git identity email"),
+    )
+
+
 def _create_project_repo_git_work_contexts(
     context: Any,
     repo: TeamStateRepository,
@@ -7594,6 +7625,7 @@ def _create_project_repo_git_work_contexts(
     dispatch_id: str,
     tasks: object,
     base_branch: str | None,
+    dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
 ) -> tuple[Any, list[dict[str, Any]], dict[str, int]]:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
@@ -7699,6 +7731,7 @@ def _create_project_repo_git_work_contexts(
                 pinned_base_commit=pinned_base_commit,
                 pinned_base_tree=pinned_base_tree,
                 dependency_git_sources=composition_git_sources,
+                dependency_merge_author_identity=dependency_merge_author_identity,
             )
             context_id = _project_repo_git_work_context_id(
                 agent_id=agent_id,
@@ -8221,6 +8254,7 @@ def _prepare_project_repo_task_worktree(
     pinned_base_commit: str | None = None,
     pinned_base_tree: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
+    dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
 ) -> tuple[str, str | None]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
@@ -8247,6 +8281,8 @@ def _prepare_project_repo_task_worktree(
                 expected_base_commit_sha=pinned_base_commit or prior_base_commit,
                 expected_base_tree_hash=pinned_base_tree,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
+                dependency_merge_author_name=dependency_merge_author_identity.name,
+                dependency_merge_author_email=dependency_merge_author_identity.email,
             )
         except Exception as exc:
             if dependency_git_sources or pinned_base_commit is not None:
@@ -8309,6 +8345,14 @@ def _prepare_project_repo_task_worktree(
         separators=(",", ":"),
     )
     quoted_dependency_provenance = shlex.quote(dependency_provenance_json)
+    quoted_dependency_author_name = shlex.quote(dependency_merge_author_identity.name)
+    quoted_dependency_author_email = shlex.quote(dependency_merge_author_identity.email)
+    quoted_dependency_committer_name = shlex.quote(
+        TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name
+    )
+    quoted_dependency_committer_email = shlex.quote(
+        TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email
+    )
     lock_path = f"/home/agent/.evander/locks/task-worktree-{repo_name}.lock"
     quoted_lock = shlex.quote(lock_path)
     dependency_assignment_lines: list[str] = []
@@ -8372,10 +8416,10 @@ def _prepare_project_repo_task_worktree(
         )
     command_lines = [
         "set -eu",
-        "export GIT_AUTHOR_NAME='Evander Team Dependency Composer'",
-        "export GIT_AUTHOR_EMAIL='team-dependencies@evander.invalid'",
-        "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'",
-        "export GIT_COMMITTER_EMAIL='team-dependencies@evander.invalid'",
+        f"export GIT_AUTHOR_NAME={quoted_dependency_author_name}",
+        f"export GIT_AUTHOR_EMAIL={quoted_dependency_author_email}",
+        f"export GIT_COMMITTER_NAME={quoted_dependency_committer_name}",
+        f"export GIT_COMMITTER_EMAIL={quoted_dependency_committer_email}",
         "export GIT_MERGE_AUTOEDIT=no",
         f"target={quoted_target}",
         f"branch={quoted_branch}",

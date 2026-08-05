@@ -793,6 +793,8 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
                 "commit_sha": dependency_commit,
             }
         ],
+        dependency_merge_author_name="Jonathan Quinth",
+        dependency_merge_author_email="operator@example.invalid",
     )
 
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -838,6 +840,19 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
             "deliverable_id": "deliverable-domain",
             "dependency_task_id": "task-domain",
         }
+    ]
+    identity = subprocess.run(
+        ["git", "show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert identity == [
+        "Jonathan Quinth",
+        "operator@example.invalid",
+        "Evander Team Dependency Composer",
+        "team-dependencies@evander.invalid",
     ]
 
     (target / "ui.txt").write_text("successor work\n", encoding="utf-8")

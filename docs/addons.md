@@ -846,6 +846,16 @@ Optional inputs are:
 - `project.git.managed_repo_id`
 - `project.git.base_branch` (the default for newly created root tasks) and
   `project.git.canonical_release_branch_prefix`
+- `project.git.agent_author_identity` and `project.git.agent_committer_identity`,
+  each shaped as `{ "name": "...", "email": "..." }`
+
+When the agent identities are omitted, Team checkouts use
+`Evander Bot <evander@quinth.se>` for both roles. Configured identities are
+reconciled into retained checkouts before work resumes. Dependency-composition
+merges use the configured project author and the specialized
+`Evander Team Dependency Composer <team-dependencies@evander.invalid>`
+committer. Host-side feature, release, and recovery consolidations remain
+governed separately by the managed repository's host commit identity.
 
 The Team Add-on setup, project-create, and project-edit forms include an
 `Import Git repo` action beside the Git fields. It accepts a local checkout or
