@@ -17,6 +17,7 @@ from evander.events.provider_models import (
     ModelUsageListQueryDefinition,
     PullRequestGetQueryDefinition,
     PullRequestListQueryDefinition,
+    PullRequestWorkItemsQueryDefinition,
     RemoteIssuesQueryDefinition,
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
@@ -33,7 +34,10 @@ from evander.workflow.contracts import WorkflowNodeEnvelope
 
 class _ResolverStub:
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
-        return GatewayConfig(runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")))
+        return GatewayConfig(
+            runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")),
+            ado_organization="directory-org",
+        )
 
 
 @dataclass
@@ -103,6 +107,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:pull-request:feedback",
         "query:communication:messages",
         "query:pull-request:get",
+        "query:pull-request:work-items",
         "query:semantic:store-status",
         "query:semantic:search",
         "query:semantic:get",
@@ -125,6 +130,26 @@ def test_pull_request_get_query_definition_materializes_and_normalizes_provider(
     materialized = materialize_node_definition(node)
 
     assert isinstance(materialized, PullRequestGetQueryDefinition)
+    assert materialized.provider == "azure_devops"
+    assert materialized.repo == "repo-1"
+    assert materialized.pr_id == "17"
+
+
+def test_pull_request_work_items_query_definition_materializes_and_normalizes_provider() -> None:
+    node = WorkflowNodeEnvelope(
+        id="query-pr-work-items-1",
+        display_name="PR work items",
+        type="query:pull-request:work-items",
+        config={
+            "provider": "ado",
+            "repo": "repo-1",
+            "pr_id": "17",
+        },
+    )
+
+    materialized = materialize_node_definition(node)
+
+    assert isinstance(materialized, PullRequestWorkItemsQueryDefinition)
     assert materialized.provider == "azure_devops"
     assert materialized.repo == "repo-1"
     assert materialized.pr_id == "17"
@@ -803,7 +828,7 @@ def test_pull_request_list_query_provider_resolves_ado_config_and_filters(
     output = provider.execute(resolved_config={"cursor": "cursor-1"})
 
     assert captured["init"] == {
-        "organization_url": "https://dev.azure.com",
+        "organization_url": "https://dev.azure.com/directory-org",
         "project": "default",
         "pat": "secret",
         "timeout_seconds": 30.0,

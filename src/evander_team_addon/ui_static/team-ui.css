@@ -399,6 +399,20 @@ button.workspace-view-link {
   flex: 0 0 auto;
 }
 
+.workspace-attention-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workspace-attention-pagination .record-actions {
+  align-items: center;
+}
+
 .workspace-team-row-meta {
   display: flex;
   align-items: center;
@@ -1337,6 +1351,17 @@ button.team-record-kind-tab strong {
   min-height: 0;
 }
 
+.chat-conversations-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-conversations-view .chat-conversation-list {
+  flex: 1 1 auto;
+}
+
 .chat-conversation-row,
 .chat-agent-picker-row {
   display: grid;
@@ -1390,6 +1415,27 @@ button.team-record-kind-tab strong {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.chat-mutation-mode {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.chat-mutation-mode.is-enabled {
+  border-color: color-mix(in srgb, var(--green) 55%, var(--line));
+  color: var(--green);
+}
+
+.chat-mutation-mode.is-reply-only {
+  color: var(--muted);
 }
 
 .chat-conversation-meta {
@@ -6380,6 +6426,23 @@ label textarea {
   border-left: 4px solid var(--danger);
 }
 
+.candidate-correction-recovery-status {
+  display: grid;
+  gap: 0.25rem;
+  width: 100%;
+  margin-top: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(36, 112, 75, 0.38);
+  border-left: 4px solid var(--green);
+  border-radius: 6px;
+  background: rgba(36, 112, 75, 0.08);
+  overflow-wrap: anywhere;
+}
+
+.candidate-correction-recovery-status .state-pill {
+  margin-left: 0.35rem;
+}
+
 .task-worktree-mapping,
 .release-detail-section {
   margin-top: 0.65rem;
@@ -6632,6 +6695,17 @@ label textarea {
   display: flex;
   align-items: flex-start;
   gap: 0.4rem;
+}
+
+.human-review-decision-form .checkbox-label > input[type="checkbox"] {
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  min-width: 1.25rem;
+  margin: 0.1rem 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .human-review-findings-editor {

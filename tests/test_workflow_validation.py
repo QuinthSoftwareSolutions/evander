@@ -1094,6 +1094,50 @@ def test_pull_request_get_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_pull_request_work_items_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            }
+        ],
+        "queries": [
+            {
+                "id": "query-pr-work-items-1",
+                "display_name": "Get PR work items",
+                "type": "query:pull-request:work-items",
+                "provider": "ado",
+                "repo": "repo-1",
+                "pr_id": "17",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Inspect ${{query-pr-work-items-1.work_items}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "query-pr-work-items-1"},
+            {"source_id": "query-pr-work-items-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["query-pr-work-items-1"]["work_items"]["type"] == "array"
+    assert output_schemas["query-pr-work-items-1"]["count"] == {"type": "integer"}
+    assert output_schemas["query-pr-work-items-1"]["raw"] == {"type": "object"}
+    assert diagnostics == []
+
+
 def test_agent_prompt_outputs_include_error_bindings() -> None:
     config = {
         "triggers": [

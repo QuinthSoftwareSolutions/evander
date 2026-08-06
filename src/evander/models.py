@@ -1957,6 +1957,23 @@ class AdoIdentitySummary(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class PullRequestWorkItem(BaseModel):
+    work_item_id: str
+    title: str | None = None
+    url: str | None = None
+    assignee: AdoIdentitySummary | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class PullRequestWorkItemsResponse(BaseModel):
+    provider: str
+    repo: str
+    pr_id: str
+    work_items: list[PullRequestWorkItem] = Field(default_factory=list)
+    count: int = 0
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
 class ResolveAdoIdentityRequest(BaseModel):
     session_id: str = Field(min_length=1)
     query: str = Field(min_length=1)

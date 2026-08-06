@@ -240,6 +240,18 @@ def _apply_review_request(
     task = state.tasks.get(deliverable.task_id)
     project_id = task.project_id if task is not None else None
     if (
+        deliverable.state == TeamRecordState.REJECTED
+        or (
+            deliverable.acceptance_decision is not None
+            and deliverable.acceptance_decision.decision == "rejected"
+        )
+    ):
+        result["errors"].append(
+            f"rejected deliverable {deliverable.id} cannot enter formal review; "
+            "submit a replacement deliverable for rework"
+        )
+        return None
+    if (
         deliverable.state == TeamRecordState.ACCEPTED
         and deliverable.rework_requested_at is not None
         and deliverable.superseded_by_deliverable_id is None
@@ -471,7 +483,10 @@ def create_sealed_review_cohort(
         actor.id == deliverable.producer_agent_id
         or _supervises(state, actor.id, deliverable.producer_agent_id)
         or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
-        or _is_team_manager(state, actor)
+        or (
+            task is not None
+            and _is_team_manager_for_task_project(state, actor=actor, task=task)
+        )
     )
     if not permitted:
         raise ValueError(
@@ -600,11 +615,12 @@ def retry_blocked_review(
         raise ValueError("review retry must target the current active review attempt")
     deliverable = _require_present(state.deliverables, current.deliverable_id, "deliverable")
     task = _require_present(state.tasks, deliverable.task_id, "task")
+    project = _require_present(state.projects, task.project_id, "project")
     permitted = (
         actor.id == deliverable.producer_agent_id
         or _supervises(state, actor.id, deliverable.producer_agent_id)
         or _is_project_lead_for(state, actor.id, task.project_id)
-        or _is_team_manager(state, actor)
+        or _is_team_manager_for_task_project(state, actor=actor, task=task)
     )
     if not permitted:
         raise ValueError(
@@ -612,8 +628,8 @@ def retry_blocked_review(
         )
     requested_reviewer_id = _optional_text(reviewer_agent_id) or current.reviewer_agent_id
     reviewer = _require_present(state.agents, requested_reviewer_id, "reviewer")
-    if reviewer.team_id != actor.team_id:
-        raise ValueError(f"reviewer {reviewer.id} is not in team {actor.team_id}")
+    if reviewer.team_id != project.team_id:
+        raise ValueError(f"reviewer {reviewer.id} is not in team {project.team_id}")
     conflicting_review = next(
         (
             review
@@ -632,7 +648,7 @@ def retry_blocked_review(
     profile, profile_error = _review_profile_for_request(
         state,
         profile_id=current.review_profile_id,
-        expected_team_id=actor.team_id,
+        expected_team_id=project.team_id,
         project_id=task.project_id,
         reviewer=reviewer,
         deliverable=deliverable,

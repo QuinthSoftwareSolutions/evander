@@ -155,6 +155,7 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     case_id: ConfigValue | None = None
     state: ConfigValue | None = None
     parent_task_id: ConfigValue | None = None
+    git_base_branch: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
     integration_boundary: ConfigValue | None = None
     deliverable_contract: ConfigValue | None = None
@@ -372,6 +373,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     required_source_ancestor_commit_sha: ConfigValue | None = None
     expected_source_commits: ConfigValue
     allowed_changed_paths: ConfigValue | None = None
+    commit_message: ConfigValue | None = None
 
     @field_validator("source_branches")
     @classmethod

@@ -603,7 +603,7 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
         f"ssh://{_TEST_MANAGED_GIT_ALIAS}/runtime/managed-git/{_TEST_MANAGED_REPO_ID}.git",
     ],
 )
-def test_worker_clone_repo_uses_session_home_for_git_ssh(
+def test_worker_clone_repo_uses_host_only_git_ssh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     repo_source: str,
@@ -639,12 +639,12 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     )
 
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
-    assert (paths.agent_home / ".ssh" / "config").is_file()
+    assert not (paths.agent_home / ".ssh" / "evander-git").exists()
+    host_ssh = paths.root / "host-ssh"
+    assert (host_ssh / "evander-git").is_file()
     clone_call = next(call for call in calls if call["args"][:2] == ["git", "clone"])
     assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
-    assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
-        f"ssh -F {paths.agent_home / '.ssh' / 'config'}"
-    )
+    assert clone_call["env"]["GIT_SSH_COMMAND"] == f"ssh -F {host_ssh / 'config'}"  # type: ignore[index]
 
 
 def test_worker_reconciles_existing_checkout_remote_without_recloning(
@@ -793,6 +793,8 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
                 "commit_sha": dependency_commit,
             }
         ],
+        dependency_merge_author_name="Jonathan Quinth",
+        dependency_merge_author_email="operator@example.invalid",
     )
 
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -839,6 +841,20 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
             "dependency_task_id": "task-domain",
         }
     ]
+    identity = subprocess.run(
+        ["git", "show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert prepared.commit_sha == dependency_commit
+    assert identity == [
+        "Worker Test",
+        "test@example.invalid",
+        "Worker Test",
+        "test@example.invalid",
+    ]
 
     (target / "ui.txt").write_text("successor work\n", encoding="utf-8")
     subprocess.run(["git", "add", "ui.txt"], cwd=target, check=True)
@@ -868,6 +884,107 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
         match="dependency Git provenance does not match",
     ):
         daemon.prepare_task_worktree("session-1", without_provenance)
+
+
+def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    base_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_commits: list[str] = []
+    dependency_rows: list[dict[str, str]] = []
+    for suffix in ("domain", "client"):
+        branch = f"agents/predecessor/tasks/{suffix}"
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=source, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=source, check=True)
+        (source / f"{suffix}.txt").write_text(f"accepted {suffix}\n", encoding="utf-8")
+        subprocess.run(["git", "add", f"{suffix}.txt"], cwd=source, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"{suffix} dependency"], cwd=source, check=True)
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dependency_commits.append(commit)
+        dependency_rows.append(
+            {
+                "dependency_task_id": f"task-{suffix}",
+                "deliverable_id": f"deliverable-{suffix}",
+                "branch": branch,
+                "commit_sha": commit,
+            }
+        )
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    prepared = daemon.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name="task-ui-compact",
+            branch="agents/session-1/tasks/task-ui-compact",
+            base_ref="main",
+            dependency_git_sources=dependency_rows,
+            dependency_merge_author_name="Jonathan Quinth",
+            dependency_merge_author_email="operator@example.invalid",
+            dependency_composition_commit_message=(
+                "Compose accepted dependencies for task task-ui"
+            ),
+        ),
+    )
+    target = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / "worktrees"
+        / "repo"
+        / "task-ui-compact"
+    )
+
+    details = subprocess.run(
+        ["git", "show", "-s", "--format=%s%n%P%n%an%n%ae%n%cn%n%ce", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert prepared.base_commit_sha == prepared.commit_sha
+    assert details == [
+        "Compose accepted dependencies for task task-ui",
+        " ".join([base_commit, *dependency_commits]),
+        "Jonathan Quinth",
+        "operator@example.invalid",
+        "Evander Team Dependency Composer",
+        "team-dependencies@evander.invalid",
+    ]
+    assert (target / "domain.txt").read_text(encoding="utf-8") == "accepted domain\n"
+    assert (target / "client.txt").read_text(encoding="utf-8") == "accepted client\n"
 
 
 def test_worker_adopts_only_clean_retained_dependency_history_with_prior_base(
@@ -2175,7 +2292,7 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     assert "IdentityFile ~/.ssh/evander-git" in config_text
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
     host_config_text = (paths.root / "host-ssh" / "config").read_text(encoding="utf-8")
-    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git'}" in host_config_text
+    assert f"IdentityFile {paths.root / 'host-ssh' / 'evander-git'}" in host_config_text
     assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
     assert _git_subprocess_env(paths.agent_home)["GIT_SSH_COMMAND"] == (
         f"ssh -F {paths.root / 'host-ssh' / 'config'}"
@@ -2191,6 +2308,11 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     )
 
     assert (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8") == config_text
+    refreshed_host_config = (paths.root / "host-ssh" / "config").read_text(encoding="utf-8")
+    assert "Host evander-git-host-write" in refreshed_host_config
+    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in (
+        refreshed_host_config
+    )
 
 
 def test_worker_rejects_symlinked_git_write_ssh_directory(tmp_path: Path) -> None:
@@ -2304,6 +2426,53 @@ def test_worker_api_provisions_session_git_write_key(
     assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
 
 
+def test_worker_api_rejects_legacy_worker_git_key_name(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/git/write-key",
+        headers=_auth(),
+        json={
+            "git_host": "10.2.0.4",
+            "git_user": "agent",
+            "git_ssh_alias": "evander-git-host",
+            "key_name": "evander-git",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "reserved for the worker Git credential" in response.json()["error"]
+    assert not (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / ".ssh"
+        / "evander-git"
+    ).exists()
+
+
+def test_worker_service_rejects_legacy_worker_git_key_name(tmp_path: Path) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    request = WorkerGitWriteKeyRequest.model_construct(
+        git_host="10.2.0.4",
+        git_user="agent",
+        git_ssh_alias="evander-git-host",
+        key_name="evander-git",
+    )
+
+    with pytest.raises(ValueError, match="reserved for the worker Git credential"):
+        daemon.provision_git_write_key("session-1", request)
+
+    assert not (tmp_path / "worker-root" / "sessions" / "session-1").exists()
+
+
 def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2351,12 +2520,28 @@ def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
 
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
     config_path = paths.agent_home / ".ssh" / "config"
+    host_config_path = paths.root / "host-ssh" / "config"
     assert "Host git-one" in config_path.read_text(encoding="utf-8")
     assert "Host git-two" in config_path.read_text(encoding="utf-8")
+    assert "Host git-one" in host_config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in host_config_path.read_text(encoding="utf-8")
 
     daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
     assert "Host git-one" in config_path.read_text(encoding="utf-8")
     assert "Host git-two" in config_path.read_text(encoding="utf-8")
+    assert "Host git-one" in host_config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in host_config_path.read_text(encoding="utf-8")
+
+    daemon.start_job(
+        WorkerJobRequest(
+            session_id="session-1",
+            job_id="job-1",
+            image="runner:latest",
+            command=["true"],
+        )
+    )
+    assert "Host git-one" in host_config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in host_config_path.read_text(encoding="utf-8")
 
     result = daemon.revoke_git_key("session-1", "evander-git-one")
 
@@ -2800,7 +2985,7 @@ def test_session_artifact_text_endpoint_does_not_follow_leaf_symlink_swapped_at_
     assert outside.read_text(encoding="utf-8") == "host secret\n"
 
 
-def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Path) -> None:
+def test_session_prepare_keeps_git_ssh_outside_agent_home(tmp_path: Path) -> None:
     ssh_source = tmp_path / "worker-ssh"
     ssh_source.mkdir()
     (ssh_source / "evander-git").write_text("private-key\n", encoding="utf-8")
@@ -2808,6 +2993,9 @@ def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Pat
     (ssh_source / "config").write_text("Host evander-git-host\n", encoding="utf-8")
     (ssh_source / "known_hosts").write_text("known-host\n", encoding="utf-8")
     client = _client(tmp_path, git_ssh_source_dir=ssh_source)
+    exposed_dir = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh"
+    exposed_dir.mkdir(parents=True)
+    (exposed_dir / "evander-git").write_text("legacy-private-key\n", encoding="utf-8")
 
     response = client.post(
         "/v1/sessions",
@@ -2816,7 +3004,9 @@ def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Pat
     )
 
     assert response.status_code == 201
-    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh"
+    session_root = tmp_path / "worker-root" / "sessions" / "session-1"
+    assert not (session_root / "agent_home" / ".ssh" / "evander-git").exists()
+    target = session_root / "host-ssh"
     assert (target / "evander-git").read_text(encoding="utf-8") == "private-key\n"
     assert (target / "config").read_text(encoding="utf-8") == "Host evander-git-host\n"
     assert oct((target / "evander-git").stat().st_mode & 0o777) == "0o600"

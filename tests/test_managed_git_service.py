@@ -1930,6 +1930,125 @@ def test_push_branch_publishes_exact_sha_with_destination_lease(tmp_path: Path) 
     )
 
 
+def test_push_branch_publishes_when_destination_matches_reviewed_base(tmp_path: Path) -> None:
+    source, upstream, reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "main",
+        "root",
+        expected_destination_commit_sha=reviewed_base,
+    )
+
+    assert result["success"] is True
+    assert result["expected_destination_commit_sha"] == reviewed_base
+    assert result["previous_commit_sha"] == reviewed_base
+    assert _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/main") == approved
+
+
+def test_push_branch_rejects_destination_that_predates_reviewed_base(tmp_path: Path) -> None:
+    source, upstream, canonical_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    reviewed_base = _commit(source, "preexisting.txt", "unreviewed\n", "preexisting feature work")
+    approved = _commit(source, "allowed.txt", "allowed\n", "allowed release change")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "main",
+        "root",
+        expected_destination_commit_sha=reviewed_base,
+    )
+
+    assert result["success"] is False
+    assert result["preflight_success"] is False
+    assert result["reason"] == "destination_base_mismatch"
+    assert result["expected_destination_commit_sha"] == reviewed_base
+    assert result["destination_commit"] == canonical_commit
+    assert _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/main") == canonical_commit
+
+
+def test_push_branch_creates_missing_destination_from_reviewed_base(tmp_path: Path) -> None:
+    source, upstream, reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "new-release",
+        "root",
+        expected_destination_commit_sha=reviewed_base,
+    )
+
+    assert result["success"] is True
+    assert result["previous_commit_sha"] is None
+    assert result["expected_destination_commit_sha"] == reviewed_base
+    assert _run(
+        "git",
+        f"--git-dir={upstream}",
+        "rev-parse",
+        "refs/heads/new-release",
+    ) == approved
+
+
+def test_push_branch_rejects_missing_destination_with_unrelated_reviewed_base(
+    tmp_path: Path,
+) -> None:
+    source, upstream, _reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    incompatible_base = _commit(
+        source,
+        "later.txt",
+        "later\n",
+        "not an ancestor of the approved commit",
+    )
+    _run(
+        "git",
+        f"--git-dir={bare}",
+        "fetch",
+        str(source),
+        f"{approved}:refs/heads/review/topic",
+        f"{incompatible_base}:refs/heads/test/incompatible-base",
+    )
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "new-release",
+        "root",
+        expected_destination_commit_sha=incompatible_base,
+    )
+
+    assert result["success"] is False
+    assert result["reason"] == "destination_base_mismatch"
+    assert result["destination_commit"] is None
+    assert _run("git", f"--git-dir={upstream}", "branch", "--list", "new-release") == ""
+
+
 def test_push_branch_returns_merge_required_when_destination_is_ahead(tmp_path: Path) -> None:
     source, upstream, first = _source_repository(tmp_path)
     service = _service(tmp_path)
@@ -2103,6 +2222,7 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
             "agents/session-2/b": second_feature,
         },
         allowed_changed_paths=["feature-a.txt", "feature-b.txt"],
+        commit_message="Assemble release release-1",
     )
 
     assert result["success"] is True
@@ -2111,6 +2231,22 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         "agents/session-2/b",
     ]
     assert result["base_commit_sha"] == base_commit
+    assert _run(
+        "git",
+        f"--git-dir={bare}",
+        "show",
+        "-s",
+        "--format=%s",
+        result["commit_sha"],
+    ) == "Assemble release release-1"
+    assert _run(
+        "git",
+        f"--git-dir={bare}",
+        "show",
+        "-s",
+        "--format=%P",
+        result["commit_sha"],
+    ).split() == [base_commit, first_feature, second_feature]
     assert result["tree_hash"] == _run(
         "git", f"--git-dir={bare}", "rev-parse", f"{result['commit_sha']}^{{tree}}"
     )
@@ -2160,6 +2296,63 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         )
         == ""
     )
+
+
+def test_consolidation_fast_forwards_to_single_reviewed_source(tmp_path: Path) -> None:
+    source, _, base_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    _run("git", "checkout", "-b", "agents/session-1/fix", cwd=source)
+    reviewed_commit = _commit(source, "fix.txt", "fixed\n", "Fix the release")
+    _run("git", "push", str(bare), "agents/session-1/fix", cwd=source)
+
+    result = service.consolidate_branches(
+        repo_id,
+        ["agents/session-1/fix"],
+        "team/corrections/release-1",
+        directory_path="root",
+        base_commit_sha=base_commit,
+        expected_source_commits={"agents/session-1/fix": reviewed_commit},
+        commit_message="Integrate corrections for release release-1",
+    )
+
+    assert result["success"] is True
+    assert result["commit_sha"] == reviewed_commit
+    assert _run(
+        "git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/corrections/release-1"
+    ) == reviewed_commit
+
+
+def test_consolidation_fast_forwards_to_dominant_reviewed_source(tmp_path: Path) -> None:
+    source, _, base_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    _run("git", "checkout", "-b", "agents/session-1/first", cwd=source)
+    first_commit = _commit(source, "first.txt", "first\n", "First accepted change")
+    _run("git", "branch", "agents/session-2/dominant", cwd=source)
+    _run("git", "checkout", "agents/session-2/dominant", cwd=source)
+    dominant_commit = _commit(source, "second.txt", "second\n", "Second accepted change")
+    _run("git", "push", str(bare), "agents/session-1/first", cwd=source)
+    _run("git", "push", str(bare), "agents/session-2/dominant", cwd=source)
+
+    result = service.consolidate_branches(
+        repo_id,
+        ["agents/session-1/first", "agents/session-2/dominant"],
+        "team/features/task-1",
+        directory_path="root",
+        base_commit_sha=base_commit,
+        expected_source_commits={
+            "agents/session-1/first": first_commit,
+            "agents/session-2/dominant": dominant_commit,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["commit_sha"] == dominant_commit
 
 
 def test_consolidation_rejects_source_outside_required_ancestor(

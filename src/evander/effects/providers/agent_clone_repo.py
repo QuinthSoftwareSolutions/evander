@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 import ipaddress
 from pathlib import Path
 import posixpath
@@ -12,6 +11,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from evander.events.provider_models import AgentCloneRepoEffectDefinition
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY, GitIdentity
 from evander.git_ssh_authorized_keys import (
     authorized_keys_path_for_user,
     install_git_read_authorized_key,
@@ -45,14 +45,8 @@ from .agent_session import (
 from .base import EffectProviderBase
 
 
-@dataclass(frozen=True)
-class GitIdentity:
-    name: str
-    email: str
-
-
 GitAuthorIdentity = GitIdentity
-_DEFAULT_GIT_IDENTITY = GitIdentity(name="Truman Bot", email="truman@quinth.se")
+_DEFAULT_GIT_IDENTITY = DEFAULT_AGENT_GIT_IDENTITY
 
 
 class AgentCloneRepoEffectProvider(EffectProviderBase):
@@ -191,33 +185,32 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 target_dir=result.target_dir,
             )
             write_access_metadata = access_metadata if git_access_mode == "write" else None
-            if result.cloned or access_metadata is not None:
-                self._configure_container_git(
-                    backend=backend,
-                    config=config,
-                    session_id=session_id,
-                    session=session,
-                    directory_path=session_directory_path,
-                    target_dir=result.target_dir,
-                    repo_source=clone_source,
-                    remote_url=result.remote_url,
-                    push_remote_url=(
-                        _container_git_remote_url_with_ssh_alias(
-                            result.remote_url,
-                            str(write_access_metadata["git_ssh_alias"]),
-                        )
-                        if write_access_metadata is not None
-                        else None
-                    ),
-                    clone_branch=clone_branch,
-                    git_access_mode=git_access_mode,
-                    git_access_lifetime=git_access_lifetime,
-                    pinned_ref=pinned_ref,
-                    pinned_commit_sha=pinned_commit_sha,
-                    git_author_identity=git_author_identity,
-                    git_committer_identity=git_committer_identity,
-                    timeout_seconds=container_job_timeout_seconds,
-                )
+            self._configure_container_git(
+                backend=backend,
+                config=config,
+                session_id=session_id,
+                session=session,
+                directory_path=session_directory_path,
+                target_dir=result.target_dir,
+                repo_source=clone_source,
+                remote_url=result.remote_url,
+                push_remote_url=(
+                    _container_git_remote_url_with_ssh_alias(
+                        result.remote_url,
+                        str(write_access_metadata["git_ssh_alias"]),
+                    )
+                    if write_access_metadata is not None
+                    else None
+                ),
+                clone_branch=clone_branch,
+                git_access_mode=git_access_mode,
+                git_access_lifetime=git_access_lifetime,
+                pinned_ref=pinned_ref,
+                pinned_commit_sha=pinned_commit_sha,
+                git_author_identity=git_author_identity,
+                git_committer_identity=git_committer_identity,
+                timeout_seconds=container_job_timeout_seconds,
+            )
             bind_repository = getattr(context.admin_service, "bind_managed_git_repository", None)
             if callable(bind_repository):
                 bind_repository(

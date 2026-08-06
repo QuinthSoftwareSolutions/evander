@@ -491,6 +491,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "allowed_changed_paths": (
                     "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
                 ),
+                "commit_message": (
+                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
+                ),
             },
             {
                 "id": "team-record-feature-promotion",
@@ -546,6 +549,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 ),
                 "allowed_changed_paths": (
                     "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
+                "commit_message": (
+                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
                 ),
             },
             {
@@ -608,6 +614,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 ),
                 "allowed_changed_paths": (
                     "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
+                "commit_message": (
+                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
                 ),
             },
             {
@@ -685,6 +694,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "allowed_changed_paths": (
                     "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
                 ),
+                "commit_message": (
+                    "${{team-git-release-recovery-requested.payload.commit_message ?? null}}"
+                ),
             },
             {
                 "id": "team-record-release-recovery-promotion",
@@ -729,6 +741,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "expected_commit_sha": (
                     "${{team-git-promotion-requested.payload.expected_commit_sha}}"
                 ),
+                "expected_destination_commit_sha": (
+                    "${{team-git-promotion-requested.payload.base_commit_sha}}"
+                ),
                 "destination_branch": "${{team-git-promotion-requested.payload.target_branch}}",
             },
             {
@@ -742,6 +757,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "result_outputs": {
                     "destination_branch": (
                         "${{team-push-canonical-branch.destination_branch ?? null}}"
+                    ),
+                    "expected_destination_commit_sha": (
+                        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+                    ),
+                    "destination_commit": (
+                        "${{team-push-canonical-branch.destination_commit ?? null}}"
                     ),
                     "error_code": "${{team-push-canonical-branch.reason ?? null}}",
                 },
@@ -760,6 +781,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "result_outputs": {
                     "destination_branch": (
                         "${{team-push-canonical-branch.destination_branch ?? null}}"
+                    ),
+                    "expected_destination_commit_sha": (
+                        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+                    ),
+                    "destination_commit": (
+                        "${{team-push-canonical-branch.destination_commit ?? null}}"
                     ),
                     "error_code": "${{team-push-canonical-branch.reason ?? null}}",
                 },

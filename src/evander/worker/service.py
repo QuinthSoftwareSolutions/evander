@@ -39,6 +39,10 @@ from evander.session_artifacts import (
     read_artifact_text_no_follow,
 )
 from evander.git_ssh_authorized_keys import public_key_body_from_line
+from evander.git_identity import (
+    DEFAULT_AGENT_GIT_IDENTITY,
+    TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY,
+)
 from evander.managed_git_grants import managed_git_ssh_alias
 from evander.execution.task_worktree_cleanup import (
     cleanup_task_worktree as cleanup_task_worktree_checkout,
@@ -56,6 +60,7 @@ from .codex_subscription import (
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .models import (
     DEFAULT_WORKER_ROOT,
+    LEGACY_WORKER_GIT_KEY_NAME,
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
     WorkerFailureCause,
@@ -1271,6 +1276,16 @@ class WorkerDaemon:
             created=created,
             base_commit_sha=base_commit_sha,
             env=env,
+            dependency_merge_author_name=(
+                request.dependency_merge_author_name or DEFAULT_AGENT_GIT_IDENTITY.name
+            ),
+            dependency_merge_author_email=(
+                request.dependency_merge_author_email or DEFAULT_AGENT_GIT_IDENTITY.email
+            ),
+            dependency_composition_commit_message=(
+                request.dependency_composition_commit_message
+                or "Compose accepted Team dependencies"
+            ),
         )
         if base_commit_sha is not None:
             subprocess.run(
@@ -1304,8 +1319,11 @@ class WorkerDaemon:
         created: bool,
         base_commit_sha: str | None,
         env: dict[str, str],
+        dependency_merge_author_name: str,
+        dependency_merge_author_email: str,
+        dependency_composition_commit_message: str,
     ) -> str | None:
-        """Merge exact dependency commits before exposing a task worktree.
+        """Compose exact dependency commits before exposing a task worktree.
 
         The compact JSON stored in worktree-local Git configuration is immutable
         provenance. A reused checkout must name precisely the same sources; an
@@ -1472,38 +1490,124 @@ class WorkerDaemon:
                 "does not already contain every accepted dependency commit; "
                 "preserve it for explicit recovery"
             )
-        try:
-            for source in expected_rows:
-                expected_commit = str(source["commit_sha"])
-                merge = subprocess.run(
-                    ["git", "merge", "--no-ff", "--no-edit", expected_commit],
+        def is_ancestor(ancestor: str, descendant: str) -> bool:
+            return (
+                subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", ancestor, descendant],
                     cwd=target_dir,
-                    env={
-                        **env,
-                        "GIT_AUTHOR_NAME": "Evander Team Dependency Composer",
-                        "GIT_AUTHOR_EMAIL": "team-dependencies@evander.invalid",
-                        "GIT_COMMITTER_NAME": "Evander Team Dependency Composer",
-                        "GIT_COMMITTER_EMAIL": "team-dependencies@evander.invalid",
-                        "GIT_MERGE_AUTOEDIT": "no",
-                    },
+                    env=env,
                     check=False,
                     capture_output=True,
                     text=True,
+                ).returncode
+                == 0
+            )
+
+        frontier_rows: list[dict[str, Any]] = []
+        seen_frontier_commits: set[str] = set()
+        for source in expected_rows:
+            expected_commit = str(source["commit_sha"])
+            if expected_commit in seen_frontier_commits or is_ancestor(
+                expected_commit, head_before
+            ):
+                continue
+            if any(
+                expected_commit != str(other["commit_sha"])
+                and is_ancestor(expected_commit, str(other["commit_sha"]))
+                for other in expected_rows
+            ):
+                continue
+            frontier_rows.append(source)
+            seen_frontier_commits.add(expected_commit)
+
+        composition_env = {
+            **env,
+            "GIT_AUTHOR_NAME": dependency_merge_author_name,
+            "GIT_AUTHOR_EMAIL": dependency_merge_author_email,
+            "GIT_COMMITTER_NAME": TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name,
+            "GIT_COMMITTER_EMAIL": TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email,
+            "GIT_MERGE_AUTOEDIT": "no",
+        }
+        try:
+            if len(frontier_rows) == 1 and is_ancestor(
+                head_before, str(frontier_rows[0]["commit_sha"])
+            ):
+                subprocess.run(
+                    ["git", "reset", "--hard", str(frontier_rows[0]["commit_sha"])],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 )
-                if merge.returncode != 0:
-                    subprocess.run(
-                        ["git", "merge", "--abort"],
+            elif frontier_rows:
+                for source in frontier_rows:
+                    expected_commit = str(source["commit_sha"])
+                    merge = subprocess.run(
+                        [
+                            "git",
+                            "merge",
+                            "--no-ff",
+                            "-m",
+                            f"Temporary Team integration of {source['dependency_task_id']}",
+                            expected_commit,
+                        ],
                         cwd=target_dir,
-                        env=env,
+                        env=composition_env,
                         check=False,
                         capture_output=True,
                         text=True,
                     )
-                    raise ValueError(
-                        "dependency Git composition conflict for dependency "
-                        f"{source['dependency_task_id']} deliverable "
-                        f"{source['deliverable_id']}"
+                    if merge.returncode != 0:
+                        subprocess.run(
+                            ["git", "merge", "--abort"],
+                            cwd=target_dir,
+                            env=env,
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                        )
+                        raise ValueError(
+                            "dependency Git composition conflict for dependency "
+                            f"{source['dependency_task_id']} deliverable "
+                            f"{source['deliverable_id']}"
+                        )
+                result_tree = (
+                    subprocess.run(
+                        ["git", "rev-parse", "HEAD^{tree}"],
+                        cwd=target_dir,
+                        env=env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
                     )
+                    .stdout.strip()
+                    .casefold()
+                )
+                commit_command = ["git", "commit-tree", result_tree, "-p", head_before]
+                for source in frontier_rows:
+                    commit_command.extend(("-p", str(source["commit_sha"])))
+                commit_command.extend(("-m", dependency_composition_commit_message))
+                composed_commit = (
+                    subprocess.run(
+                        commit_command,
+                        cwd=target_dir,
+                        env=composition_env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    .stdout.strip()
+                    .casefold()
+                )
+                subprocess.run(
+                    ["git", "reset", "--hard", composed_commit],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
         except Exception:
             subprocess.run(
                 ["git", "reset", "--hard", head_before],
@@ -1566,6 +1670,7 @@ class WorkerDaemon:
                 "expected_target_dir does not match the deterministic task worktree path"
             )
         outcome = cleanup_task_worktree_checkout(
+            trusted_root=paths.agent_home,
             repo_dir=repo_dir,
             worktrees_root=worktrees_root,
             target_dir=target_dir,
@@ -1608,6 +1713,10 @@ class WorkerDaemon:
         session_id: str,
         request: WorkerGitWriteKeyRequest,
     ) -> WorkerGitWriteKeyRecord:
+        if request.key_name == LEGACY_WORKER_GIT_KEY_NAME:
+            raise ValueError(
+                f"key_name {LEGACY_WORKER_GIT_KEY_NAME!r} is reserved for the worker Git credential"
+            )
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
         ssh_dir = paths.agent_home / ".ssh"
         self._ensure_managed_ssh_dir(ssh_dir)
@@ -1674,7 +1783,7 @@ class WorkerDaemon:
                 write_git_ssh_alias=write_git_ssh_alias,
                 git_host=request.git_host,
                 git_user=request.git_user,
-                read_identity_file=str(ssh_dir / "evander-git"),
+                read_identity_file=str(paths.root / "host-ssh" / "evander-git"),
                 identity_file=str(key_path),
             )
         metadata = self._read_session_metadata(paths)
@@ -2818,8 +2927,15 @@ class WorkerDaemon:
         *,
         required: bool,
     ) -> None:
-        target_dir = paths.agent_home / ".ssh"
-        preserve_config = self._has_provisioned_git_key(paths, target_dir=target_dir)
+        # The source credential is only for host-side repository operations.  The
+        # agent home is mounted into the untrusted job container, so never stage
+        # this broad read credential there.
+        exposed_dir = paths.agent_home / ".ssh"
+        for name in ("evander-git", "evander-git.pub"):
+            exposed_key = exposed_dir / name
+            if self._managed_regular_file_exists_no_follow(exposed_key, label="Git key"):
+                exposed_key.unlink()
+        target_dir = paths.root / "host-ssh"
         existing_read_key = required and self._managed_regular_file_exists_no_follow(
             target_dir / "evander-git", label="Git key"
         )
@@ -2829,7 +2945,7 @@ class WorkerDaemon:
                 target_dir / "config",
                 label="SSH config",
             )
-            and (preserve_config or existing_read_key)
+            and existing_read_key
         ):
             return
         if self.git_ssh_source_dir is None:
@@ -2847,16 +2963,36 @@ class WorkerDaemon:
                 )
             return
         self._ensure_managed_ssh_dir(target_dir)
+        existing_config = (
+            self._read_managed_text_file_no_follow(
+                target_dir / "config",
+                label="SSH config",
+            )
+            if self._managed_regular_file_exists_no_follow(
+                target_dir / "config",
+                label="SSH config",
+            )
+            else ""
+        )
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
-            if name == "config" and preserve_config:
-                continue
             source = source_dir / name
             if not source.is_file():
                 continue
             destination = target_dir / name
+            contents = source.read_bytes()
+            if name == "config":
+                config = contents.decode("utf-8")
+                config = config.replace(
+                    "~/.ssh/evander-git", str(target_dir / "evander-git")
+                ).replace(str(source_dir / "evander-git"), str(target_dir / "evander-git"))
+                config = self._merge_provisioned_git_ssh_config(
+                    refreshed_config=config,
+                    existing_config=existing_config,
+                )
+                contents = config.encode("utf-8")
             self._write_managed_bytes_file_no_follow(
                 destination,
-                source.read_bytes(),
+                contents,
                 mode=0o644 if name.endswith(".pub") else 0o600,
                 label=f"SSH {name}",
             )
@@ -3187,6 +3323,55 @@ class WorkerDaemon:
             mode=0o600,
             label="SSH config",
         )
+
+    @classmethod
+    def _merge_provisioned_git_ssh_config(
+        cls,
+        *,
+        refreshed_config: str,
+        existing_config: str,
+    ) -> str:
+        refreshed_base, _ = cls._split_provisioned_git_ssh_config(refreshed_config)
+        _, provisioned_blocks = cls._split_provisioned_git_ssh_config(existing_config)
+        parts = [*provisioned_blocks]
+        if refreshed_base:
+            parts.append(refreshed_base)
+        return "\n\n".join(parts).rstrip() + "\n" if parts else ""
+
+    @staticmethod
+    def _split_provisioned_git_ssh_config(text: str) -> tuple[str, list[str]]:
+        lines = str(text or "").splitlines()
+        base_lines: list[str] = []
+        blocks: list[str] = []
+        index = 0
+        while index < len(lines):
+            begin = lines[index]
+            if begin == "# BEGIN evander git write host":
+                end = "# END evander git write host"
+            elif begin.startswith("# BEGIN evander git grant "):
+                key_name = begin.removeprefix("# BEGIN evander git grant ")
+                try:
+                    validate_worker_component_id(key_name, field_name="key_name")
+                except (TypeError, ValueError):
+                    base_lines.append(begin)
+                    index += 1
+                    continue
+                end = f"# END evander git grant {key_name}"
+            else:
+                base_lines.append(begin)
+                index += 1
+                continue
+
+            try:
+                stop = lines.index(end, index + 1)
+            except ValueError:
+                base_lines.append(begin)
+                index += 1
+                continue
+            blocks.append("\n".join(lines[index : stop + 1]))
+            index = stop + 1
+
+        return "\n".join(base_lines).strip(), blocks
 
     @classmethod
     def _remove_git_grant_ssh_config(cls, *, config_path: Path, key_name: str) -> bool:

@@ -50,6 +50,7 @@ from evander.admin.services.managed_git_worktree_service import (
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.consultations import consultation_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
 from evander.managed_git_grants import (
     LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS,
     MANAGED_GIT_GRANTS_METADATA_KEY,
@@ -62,8 +63,8 @@ from evander.storage import JsonObjectStore
 
 REGISTRY_SCHEMA = "evander.managed-git-repositories/v1"
 REGISTRY_FILENAME = "managed-git-repositories.json"
-DEFAULT_HOST_COMMIT_NAME = "Truman Bot"
-DEFAULT_HOST_COMMIT_EMAIL = "truman@quinth.se"
+DEFAULT_HOST_COMMIT_NAME = DEFAULT_AGENT_GIT_IDENTITY.name
+DEFAULT_HOST_COMMIT_EMAIL = DEFAULT_AGENT_GIT_IDENTITY.email
 DEFAULT_GIT_OPERATION_TIMEOUT_SECONDS = 5 * 60
 _RESERVED_BRANCH_ROOTS = frozenset({"agents", "review", "team"})
 _LEGACY_MANAGED_GIT_FIELDS = frozenset(
@@ -155,6 +156,15 @@ def _normalize_commit_identity_value(value: str, *, field_name: str) -> str:
         raise ValueError(f"{field_name} is required")
     if any(character in normalized for character in ("\0", "\r", "\n", "<", ">")):
         raise ValueError(f"{field_name} contains characters Git does not permit in an identity")
+    return normalized
+
+
+def _normalize_commit_subject(value: str, *, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    if any(character in normalized for character in ("\0", "\r", "\n")):
+        raise ValueError(f"{field_name} must be a single-line Git commit subject")
     return normalized
 
 
@@ -1706,6 +1716,7 @@ class ManagedGitAdminService:
         destination_branch: str,
         directory_path: str,
         *,
+        expected_destination_commit_sha: str | None = None,
         _target_lock_held: bool = False,
     ) -> dict[str, Any]:
         normalized_source = _normalize_ref(source_ref, field_name="source_ref")
@@ -1715,6 +1726,14 @@ class ManagedGitAdminService:
         if destination.split("/", 1)[0] in _RESERVED_BRANCH_ROOTS:
             raise ValueError("destination_branch cannot use an Evander-reserved namespace")
         expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+        expected_destination = (
+            _normalize_object_id(
+                expected_destination_commit_sha,
+                field_name="expected_destination_commit_sha",
+            )
+            if expected_destination_commit_sha is not None
+            else None
+        )
         record = self._require_scoped_record(managed_repo_id, directory_path)
         bare_path = self._bare_path(record)
         destination_ref = f"refs/heads/{destination}"
@@ -1786,6 +1805,49 @@ class ManagedGitAdminService:
                     advertised = self._ls_remote_branch(remote_url, destination_ref, env=auth_env)
                     if advertised is not None:
                         self._raise_git_failure(fetch)
+                if expected_destination is not None:
+                    if destination_commit is None:
+                        self._require_commit(bare_path, expected_destination)
+                        if not self._is_ancestor(
+                            bare_path,
+                            expected_destination,
+                            expected,
+                        ):
+                            return {
+                                "success": False,
+                                "preflight_success": False,
+                                "reason": "destination_base_mismatch",
+                                "message": (
+                                    f"Approved commit does not contain the reviewed base "
+                                    f"required to create destination branch {destination}."
+                                ),
+                                "managed_repo_id": managed_repo_id,
+                                "source_ref": normalized_source,
+                                "destination_branch": destination,
+                                "destination_ref": destination_ref,
+                                "expected_commit_sha": expected,
+                                "expected_destination_commit_sha": expected_destination,
+                                "destination_commit": None,
+                                "local_commit": expected,
+                            }
+                    elif destination_commit != expected_destination:
+                        return {
+                            "success": False,
+                            "preflight_success": False,
+                            "reason": "destination_base_mismatch",
+                            "message": (
+                                f"Destination branch {destination} is not at the release base "
+                                "commit reviewed for canonical publication."
+                            ),
+                            "managed_repo_id": managed_repo_id,
+                            "source_ref": normalized_source,
+                            "destination_branch": destination,
+                            "destination_ref": destination_ref,
+                            "expected_commit_sha": expected,
+                            "expected_destination_commit_sha": expected_destination,
+                            "destination_commit": destination_commit,
+                            "local_commit": expected,
+                        }
                 if destination_commit and not self._is_ancestor(
                     bare_path, destination_commit, expected
                 ):
@@ -1849,14 +1911,18 @@ class ManagedGitAdminService:
                 if destination_commit:
                     self._delete_ref_cas(bare_path, destination_operation_ref, destination_commit)
                 self._delete_ref_cas(bare_path, source_operation_ref, expected)
-        return {
+        result = {
             "success": True,
             "managed_repo_id": managed_repo_id,
             "source_ref": normalized_source,
             "destination_ref": destination_ref,
             "previous_commit_sha": destination_commit,
+            "destination_commit": destination_commit,
             "commit_sha": expected,
         }
+        if expected_destination is not None:
+            result["expected_destination_commit_sha"] = expected_destination
+        return result
 
     def pr_create(
         self,
@@ -2597,6 +2663,7 @@ class ManagedGitAdminService:
         required_source_ancestor_commit_sha: str | None = None,
         expected_source_commits: Mapping[str, str] | None = None,
         allowed_changed_paths: list[str] | None = None,
+        commit_message: str | None = None,
     ) -> dict[str, Any]:
         normalized_sources = [
             _normalize_branch(branch, field_name="source_branches") for branch in source_branches
@@ -2608,6 +2675,10 @@ class ManagedGitAdminService:
         target = _normalize_branch(target_branch, field_name="target_branch")
         if not target.startswith(("review/", "team/")):
             raise ValueError("target_branch must be inside the review/ or team/ namespace")
+        commit_subject = _normalize_commit_subject(
+            commit_message or f"Integrate Team branches into {target}",
+            field_name="commit_message",
+        )
         supplied_expected = dict(expected_source_commits or {})
         if set(supplied_expected) != set(normalized_sources):
             raise ValueError(
@@ -2859,102 +2930,156 @@ class ManagedGitAdminService:
                             "source_manifests": source_manifests,
                             "tree_hash": None,
                         }
-                with self.temporary_worktree(
-                    managed_repo_id,
-                    source_ref=base_operation_ref,
-                    commit_sha=base_commit,
-                    operation_id=f"consolidate-{operation_id}",
-                    purpose="team-release-consolidation",
-                ) as worktree:
-                    identity = dict(record.get("host_commit_identity") or {})
-                    merge_env = self._safe_worktree_environment()
-                    merge_env.update(
-                        {
-                            "GIT_AUTHOR_NAME": str(
-                                identity.get("name") or DEFAULT_HOST_COMMIT_NAME
-                            ),
-                            "GIT_AUTHOR_EMAIL": str(
-                                identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
-                            ),
-                            "GIT_COMMITTER_NAME": str(
-                                identity.get("name") or DEFAULT_HOST_COMMIT_NAME
-                            ),
-                            "GIT_COMMITTER_EMAIL": str(
-                                identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
-                            ),
-                            "GIT_MERGE_AUTOEDIT": "no",
-                        }
-                    )
-                    for branch in normalized_sources:
-                        merge = self._run_git(
-                            [
-                                "git",
-                                "-C",
-                                str(worktree),
-                                "merge",
-                                "--no-ff",
-                                "--no-edit",
-                                source_operation_refs[branch],
-                            ],
-                            env=merge_env,
-                            check=False,
-                        )
-                        merge_output.append((merge.stdout or "") + (merge.stderr or ""))
-                        if merge.returncode != 0:
-                            self._run_git(
-                                ["git", "-C", str(worktree), "merge", "--abort"],
+                frontier_branches: list[str] = []
+                seen_frontier_commits: set[str] = set()
+                for branch in normalized_sources:
+                    commit = expected[branch]
+                    if commit in seen_frontier_commits or self._is_ancestor(
+                        bare_path, commit, base_commit
+                    ):
+                        continue
+                    if any(
+                        commit != other_commit
+                        and self._is_ancestor(bare_path, commit, other_commit)
+                        for other_commit in expected.values()
+                    ):
+                        continue
+                    frontier_branches.append(branch)
+                    seen_frontier_commits.add(commit)
+
+                identity = dict(record.get("host_commit_identity") or {})
+                merge_env = self._safe_worktree_environment()
+                merge_env.update(
+                    {
+                        "GIT_AUTHOR_NAME": str(
+                            identity.get("name") or DEFAULT_HOST_COMMIT_NAME
+                        ),
+                        "GIT_AUTHOR_EMAIL": str(
+                            identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
+                        ),
+                        "GIT_COMMITTER_NAME": str(
+                            identity.get("name") or DEFAULT_HOST_COMMIT_NAME
+                        ),
+                        "GIT_COMMITTER_EMAIL": str(
+                            identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
+                        ),
+                        "GIT_MERGE_AUTOEDIT": "no",
+                    }
+                )
+                if not frontier_branches:
+                    result_commit = base_commit
+                    result_tree_hash = self._git_output(
+                        ["git", f"--git-dir={bare_path}", "rev-parse", f"{base_commit}^{{tree}}"]
+                    ).strip()
+                elif len(frontier_branches) == 1 and self._is_ancestor(
+                    bare_path, base_commit, expected[frontier_branches[0]]
+                ):
+                    result_commit = expected[frontier_branches[0]]
+                    result_tree_hash = self._git_output(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "rev-parse",
+                            f"{result_commit}^{{tree}}",
+                        ]
+                    ).strip()
+                else:
+                    with self.temporary_worktree(
+                        managed_repo_id,
+                        source_ref=base_operation_ref,
+                        commit_sha=base_commit,
+                        operation_id=f"consolidate-{operation_id}",
+                        purpose="team-release-consolidation",
+                    ) as worktree:
+                        for branch in frontier_branches:
+                            merge = self._run_git(
+                                [
+                                    "git",
+                                    "-C",
+                                    str(worktree),
+                                    "merge",
+                                    "--no-ff",
+                                    "-m",
+                                    f"Temporary Team integration of {branch}",
+                                    source_operation_refs[branch],
+                                ],
                                 env=merge_env,
                                 check=False,
                             )
-                            return {
-                                "success": False,
-                                "managed_repo_id": managed_repo_id,
-                                "target_branch": target,
-                                "merged_branches": merged,
-                                "commit_sha": None,
-                                "conflict_branch": branch,
-                                "output": self._sanitize_managed_worktree_error(
-                                    "".join(merge_output).strip(),
-                                    operation_dir=worktree.parent,
+                            merge_output.append((merge.stdout or "") + (merge.stderr or ""))
+                            if merge.returncode != 0:
+                                self._run_git(
+                                    ["git", "-C", str(worktree), "merge", "--abort"],
+                                    env=merge_env,
+                                    check=False,
                                 )
-                                or None,
-                                "error": f"Merge conflict while consolidating {branch}",
-                                "error_code": "merge_conflict",
-                                "base_commit_sha": base_commit,
-                                "source_manifests": source_manifests,
-                                "tree_hash": None,
-                            }
-                        merged.append(branch)
-                    result_commit = self._git_output(
-                        ["git", "-C", str(worktree), "rev-parse", "HEAD"]
-                    ).strip()
-                    result_tree_hash = self._git_output(
-                        ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"]
-                    ).strip()
-                    self._require_commit(bare_path, result_commit)
-                    current_target = self._resolve_ref(bare_path, target_ref)
-                    if current_target != previous_target:
-                        raise ManagedGitConflictError(
-                            f"Target ref {target_ref} moved during consolidation"
-                        )
-                    if previous_target and not self._is_ancestor(
-                        bare_path, previous_target, result_commit
-                    ):
-                        raise ManagedGitConflictError(
-                            f"Consolidation would regress or rewrite target ref {target_ref}"
-                        )
-                    if previous_target:
-                        self._run_update_ref_transaction(
-                            bare_path,
-                            [f"update {target_ref} {result_commit} {previous_target}"],
-                        )
-                    else:
-                        self._run_update_ref_transaction(
-                            bare_path, [f"create {target_ref} {result_commit}"]
-                        )
-                sanitized_merge_output = self._sanitize_managed_worktree_error(
-                    "".join(merge_output).strip(),
-                    operation_dir=worktree.parent,
+                                return {
+                                    "success": False,
+                                    "managed_repo_id": managed_repo_id,
+                                    "target_branch": target,
+                                    "merged_branches": merged,
+                                    "commit_sha": None,
+                                    "conflict_branch": branch,
+                                    "output": self._sanitize_managed_worktree_error(
+                                        "".join(merge_output).strip(),
+                                        operation_dir=worktree.parent,
+                                    )
+                                    or None,
+                                    "error": f"Merge conflict while consolidating {branch}",
+                                    "error_code": "merge_conflict",
+                                    "base_commit_sha": base_commit,
+                                    "source_manifests": source_manifests,
+                                    "tree_hash": None,
+                                }
+                            merged.append(branch)
+                        result_tree_hash = self._git_output(
+                            ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"]
+                        ).strip()
+                        commit_command = [
+                            "git",
+                            "-C",
+                            str(worktree),
+                            "commit-tree",
+                            result_tree_hash,
+                            "-p",
+                            base_commit,
+                        ]
+                        for branch in frontier_branches:
+                            commit_command.extend(("-p", expected[branch]))
+                        commit_command.extend(("-m", commit_subject))
+                        result_commit = self._run_git(
+                            commit_command,
+                            env=merge_env,
+                        ).stdout.strip()
+                merged = list(normalized_sources)
+                self._require_commit(bare_path, result_commit)
+                current_target = self._resolve_ref(bare_path, target_ref)
+                if current_target != previous_target:
+                    raise ManagedGitConflictError(
+                        f"Target ref {target_ref} moved during consolidation"
+                    )
+                if previous_target and not self._is_ancestor(
+                    bare_path, previous_target, result_commit
+                ):
+                    raise ManagedGitConflictError(
+                        f"Consolidation would regress or rewrite target ref {target_ref}"
+                    )
+                if previous_target:
+                    self._run_update_ref_transaction(
+                        bare_path,
+                        [f"update {target_ref} {result_commit} {previous_target}"],
+                    )
+                else:
+                    self._run_update_ref_transaction(
+                        bare_path, [f"create {target_ref} {result_commit}"]
+                    )
+                sanitized_merge_output = (
+                    self._sanitize_managed_worktree_error(
+                        "".join(merge_output).strip(),
+                        operation_dir=worktree.parent,
+                    )
+                    if merge_output
+                    else ""
                 )
                 return {
                     "success": True,

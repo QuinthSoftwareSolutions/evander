@@ -74,6 +74,7 @@ type SessionRecord = {
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   approval_notification_target_ids?: string[];
   approval_notification_target_options?: Array<{ value: string; label: string }>;
+  allowed_contact_ids?: string[] | null;
   communication_target_ids?: string[] | null;
   communication_target_options?: AgentCreateCommunicationTargetOption[];
   effective_tool_policy?: EffectiveToolPolicy | null;
@@ -212,6 +213,7 @@ type ManagedGitGrant = {
 type ManagedGitRepository = {
   managed_repo_id: string;
   display_name?: string;
+  canonical_repository_url?: string;
   directory_path?: string;
 };
 
@@ -251,6 +253,7 @@ type SessionPolicyDraft = {
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
+  allowedContactIds: string[] | null;
   communicationTargetIds: string[] | null;
   emailMailboxGrants: EmailMailboxGrant[] | null;
   discordChannelAllowlist: string[];
@@ -427,6 +430,10 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
+    allowedContactIds:
+      session.allowed_contact_ids == null
+        ? null
+        : dedupeStrings(session.allowed_contact_ids),
     communicationTargetIds:
       session.communication_target_ids == null
         ? null
@@ -1222,6 +1229,7 @@ export function SessionsScreen() {
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
+    allowedContactIds: null,
     communicationTargetIds: null,
     emailMailboxGrants: null,
     discordChannelAllowlist: [],
@@ -1532,6 +1540,19 @@ export function SessionsScreen() {
     }
     return listItem;
   }, [detail?.session, response?.items, selectedSessionId]);
+
+  const gitRepositoriesById = useMemo(
+    () => new Map(gitRepositories.map((repository) => [repository.managed_repo_id, repository])),
+    [gitRepositories],
+  );
+  const sortedGitGrants = useMemo(
+    () => [...(detail?.git_grants ?? [])].sort((left, right) => {
+      const leftName = gitRepositoriesById.get(left.managed_repo_id)?.display_name?.trim() || left.managed_repo_id;
+      const rightName = gitRepositoriesById.get(right.managed_repo_id)?.display_name?.trim() || right.managed_repo_id;
+      return sessionListCollator.compare(leftName, rightName);
+    }),
+    [detail?.git_grants, gitRepositoriesById],
+  );
 
   const visibleWakeScheduleItems = useMemo(
     () => filterVisibleWakeSchedules(detail?.wake_schedules ?? [], {
@@ -2067,6 +2088,7 @@ export function SessionsScreen() {
             method: "PATCH",
             body: JSON.stringify({
               allowed_script_names: policyDraft.allowedScriptNames,
+              allowed_contact_ids: policyDraft.allowedContactIds,
               communication_target_ids: policyDraft.communicationTargetIds,
               email_mailbox_grants: policyDraft.emailMailboxGrants,
               discord_channel_allowlist: policyDraft.discordChannelAllowlist,
@@ -2408,31 +2430,50 @@ export function SessionsScreen() {
               </div>
             </article>
             <article className="panel">
-              <div className="panel-header">
-                <h3>Repository access</h3>
-                <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
-              </div>
-              <div className="panel-body stack-layout">
-                {(detail?.git_grants ?? []).length > 0 ? (
-                  <div className="feature-list">
-                    {(detail?.git_grants ?? []).map((grant) => (
-                      <div className="feature-list-item" key={grant.managed_repo_id}>
-                        <div>
-                          <strong>{grant.managed_repo_id}</strong>
-                          <div className="panel-meta">
-                            {grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="admin-shell-button admin-shell-button-muted"
-                          onClick={() => void revokeGitGrant(grant)}
-                          disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
-                        >
-                          {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
-                        </button>
-                      </div>
-                    ))}
+              <details className="compact-disclosure session-repository-access">
+                <summary className="compact-disclosure-summary feature-list-title-row">
+                  <h3>Repository access</h3>
+                  <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
+                </summary>
+                <div className="panel-body stack-layout">
+                {sortedGitGrants.length > 0 ? (
+                  <div className="session-git-grant-table-wrap">
+                    <table className="session-git-grant-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Repository ID</th>
+                          <th scope="col">Name</th>
+                          <th scope="col">URL</th>
+                          <th scope="col">Access</th>
+                          <th scope="col"><span className="sr-only">Actions</span></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedGitGrants.map((grant) => {
+                          const repository = gitRepositoriesById.get(grant.managed_repo_id);
+                          const displayName = repository?.display_name?.trim();
+                          const canonicalUrl = repository?.canonical_repository_url?.trim();
+                          return (
+                            <tr key={grant.managed_repo_id}>
+                              <td><code>{grant.managed_repo_id}</code></td>
+                              <td>{displayName || "Unavailable"}</td>
+                              <td className="session-git-grant-url">{canonicalUrl || "Unavailable"}</td>
+                              <td>{grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}</td>
+                              <td className="session-git-grant-action">
+                                <button
+                                  type="button"
+                                  className="admin-shell-button admin-shell-button-muted"
+                                  onClick={() => void revokeGitGrant(grant)}
+                                  disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
+                                >
+                                  {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 ) : (
                   <div className="empty-state">No managed repository grants.</div>
@@ -2486,7 +2527,8 @@ export function SessionsScreen() {
                 <p className="panel-meta">
                   Read-only session grants support repeated clone, fetch, and pull. Revocation leaves existing checkout files in place.
                 </p>
-              </div>
+                </div>
+              </details>
             </article>
             {selectedSession.container_lifecycle ? (
               <article className="panel">
@@ -2684,6 +2726,50 @@ export function SessionsScreen() {
                       These IDs must resolve to notify-capable communication targets in the selected directory.
                     </p>
                     {renderApprovalNotificationTargetEditor()}
+                  </div>
+                  <div className="field-stack wide-field">
+                    <span>Contacts</span>
+                    <p className="field-description">
+                      Choose whether this session can use every contact visible in its directory or only an explicit
+                      allowlist. An explicit allowlist with no contact IDs blocks access to every contact.
+                    </p>
+                    <div className="inline-actions compact-actions" role="radiogroup" aria-label="Contact access">
+                      <label className="checkbox-row">
+                        <input
+                          type="radio"
+                          name="session-contact-access-mode"
+                          checked={policyDraft.allowedContactIds === null}
+                          onChange={() => updatePolicyDraft({ allowedContactIds: null })}
+                          disabled={mutationLocked}
+                        />
+                        <span>All directory contacts</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="radio"
+                          name="session-contact-access-mode"
+                          checked={policyDraft.allowedContactIds !== null}
+                          onChange={() => updatePolicyDraft({ allowedContactIds: policyDraft.allowedContactIds ?? [] })}
+                          disabled={mutationLocked}
+                        />
+                        <span>Explicit allowlist</span>
+                      </label>
+                    </div>
+                    {policyDraft.allowedContactIds === null ? (
+                      <div className="callout">
+                        This session inherits access to all contacts visible in its directory.
+                      </div>
+                    ) : (
+                      <StringListEditor
+                        values={policyDraft.allowedContactIds}
+                        onChange={(nextValues) => updatePolicyDraft({ allowedContactIds: nextValues })}
+                        disabled={mutationLocked}
+                        itemLabel="Contact ID"
+                        addLabel="Add contact"
+                        placeholder="Enter a configured contact ID"
+                        emptyState="No contacts are allowed."
+                      />
+                    )}
                   </div>
                   {policyDraft.communicationTargetIds === null || policyDraft.emailMailboxGrants === null ? (
                     <div className="field-stack wide-field">

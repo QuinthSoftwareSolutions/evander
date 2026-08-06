@@ -22,7 +22,6 @@ from .validators import (
 from ...models import (
     ExternalChatDeliveryRecord,
     TeamChatAttachment,
-    TeamConversation,
     TeamConversationMessage,
     TeamState,
     _unique_text_list,
@@ -35,9 +34,7 @@ from ..domain.chat import (
     _touch_conversation,
 )
 from ..domain.common import (
-    _generated_id,
     _normalize_operator_user_id,
-    _operator_display_name_for_user,
     _optional_text,
     _required_text,
 )
@@ -330,49 +327,38 @@ class TeamChatCommandService(TeamCommandExecutor):
                     code="empty_body",
                     message="body or at least one attachment is required",
                 )
-            known_display_name = _operator_display_name_for_user(state, normalized_operator_id)
-            known_operator_ids = {
-                conversation.operator_user_id for conversation in state.conversations.values()
-            }
-            if normalized_operator_id not in known_operator_ids:
-                raise TeamCommandValidationError(
-                    code="unknown_operator_participant",
-                    message=f"operator {normalized_operator_id} is not a current Team Chat participant",
-                    correction_context={
-                        "recipient_operator_user_id": normalized_operator_id,
-                        "operator_user_ids": sorted(known_operator_ids),
-                    },
-                )
-            _require_unclaimed_chat_attachments(state, prepared_attachments)
             conversation = next(
                 (
                     item
                     for item in state.conversations.values()
-                    if item.agent_id == agent.id and item.operator_user_id == normalized_operator_id
+                    if item.agent_id == agent.id
+                    and item.operator_user_id == normalized_operator_id
                 ),
                 None,
             )
-            now = utc_now()
-            conversation_created = False
             if conversation is None:
-                conversation_id = _generated_id(
-                    prefix="conversation",
-                    labels=[agent.id, normalized_operator_id],
-                    existing_ids=state.conversations,
+                operator_user_ids = sorted(
+                    {
+                        item.operator_user_id
+                        for item in state.conversations.values()
+                        if item.agent_id == agent.id
+                    }
                 )
-                conversation = TeamConversation(
-                    id=conversation_id,
-                    agent_id=agent.id,
-                    operator_user_id=normalized_operator_id,
-                    operator_display_name=known_display_name,
-                    created_by=f"agent:{agent.id}",
-                    last_message_preview="",
-                    created_at=now,
-                    updated_at=now,
-                    last_interaction_at=now,
+                raise TeamCommandValidationError(
+                    code="operator_chat_not_member",
+                    message=(
+                        f"agent {agent.id} is not a member of an operator chat with "
+                        f"{normalized_operator_id}"
+                    ),
+                    correction_context={
+                        "agent_id": agent.id,
+                        "recipient_operator_user_id": normalized_operator_id,
+                        "operator_user_ids": operator_user_ids,
+                    },
                 )
-                state.conversations[conversation.id] = conversation
-                conversation_created = True
+            _require_unclaimed_chat_attachments(state, prepared_attachments)
+            now = utc_now()
+            known_display_name = conversation.operator_display_name
             message_id = f"chatmsg-{uuid4().hex}"
             metadata: dict[str, Any] = {
                 "sender_kind": "team_agent",
@@ -408,18 +394,15 @@ class TeamChatCommandService(TeamCommandExecutor):
                 now=now,
                 preview=_chat_message_preview(body_text, len(prepared_attachments)),
             )
-            created_domain_ids = [message_id]
-            if conversation_created:
-                created_domain_ids.append(conversation.id)
             return TeamCommandApplyResult(
                 response_payload={
                     "chat_message_id": message_id,
                     "conversation_id": conversation.id,
-                    "conversation_created": conversation_created,
+                    "conversation_created": False,
                     "created_operator_chat_message_ids": [message_id],
                     "progress_made": True,
                 },
-                created_domain_ids=created_domain_ids,
+                created_domain_ids=[message_id],
             )
 
         state, response = self._execute_team_command(

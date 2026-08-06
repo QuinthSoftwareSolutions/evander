@@ -33,6 +33,7 @@ from evander_team_addon.models import (
     PersistentAgent,
     Project,
     ProjectGitConfig,
+    ProjectGitIdentity,
     ProjectGoal,
     ProjectReleasePolicy,
     ReleasePackage,
@@ -652,6 +653,8 @@ def test_project_git_config_requires_managed_repo_id() -> None:
     assert config.directory_path == "root/team-a"
     assert config.base_branch is None
     assert config.canonical_release_branch_prefix == "releases/<project-id>/"
+    assert config.agent_author_identity is None
+    assert config.agent_committer_identity is None
 
     with pytest.raises(ValidationError, match="managed_repo_id"):
         ProjectGitConfig.model_validate({})
@@ -671,6 +674,47 @@ def test_project_git_config_requires_managed_repo_id() -> None:
                 "managed_repo_id": "mr_0123456789abcdefabcd",
                 "repo_source": "https://example.invalid/operator-checkout.git",
             }
+        )
+
+
+def test_project_git_config_accepts_distinct_agent_author_and_committer() -> None:
+    config = ProjectGitConfig(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        agent_author_identity=ProjectGitIdentity(
+            name=" Jonathan Quinth ",
+            email=" operator@example.invalid ",
+        ),
+        agent_committer_identity={
+            "name": "Evander Bot",
+            "email": "evander@quinth.se",
+        },
+    )
+
+    assert config.agent_author_identity == ProjectGitIdentity(
+        name="Jonathan Quinth",
+        email="operator@example.invalid",
+    )
+    assert config.agent_committer_identity == ProjectGitIdentity(
+        name="Evander Bot",
+        email="evander@quinth.se",
+    )
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"name": "", "email": "person@example.com"},
+        {"name": "Person", "email": "not-an-email"},
+        {"name": "Person\nInjected", "email": "person@example.com"},
+    ],
+)
+def test_project_git_config_rejects_invalid_agent_identity(
+    identity: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            agent_author_identity=identity,
         )
 
 
@@ -1522,10 +1566,15 @@ def test_runtime_attention_reconciles_pending_inbox_from_its_primary_target() ->
     assert reconciled["reconciliation_required"] is True
 
 
-def test_runtime_operations_ignores_failed_promotion_for_terminal_release() -> None:
+@pytest.mark.parametrize(
+    "terminal_state",
+    [TeamRecordState.ACCEPTED, TeamRecordState.REJECTED],
+)
+def test_runtime_operations_ignores_failed_attention_for_terminal_release(
+    terminal_state: TeamRecordState,
+) -> None:
     state = _state_with_runtime_operations()
-    state.release_packages["release"].state = TeamRecordState.REJECTED
-    state.release_packages["release"].error = None
+    state.release_packages["release"].state = terminal_state
 
     payload = runtime_operations_payload(
         state,

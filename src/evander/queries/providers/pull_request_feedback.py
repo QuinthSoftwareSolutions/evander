@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.pr_feedback import (
     AzureDevOpsFeedbackAdapter,
     GitHubFeedbackAdapter,
@@ -38,7 +39,7 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
             provider_name=provider_name,
             repo=repo,
             directory_path=directory_path,
-            organization_url=self._normalize_optional_string(payload.get("organization_url")),
+            ado_organization=self._normalize_optional_string(payload.get("ado_organization")),
             project=self._normalize_optional_string(payload.get("project")),
         )
         with httpx.Client(timeout=timeout_seconds) as client:
@@ -63,7 +64,7 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
             "repo",
             "pr_id",
             "directory_path",
-            "organization_url",
+            "ado_organization",
             "project",
             "cursor",
         ):
@@ -77,7 +78,7 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
         provider_name: str,
         repo: str,
         directory_path: str,
-        organization_url: str | None,
+        ado_organization: str | None,
         project: str | None,
     ) -> tuple[Any, str | None, float]:
         config = self._resolve_directory_config(directory_path)
@@ -90,15 +91,15 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
         if provider_name != "azure_devops":
             raise ValueError(f"{self.NODE_TYPE} provider {provider_name!r} is not supported")
 
-        resolved_organization_url = organization_url or self._normalize_optional_string(
-            getattr(config, "azure_devops_organization_url", None)
+        resolved_organization_url = resolve_azure_devops_organization_url(
+            ado_organization=ado_organization,
+            legacy_organization_url=getattr(config, "azure_devops_organization_url", None),
+            node_type=self.NODE_TYPE,
         )
         configured_project = self._normalize_optional_string(
             getattr(config, "azure_devops_project", None)
         )
         resolved_project = project or configured_project or self._project_from_composite_repo(repo)
-        if not resolved_organization_url:
-            raise ValueError(f"{self.NODE_TYPE} requires organization_url for Azure DevOps")
         if not resolved_project:
             raise ValueError(f"{self.NODE_TYPE} requires project for Azure DevOps")
         pat_env = self._normalize_optional_string(getattr(config, "azure_devops_pr_pat_env", None))

@@ -126,9 +126,10 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
   const sessionDetailResponse = {
     session: sessionRecord,
     wake_schedules: [],
-    git_grants: [],
+    git_grants: overrides.gitGrants ?? [],
     summary_json: {},
   };
+  const gitRepositories = overrides.gitRepositories ?? [];
   const sessionCatalogResponse = overrides.sessionCatalogResponse ?? {
     tool_options: [
       {
@@ -267,6 +268,13 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
       return;
     }
 
+    if (pathname === "/api/admin/git-repositories") {
+      assert.equal(url.searchParams.get("directory_path"), sessionRecord.directory_path);
+      assert.equal(url.searchParams.get("include_descendants"), "false");
+      await route.fulfill(jsonResponse({ repositories: gitRepositories }));
+      return;
+    }
+
     if (pathname === "/api/admin/sessions") {
       assert.equal(url.searchParams.get("include_expired"), "true");
       assert.equal(url.searchParams.get("directory_path"), "root");
@@ -329,6 +337,70 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
     sessionRecord,
   };
 }
+
+test("admin shell sessions page identifies repository grants with repository metadata", async (t) => {
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+    requestedEndpoints,
+  } = await createSessionsSmokeHarness(t, makeSessionRecord(), {}, {
+    gitGrants: [
+      {
+        managed_repo_id: "mr_286e7730d5c3c49f5f89",
+        access_mode: "read-only",
+        lifetime: "session",
+        execution_backend: "container_worker_vm",
+      },
+      {
+        managed_repo_id: "mr_01a2b3c4d5e6f7a8b9c0",
+        access_mode: "write",
+        lifetime: "session",
+        execution_backend: "container_worker_vm",
+      },
+    ],
+    gitRepositories: [
+      {
+        managed_repo_id: "mr_286e7730d5c3c49f5f89",
+        display_name: "exampleindustry/Casat/Casat",
+        canonical_repository_url: "https://dev.azure.com/exampleindustry/Casat/_git/Casat",
+        directory_path: "root",
+      },
+      {
+        managed_repo_id: "mr_01a2b3c4d5e6f7a8b9c0",
+        display_name: "Acme/Agent/Alpha",
+        canonical_repository_url: "https://example.test/Acme/_git/Alpha",
+        directory_path: "root",
+      },
+    ],
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" });
+
+  const repositoryAccess = page.locator("details.session-repository-access");
+  assert.equal(await repositoryAccess.evaluate((element) => element.open), false);
+  await repositoryAccess.locator("summary").click();
+
+  const grant = page.locator(".session-git-grant-table tbody tr");
+  await grant.getByText("exampleindustry/Casat/Casat", { exact: true }).waitFor({ state: "visible" });
+  assert.match(await grant.innerText(), /https:\/\/dev\.azure\.com\/exampleindustry\/Casat\/_git\/Casat/);
+  assert.match(await grant.innerText(), /mr_286e7730d5c3c49f5f89/);
+  assert.deepEqual(
+    await page.locator(".session-git-grant-table tbody tr td:nth-child(2)").allTextContents(),
+    ["Acme/Agent/Alpha", "exampleindustry/Casat/Casat"],
+  );
+  assert.ok(
+    requestedEndpoints.includes(
+      "/api/admin/git-repositories?directory_path=root%2Fteam&include_descendants=false",
+    ),
+  );
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
 
 test("admin shell sessions page clears approval gates when the allowed tool is removed", async (t) => {
   const {

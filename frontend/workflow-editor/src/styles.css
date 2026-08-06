@@ -5922,6 +5922,55 @@ select {
   min-width: 0;
 }
 
+.session-git-grant-table-wrap {
+  overflow-x: auto;
+}
+
+.session-git-grant-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.session-git-grant-table th,
+.session-git-grant-table td {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.session-git-grant-table th {
+  padding: 0 0.55rem 0.4rem;
+  color: #6d5c4c;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.session-git-grant-table td {
+  padding: 0.55rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.session-git-grant-table code,
+.session-git-grant-url {
+  overflow-wrap: anywhere;
+}
+
+.session-git-grant-action {
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+:root[data-theme="dark"] .session-git-grant-table th {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .session-git-grant-table td {
+  border-top-color: rgba(125, 170, 190, 0.16);
+}
+
 .host-directory-add {
   display: grid;
   gap: 0.55rem;
@@ -6558,6 +6607,124 @@ select {
   min-height: 0;
   max-height: 24rem;
   overflow-y: auto;
+}
+
+.managed-git-content {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  padding-top: 0.8rem;
+}
+
+.managed-git-filter-grid {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 0.45rem;
+}
+
+.managed-git-list-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-height: 2rem;
+  margin-bottom: 0.35rem;
+  color: #6d5c4c;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.managed-git-list-item {
+  width: 100%;
+  cursor: pointer;
+}
+
+.managed-git-list-item code,
+.managed-git-list-item .feature-list-meta,
+.managed-git-list-title-row strong,
+.managed-git-property-grid code,
+.managed-git-binding-group code,
+.managed-git-url {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.managed-git-list-item code,
+.managed-git-list-item .feature-list-meta {
+  display: block;
+  margin-top: 0.35rem;
+}
+
+.managed-git-list-title-row {
+  align-items: flex-start;
+}
+
+.managed-git-wide-property {
+  grid-column: 1 / -1;
+}
+
+.managed-git-registration-panel,
+.managed-git-actions-panel,
+.managed-git-identity-panel,
+.managed-git-bindings-panel {
+  margin: 0;
+}
+
+.managed-git-register-form,
+.managed-git-identity-form {
+  display: grid;
+  grid-template-columns: minmax(15rem, 2fr) minmax(11rem, 1fr) auto;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.managed-git-register-form .field-stack,
+.managed-git-identity-form .field-stack {
+  margin: 0;
+}
+
+.managed-git-register-form .managed-git-source-field {
+  grid-column: span 2;
+}
+
+.managed-git-register-form .managed-git-refresh-toggle {
+  grid-column: 1 / span 2;
+}
+
+.managed-git-register-form > button,
+.managed-git-identity-form > button {
+  align-self: end;
+  margin-bottom: 0.05rem;
+}
+
+.managed-git-action-buttons {
+  justify-content: flex-start;
+}
+
+.managed-git-binding-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.managed-git-binding-group ul {
+  display: grid;
+  gap: 0.55rem;
+  max-height: 20rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.managed-git-binding-group li {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.managed-git-binding-group li span {
+  color: #6d5c4c;
+  font-size: 0.78rem;
 }
 
 .workers-filter-grid {
@@ -10636,6 +10803,7 @@ button.mobile-record-card:focus-visible,
   .property-grid,
   .split-layout,
   .detail-grid,
+  .managed-git-binding-groups,
   .checkbox-grid,
   .form-grid,
   .report-period-form,
@@ -10854,6 +11022,8 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .panel-meta,
 :root[data-theme="dark"] .muted-text,
 :root[data-theme="dark"] .feature-list-meta,
+:root[data-theme="dark"] .managed-git-list-summary,
+:root[data-theme="dark"] .managed-git-binding-group li span,
 :root[data-theme="dark"] .path-note,
 :root[data-theme="dark"] .inspector-summary,
 :root[data-theme="dark"] .runtime-summary,

@@ -116,6 +116,7 @@ const gitProviders = [
 ];
 const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
+const workspaceAttentionPageSize = 7;
 const defaultPlanningTaskStates = new Set([
   "pending",
   "in_progress",
@@ -186,7 +187,6 @@ let timelineState = emptyTimelineState();
 let chatState = emptyChatState();
 let chatRequestId = 0;
 let chatNewPickerOpen = false;
-let selectedChatConversationId = null;
 let selectedChatOperatorUserId = null;
 let chatSending = false;
 const pendingChatAttachments = new Map();
@@ -214,9 +214,14 @@ let costBackfillLoading = false;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
-let activeTeamView = initialHumanReviewDeepLink.enabled
-  ? "delivery"
-  : readStoredTeamView();
+const initialChatDeepLink = readChatDeepLink();
+let selectedChatConversationId = initialChatDeepLink.conversationId || null;
+let activeTeamView =
+  initialHumanReviewDeepLink.enabled
+    ? "delivery"
+    : initialChatDeepLink.enabled
+      ? "chat"
+      : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
@@ -419,6 +424,7 @@ const deliveryStatusLabels = {
 
 let selectedDeliveryFilter = "attention";
 let selectedDeliveryProjectId = "";
+let workspaceAttentionPage = 1;
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
 let humanReviewQueue = {
@@ -429,6 +435,9 @@ let humanReviewQueue = {
 };
 const releaseDetailCache = new Map();
 const expandedReleaseDetailIds = new Set();
+const releaseVerificationLiveCache = new Map();
+const releaseVerificationLivePollTimers = new Map();
+const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
 const postReleaseReportResults = new Map();
 const runtimeAttentionFilters = {
   kind: "all",
@@ -524,6 +533,7 @@ const fieldTooltips = {
   "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
+  "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
   "create-task-form:require_git_provenance": "Require the integration deliverable to carry server-verified Git branch and commit provenance.",
@@ -620,6 +630,7 @@ const fieldTooltips = {
   "edit:task:title": "Rename the task without changing its immutable ID.",
   "edit:task:description": "Update the instructions for the owning agent.",
   "edit:task:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
+  "edit:task:git_base_branch": "The task's durable Git starting branch. It locks after Git preparation, deliverable submission, or promotion creation.",
   "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
   "edit:task:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
   "edit:task:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
@@ -642,8 +653,12 @@ const fieldTooltips = {
 
   repo_source: "Transient Git URL or local checkout used to register a managed repository.",
   managed_repo_id: "Stable Evander managed repository ID stored with the project.",
-  base_branch: "Canonical base branch used for agent branches, reviews, and promotions.",
+  base_branch: "Default base branch captured by newly created root tasks. Existing tasks keep their own snapshot when this changes.",
   canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
+  agent_author_name: "Human or service identity recorded as the author of Team agent commits.",
+  agent_author_email: "Email recorded for the configured Team agent commit author.",
+  agent_committer_name: "Automation identity recorded as the committer of Team agent commits.",
+  agent_committer_email: "Email recorded for the configured Team agent commit committer.",
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -656,6 +671,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindProjectLeadSelects();
   bindAgentEditTeamScopedSelects();
   bindRuntimeFilters();
+  bindWorkspaceAttentionPagination();
   bindDeliveryFilters();
   bindPlanningFilters();
   bindTeamDisclosures();
@@ -849,6 +865,22 @@ function bindTopLevelTabs() {
   updateTeamViewTabs();
 }
 
+function bindWorkspaceAttentionPagination() {
+  document.addEventListener("click", (event) => {
+    const pageButton = event.target?.closest?.("[data-workspace-attention-page]");
+    if (!pageButton) {
+      return;
+    }
+    event.preventDefault();
+    workspaceAttentionPage = Math.max(1, Number(pageButton.dataset.workspaceAttentionPage || 1));
+    renderWorkspaceDashboard();
+    document.querySelector(".workspace-attention-panel")?.scrollIntoView({
+      block: "start",
+      behavior: "auto",
+    });
+  });
+}
+
 function normalizedTeamView(view) {
   return teamViewIds.has(view) ? view : defaultTeamView;
 }
@@ -866,7 +898,7 @@ function readStoredTeamView() {
   }
 }
 
-function readHumanReviewDeepLink() {
+function readAddonDeepLinkParams() {
   const params = new URLSearchParams(window.location.search);
   const hash = String(window.location.hash || "");
   const hashQueryIndex = hash.indexOf("?");
@@ -878,11 +910,27 @@ function readHumanReviewDeepLink() {
       }
     });
   }
+  return params;
+}
+
+function readHumanReviewDeepLink() {
+  const params = readAddonDeepLinkParams();
   const enabled = params.get("view") === "my-human-reviews";
   return {
     enabled,
     requestId: enabled
       ? String(params.get("human_review_request_id") || "").trim()
+      : "",
+  };
+}
+
+function readChatDeepLink() {
+  const params = readAddonDeepLinkParams();
+  const enabled = params.get("view") === "chat";
+  return {
+    enabled,
+    conversationId: enabled
+      ? String(params.get("conversation_id") || "").trim()
       : "",
   };
 }
@@ -1642,6 +1690,26 @@ function bindForms() {
     void submitChatMessage(form);
   });
 
+  document.addEventListener("keydown", (event) => {
+    const chatComposer = event.target?.closest?.(
+      '[data-chat-message-form] textarea[name="body"]',
+    );
+    if (
+      !(chatComposer instanceof HTMLTextAreaElement) ||
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.isComposing
+    ) {
+      return;
+    }
+    const form = chatComposer.closest("form[data-chat-message-form]");
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    event.preventDefault();
+    form.requestSubmit();
+  });
+
   elements.chatAttachmentPolicyForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitChatAttachmentPolicy(elements.chatAttachmentPolicyForm);
@@ -1796,7 +1864,9 @@ function bindForms() {
     if (humanReviewApprove) {
       humanReviewApprove
         .closest("[data-human-review-decision-form]")
-        ?.querySelectorAll?.('[name="human_finding_text"]')
+        ?.querySelectorAll?.(
+          '[name="human_finding_text"], [name="human_finding_target_release_candidate"]',
+        )
         .forEach((field) => field.setCustomValidity(""));
     }
 
@@ -1918,14 +1988,42 @@ function bindForms() {
       syncHumanReviewChecklistEditor(editor);
     }
     const humanReviewFindingField = event.target?.closest?.(
-      '[name="human_finding_text"], [name="human_finding_target_deliverable_ids"], [name="human_finding_evidence_refs"]',
+      '[name="human_finding_text"], [name="human_finding_target_release_candidate"], [name="human_finding_target_deliverable_ids"], [name="human_finding_evidence_refs"]',
     );
     if (
       humanReviewFindingField instanceof HTMLTextAreaElement
       || humanReviewFindingField instanceof HTMLInputElement
     ) {
-      humanReviewFindingField
-        .closest("[data-human-review-finding-row]")
+      const findingRow = humanReviewFindingField.closest(
+        "[data-human-review-finding-row]",
+      );
+      const releaseTarget = findingRow?.querySelector?.(
+        '[name="human_finding_target_release_candidate"]',
+      );
+      if (
+        humanReviewFindingField.matches(
+          '[name="human_finding_target_release_candidate"]',
+        )
+        && humanReviewFindingField.checked
+      ) {
+        findingRow
+          ?.querySelectorAll?.(
+            '[name="human_finding_target_deliverable_ids"]',
+          )
+          .forEach((field) => {
+            field.checked = false;
+          });
+      } else if (
+        humanReviewFindingField.matches(
+          '[name="human_finding_target_deliverable_ids"]',
+        )
+        && humanReviewFindingField.checked
+        && releaseTarget
+      ) {
+        releaseTarget.checked = false;
+      }
+      releaseTarget?.setCustomValidity("");
+      findingRow
         ?.querySelector?.('[name="human_finding_text"]')
         ?.setCustomValidity("");
     }
@@ -2229,6 +2327,45 @@ function bindRecordEditing() {
         resumeReleaseRecoveryButton,
         resumeReleaseRecoveryButton.dataset.resumeReleaseRecoveryBlockerId,
         resumeReleaseRecoveryButton.dataset.resumeReleaseRecoveryTaskId,
+      );
+      return;
+    }
+
+    const candidateCorrectionRecoveryTaskButton = event.target.closest(
+      "[data-candidate-correction-recovery-task-id]",
+    );
+    if (candidateCorrectionRecoveryTaskButton) {
+      event.preventDefault();
+      openCandidateCorrectionRecoveryTask(
+        candidateCorrectionRecoveryTaskButton.dataset.candidateCorrectionRecoveryTaskId,
+      );
+      return;
+    }
+
+    const candidateCorrectionRecoveryButton = event.target.closest(
+      "[data-candidate-correction-recovery-id]",
+    );
+    if (candidateCorrectionRecoveryButton) {
+      event.preventDefault();
+      const action = text(
+        candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryAction,
+      );
+      let reason = null;
+      if (action === "authorize_verification_waiver") {
+        reason = window.prompt(
+          "Why is a verification waiver justified? This reason is recorded on the release.",
+          "",
+        );
+        if (!text(reason)) {
+          setStatus("A verification-waiver reason is required.", "error");
+          return;
+        }
+      }
+      void recoverCandidateCorrectionSuccessor(
+        candidateCorrectionRecoveryButton,
+        candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryId,
+        action,
+        text(reason) || null,
       );
       return;
     }
@@ -2720,6 +2857,7 @@ const lockedMutationControlSelectors = [
   ["[data-task-cancel-id]:not(:disabled)", "cancel tasks"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
+  ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -3382,6 +3520,12 @@ function bindTaskBoardSelectors() {
   projectSelect?.addEventListener("change", updateProject);
 
   document.addEventListener("submit", (event) => {
+    const createForm = event.target?.closest?.("[data-task-board-create-form]");
+    if (createForm) {
+      event.preventDefault();
+      void submitTaskBoardCreateForm(createForm);
+      return;
+    }
     const form = event.target?.closest?.("[data-task-board-search-form]");
     if (!form) {
       return;
@@ -3514,6 +3658,13 @@ function bindTaskBoardSelectors() {
       focusTaskBoardControl(taskId, "[data-task-board-toggle-children-id]");
     }
   });
+}
+
+async function submitTaskBoardCreateForm(form) {
+  const result = await submitCreateForm(form);
+  if (mutationResultSaved(result)) {
+    renderTaskBoard();
+  }
 }
 
 function resetTaskBoardProjectState() {
@@ -4945,8 +5096,11 @@ function renderReviewDeliveryWorkspace() {
 }
 
 function deliveryRowNeedsAttention(row) {
-  if (text(row.deliverable.superseded_by_deliverable_id)) {
+  if (!isCurrentDeliverable(row.deliverable)) {
     return false;
+  }
+  if (text(row.deliverable?.initial_release_disposition?.state) === "pending") {
+    return true;
   }
   if (
     currentDeliveryReleasePackages(row.releasePackages).some(
@@ -5159,10 +5313,7 @@ function renderWorkspaceDashboard() {
   renderWorkspaceTarget(
     panel,
     "[data-workspace-attention-column]",
-    [
-      renderWorkspaceAttentionPanel(model),
-      renderWorkspaceDeliveryPanel(model),
-    ].join(""),
+    renderWorkspaceAttentionPanel(model),
   );
   renderWorkspaceTarget(
     panel,
@@ -5170,7 +5321,7 @@ function renderWorkspaceDashboard() {
     [
       renderWorkspaceTeamStatusPanel(model),
       renderWorkspaceWorkStatusPanel(model),
-      renderWorkspaceNavigationPanel(),
+      renderWorkspaceDeliveryPanel(model),
     ].join(""),
   );
 }
@@ -5210,8 +5361,10 @@ function buildWorkspaceDashboardModel() {
     .filter((item) => !runtimeInboxIds.has(text(item.id)))
     .filter((item) => visibleAgentIds.has(text(item.recipient_agent_id)))
     .sort(compareWorkspaceInboxItems);
+  const attentionInbox = pendingInbox.filter(workspaceInboxItemNeedsAttention);
   const pendingReviews = values(state.review_requests)
     .filter((review) => !terminalRecordStates.has(review.state))
+    .filter(workspaceReviewNeedsAttention)
     .filter((review) => workspaceReviewIsVisible(review, visibleProjectIds))
     .sort(compareWorkspaceReviews);
   const pendingGovernanceAgenda = values(state.governance_agenda)
@@ -5221,6 +5374,7 @@ function buildWorkspaceDashboardModel() {
   const runtimeAttention = (runtime.attention || [])
     .filter(isVisibleRuntimeRow)
     .filter((row) => runtimeAttentionGroup(row) !== "retained_history")
+    .filter(workspaceRuntimeAttentionNeedsAttention)
     .sort(runtimeSortRows);
   const dueAgents = dueLeasedAgentsForFilter(runtime.agents || []);
   const deliveryRows = buildReviewDeliveryRows();
@@ -5230,7 +5384,7 @@ function buildWorkspaceDashboardModel() {
     costAttention,
     blockedTasks,
     pendingReviews,
-    pendingInbox,
+    pendingInbox: attentionInbox,
     pendingGovernanceAgenda,
   });
   return {
@@ -5240,6 +5394,7 @@ function buildWorkspaceDashboardModel() {
     openTasks,
     blockedTasks,
     pendingInbox,
+    attentionInbox,
     pendingReviews,
     pendingGovernanceAgenda,
     runtimeAttention,
@@ -5334,17 +5489,20 @@ function renderWorkspaceMetricCard(metric) {
 }
 
 function renderWorkspaceAttentionPanel(model) {
-  const limit = 7;
-  const visibleItems = model.attentionItems.slice(0, limit);
-  const remaining = Math.max(0, model.attentionItems.length - visibleItems.length);
+  const total = model.attentionItems.length;
+  const pageCount = Math.max(1, Math.ceil(total / workspaceAttentionPageSize));
+  const page = Math.min(workspaceAttentionPage, pageCount);
+  workspaceAttentionPage = page;
+  const offset = (page - 1) * workspaceAttentionPageSize;
+  const visibleItems = model.attentionItems.slice(offset, offset + workspaceAttentionPageSize);
   const body = visibleItems.length
     ? `
       <ul class="workspace-attention-list">
         ${visibleItems.map(renderWorkspaceAttentionItem).join("")}
       </ul>
-      ${remaining ? `<div class="workspace-more-row">${remaining} more item${remaining === 1 ? "" : "s"} in detailed tabs.</div>` : ""}
+      ${renderWorkspaceAttentionPagination(total, page, pageCount)}
     `
-    : `<p class="empty-state">No runtime blockers, pending reviews, open inbox items, or governance agenda items need attention.</p>`;
+    : `<p class="empty-state">No runtime blockers, pending reviews, actionable inbox items, or governance agenda items need attention.</p>`;
   return `
     <section class="workspace-dashboard-panel workspace-attention-panel" aria-labelledby="workspace-attention-heading">
       <div class="workspace-panel-header">
@@ -5357,6 +5515,24 @@ function renderWorkspaceAttentionPanel(model) {
       ${body}
       ${model.generatedAt ? `<div class="meta-line">Runtime generated ${escapeHtml(model.generatedAt)}</div>` : ""}
     </section>
+  `;
+}
+
+function renderWorkspaceAttentionPagination(total, page, pageCount) {
+  if (pageCount <= 1) {
+    return "";
+  }
+  const first = (page - 1) * workspaceAttentionPageSize + 1;
+  const last = Math.min(total, page * workspaceAttentionPageSize);
+  return `
+    <nav class="workspace-attention-pagination" aria-label="Workspace attention pages">
+      <span>Showing ${first}-${last} of ${total}</span>
+      <div class="record-actions">
+        <button type="button" class="record-action secondary" data-workspace-attention-page="${page - 1}"${page <= 1 ? " disabled" : ""}>Previous</button>
+        <span>Page ${page} of ${pageCount}</span>
+        <button type="button" class="record-action secondary" data-workspace-attention-page="${page + 1}"${page >= pageCount ? " disabled" : ""}>Next</button>
+      </div>
+    </nav>
   `;
 }
 
@@ -5491,38 +5667,6 @@ function renderWorkspaceWorkStatusPanel(model) {
   `;
 }
 
-function renderWorkspaceNavigationPanel() {
-  const links = [
-    ["projects", "Projects", "Project catalog and review profiles"],
-    ["task-board", "Task board", "Project work by lane"],
-    ["cases", "Cases", "Intake and ticket context"],
-    ["governance", "Governance", "Groups, agenda, and oversight"],
-    ["mail", "Agent Mail", "Internal messages and historical correspondence"],
-    ["timeline", "Activity timeline", "Retained-record activity history"],
-    ["org", "Org chart", "Team graph"],
-  ];
-  return `
-    <section class="workspace-dashboard-panel" aria-labelledby="workspace-navigation-heading">
-      <div class="workspace-panel-header">
-        <div>
-          <p class="section-label">Drill down</p>
-          <h3 id="workspace-navigation-heading">Detailed tabs</h3>
-        </div>
-      </div>
-      <div class="workspace-link-grid">
-        ${links
-          .map(([view, label, detail]) => `
-            <button type="button" class="workspace-link-card" data-team-link-view="${escapeAttr(view)}">
-              <strong>${escapeHtml(label)}</strong>
-              <span>${escapeHtml(detail)}</span>
-            </button>
-          `)
-          .join("")}
-      </div>
-    </section>
-  `;
-}
-
 function renderWorkspaceStatusCount(label, value, tone = "info") {
   return `
     <div class="workspace-status-count workspace-tone-${escapeAttr(tone || "info")}">
@@ -5552,6 +5696,19 @@ function workspaceReviewIsVisible(review, visibleProjectIds) {
   const deliverable = state.deliverables[text(review.deliverable_id)];
   const task = deliverable ? state.tasks[text(deliverable.task_id)] : null;
   return !task || workspaceTaskIsVisible(task, visibleProjectIds);
+}
+
+function isCurrentDeliverable(deliverable) {
+  return !text(deliverable?.superseded_by_deliverable_id);
+}
+
+function isCurrentReviewRequest(review) {
+  return !review?.retired_at && !text(review?.superseded_by_review_request_id);
+}
+
+function workspaceReviewNeedsAttention(review) {
+  const deliverable = state.deliverables?.[text(review.deliverable_id)];
+  return isCurrentReviewRequest(review) && isCurrentDeliverable(deliverable);
 }
 
 function workspaceGovernanceAgendaIsVisible(item, visibleTeamIds, visibleProjectIds) {
@@ -5736,6 +5893,15 @@ function workspaceAttentionItems({
     });
   });
   return items.sort(compareWorkspaceAttentionItems);
+}
+
+function workspaceInboxItemNeedsAttention(item) {
+  return text(item.item_type) !== "operator_directive";
+}
+
+function workspaceRuntimeAttentionNeedsAttention(row) {
+  const inboxItemId = text(row.inbox_item_id);
+  return !inboxItemId || workspaceInboxItemNeedsAttention(state.inbox?.[inboxItemId] || {});
 }
 
 function workspaceRuntimeAttentionMeta(row) {
@@ -8245,8 +8411,12 @@ function renderTeamInlineProjectForm(teamId) {
           ${gitImportControls()}
           <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
           <input type="hidden" name="managed_repo_directory_path" />
-          <label>Base branch <input name="base_branch" placeholder="main" /></label>
+          <label>Default base branch for new tasks <input name="base_branch" placeholder="main" /></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+          <label>Agent commit author name <input name="agent_author_name" placeholder="Evander Bot" /></label>
+          <label>Agent commit author email <input name="agent_author_email" placeholder="evander@quinth.se" /></label>
+          <label>Agent commit committer name <input name="agent_committer_name" placeholder="Evander Bot" /></label>
+          <label>Agent commit committer email <input name="agent_committer_email" placeholder="evander@quinth.se" /></label>
         </div>
       </details>
       <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "release-gates"))}>
@@ -9361,7 +9531,7 @@ function renderChatThreadMarkup({
       ${renderChatReadonlyBanner(conversation, readOnly)}
       ${callStrip}
       ${renderChatMessageList(conversation, messages, olderLoading)}
-      ${renderChatComposer(label, readOnly)}
+      ${renderChatComposer(conversation, label, readOnly)}
     </div>
   `;
 }
@@ -9398,7 +9568,7 @@ function patchChatThread(
     list.innerHTML = renderChatMessageListContents(conversation, messages, olderLoading);
     list.dataset.chatMessageSignature = listSignature;
   }
-  composer.outerHTML = renderChatComposer(label, readOnly);
+  composer.outerHTML = renderChatComposer(conversation, label, readOnly);
   return true;
 }
 
@@ -9466,9 +9636,14 @@ function renderChatMessageListContents(conversation, messages, olderLoading) {
   `;
 }
 
-function renderChatComposer(label, readOnly) {
+function renderChatComposer(conversation, label, readOnly) {
   const conversationId = text(selectedChatConversationId);
   const attachments = [...(pendingChatAttachments.get(conversationId) || [])];
+  const mutationEnabled = !readOnly && text(conversation?.mutation_mode) === "project_scoped";
+  const modeLabel = mutationEnabled ? "Mutation enabled" : "Reply only";
+  const modeTitle = mutationEnabled
+    ? "This message can authorize Team mutations within your directory-scoped project permissions."
+    : "This message can receive an agent reply but cannot authorize Team mutations.";
   return `
     <form class="chat-composer" data-chat-message-form>
       <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
@@ -9481,6 +9656,7 @@ function renderChatComposer(label, readOnly) {
         `).join("")}
       </div>
       <div class="chat-composer-actions">
+        <span class="chat-mutation-mode ${mutationEnabled ? "is-enabled" : "is-reply-only"}" title="${escapeAttr(modeTitle)}">${escapeHtml(modeLabel)}</span>
         <label class="chat-attach-button ${readOnly ? "is-disabled" : ""}">
           <input type="file" multiple data-chat-attachment-input="${escapeAttr(conversationId)}" ${chatSending || readOnly ? "disabled" : ""} />
           <span>Attach</span>
@@ -9584,6 +9760,12 @@ function renderChatMessage(message) {
   const externalDelivery = metadata.external_delivery && typeof metadata.external_delivery === "object"
     ? metadata.external_delivery
     : null;
+  const mutationMode = sender === "operator" ? text(message.mutation_mode) : "";
+  const mutationModeLabel = mutationMode === "project_scoped"
+    ? "Mutation enabled"
+    : mutationMode === "reply_only"
+      ? "Reply only"
+      : "";
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
@@ -9593,6 +9775,7 @@ function renderChatMessage(message) {
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
+          ${mutationModeLabel ? `<span class="chat-mutation-mode ${mutationMode === "project_scoped" ? "is-enabled" : "is-reply-only"}">${escapeHtml(mutationModeLabel)}</span>` : ""}
           ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
         ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
@@ -9620,8 +9803,11 @@ function renderChatAttachment(attachment) {
   const mimeType = text(attachment.mime_type);
   const filename = text(attachment.filename) || "attachment";
   const image = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mimeType);
+  const linkAttributes = image
+    ? ' target="_blank" rel="noopener"'
+    : ` download="${escapeAttr(filename)}"`;
   return `
-    <a class="chat-message-attachment${image ? " is-image" : ""}" href="${escapeAttr(url)}" target="_blank" rel="noopener">
+    <a class="chat-message-attachment${image ? " is-image" : ""}" href="${escapeAttr(url)}"${linkAttributes}>
       ${image ? `<img src="${escapeAttr(url)}" alt="${escapeAttr(filename)}" loading="lazy" />` : `<span class="chat-file-icon" aria-hidden="true">↧</span>`}
       <span><strong>${escapeHtml(filename)}</strong><small>${escapeHtml(formatFileSize(attachment.byte_count))}${mimeType ? ` · ${escapeHtml(mimeType)}` : ""}</small></span>
     </a>
@@ -10431,10 +10617,10 @@ function effectiveStandDowns(record) {
   return values.filter((item) => item && typeof item === "object");
 }
 
-function operatorRootStandDown(agentId, record) {
+function revocableRootStandDown(agentId, record) {
   const normalizedAgentId = text(agentId);
   return effectiveStandDowns(record).find((item) => {
-    return text(item.source) === "operator"
+    return ["operator", "superior"].includes(text(item.source))
       && text(item.agent_id) === normalizedAgentId
       && text(item.root_agent_id || item.agent_id) === normalizedAgentId
       && !Boolean(item.inherited);
@@ -10454,13 +10640,13 @@ function renderAgentStandDownControls(agentId, record) {
       <button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}" data-stand-down-scope="subtree">Stand down subtree</button>
     `;
   }
-  const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
+  const revocableRoot = revocableRootStandDown(normalizedAgentId, record);
   const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
   const unavailableReason = standDownRevokeUnavailableReason(normalizedAgentId, standDowns);
   return `
     <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
     ${
-      operatorRoot
+      revocableRoot
         ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke stand-down</button>`
         : `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}" disabled aria-disabled="true" title="${escapeAttr(unavailableReason)}">Revoke stand-down</button>`
     }
@@ -10477,14 +10663,9 @@ function standDownRevokeUnavailableReason(agentId, standDowns) {
   const rootLabel = rootAgent ? agentLabel(rootAgent) : rootAgentId || "another agent";
   const inherited = Boolean(primary.inherited) || (rootAgentId && rootAgentId !== text(agentId));
   if (text(primary.source) === "superior") {
-    const setterAgentId = text(primary.set_by);
-    const setterAgent = state.agents?.[setterAgentId];
-    const setterLabel = setterAgent
-      ? agentLabel(setterAgent)
-      : setterAgentId || "the superior who set it";
     return inherited
-      ? `This stand-down is inherited from ${rootLabel}. Only ${setterLabel} can revoke it.`
-      : `Only ${setterLabel} can revoke this superior-issued stand-down.`;
+      ? `This stand-down is inherited from ${rootLabel}. Revoke it on ${rootLabel}.`
+      : "This stand-down cannot be revoked here. Revoke it at its source.";
   }
   if (inherited) {
     return `This stand-down is inherited from ${rootLabel}. Revoke the stand-down on that agent.`;
@@ -12241,11 +12422,13 @@ function renderTaskBoard() {
   const activeCount = projectTasks.filter((task) => !terminalTaskStates.has(text(task.state))).length;
   const terminalCount = projectTasks.length - activeCount;
   const blockedCount = projectTasks.filter(isTaskBoardBlocked).length;
+  const dependencyWaitCount = projectTasks.filter(taskBoardWaitsOnDependencies).length;
   const boardMeta = [
     `${projectTasks.length} task${projectTasks.length === 1 ? "" : "s"}`,
     `${activeCount} active`,
     `${terminalCount} completed`,
     `${blockedCount} blocked`,
+    `${dependencyWaitCount} waiting on dependencies`,
   ];
   renderIntoActiveTargets(
     "[data-task-board-view]",
@@ -12254,6 +12437,7 @@ function renderTaskBoard() {
         <strong>${escapeHtml(selectedProject.name || selectedProject.id)}</strong>
         <span>${escapeHtml(selectedTeam.name || selectedTeam.id)} - ${escapeHtml(boardMeta.join(" - "))}</span>
       </div>
+      ${renderTaskBoardCreateForm(selectedProject, projectTasks)}
       ${renderTaskBoardControls(projectTasks, hierarchy, terminalCount)}
       ${renderTaskBoardFocusSummary(focus)}
       ${
@@ -12263,6 +12447,74 @@ function renderTaskBoard() {
       }
     `,
   );
+  document.querySelectorAll("[data-task-board-view]").forEach((target) => {
+    if (!targetIsActive(target)) return;
+    decorateFieldTooltips(target);
+  });
+  applyLockedMutationControls();
+}
+
+function renderTaskBoardCreateForm(project, projectTasks) {
+  const ownerOptions = values(state.agents)
+    .filter(isVisibleAgent)
+    .filter((agent) => agentProjectIds(agent).includes(project.id))
+    .sort(comparePeopleAgents)
+    .map((agent) => [agent.id, agentLabel(agent)]);
+  const caseOptions = values(state.cases)
+    .filter((teamCase) => (
+      text(teamCase.project_id) === text(project.id)
+      || (!text(teamCase.project_id) && text(teamCase.team_id) === text(project.team_id))
+    ))
+    .sort(byId)
+    .map((teamCase) => [teamCase.id, text(teamCase.title) || teamCase.id]);
+  const taskOptions = projectTasks
+    .slice()
+    .sort(compareTaskBoardTasks)
+    .map((task) => [task.id, taskBoardTaskReferenceLabel(task.id)]);
+  return `
+    <details
+      class="task-board-create"
+      ${teamDisclosureAttributes(teamDisclosureKey("task-board", project.id, "create-task"))}
+    >
+      <summary>Create task</summary>
+      <form
+        class="team-inline-create-form task-board-create-form"
+        data-task-board-create-form
+        data-form-id="create-task-form"
+        data-form-draft-scope="${escapeAttr(project.id)}"
+        data-endpoint="/tasks"
+        data-method="POST"
+      >
+        <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
+        <div class="team-inline-create-fields task-board-create-fields">
+          <label>Owner
+            <select name="owner_agent_id" required>${renderSelectOptions(ownerOptions, { placeholder: "Select project agent" })}</select>
+          </label>
+          <label>Case
+            <select name="case_id">${renderSelectOptions(caseOptions, { placeholder: "No case" })}</select>
+          </label>
+          <label>Priority <input name="priority" type="number" min="0" value="0" required /></label>
+          <label>Title <input name="title" required /></label>
+          <label>Description <textarea name="description" rows="3" required></textarea></label>
+          <label>Git base branch
+            <input name="git_base_branch" placeholder="Inherit parent or ${escapeAttr(project.git?.base_branch || "project default")}" />
+          </label>
+          <label>Parent task
+            <select name="parent_task_id">${renderSelectOptions(taskOptions, { placeholder: "No parent" })}</select>
+          </label>
+          <label>Dependency task IDs
+            <textarea name="dependency_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
+          </label>
+          <label class="checkbox-label"><input name="integration_boundary" type="checkbox" /> Integration boundary</label>
+          <label class="checkbox-label"><input name="require_git_provenance" type="checkbox" /> Require Git provenance</label>
+          <label>Required contribution task IDs
+            <textarea name="required_contribution_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
+          </label>
+        </div>
+        <button type="submit" ${lockedAttrs("create tasks")}>Create task</button>
+      </form>
+    </details>
+  `;
 }
 
 function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
@@ -12749,6 +13001,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
   const resolution = text(task.resolution_status || assessment.resolution_status) || "unknown";
   const integrationReady = Boolean(task.integration_ready ?? assessment.integration_ready);
   const blockerCount = taskBoardBlockerCount(task);
+  const upstreamBlockerCount = inheritedTaskBlockers(task).length;
   const relation = taskBoardRelationLabel(taskId, focus);
   const relationClasses = taskBoardRelationClasses(taskId, focus);
   const warnings = hierarchy.warnings.get(taskId) || [];
@@ -12787,7 +13040,17 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
           <span class="state-pill neutral">Assignee: ${escapeHtml(assignedTo)}</span>
           <span class="state-pill ${escapeAttr(taskResolutionPill(resolution))}">Resolution: ${escapeHtml(humanizeToken(resolution))}</span>
           <span class="state-pill ${integrationReady ? "accepted" : "neutral"}">Integration: ${integrationReady ? "ready" : "not ready"}</span>
-          ${blockerCount ? `<span class="state-pill blocked">${blockerCount} blocker${blockerCount === 1 ? "" : "s"}</span>` : ""}
+          ${renderTaskBoardDependencyWaitBadge(task)}
+          ${
+            blockerCount
+              ? `<span class="state-pill blocked">${blockerCount} assigned blocker${blockerCount === 1 ? "" : "s"}</span>`
+              : ""
+          }
+          ${
+            upstreamBlockerCount
+              ? `<span class="state-pill warning">${upstreamBlockerCount} upstream blocker${upstreamBlockerCount === 1 ? "" : "s"}</span>`
+              : ""
+          }
           ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
         </div>
         ${warnings.length ? `<div class="task-board-hierarchy-warning">${escapeHtml(warnings.join(" "))}</div>` : ""}
@@ -12827,19 +13090,9 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
 
 function taskBoardBlockerCount(task) {
   const blockerKeys = new Set();
-  (task.blocked_by_task_ids || []).forEach((taskId) => blockerKeys.add(`task:${text(taskId)}`));
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) =>
     blockerKeys.add(`blocker:${text(blocker.id)}`),
   );
-  inheritedTaskBlockers(task).forEach((blocker) =>
-    blockerKeys.add(`blocker:${text(blocker.blocker_id)}`),
-  );
-  if (task.dependency_status === "blocked") {
-    blockerKeys.add("dependency:blocked");
-  }
-  if (text(task.state) === "blocked" && !blockerKeys.size) {
-    blockerKeys.add("state:blocked");
-  }
   return blockerKeys.size;
 }
 
@@ -13084,6 +13337,7 @@ function renderTaskBoardCard(task, focus) {
       </div>
       <div class="task-board-card-badges">
         ${blocked && task.state !== "blocked" ? `<span class="state-pill blocked">Blocked</span>` : ""}
+        ${renderTaskBoardDependencyWaitBadge(task)}
         ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
       </div>
       <div class="task-board-card-meta">Priority ${Number(task.priority ?? 0)}</div>
@@ -13180,11 +13434,13 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Hierarchy depth", String(taskHierarchyDepth(task))],
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
+    ["Git base branch", text(task.git_base_branch)],
+    ["Git base commit pin", text(task.git_base_commit_sha)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Integration boundary", task.integration_boundary ? "Yes" : ""],
     ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
     ["Required contribution task IDs", (task.deliverable_contract?.required_contribution_task_ids || []).map(text).filter(Boolean).join(", ")],
-    ["Blocking task IDs", (task.blocked_by_task_ids || []).map(text).filter(Boolean).join(", ")],
+    ["Unresolved dependency task IDs", taskBoardDependencyWaitIds(task).join(", ")],
     ["Blocker IDs", [...new Set(blockerIds)].join(", ")],
     ["Worktree context IDs", worktreeContextIds.join(", ")],
     ["Unresolved descendant IDs", (unresolvedIds || []).map(text).filter(Boolean).join(", ")],
@@ -13273,26 +13529,71 @@ function renderTaskBoardBrief(task) {
 }
 
 function isTaskBoardBlocked(task) {
+  const readiness = taskBoardReadiness(task);
   return (
     task.state === "blocked" ||
-    task.readiness === "blocked" ||
-    task.readiness === "invalid" ||
-    task.dependency_status === "blocked" ||
-    Boolean((task.blocked_by_task_ids || []).length)
+    readiness === "blocked" ||
+    readiness === "invalid" ||
+    Boolean(activeBlockersForRecord("task", task.id, task.id).length)
   );
+}
+
+function taskBoardDependencyWaitIds(task) {
+  const assessmentIds = task?.assessment?.unsatisfied_dependency_ids || [];
+  const derivedIds = task?.blocked_by_task_ids || [];
+  return [...new Set([...assessmentIds, ...derivedIds].map(text).filter(Boolean))];
+}
+
+function taskBoardBlockedDependencyIds(task) {
+  return taskBoardDependencyWaitIds(task).filter((taskId) =>
+    ["blocked", "rejected"].includes(text(state.tasks[taskId]?.state)),
+  );
+}
+
+function taskBoardWaitsOnDependencies(task) {
+  const readiness = taskBoardReadiness(task);
+  const dependencyStatus = text(task?.dependency_status);
+  const resolution = text(task?.resolution_status || task?.assessment?.resolution_status);
+  if (terminalTaskStates.has(text(task?.state)) || resolution === "resolved") {
+    return false;
+  }
+  return (
+    readiness === "waiting_on_dependencies" ||
+    ((dependencyStatus === "waiting" || dependencyStatus === "blocked") &&
+      taskBoardDependencyWaitIds(task).length > 0)
+  );
+}
+
+function renderTaskBoardDependencyWaitBadge(task) {
+  if (!taskBoardWaitsOnDependencies(task)) {
+    return "";
+  }
+  const count = taskBoardDependencyWaitIds(task).length;
+  const dependencyLabel = count === 1 ? "dependency" : "dependencies";
+  const blockedCount = taskBoardBlockedDependencyIds(task).length;
+  const blockedDetail = blockedCount
+    ? `${blockedCount} blocked`
+    : text(task.dependency_status) === "blocked"
+      ? "at least one blocked"
+      : "";
+  const label = `${count ? `Waiting on ${count} ${dependencyLabel}` : "Waiting on dependencies"}${
+    blockedDetail ? `; ${blockedDetail}` : ""
+  }`;
+  return `<span class="state-pill warning">${escapeHtml(label)}</span>`;
 }
 
 function renderTaskBoardBlockerLine(task) {
   const blockers = [];
-  if ((task.blocked_by_task_ids || []).length) {
+  const dependencyWaitIds = taskBoardDependencyWaitIds(task);
+  if (taskBoardWaitsOnDependencies(task)) {
+    const waitLabel = "Waiting on dependencies:";
     blockers.push(
-      `<span><strong>Blocked by:</strong> ${task.blocked_by_task_ids
-        .map((taskId) => renderTaskBoardTaskLink(taskId, { reveal: true }))
-        .join(", ")}</span>`,
+      dependencyWaitIds.length
+        ? `<span><strong>${waitLabel}</strong> ${dependencyWaitIds
+            .map((taskId) => renderTaskBoardTaskLink(taskId, { reveal: true }))
+            .join(", ")}</span>`
+        : `<span><strong>${waitLabel}</strong> Prerequisite work is not yet resolved.</span>`,
     );
-  }
-  if (task.dependency_status === "blocked") {
-    blockers.push(`<span><strong>Dependency status:</strong> Blocked</span>`);
   }
   const routedBlockers = activeBlockersForRecord("task", task.id, task.id);
   routedBlockers.forEach((blocker) => {
@@ -13302,14 +13603,14 @@ function renderTaskBoardBlockerLine(task) {
     const owner = state.agents[text(blocker.owner_agent_id)] || null;
     const ownerLabel = owner ? agentLabel(owner) : "";
     blockers.push(
-      `<span><strong>${escapeHtml(summary)}</strong>${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
+      `<span><strong>Assigned blocker:</strong> ${escapeHtml(summary)}${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
     );
   });
   inheritedTaskBlockers(task).forEach((blocker) => {
     const relationship = humanizeToken(blocker.relationship || "upstream");
     const reason = text(blocker.reason || blocker.summary) || "No reason supplied";
     blockers.push(
-      `<span><strong>${escapeHtml(relationship)}:</strong> ${renderTaskBoardTaskLink(
+      `<span><strong>Blocker on ${escapeHtml(relationship.toLocaleLowerCase())}:</strong> ${renderTaskBoardTaskLink(
         blocker.upstream_task_id,
         { reveal: true },
       )} <span aria-hidden="true">—</span> <span class="task-board-blocker-reason">${escapeHtml(reason)}</span></span>`,
@@ -13356,6 +13657,7 @@ function blockerRoutingLabel(blocker) {
     blocker.owner_agent_id ? `owner ${text(blocker.owner_agent_id)}` : "",
     blocker.delegate_agent_id ? `delegate ${text(blocker.delegate_agent_id)}` : "",
     blocker.route ? `route ${humanizeToken(blocker.route)}` : "",
+    blocker.resolution_scope ? `scope ${humanizeToken(blocker.resolution_scope)}` : "",
     Number.isFinite(Number(blocker.escalation_depth))
       ? `level ${Number(blocker.escalation_depth)}`
       : "",
@@ -13386,7 +13688,133 @@ function releaseRecoveryTaskForBlocker(blocker) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+function candidateCorrectionRecoveryTaskForBlocker(blocker) {
+  if (!blocker || text(blocker.source_kind) !== "candidate_correction_successor") {
+    return null;
+  }
+  const correctionTaskIds = new Set(uniqueTextList([
+    blocker.task_id,
+    ...(blocker.affected_task_ids || []),
+  ]));
+  return values(state.tasks)
+    .filter(
+      (task) =>
+        text(task.created_by_actor) === "system:candidate-correction-recovery" &&
+        correctionTaskIds.has(text(task.originating_task_id)) &&
+        (!blocker.project_id || text(task.project_id) === text(blocker.project_id)),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function latestDispatchForTask(taskId) {
+  const normalizedTaskId = text(taskId);
+  return values(state.dispatches)
+    .filter((dispatch) =>
+      (dispatch.task_ids || []).some((candidateId) => text(candidateId) === normalizedTaskId),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function renderCandidateCorrectionRecoveryStatus(task) {
+  const dispatch = latestDispatchForTask(task.id);
+  const assignee = state.agents?.[text(task.owner_agent_id)];
+  const details = [
+    `Task ${text(task.id)}`,
+    `assigned to ${assignee ? agentLabel(assignee) : text(task.owner_agent_id) || "unassigned"}`,
+    task.git_base_commit_sha ? `pinned commit ${text(task.git_base_commit_sha)}` : "",
+    dispatch ? `dispatch ${humanizeToken(dispatch.status || "unknown")}` : "awaiting dispatch",
+  ].filter(Boolean);
+  return `
+    <div class="candidate-correction-recovery-status" role="status">
+      <div>
+        <strong>Verified replacement task</strong>
+        <span class="state-pill ${escapeAttr(task.state || "pending")}">${escapeHtml(humanizeToken(task.state || "pending"))}</span>
+      </div>
+      <div>${escapeHtml(task.title || task.id)}</div>
+      <div class="meta-line">${escapeHtml(details.join(" - "))}</div>
+    </div>
+  `;
+}
+
+function openCandidateCorrectionRecoveryTask(taskId) {
+  const task = state.tasks?.[text(taskId)];
+  const project = state.projects?.[text(task?.project_id)];
+  if (!task || !project) {
+    setStatus("The verified replacement task is not visible in the current scope.", "warning");
+    return;
+  }
+  resetTaskBoardProjectState();
+  selectedTaskBoardTeamId = text(project.team_id);
+  selectedTaskBoardProjectId = text(project.id);
+  selectedTaskBoardTaskId = text(task.id);
+  if (terminalTaskStates.has(text(task.state))) {
+    taskBoardShowCompleted = true;
+  }
+  prepareSelectedTaskBoardTaskForDisplay();
+  setTeamView("task-board");
+  window.requestAnimationFrame(() => focusSelectedTaskBoardTask());
+}
+
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
+  if (
+    blocker &&
+    text(blocker.state) === "open" &&
+    text(blocker.source_kind) === "candidate_correction_successor"
+  ) {
+    const recoveryTask = candidateCorrectionRecoveryTaskForBlocker(blocker);
+    if (recoveryTask) {
+      const replacementStillActive = !terminalTaskStates.has(text(recoveryTask.state));
+      return `
+        ${renderCandidateCorrectionRecoveryStatus(recoveryTask)}
+        <div class="record-actions ${escapeAttr(extraClass)}">
+          <button type="button" class="record-action"
+            data-candidate-correction-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+          >View replacement task</button>
+          ${
+            replacementStillActive
+              ? ""
+              : `<button type="button" class="record-action"
+                  data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+                  data-candidate-correction-recovery-action="retry"
+                  ${lockedAttrs("retry candidate correction recovery")}
+                >Retry packaging</button>`
+          }
+          <button type="button" class="record-action"
+            data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+            data-candidate-correction-recovery-action="authorize_verification_waiver"
+            ${lockedAttrs("authorize candidate verification waivers")}
+          >Authorize waiver instead</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="record-actions ${escapeAttr(extraClass)}">
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="retry"
+          ${lockedAttrs("retry candidate correction recovery")}
+        >Retry packaging</button>
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="create_verified_replacement"
+          ${lockedAttrs("create verified replacement tasks")}
+        >Create verified replacement</button>
+        <button type="button" class="record-action"
+          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
+          data-candidate-correction-recovery-action="authorize_verification_waiver"
+          ${lockedAttrs("authorize candidate verification waivers")}
+        >Authorize waiver</button>
+      </div>
+    `;
+  }
   if (
     !blocker ||
     text(blocker.state) !== "open" ||
@@ -13604,6 +14032,8 @@ function renderProjectGit(git) {
   }
   const parts = [`managed ${git.managed_repo_id}`];
   if (git.base_branch) parts.push(`base ${git.base_branch}`);
+  if (git.agent_author_identity) parts.push(`author ${git.agent_author_identity.name}`);
+  if (git.agent_committer_identity) parts.push(`committer ${git.agent_committer_identity.name}`);
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
 }
 
@@ -14310,8 +14740,9 @@ function renderTaskGraph(task) {
   if ((task.dependency_task_ids || []).length) {
     lines.push(`depends on ${task.dependency_task_ids.join(", ")}`);
   }
-  if ((task.blocked_by_task_ids || []).length) {
-    lines.push(`blocked by ${task.blocked_by_task_ids.join(", ")}`);
+  const dependencyWaitIds = taskBoardDependencyWaitIds(task);
+  if (taskBoardWaitsOnDependencies(task) && dependencyWaitIds.length) {
+    lines.push(`waiting on dependencies ${dependencyWaitIds.join(", ")}`);
   }
   activeBlockersForRecord("task", task.id, task.id).forEach((blocker) => {
     lines.push(blockerRoutingLabel(blocker));
@@ -14705,6 +15136,7 @@ function renderDeliverableEvidence(deliverable) {
 
 function renderDeliverableTechnicalDetails(deliverable) {
   const gitRefs = deliverable.git_refs || {};
+  const initialRelease = deliverable.initial_release_disposition || {};
   return renderTechnicalDetails([
     ["Deliverable ID", deliverable.id],
     ["Task ID", deliverable.task_id],
@@ -14721,9 +15153,31 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
+    ["Initial release package ID", initialRelease.release_package_id],
   ], {
     disclosureKey: teamDisclosureKey("deliverable", deliverable.id, "technical"),
   });
+}
+
+function renderInitialReleaseDisposition(deliverable) {
+  const disposition = deliverable.initial_release_disposition;
+  if (!disposition) {
+    return "";
+  }
+  const dispositionState = text(disposition.state || "pending");
+  return `
+    <section class="deliverable-detail-group deliverable-initial-release-disposition">
+      <h4>Initial release decision</h4>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Disposition</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(dispositionState)}">${escapeHtml(humanizeToken(dispositionState))}</span></div></div>
+        ${disposition.decided_by_actor ? `<div><div class="delivery-detail-label">Decided by</div><div class="delivery-detail-value">${escapeHtml(disposition.decided_by_actor)}</div></div>` : ""}
+        ${disposition.decided_at ? `<div><div class="delivery-detail-label">Decided</div><div class="delivery-detail-value">${renderRecordDate(disposition.decided_at)}</div></div>` : ""}
+        ${disposition.release_package_id ? `<div><div class="delivery-detail-label">Release package</div><div class="delivery-detail-value">${renderIdentifierCopy(disposition.release_package_id, { label: "Copy ID" })}</div></div>` : ""}
+      </div>
+      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${escapeHtml(disposition.reason)}</p>` : ""}
+      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${escapeHtml(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
+    </section>
+  `;
 }
 
 function renderDeliverableCard(deliverable, { compact = false } = {}) {
@@ -14762,6 +15216,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
             <h4>Evidence and artifacts</h4>
             ${renderDeliverableEvidence(deliverable)}
           </section>
+          ${renderInitialReleaseDisposition(deliverable)}
           <section class="deliverable-detail-group">
             <h4>Reviews and decision</h4>
             ${reviewIds.length ? renderReviewSummary(reviewIds) : `<p class="empty-state">No reviews recorded.</p>`}
@@ -15816,12 +16271,21 @@ function releaseProgressStages(release) {
     stages.push({ label: "Automated verification", state: "not-applicable", detail: "No automated checks required" });
   } else {
     const runStates = verificationRuns.map((run) => text(run.state));
-    const failed = runStates.some((stateValue) => ["failed", "blocked", "rejected"].includes(stateValue));
+    const failed = runStates.some((stateValue) => ["failed", "timed_out", "blocked", "rejected"].includes(stateValue));
     const completed = runStates.length && runStates.every((stateValue) => ["passed", "succeeded", "accepted"].includes(stateValue));
+    const runningRun = verificationRuns.find((run) => text(run.state) === "running");
+    const currentCommandIndex = Number(runningRun?.current_command_index || 0);
+    const currentCommand = runningRun?.command_results?.[currentCommandIndex]
+      || runningRun?.command_results?.find((result) => text(result.state) === "running");
+    const runningDetail = currentCommand?.name
+      ? `Running: ${text(currentCommand.name)}`
+      : runningRun
+        ? "Preparing verifier"
+        : "";
     stages.push({
       label: "Automated verification",
       state: failed ? "blocked" : completed ? "complete" : "pending",
-      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
+      detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : runningDetail || `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
     });
   }
 
@@ -15926,7 +16390,9 @@ function renderReleaseTechnicalDetails(
     ["Release branch", release.release_branch],
     ["Canonical branch", release.canonical_branch],
     ["Feature branches", release.feature_branches || []],
+    ["Git base branch", release.git_base_branch],
     ["Base commit", release.base_commit_sha],
+    ["Canonical destination base", release.canonical_base_commit_sha],
     ["Candidate commit", release.candidate_commit_sha || manifest.candidate_commit_sha],
     ["Candidate tree", release.candidate_tree_hash || manifest.candidate_tree_hash],
     ["Approved commit", release.approved_commit_sha],
@@ -16157,7 +16623,9 @@ function renderCachedReleaseDetail(releaseId) {
   if (cached.error) {
     return `<div class="release-review-detail task-invalid-warning">${escapeHtml(cached.error)}</div>`;
   }
-  return renderReleaseDetail(cached.release);
+  const release = mergeReleaseDetailWithCurrentState(cached.release);
+  ensureReleaseVerificationLivePolling(release);
+  return renderReleaseDetail(release);
 }
 
 async function toggleReleaseDetail(releaseId) {
@@ -16166,6 +16634,7 @@ async function toggleReleaseDetail(releaseId) {
   }
   if (expandedReleaseDetailIds.has(releaseId)) {
     expandedReleaseDetailIds.delete(releaseId);
+    clearReleaseVerificationLivePolling(releaseId);
     openTeamDisclosures.delete(
       teamDisclosureStateKey(teamDisclosureKey("release-card", releaseId, "detail")),
     );
@@ -16180,6 +16649,8 @@ async function toggleReleaseDetail(releaseId) {
   const cached = releaseDetailCache.get(releaseId);
   if (!cached?.release) {
     await loadReleaseDetail(releaseId);
+  } else {
+    ensureReleaseVerificationLivePolling(mergeReleaseDetailWithCurrentState(cached.release));
   }
 }
 
@@ -16207,6 +16678,117 @@ async function loadReleaseDetail(releaseId) {
       error: error instanceof Error ? error.message : "Release detail could not be loaded.",
       release: null,
     });
+  }
+  renderReleaseDetailSurfaces();
+}
+
+function mergeReleaseDetailWithCurrentState(release) {
+  const current = state.release_packages?.[text(release?.id)];
+  if (!current) {
+    return release;
+  }
+  return {
+    ...release,
+    state: current.state ?? release.state,
+    error: current.error ?? release.error,
+    updated_at: current.updated_at ?? release.updated_at,
+    manifest: current.manifest ?? release.manifest,
+    verification_runs: current.verification_runs ?? release.verification_runs,
+  };
+}
+
+function activeReleaseVerificationRun(release) {
+  return (release?.verification_runs || []).find(
+    (run) => !run.superseded_by_verification_run_id && text(run.state) === "running",
+  ) || null;
+}
+
+function releaseVerificationRunStillActive(releaseId) {
+  const normalizedId = text(releaseId);
+  const detailedRelease = releaseDetailCache.get(normalizedId)?.release;
+  const release = detailedRelease
+    ? mergeReleaseDetailWithCurrentState(detailedRelease)
+    : state.release_packages?.[normalizedId];
+  return Boolean(activeReleaseVerificationRun(release));
+}
+
+function clearReleaseVerificationLivePolling(releaseId) {
+  const normalizedId = text(releaseId);
+  const timer = releaseVerificationLivePollTimers.get(normalizedId);
+  if (timer) {
+    window.clearTimeout(timer);
+  }
+  releaseVerificationLivePollTimers.delete(normalizedId);
+  releaseVerificationLiveCache.delete(normalizedId);
+}
+
+function ensureReleaseVerificationLivePolling(release) {
+  const releaseId = text(release?.id);
+  if (!releaseId || !expandedReleaseDetailIds.has(releaseId)) {
+    return;
+  }
+  if (!activeReleaseVerificationRun(release)) {
+    clearReleaseVerificationLivePolling(releaseId);
+    return;
+  }
+  const cached = releaseVerificationLiveCache.get(releaseId);
+  if (!cached || (!cached.loading && !cached.payload && !cached.error)) {
+    void loadReleaseVerificationLive(releaseId);
+  }
+}
+
+function scheduleReleaseVerificationLivePoll(releaseId, payload, retryWhileActive = false) {
+  const normalizedId = text(releaseId);
+  const previous = releaseVerificationLivePollTimers.get(normalizedId);
+  if (previous) {
+    window.clearTimeout(previous);
+  }
+  if (
+    !expandedReleaseDetailIds.has(normalizedId)
+    || (
+      text(payload?.run?.state) !== "running"
+      && !(retryWhileActive && releaseVerificationRunStillActive(normalizedId))
+    )
+  ) {
+    releaseVerificationLivePollTimers.delete(normalizedId);
+    return;
+  }
+  releaseVerificationLivePollTimers.set(normalizedId, window.setTimeout(() => {
+    releaseVerificationLivePollTimers.delete(normalizedId);
+    void loadReleaseVerificationLive(normalizedId);
+  }, RELEASE_VERIFICATION_LIVE_POLL_MS));
+}
+
+async function loadReleaseVerificationLive(releaseId) {
+  const normalizedId = text(releaseId);
+  const existing = releaseVerificationLiveCache.get(normalizedId);
+  if (existing?.loading) {
+    return;
+  }
+  releaseVerificationLiveCache.set(normalizedId, {
+    loading: true,
+    error: null,
+    payload: existing?.payload || null,
+  });
+  renderReleaseDetailSurfaces();
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(normalizedId)}/verification-live?limit=160`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    releaseVerificationLiveCache.set(normalizedId, { loading: false, error: null, payload });
+    scheduleReleaseVerificationLivePoll(normalizedId, payload);
+  } catch (error) {
+    releaseVerificationLiveCache.set(normalizedId, {
+      loading: false,
+      error: error instanceof Error ? error.message : "Live verifier output could not be loaded.",
+      payload: existing?.payload || null,
+    });
+    scheduleReleaseVerificationLivePoll(normalizedId, existing?.payload, true);
   }
   renderReleaseDetailSurfaces();
 }
@@ -16465,7 +17047,35 @@ function renderReleaseVerificationCommandResult(
   `;
 }
 
-function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
+function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
+  if (text(run.state) !== "running" || text(result.state) !== "running") {
+    return "";
+  }
+  const live = releaseVerificationLiveCache.get(text(releaseId));
+  const liveRun = live?.payload?.run;
+  const liveCommand = liveRun?.current_command;
+  const matchesCurrentCommand = text(liveRun?.id) === text(run.id)
+    && Number(liveCommand?.index) === index;
+  if (!matchesCurrentCommand && !live?.loading && !live?.error) {
+    return "";
+  }
+  const log = live?.payload?.log;
+  const message = live?.error
+    || log?.message
+    || (live?.loading ? "Connecting to the live verifier output." : "Waiting for verifier output.");
+  const logText = text(log?.text);
+  return `
+    <li class="release-verification-live-output">
+      <details class="release-verification-log" open>
+        <summary>Live verifier output · updates every 2 seconds</summary>
+        ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
+        ${logText ? `<pre>${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
+      </details>
+    </li>
+  `;
+}
+
+function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix, releaseId) {
   const results = run.command_results || [];
   if (!results.length) {
     return "";
@@ -16477,7 +17087,7 @@ function renderReleaseVerificationCommandResults(run, disclosureKeyPrefix) {
           result,
           run,
           teamDisclosureKey(disclosureKeyPrefix, run.id, "command", String(index), "log"),
-        )).join("")}
+        ) + renderReleaseVerificationLiveOutput(run, result, index, releaseId)).join("")}
     </ul>
   `;
 }
@@ -16494,7 +17104,7 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`)}
+              ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}
@@ -16702,7 +17312,7 @@ function renderHumanFindingHistory(findings, correctionTasks, targetOptions = []
       <ul class="delivery-detail-list">
         ${findings.map((finding) => `<li>
           <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
-          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${finding.target_deliverable_ids?.length ? ` · affected work: ${escapeHtml(humanReviewTargetLabels(finding.target_deliverable_ids, targetOptions).join(", "))}` : ""}</div>
+          <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${text(finding.target_scope) === "release_candidate" ? " · affected work: Entire release candidate" : finding.target_deliverable_ids?.length ? ` · affected work: ${escapeHtml(humanReviewTargetLabels(finding.target_deliverable_ids, targetOptions).join(", "))}` : ""}</div>
           ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
           ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
         </li>`).join("")}
@@ -16719,16 +17329,30 @@ function humanReviewFindingListFieldValue(value) {
   return value === null || value === undefined ? "" : String(value);
 }
 
-function renderHumanReviewTargetSelector(targetOptions, selectedTargetIds) {
-  if ((targetOptions || []).length <= 1) {
-    return "";
-  }
+function renderHumanReviewTargetSelector(
+  targetOptions,
+  selectedTargetIds,
+  selectedTargetScope,
+) {
   const selected = new Set(splitList(selectedTargetIds));
+  const scope = text(selectedTargetScope)
+    || (selected.size ? "deliverables" : "");
   return `
     <div class="human-review-finding-targets" role="group" aria-label="Affected work">
-      <span>Affected work <small>(optional)</small></span>
+      <span>Affected work</span>
       <div class="human-review-finding-target-options">
-        ${targetOptions.map((option) => `
+        <label class="checkbox-label">
+          <input
+            type="checkbox"
+            name="human_finding_target_release_candidate"
+            ${scope === "release_candidate" ? "checked" : ""}
+          />
+          <span>
+            <strong>Entire release candidate</strong>
+            <small>Route release-wide correction work to the project lead.</small>
+          </span>
+        </label>
+        ${(targetOptions || []).map((option) => `
           <label class="checkbox-label">
             <input
               type="checkbox"
@@ -16770,6 +17394,7 @@ function renderHumanReviewFindingRow(finding = {}, targetOptions = []) {
         ${renderHumanReviewTargetSelector(
           targetOptions,
           finding.target_deliverable_ids,
+          finding.target_scope,
         )}
         <label>
           <span>Evidence references <small>(optional)</small></span>
@@ -16865,13 +17490,24 @@ function removeHumanReviewFindingRow(button) {
 }
 
 function humanReviewFindingFromRow(row) {
+  const targetDeliverableIds = Array.from(
+    row.querySelectorAll(
+      'input[name="human_finding_target_deliverable_ids"]:checked',
+    ),
+  ).map((field) => text(field.value)).filter(Boolean);
+  const targetsEntireRelease = Boolean(
+    row.querySelector(
+      'input[name="human_finding_target_release_candidate"]:checked',
+    ),
+  );
   return {
     text: text(row.querySelector('[name="human_finding_text"]')?.value),
-    target_deliverable_ids: Array.from(
-      row.querySelectorAll(
-        'input[name="human_finding_target_deliverable_ids"]:checked',
-      ),
-    ).map((field) => text(field.value)).filter(Boolean),
+    target_scope: targetsEntireRelease
+      ? "release_candidate"
+      : targetDeliverableIds.length
+        ? "deliverables"
+        : "",
+    target_deliverable_ids: targetDeliverableIds,
     evidence_refs: splitList(
       row.querySelector('[name="human_finding_evidence_refs"]')?.value,
     ),
@@ -16884,16 +17520,31 @@ function humanReviewFindingsFromForm(form, { validate = false } = {}) {
   let valid = true;
   rows.forEach((row) => {
     const description = row.querySelector('[name="human_finding_text"]');
+    const releaseTarget = row.querySelector(
+      '[name="human_finding_target_release_candidate"]',
+    );
     description?.setCustomValidity("");
+    releaseTarget?.setCustomValidity("");
     const finding = humanReviewFindingFromRow(row);
     const hasMetadata =
-      finding.target_deliverable_ids.length > 0 || finding.evidence_refs.length > 0;
+      Boolean(finding.target_scope)
+      || finding.target_deliverable_ids.length > 0
+      || finding.evidence_refs.length > 0;
     if (!finding.text) {
       if (validate) {
         description?.setCustomValidity(
           hasMetadata
             ? "Describe the finding before attaching targets or evidence."
             : "Describe this finding or remove the empty row.",
+        );
+        valid = false;
+      }
+      return;
+    }
+    if (!finding.target_scope) {
+      if (validate) {
+        releaseTarget?.setCustomValidity(
+          "Select the entire release candidate or at least one affected deliverable.",
         );
         valid = false;
       }
@@ -16909,7 +17560,7 @@ function humanReviewFindingsFromForm(form, { validate = false } = {}) {
   if (validate && !valid) {
     form.reportValidity();
     setStatus(
-      "Describe or remove every added finding before requesting changes.",
+      "Complete or remove every added finding before requesting changes.",
       "error",
     );
     return null;
@@ -16918,13 +17569,11 @@ function humanReviewFindingsFromForm(form, { validate = false } = {}) {
 }
 
 function humanReviewFindingDraftFromRow(row) {
+  const finding = humanReviewFindingFromRow(row);
   return {
     text: row.querySelector('[name="human_finding_text"]')?.value || "",
-    target_deliverable_ids: Array.from(
-      row.querySelectorAll(
-        'input[name="human_finding_target_deliverable_ids"]:checked',
-      ),
-    ).map((field) => text(field.value)).filter(Boolean),
+    target_scope: finding.target_scope,
+    target_deliverable_ids: finding.target_deliverable_ids,
     evidence_refs:
       row.querySelector('[name="human_finding_evidence_refs"]')?.value || "",
   };
@@ -18194,6 +18843,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
       <h4>Evidence and artifacts</h4>
       ${renderDeliverableEvidence(deliverable)}
     </section>
+    ${renderInitialReleaseDisposition(deliverable)}
     <section class="deliverable-detail-group delivery-row-reviews">
       <h4>Reviews and decision</h4>
       ${reviewIds.length ? renderReviewSummary(reviewIds, { interactive: true }) : `<p class="empty-state">No reviews recorded.</p>`}
@@ -18242,9 +18892,7 @@ function currentDeliveryReleasePackages(releasePackages) {
 
 function deliverableAcceptanceStage(row) {
   const deliverable = row.deliverable;
-  const activeReviews = row.reviewRequests.filter(
-    (review) => !text(review.superseded_by_review_request_id),
-  );
+  const activeReviews = row.reviewRequests.filter(isCurrentReviewRequest);
   const label = activeReviews.length
     ? "Deliverable agent review"
     : "Deliverable acceptance";
@@ -18318,6 +18966,34 @@ function deliverablePipelineStages(row, release) {
     deliverableAcceptanceStage(row),
   ];
   if (!release) {
+    const disposition = row.deliverable.initial_release_disposition;
+    const dispositionState = text(disposition?.state);
+    if (dispositionState === "pending") {
+      stages.push({
+        label: "Initial release decision",
+        state: "waiting",
+        detail: "Waiting for the project lead or team manager to request a release or mark it not planned",
+      });
+      return stages;
+    }
+    if (dispositionState === "not_planned") {
+      stages.push({
+        label: "Initial release decision",
+        state: "complete",
+        detail: disposition.reason
+          ? `Not planned for an initial release: ${disposition.reason}`
+          : "Not planned for an initial release",
+      });
+      return stages;
+    }
+    if (dispositionState === "release_requested") {
+      stages.push({
+        label: "Release inclusion",
+        state: "blocked",
+        detail: `Recorded release package ${text(disposition.release_package_id) || "is"} unavailable`,
+      });
+      return stages;
+    }
     stages.push({
       label: "Release inclusion",
       state: "waiting",
@@ -18506,9 +19182,7 @@ function renderReleaseSummary(releasePackages) {
 }
 
 function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPromotions) {
-  const currentReviews = reviews.filter(
-    (review) => !text(review.superseded_by_review_request_id),
-  );
+  const currentReviews = reviews.filter(isCurrentReviewRequest);
   const currentReleases = currentDeliveryReleasePackages(releasePackages);
   const currentPromotionIds = new Set(
     currentReleases.flatMap((release) => release.git_promotion_record_ids || []),
@@ -19419,6 +20093,9 @@ async function submitTaskUpdate(form) {
   if (title) payload.title = title;
   if (description) payload.description = description;
   payload.parent_task_id = parentTaskId || null;
+  if (form.elements.git_base_branch) {
+    payload.git_base_branch = text(data.git_base_branch) || null;
+  }
   payload.dependency_task_ids = splitList(data.dependency_task_ids);
   const integrationBoundary = Boolean(
     form.elements.integration_boundary?.checked,
@@ -20894,6 +21571,83 @@ async function resolveTerminalBlocker(button, blockerId, note) {
   }
 }
 
+async function recoverCandidateCorrectionSuccessor(button, blockerId, action, reason = null) {
+  if (!guardTeamMutation("recover candidate correction successors")) {
+    return;
+  }
+  const normalizedBlockerId = text(blockerId);
+  const normalizedAction = text(action);
+  if (!normalizedBlockerId || !normalizedAction) {
+    setStatus("No candidate-correction recovery action was selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`${humanizeToken(normalizedAction)} for ${normalizedBlockerId}.`, "loading");
+  const endpoint = `/candidate-correction-recoveries/${encodeURIComponent(normalizedBlockerId)}`;
+  try {
+    const payload = { action: normalizedAction };
+    if (text(reason)) {
+      payload.reason = text(reason);
+    }
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", payload),
+      ),
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the recovery and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const body = await response.json();
+    await applyMutationResultPayload(body);
+    restoreFormDrafts(drafts);
+    const recovery = body.candidate_correction_recovery || {};
+    const recoveryTaskId = text(
+      recovery.created_recovery_task_id ||
+      recovery.existing_recovery_task_id ||
+      recovery.recovery_task_id,
+    );
+    const releaseId = text(
+      recovery.release_package_id ||
+      recovery.created_successor_release_package_ids?.[0] ||
+      recovery.existing_successor_release_package_ids?.[0],
+    );
+    setStatus(
+      releaseId
+        ? `Candidate recovery created or found successor ${releaseId}.`
+        : recoveryTaskId
+          ? `Candidate recovery created or found pinned task ${recoveryTaskId}.`
+          : `Candidate recovery ${humanizeToken(normalizedAction)} completed.`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Candidate correction recovery failed.",
+      "error",
+    );
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
 async function resumeReleaseRecovery(button, blockerId, taskId) {
   if (!guardTeamMutation("resume release recoveries")) {
     return;
@@ -21237,6 +21991,9 @@ function payloadForForm(form, data = formData(form)) {
     if (text(data.state)) {
       payload.state = text(data.state);
     }
+    if (text(data.git_base_branch)) {
+      payload.git_base_branch = text(data.git_base_branch);
+    }
     const parentTaskId = text(data.parent_task_id);
     if (parentTaskId) {
       payload.parent_task_id = parentTaskId;
@@ -21338,6 +22095,16 @@ function gitConfigForForm(data) {
       git[field] = value;
     }
   });
+  const authorName = text(data.agent_author_name);
+  const authorEmail = text(data.agent_author_email);
+  if (authorName || authorEmail) {
+    git.agent_author_identity = { name: authorName, email: authorEmail };
+  }
+  const committerName = text(data.agent_committer_name);
+  const committerEmail = text(data.agent_committer_email);
+  if (committerName || committerEmail) {
+    git.agent_committer_identity = { name: committerName, email: committerEmail };
+  }
   return git;
 }
 
@@ -21997,8 +22764,12 @@ function renderEditFields(type, record) {
         placeholder: "mr_...",
       })}
       <input type="hidden" name="managed_repo_directory_path" value="${escapeAttr(record.git?.directory_path || "root")}" />
-      ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
+      ${textField("Default base branch for new tasks", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
+      ${textField("Agent commit author name", "agent_author_name", record.git?.agent_author_identity?.name || "", { placeholder: "Evander Bot" })}
+      ${textField("Agent commit author email", "agent_author_email", record.git?.agent_author_identity?.email || "", { placeholder: "evander@quinth.se" })}
+      ${textField("Agent commit committer name", "agent_committer_name", record.git?.agent_committer_identity?.name || "", { placeholder: "Evander Bot" })}
+      ${textField("Agent commit committer email", "agent_committer_email", record.git?.agent_committer_identity?.email || "", { placeholder: "evander@quinth.se" })}
       <p class="subheading">Release gates</p>
       ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
         rows: 12,
@@ -22055,6 +22826,7 @@ function renderEditFields(type, record) {
     `;
   }
   if (type === "task") {
+    const gitBaseLocked = taskGitBaseBranchLocked(record);
     return `
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
@@ -22064,6 +22836,9 @@ function renderEditFields(type, record) {
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
+      ${gitBaseLocked
+        ? readonlyField("Git base branch (locked)", record.git_base_branch || "Not recorded (legacy task)")
+        : textField("Git base branch", "git_base_branch", record.git_base_branch || "", { placeholder: "Inherit project default" })}
       ${selectField("Parent task", "parent_task_id", "tasks", record.parent_task_id || "", { placeholder: "No parent" })}
       ${textareaField("Dependency tasks", "dependency_task_ids", (record.dependency_task_ids || []).join("\n"), { rows: 2 })}
       ${checkboxField("Integration boundary", "integration_boundary", Boolean(record.integration_boundary))}
@@ -22115,6 +22890,24 @@ function taskEditStateField(task) {
     ${readonlyField("State", taskStateLabel(task))}
     <input type="hidden" name="state" value="${escapeAttr(stateValue)}" />
   `;
+}
+
+function taskGitBaseBranchLocked(task) {
+  const deliverableIds = new Set([
+    ...(task?.deliverable_ids || []).map(text).filter(Boolean),
+    ...Object.values(state.deliverables || {})
+      .filter((deliverable) => text(deliverable.task_id) === text(task?.id))
+      .map((deliverable) => text(deliverable.id))
+      .filter(Boolean),
+  ]);
+  if (deliverableIds.size) return true;
+  if (Object.values(state.git_work_contexts || {}).some((context) => text(context.task_id) === text(task?.id))) {
+    return true;
+  }
+  return Object.values(state.git_promotions || {}).some((promotion) => (
+    text(promotion.task_id) === text(task?.id)
+    || deliverableIds.has(text(promotion.deliverable_id))
+  ));
 }
 
 function renderAvatarEditControls(record) {
@@ -22271,6 +23064,12 @@ function editPayloadForForm(type, form) {
       dependency_task_ids: splitList(data.dependency_task_ids),
     };
     const currentTask = state.tasks?.[text(form.dataset.editId)];
+    if (form.elements.git_base_branch) {
+      const nextGitBaseBranch = text(data.git_base_branch) || null;
+      if (!currentTask || nextGitBaseBranch !== (currentTask.git_base_branch || null)) {
+        payload.git_base_branch = nextGitBaseBranch;
+      }
+    }
     const currentContract = currentTask?.deliverable_contract || null;
     if (
       !currentTask

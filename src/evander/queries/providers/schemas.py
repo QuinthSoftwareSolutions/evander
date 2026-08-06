@@ -7,6 +7,16 @@ from pydantic import field_validator, model_validator
 from evander.events.models import ConfigValue, QueryDefinition
 
 
+def _migrate_legacy_pull_request_organization(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    payload = dict(data)
+    if "ado_organization" not in payload and "organization_url" in payload:
+        payload["ado_organization"] = payload["organization_url"]
+    payload.pop("organization_url", None)
+    return payload
+
+
 class VmRunStateQueryDefinition(QueryDefinition):
     type: Literal["query:vm:run-state"]
     session_id: ConfigValue | None = None
@@ -194,7 +204,7 @@ class PullRequestListQueryDefinition(QueryDefinition):
     provider: ConfigValue
     repo: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
     status: ConfigValue | None = None
     creator_id: ConfigValue | None = None
@@ -212,6 +222,11 @@ class PullRequestListQueryDefinition(QueryDefinition):
     top: ConfigValue | None = None
     skip: ConfigValue | None = None
     cursor: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod
@@ -236,9 +251,14 @@ class PullRequestFeedbackQueryDefinition(QueryDefinition):
     repo: ConfigValue
     pr_id: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
     cursor: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod
@@ -287,10 +307,39 @@ class PullRequestGetQueryDefinition(QueryDefinition):
     repo: ConfigValue
     pr_id: ConfigValue
     directory_path: ConfigValue | None = None
-    organization_url: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
     project: ConfigValue | None = None
     include_reviewers: ConfigValue | None = None
     include_commits: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip()
+            if normalized in {"ado", "azure-devops", "azure_devops"}:
+                return "azure_devops"
+        return value
+
+
+class PullRequestWorkItemsQueryDefinition(QueryDefinition):
+    type: Literal["query:pull-request:work-items"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod

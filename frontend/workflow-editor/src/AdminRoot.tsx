@@ -91,6 +91,9 @@ const OperationsDashboard = lazy(() =>
 const IssuesPage = lazy(() =>
   import("./features/issues/IssuesPage").then(({ IssuesPage }) => ({ default: IssuesPage })),
 );
+const ManagedGitRepositoriesPage = lazy(() =>
+  import("./features/managedGit/ManagedGitRepositoriesPage").then(({ ManagedGitRepositoriesPage }) => ({ default: ManagedGitRepositoriesPage })),
+);
 const McpToolsPage = lazy(() =>
   import("./features/mcpTools/McpToolsPage").then(({ McpToolsPage }) => ({ default: McpToolsPage })),
 );
@@ -1964,7 +1967,14 @@ export default function AdminRoot() {
   function openUserNotification(notification: UserNotification) {
     void markUserNotificationsRead([notification.id]);
     setUserNotificationsOpen(false);
-    const targetUrl = notification.target_url?.trim();
+    const conversationId =
+      notification.source === "team-chat" &&
+      typeof notification.metadata?.conversation_id === "string"
+        ? notification.metadata.conversation_id.trim()
+        : "";
+    const targetUrl = conversationId
+      ? adminHash("addon:team-addon", { view: "chat", conversation_id: conversationId })
+      : notification.target_url?.trim();
     if (!targetUrl) {
       return;
     }
@@ -2259,6 +2269,11 @@ export default function AdminRoot() {
                 <SkillsPage />
               ) : renderedTab === "issues" ? (
                 <IssuesPage />
+              ) : renderedTab === "git-repositories" ? (
+                <ManagedGitRepositoriesPage
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  privilegedUnlocked={privilegeUnlocked}
+                />
               ) : renderedTab === "configuration" ? (
                 <ConfigurationScreen />
               ) : renderedTab === "connectors" ? (

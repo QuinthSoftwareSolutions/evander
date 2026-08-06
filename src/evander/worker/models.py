@@ -28,6 +28,7 @@ from evander.codex_auth import CodexTurnSpec
 from evander.managed_sections import normalize_managed_section_id
 
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
+LEGACY_WORKER_GIT_KEY_NAME = "evander-git"
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 SAFE_ID_ALLOWED_DESCRIPTION = "letters, numbers, dots, underscores, or dashes"
 
@@ -375,6 +376,9 @@ class WorkerTaskWorktreeRequest(BaseModel):
     expected_base_commit_sha: str | None = None
     expected_base_tree_hash: str | None = None
     dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
+    dependency_merge_author_name: str | None = None
+    dependency_merge_author_email: str | None = None
+    dependency_composition_commit_message: str | None = None
 
     @field_validator("repo_name", "worktree_name", mode="before")
     @classmethod
@@ -412,6 +416,32 @@ class WorkerTaskWorktreeRequest(BaseModel):
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
             raise ValueError("expected_base_tree_hash must be a full Git object ID")
         return text
+
+    @field_validator(
+        "dependency_merge_author_name",
+        "dependency_merge_author_email",
+        "dependency_composition_commit_message",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_identity_field(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if any(character in text for character in ("\0", "\n", "\r")):
+            raise ValueError(f"{info.field_name} must be single-line text")
+        return text
+
+    @model_validator(mode="after")
+    def validate_dependency_merge_author(self) -> "WorkerTaskWorktreeRequest":
+        if bool(self.dependency_merge_author_name) != bool(self.dependency_merge_author_email):
+            raise ValueError(
+                "dependency_merge_author_name and dependency_merge_author_email "
+                "must both be set"
+            )
+        return self
 
 
 class WorkerTaskWorktreeRecord(BaseModel):
@@ -525,7 +555,12 @@ class WorkerGitWriteKeyRequest(BaseModel):
     @field_validator("key_name", mode="before")
     @classmethod
     def normalize_key_name(cls, value: object) -> str:
-        return str(validate_worker_component_id(value, field_name="key_name"))
+        key_name = str(validate_worker_component_id(value, field_name="key_name"))
+        if key_name == LEGACY_WORKER_GIT_KEY_NAME:
+            raise ValueError(
+                f"key_name {LEGACY_WORKER_GIT_KEY_NAME!r} is reserved for the worker Git credential"
+            )
+        return key_name
 
 
 class WorkerGitWriteKeyRecord(BaseModel):

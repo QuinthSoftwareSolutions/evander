@@ -8216,6 +8216,19 @@ class _IndexedOnlyExecutionStore:
         raise AssertionError("hot-path reconciliation should not call read_all")
 
 
+class _ActiveIndexedExecutionStore(_IndexedOnlyExecutionStore):
+    def __init__(self, records: list[object]) -> None:
+        super().__init__(records)
+        self.active_list_calls = 0
+
+    def list_active_records(self) -> list[object]:
+        self.active_list_calls += 1
+        return list(self.records)
+
+    def list_executions(self) -> list[object]:
+        raise AssertionError("queued-prompt activity lookup should not scan full history")
+
+
 def test_agent_prompt_waiting_reconciliation_uses_indexed_store_method() -> None:
     worker = SimpleNamespace(execution_store=_IndexedOnlyExecutionStore([]))
 
@@ -8243,6 +8256,28 @@ def test_enqueue_prompt_queue_dispatch_checks_waiting_records_without_full_scan(
         )
         is True
     )
+
+
+def test_enqueue_prompt_queue_dispatch_prefers_active_records_over_full_history() -> None:
+    waiting_record = SimpleNamespace(
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={"session_id": "session-1"},
+        resolved_config={},
+        input_payload={},
+    )
+    execution_store = _ActiveIndexedExecutionStore([waiting_record])
+    worker = SimpleNamespace(execution_store=execution_store)
+    queued_record = SimpleNamespace(session_id="session-1", vm_name="", target="")
+
+    assert (
+        AgentEnqueuePromptQueueDispatchHook()._has_waiting_enqueue_prompt_for_record(
+            worker=worker,
+            record=queued_record,
+        )
+        is True
+    )
+    assert execution_store.active_list_calls == 1
 
 
 def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispatch(

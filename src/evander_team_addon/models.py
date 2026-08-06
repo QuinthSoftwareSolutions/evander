@@ -23,9 +23,10 @@ from evander.worker.models import WorkerFailureCause, WorkerResourceLimits
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
+    validate_branch_name,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 9
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -100,6 +101,18 @@ class TeamRecordState(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+
+
+class InitialReleaseDispositionState(str, Enum):
+    PENDING = "pending"
+    RELEASE_REQUESTED = "release_requested"
+    NOT_PLANNED = "not_planned"
+
+
+class HumanReviewFindingTargetScope(str, Enum):
+    LEGACY_UNSPECIFIED = "legacy_unspecified"
+    RELEASE_CANDIDATE = "release_candidate"
+    DELIVERABLES = "deliverables"
 
 
 class ReviewBlockKind(str, Enum):
@@ -239,12 +252,18 @@ class TeamBlockerSourceKind(str, Enum):
     RELEASE_PACKAGE = "release_package"
     HUMAN_REVIEW_REQUEST = "human_review_request"
     AGENT_EXECUTION_STALL = "agent_execution_stall"
+    CANDIDATE_CORRECTION_SUCCESSOR = "candidate_correction_successor"
     EXPLICIT = "explicit"
 
 
 class TeamBlockerState(str, Enum):
     OPEN = "open"
     RESOLVED = "resolved"
+
+
+class TeamBlockerResolutionScope(str, Enum):
+    TASK = "task"
+    DOWNSTREAM = "downstream"
 
 
 class TeamBlockerRoute(str, Enum):
@@ -627,11 +646,38 @@ class Team(TeamModel):
         return _unique_text_list(value, "project_ids")
 
 
+class ProjectGitIdentity(TeamModel):
+    name: str
+    email: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, value: object) -> str:
+        normalized = _required_text(value, "name")
+        if "\n" in normalized or "\r" in normalized:
+            raise ValueError("name must be single-line text")
+        return normalized
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _email(cls, value: object) -> str:
+        normalized = _required_text(value, "email")
+        if (
+            "\n" in normalized
+            or "\r" in normalized
+            or re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", normalized) is None
+        ):
+            raise ValueError("email must be a valid email address")
+        return normalized
+
+
 class ProjectGitConfig(TeamModel):
     managed_repo_id: str
     directory_path: str = "root"
     base_branch: str | None = None
     canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
+    agent_author_identity: ProjectGitIdentity | None = None
+    agent_committer_identity: ProjectGitIdentity | None = None
 
     @field_validator("managed_repo_id", mode="before")
     @classmethod
@@ -906,6 +952,7 @@ class AgentRuntime(TeamModel):
     last_agent_handoff_at: datetime | None = None
     last_context_rotated_at: datetime | None = None
     last_thread_id: str | None = None
+    last_delivered_role_description_fingerprint: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("agent_id", mode="before")
@@ -921,6 +968,7 @@ class AgentRuntime(TeamModel):
         "last_handoff_summary",
         "last_agent_handoff_summary",
         "last_thread_id",
+        "last_delivered_role_description_fingerprint",
         mode="before",
     )
     @classmethod
@@ -1210,6 +1258,8 @@ class AgentTask(TeamModel):
     created_by_actor: str | None = None
     parent_task_id: str | None = None
     originating_task_id: str | None = None
+    git_base_branch: str | None = None
+    git_base_commit_sha: str | None = None
     cancellation: TaskCancellation | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -1242,11 +1292,28 @@ class AgentTask(TeamModel):
         "created_by_actor",
         "parent_task_id",
         "originating_task_id",
+        "git_base_commit_sha",
         mode="before",
     )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
+
+    @field_validator("git_base_commit_sha")
+    @classmethod
+    def _git_base_commit_sha(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError("git_base_commit_sha must be a full Git object ID")
+        return normalized
 
     @field_validator("dependency_task_ids", mode="before")
     @classmethod
@@ -1268,6 +1335,8 @@ class AgentTask(TeamModel):
             raise ValueError("task cannot originate from itself")
         if self.id in self.dependency_task_ids:
             raise ValueError("task cannot depend on itself")
+        if self.git_base_commit_sha is not None and self.git_base_branch is None:
+            raise ValueError("git_base_commit_sha requires git_base_branch")
         if self.task_kind == TeamTaskKind.OUTCOME and self.outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
         if self.task_kind == TeamTaskKind.SUPPORT and self.outcome_contract is not None:
@@ -1460,6 +1529,76 @@ class DeliverableAcceptanceDecision(TeamModel):
         return self
 
 
+class DeliverableInitialReleaseDisposition(TeamModel):
+    state: InitialReleaseDispositionState = InitialReleaseDispositionState.PENDING
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    decided_at: datetime | None = None
+    decided_by_actor: str | None = None
+    reason: str | None = None
+    release_package_id: str | None = None
+    reopened_at: datetime | None = None
+    reopened_by_actor: str | None = None
+    reopen_reason: str | None = None
+
+    @field_validator(
+        "decided_by_actor",
+        "reason",
+        "release_package_id",
+        "reopened_by_actor",
+        "reopen_reason",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_state_evidence(self) -> "DeliverableInitialReleaseDisposition":
+        reopen_values = (
+            self.reopened_at,
+            self.reopened_by_actor,
+            self.reopen_reason,
+        )
+        if any(value is not None for value in reopen_values) and not all(
+            value is not None for value in reopen_values
+        ):
+            raise ValueError(
+                "initial release disposition reopen evidence requires actor, reason, and time"
+            )
+        if self.state == InitialReleaseDispositionState.PENDING:
+            if any(
+                value is not None
+                for value in (
+                    self.decided_at,
+                    self.decided_by_actor,
+                    self.reason,
+                    self.release_package_id,
+                )
+            ):
+                raise ValueError(
+                    "pending initial release dispositions cannot contain decision evidence"
+                )
+            return self
+        if self.decided_at is None or self.decided_by_actor is None:
+            raise ValueError(
+                "terminal initial release dispositions require actor and decision time"
+            )
+        if self.state == InitialReleaseDispositionState.RELEASE_REQUESTED:
+            if self.release_package_id is None:
+                raise ValueError(
+                    "release-requested initial release dispositions require a release package"
+                )
+            return self
+        if self.reason is None:
+            raise ValueError("not-planned initial release dispositions require a reason")
+        if self.release_package_id is not None:
+            raise ValueError(
+                "not-planned initial release dispositions cannot reference a release package"
+            )
+        return self
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -1477,6 +1616,7 @@ class Deliverable(TeamModel):
     review_manifest: DeliverableReviewManifest | None = None
     acceptance_recipient_agent_id: str | None = None
     acceptance_decision: DeliverableAcceptanceDecision | None = None
+    initial_release_disposition: DeliverableInitialReleaseDisposition | None = None
     supersedes_deliverable_id: str | None = None
     superseded_by_deliverable_id: str | None = None
     supersession_reason: str | None = None
@@ -1530,8 +1670,12 @@ class Deliverable(TeamModel):
             raise ValueError(
                 "deliverable acceptance decision must be made by its acceptance recipient"
             )
+        if decision.decision == "rejected" and self.state != TeamRecordState.REJECTED:
+            raise ValueError(
+                "a deliverable rejected by its acceptance recipient must remain rejected"
+            )
         # The decision records the original direct handoff. Later formal review or
-        # promotion processing may legitimately move the current deliverable state.
+        # promotion processing may legitimately move a previously accepted deliverable.
         return self
 
     @model_validator(mode="after")
@@ -1830,6 +1974,7 @@ class TeamBlocker(TeamModel):
     owner_agent_id: str | None = None
     delegate_agent_id: str | None = None
     affected_task_ids: list[str] = Field(default_factory=list)
+    resolution_scope: TeamBlockerResolutionScope = TeamBlockerResolutionScope.TASK
     state: TeamBlockerState = TeamBlockerState.OPEN
     route: TeamBlockerRoute = TeamBlockerRoute.OWNED
     summary: str
@@ -1887,6 +2032,14 @@ class TeamBlocker(TeamModel):
 
     @model_validator(mode="after")
     def _validate_route(self) -> "TeamBlocker":
+        if (
+            self.source_kind
+            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            and self.resolution_scope != TeamBlockerResolutionScope.DOWNSTREAM
+        ):
+            raise ValueError(
+                "candidate correction successor blocker must use downstream scope"
+            )
         if self.route == TeamBlockerRoute.DELEGATED and self.delegate_agent_id is None:
             raise ValueError("delegated blocker requires delegate_agent_id")
         if self.route != TeamBlockerRoute.DELEGATED and self.delegate_agent_id is not None:
@@ -2111,6 +2264,7 @@ class TeamDispatch(TeamModel):
     review_routing_authorities: list[TeamDispatchReviewRoutingAuthority] = Field(
         default_factory=list
     )
+    initial_release_decision_deliverable_ids: list[str] = Field(default_factory=list)
     status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
     created_at: datetime = Field(default_factory=utc_now)
     prepared_at: datetime | None = None
@@ -2136,6 +2290,7 @@ class TeamDispatch(TeamModel):
         "inbox_item_ids",
         "project_ids",
         "managed_repo_ids",
+        "initial_release_decision_deliverable_ids",
         mode="before",
     )
     @classmethod
@@ -2152,6 +2307,13 @@ class TeamDispatch(TeamModel):
             raise ValueError("dispatch review routing authorities must be unique")
         if self.review_routing_authorities and self.cause_kind != "manager_fallback":
             raise ValueError("dispatch review routing authorities require manager_fallback cause")
+        if (
+            self.initial_release_decision_deliverable_ids
+            and self.cause_kind != "manager_fallback"
+        ):
+            raise ValueError(
+                "dispatch initial release decisions require manager_fallback cause"
+            )
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -2446,6 +2608,55 @@ class TeamConversation(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+
+class TeamChatMutationAuthorization(TeamModel):
+    """Server-issued mutation scope snapshot for one operator chat message."""
+
+    version: Literal[1] = 1
+    mode: Literal["reply_only", "project_scoped"] = "reply_only"
+    source: Literal["admin_rbac", "external_bridge", "internal"]
+    principal_id: str
+    recipient_directory_path: str | None = None
+    project_ids: list[str] = Field(default_factory=list)
+    managed_repo_ids: list[str] = Field(default_factory=list)
+    authorized_at: datetime = Field(default_factory=utc_now)
+    reason: str | None = None
+
+    @field_validator("principal_id", mode="before")
+    @classmethod
+    def _principal_id(cls, value: object) -> str:
+        return _required_text(value, "principal_id")
+
+    @field_validator("recipient_directory_path", mode="before")
+    @classmethod
+    def _recipient_directory_path(cls, value: object) -> str | None:
+        text = _optional_text(value)
+        return DirectoryPath(segments=text).as_posix() if text is not None else None
+
+    @field_validator("project_ids", "managed_repo_ids", mode="before")
+    @classmethod
+    def _scope_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _reason(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "TeamChatMutationAuthorization":
+        if self.mode == "reply_only":
+            if self.project_ids or self.managed_repo_ids:
+                raise ValueError("reply-only Team chat authorization cannot contain scope ids")
+            return self
+        if self.recipient_directory_path is None:
+            raise ValueError(
+                "project-scoped Team chat authorization requires recipient_directory_path"
+            )
+        if not self.project_ids:
+            raise ValueError("project-scoped Team chat authorization requires project_ids")
+        return self
 
 
 class TeamConversationMessage(TeamModel):
@@ -2744,6 +2955,7 @@ class ReleaseScopeValidation(TeamModel):
 class ReleaseVerificationCommandResult(TeamModel):
     name: str
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
     job_id: str | None = None
     exit_code: int | None = None
     failure_cause: WorkerFailureCause | None = None
@@ -2976,6 +3188,9 @@ class HumanReviewTestTarget(TeamModel):
 class HumanReviewFindingSnapshot(TeamModel):
     finding_id: str
     text: str
+    target_scope: HumanReviewFindingTargetScope = (
+        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    )
     target_deliverable_ids: list[str] = Field(default_factory=list)
     correction_task_id: str | None = None
     proposed_resolution: str | None = None
@@ -3001,6 +3216,36 @@ class HumanReviewFindingSnapshot(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_target_scope(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("target_scope") is not None:
+            return value
+        normalized = dict(value)
+        if normalized.get("target_deliverable_ids"):
+            normalized["target_scope"] = (
+                HumanReviewFindingTargetScope.DELIVERABLES
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _target_scope_matches_ids(self) -> "HumanReviewFindingSnapshot":
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "release-candidate human findings cannot target deliverables"
+            )
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "deliverable-scoped human findings require target deliverables"
+            )
+        return self
 
 
 class HumanReviewRequest(TeamModel):
@@ -3088,6 +3333,9 @@ class HumanReviewFinding(TeamModel):
     id: str
     source_human_review_request_id: str
     text: str
+    target_scope: HumanReviewFindingTargetScope = (
+        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
+    )
     target_deliverable_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     correction_task_id: str
@@ -3129,6 +3377,36 @@ class HumanReviewFinding(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_target_scope(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("target_scope") is not None:
+            return value
+        normalized = dict(value)
+        if normalized.get("target_deliverable_ids"):
+            normalized["target_scope"] = (
+                HumanReviewFindingTargetScope.DELIVERABLES
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _target_scope_matches_ids(self) -> "HumanReviewFinding":
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
+            and self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "release-candidate human findings cannot target deliverables"
+            )
+        if (
+            self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
+            and not self.target_deliverable_ids
+        ):
+            raise ValueError(
+                "deliverable-scoped human findings require target deliverables"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_resolution(self) -> "HumanReviewFinding":
@@ -3198,8 +3476,10 @@ class ReleasePackage(TeamModel):
     feature_branches: list[str] = Field(default_factory=list)
     release_branch: str | None = None
     canonical_branch: str | None = None
+    git_base_branch: str | None = None
     published_commit_sha: str | None = None
     base_commit_sha: str | None = None
+    canonical_base_commit_sha: str | None = None
     candidate_commit_sha: str | None = None
     candidate_tree_hash: str | None = None
     approved_commit_sha: str | None = None
@@ -3217,6 +3497,21 @@ class ReleasePackage(TeamModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_initial_canonical_base(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        if (
+            value.get("canonical_base_commit_sha") is not None
+            or value.get("supersedes_release_package_id") is not None
+            or value.get("base_commit_sha") is None
+        ):
+            return value
+        normalized = dict(value)
+        normalized["canonical_base_commit_sha"] = value.get("base_commit_sha")
+        return normalized
 
     @field_validator("id", "project_id", mode="before")
     @classmethod
@@ -3243,6 +3538,7 @@ class ReleasePackage(TeamModel):
         "supersedes_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
+        "canonical_base_commit_sha",
         "candidate_commit_sha",
         "candidate_tree_hash",
         "approved_commit_sha",
@@ -3254,6 +3550,12 @@ class ReleasePackage(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("manifest", mode="before")
     @classmethod
@@ -3390,6 +3692,8 @@ class GitPromotionRecord(TeamModel):
     task_id: str | None = None
     deliverable_id: str | None = None
     release_package_id: str | None = None
+    git_base_branch: str | None = None
+    base_commit_sha: str | None = None
     state: Literal["pending", "succeeded", "failed", "retired"] = "pending"
     commit_sha: str | None = None
     outputs: dict[str, Any] = Field(default_factory=dict)
@@ -3413,6 +3717,7 @@ class GitPromotionRecord(TeamModel):
         "task_id",
         "deliverable_id",
         "release_package_id",
+        "base_commit_sha",
         "commit_sha",
         "error",
         mode="before",
@@ -3420,6 +3725,12 @@ class GitPromotionRecord(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("git_base_branch", mode="before")
+    @classmethod
+    def _git_base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
 
     @field_validator("outputs", mode="before")
     @classmethod
@@ -4283,6 +4594,23 @@ class TeamState(TeamModel):
                     f"deliverable {deliverable.id} references missing producer "
                     f"{deliverable.producer_agent_id}"
                 )
+            disposition = deliverable.initial_release_disposition
+            if (
+                disposition is not None
+                and disposition.state
+                == InitialReleaseDispositionState.RELEASE_REQUESTED
+            ):
+                release = self.release_packages.get(disposition.release_package_id or "")
+                if release is None:
+                    errors.append(
+                        f"deliverable {deliverable.id} initial release disposition "
+                        f"references missing release {disposition.release_package_id}"
+                    )
+                elif deliverable.id not in release.deliverable_ids:
+                    errors.append(
+                        f"deliverable {deliverable.id} initial release disposition "
+                        f"references release {release.id} that does not include it"
+                    )
             if (
                 deliverable.rework_requested_by_agent_id is not None
                 and deliverable.rework_requested_by_agent_id not in self.agents
@@ -4677,6 +5005,13 @@ class TeamState(TeamModel):
                 TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: blocker.source_id
                 in self.human_review_requests,
                 TeamBlockerSourceKind.AGENT_EXECUTION_STALL: blocker.source_id in self.agents,
+                TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: (
+                    blocker.source_id.startswith("candidate-correction-successor:")
+                    and blocker.source_id.removeprefix(
+                        "candidate-correction-successor:"
+                    )
+                    in self.release_packages
+                ),
                 TeamBlockerSourceKind.EXPLICIT: True,
             }[blocker.source_kind]
             if not source_exists:
@@ -5206,6 +5541,12 @@ class TeamState(TeamModel):
             for project_id in dispatch.project_ids:
                 if project_id not in self.projects:
                     errors.append(f"dispatch {dispatch.id} references missing project {project_id}")
+            for deliverable_id in dispatch.initial_release_decision_deliverable_ids:
+                if deliverable_id not in self.deliverables:
+                    errors.append(
+                        f"dispatch {dispatch.id} initial release authority references "
+                        f"missing deliverable {deliverable_id}"
+                    )
             for authority in dispatch.review_routing_authorities:
                 reviewer = self.agents.get(authority.reviewer_agent_id)
                 project = self.projects.get(authority.project_id)
@@ -6196,6 +6537,7 @@ def team_state_payload(
             TeamBlockerSourceKind.RELEASE_PACKAGE: "release_packages",
             TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: "human_review_requests",
             TeamBlockerSourceKind.AGENT_EXECUTION_STALL: "agents",
+            TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: None,
             TeamBlockerSourceKind.EXPLICIT: None,
         }[blocker.source_kind]
         if collection_name is not None:
@@ -6204,7 +6546,10 @@ def team_state_payload(
                 source_payload.setdefault("active_blocker_ids", [])
                 if blocker.id not in source_payload["active_blocker_ids"]:
                     source_payload["active_blocker_ids"].append(blocker.id)
-        if blocker.task_id is not None:
+        if (
+            blocker.task_id is not None
+            and blocker.resolution_scope == TeamBlockerResolutionScope.TASK
+        ):
             task_payload = payload["tasks"].get(blocker.task_id)
             if isinstance(task_payload, dict):
                 task_payload.setdefault("active_blocker_ids", [])
@@ -7108,6 +7453,14 @@ def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
                 release_package_id = review.release_package_id
         elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
             release_package_id = blocker.source_id
+        elif (
+            blocker.source_kind
+            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            and blocker.source_id.startswith("candidate-correction-successor:")
+        ):
+            release_package_id = blocker.source_id.removeprefix(
+                "candidate-correction-successor:"
+            )
         detail_parts = [
             f"source {blocker.source_kind.value} {blocker.source_id}",
             f"route {blocker.route.value}",
@@ -7328,6 +7681,11 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     for release in sorted(
         state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)
     ):
+        if release.state in {
+            TeamRecordState.ACCEPTED,
+            TeamRecordState.REJECTED,
+        }:
+            continue
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
         next_action_hint = _release_next_action_hint(state, release)
@@ -7694,6 +8052,19 @@ def _runtime_attention_links(
                 add("review_request_ids", blocker.source_id)
             elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
                 add("release_package_ids", blocker.source_id)
+            elif (
+                blocker.source_kind
+                == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+                and blocker.source_id.startswith(
+                    "candidate-correction-successor:"
+                )
+            ):
+                add(
+                    "release_package_ids",
+                    blocker.source_id.removeprefix(
+                        "candidate-correction-successor:"
+                    ),
+                )
         for promotion_id in list(links.get("promotion_ids", ())):
             promotion = state.git_promotions.get(promotion_id)
             if promotion is None:
