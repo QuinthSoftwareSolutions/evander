@@ -6971,6 +6971,10 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "all_dependencies_present=1" in command
     assert "dependency_commit_message='Compose accepted dependencies for task task-ui'" in command
     assert 'set -- git -C "$target" commit-tree' in command
+    assert 'export GIT_AUTHOR_DATE="@$deterministic_timestamp +0000"' in command
+    assert 'export GIT_COMMITTER_DATE="@$deterministic_timestamp +0000"' in command
+    assert "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT" in command
+    assert "EVANDER_DEPENDENCY_CONFLICT_PATH" in command
     assert 'reset --hard "$frontier_commit"' in command
 
 
@@ -7033,6 +7037,67 @@ def test_dependency_git_preparation_failure_routes_blocker_without_lease(
     )
     assert len(repeated_leases) == 1
     assert repo.read().blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_dependency_git_composition_conflict_persists_typed_recovery(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+    lease = leases[0]
+    _record_wake_failure(
+        repo,
+        lease=lease,
+        error="dependency Git composition conflict",
+    )
+    routed = _record_dependency_git_preparation_blocker(
+        repo,
+        lease=lease,
+        task_id="task",
+        error="dependency Git composition conflict for dependency source-two",
+        conflict={
+            "target_task_id": "task",
+            "project_id": "project",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "base_branch": "main",
+            "base_commit_sha": "a" * 40,
+            "base_tree_hash": "b" * 40,
+            "dependency_git_sources": [
+                {
+                    "dependency_task_id": "source-one",
+                    "deliverable_id": "deliverable-one",
+                    "branch": "agents/source/tasks/one",
+                    "commit_sha": "1" * 40,
+                },
+                {
+                    "dependency_task_id": "source-two",
+                    "deliverable_id": "deliverable-two",
+                    "branch": "agents/source/tasks/two",
+                    "commit_sha": "2" * 40,
+                },
+            ],
+            "failed_dependency_task_id": "source-two",
+            "failed_deliverable_id": "deliverable-two",
+            "conflict_paths": ["src/shared.py"],
+        },
+    )
+
+    blocker = next(
+        item
+        for item in routed.blockers.values()
+        if item.reason_code == "dependency_git_composition_conflict"
+    )
+    recovery = next(iter(routed.dependency_composition_recoveries.values()))
+    assert recovery.blocker_id == blocker.id
+    assert recovery.target_task_id == "task"
+    assert recovery.conflict_paths == ["src/shared.py"]
+    assert recovery.failed_deliverable_id == "deliverable-two"
+    restored = TeamStateRepository(tmp_path).read()
+    assert restored.dependency_composition_recoveries[recovery.id] == recovery
 
 
 def test_successive_dispatches_reuse_task_worktree_with_fresh_context_id(

@@ -855,6 +855,9 @@ reconciled into retained checkouts before work resumes. Divergent dependency
 composition creates one commit using the configured project author and the specialized
 `Evander Team Dependency Composer <team-dependencies@evander.invalid>`
 committer; a single or dominant dependency is adopted without an artificial commit.
+The multi-parent commit is reproducible: its author and committer dates are the
+newest final-parent committer timestamp plus one second in UTC, so both execution
+backends produce the same object ID for the same tree, parents, message, and identities.
 Host-side feature, release, and recovery consolidations remain
 governed separately by the managed repository's host commit identity.
 
@@ -1120,6 +1123,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_reopen_task_for_rework`
 - `team_report_blocker`
 - `team_update_blocker`
+- `team_start_dependency_composition_recovery`
 - `team_update_goal`
 - `team_stand_down_agent`
 - `team_revoke_stand_down`
@@ -1193,6 +1197,10 @@ wake behavior; they do not revoke resolution authority from that line. Peers and
 temporary delegates are not added to the line. Automated blockers without a
 reporter use their first recorded owner as the line anchor. Source-owned state
 transitions may also auto-resolve a blocker without an agent-authored resolution.
+The exception is a recorded dependency-composition conflict: generic resolution
+cannot discard its immutable source evidence. An escalation-line supervisor uses
+`team_start_dependency_composition_recovery` to choose the active project agent
+who will resolve and submit the pinned merge task.
 Once routing reaches governance or an operator, an unlocked Admin Web operator
 may also resolve it with a required audited explanation. That terminal authority
 is additive and does not remove resolution authority from the Team escalation line.
@@ -1693,7 +1701,19 @@ deliverable, branch, and commit. A reused pristine worktree may receive this
 composition before its next lease; a worktree with authored or dirty work and
 no matching provenance fails closed. Missing, ambiguous, unaccepted, moved, or
 conflicting Git dependency state likewise fails preparation before the agent is
-woken and opens one routed high-priority preparation blocker. Parent/child
+woken and opens one routed high-priority preparation blocker. A true merge
+conflict additionally persists the exact base commit/tree, ordered accepted
+sources, failed source, and conflicted paths. Its supervisor uses
+`team_start_dependency_composition_recovery` (or the equivalent Admin action) to
+select an active project resolver and create one pinned integration-boundary child
+task. The recovery worktree fetches and verifies those exact sources without
+pre-merging them. Generic blocker resolution is refused. The submitted recovery
+deliverable must name every exact source deliverable and its managed branch tip
+must contain the original base and every source commit. Normal review/acceptance
+then resolves the blocker and pins the target task to that reviewed commit; target
+preparation verifies and adopts it without replacing authored work. A meaningful
+source-generation change supersedes any unfinished recovery and permits a fresh
+attempt. Parent/child
 containment does not imply inheritance, and direct
 dependencies without Git deliverables remain lifecycle-only.
 

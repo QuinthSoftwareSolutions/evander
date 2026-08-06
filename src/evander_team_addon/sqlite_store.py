@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 49
+SQLITE_SCHEMA_VERSION = 50
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1350,6 +1350,18 @@ class TeamStateSqliteStore:
                     column_name="dependency_git_sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="dependency_composition_recovery_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="manual_dependency_git_sources_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 connection.execute(
                     """
                     UPDATE team_tasks
@@ -1531,6 +1543,7 @@ class TeamStateSqliteStore:
             "review_profiles": {},
             "inbox": {},
             "blockers": {},
+            "dependency_composition_recoveries": {},
             "blocker_events": {},
             "action_records": {},
             "memories": {},
@@ -1570,6 +1583,7 @@ class TeamStateSqliteStore:
         self._read_review_requests(connection, payload)
         self._read_inbox(connection, payload)
         self._read_blockers(connection, payload)
+        self._read_dependency_composition_recoveries(connection, payload)
         self._read_blocker_events(connection, payload)
         self._read_action_records(connection, payload)
         self._read_memories(connection, payload)
@@ -1617,6 +1631,10 @@ class TeamStateSqliteStore:
         self._write_review_requests(connection, payload["review_requests"])
         self._write_inbox(connection, payload["inbox"])
         self._write_blockers(connection, payload["blockers"])
+        self._write_dependency_composition_recoveries(
+            connection,
+            payload["dependency_composition_recoveries"],
+        )
         self._write_blocker_events(connection, payload["blocker_events"])
         self._write_action_records(connection, payload["action_records"])
         self._write_memories(connection, payload["memories"])
@@ -4356,6 +4374,95 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_dependency_composition_recoveries(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_dependency_composition_recoveries ORDER BY id"
+        ):
+            payload["dependency_composition_recoveries"][row["id"]] = {
+                "id": row["id"],
+                "blocker_id": row["blocker_id"],
+                "target_task_id": row["target_task_id"],
+                "project_id": row["project_id"],
+                "managed_repo_id": row["managed_repo_id"],
+                "directory_path": row["directory_path"],
+                "base_branch": row["base_branch"],
+                "base_commit_sha": row["base_commit_sha"],
+                "base_tree_hash": row["base_tree_hash"],
+                "dependency_git_sources": _json_loads(
+                    row["dependency_git_sources_json"]
+                ),
+                "source_fingerprint": row["source_fingerprint"],
+                "preparation_generation": row["preparation_generation"],
+                "failed_dependency_task_id": row["failed_dependency_task_id"],
+                "failed_deliverable_id": row["failed_deliverable_id"],
+                "conflict_paths": _json_loads(row["conflict_paths_json"]),
+                "recovery_task_id": row["recovery_task_id"],
+                "verified_deliverable_id": row["verified_deliverable_id"],
+                "verified_commit_sha": row["verified_commit_sha"],
+                "verified_at": row["verified_at"],
+                "accepted_deliverable_id": row["accepted_deliverable_id"],
+                "resolved_commit_sha": row["resolved_commit_sha"],
+                "state": row["state"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "resolved_at": row["resolved_at"],
+            }
+
+    @staticmethod
+    def _write_dependency_composition_recoveries(
+        connection: sqlite3.Connection,
+        recoveries: dict[str, Any],
+    ) -> None:
+        for recovery in recoveries.values():
+            connection.execute(
+                """
+                INSERT INTO team_dependency_composition_recoveries(
+                    id, blocker_id, target_task_id, project_id, managed_repo_id,
+                    directory_path,
+                    base_branch, base_commit_sha, base_tree_hash,
+                    dependency_git_sources_json, source_fingerprint,
+                    preparation_generation,
+                    failed_dependency_task_id, failed_deliverable_id,
+                    conflict_paths_json, recovery_task_id,
+                    verified_deliverable_id, verified_commit_sha, verified_at,
+                    accepted_deliverable_id, resolved_commit_sha, state,
+                    created_at, updated_at, resolved_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    recovery["id"],
+                    recovery["blocker_id"],
+                    recovery["target_task_id"],
+                    recovery["project_id"],
+                    recovery["managed_repo_id"],
+                    recovery["directory_path"],
+                    recovery["base_branch"],
+                    recovery["base_commit_sha"],
+                    recovery["base_tree_hash"],
+                    _json_dumps(recovery.get("dependency_git_sources", [])),
+                    recovery["source_fingerprint"],
+                    recovery["preparation_generation"],
+                    recovery["failed_dependency_task_id"],
+                    recovery["failed_deliverable_id"],
+                    _json_dumps(recovery.get("conflict_paths", [])),
+                    recovery.get("recovery_task_id"),
+                    recovery.get("verified_deliverable_id"),
+                    recovery.get("verified_commit_sha"),
+                    recovery.get("verified_at"),
+                    recovery.get("accepted_deliverable_id"),
+                    recovery.get("resolved_commit_sha"),
+                    recovery.get("state", "awaiting_assignment"),
+                    recovery["created_at"],
+                    recovery["updated_at"],
+                    recovery.get("resolved_at"),
+                ),
+            )
+
+    @staticmethod
     def _read_git_work_contexts(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         for row in connection.execute("SELECT * FROM team_git_work_contexts ORDER BY id"):
             payload["git_work_contexts"][row["id"]] = {
@@ -4369,6 +4476,12 @@ class TeamStateSqliteStore:
                 "agent_branch": row["agent_branch"],
                 "commit_sha": row["commit_sha"],
                 "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
+                "dependency_composition_recovery_id": row[
+                    "dependency_composition_recovery_id"
+                ],
+                "manual_dependency_git_sources": _json_loads(
+                    row["manual_dependency_git_sources_json"]
+                ),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -4382,9 +4495,12 @@ class TeamStateSqliteStore:
                 INSERT INTO team_git_work_contexts(
                     id, agent_id, task_id, dispatch_id, worktree_path, base_branch,
                     base_commit, agent_branch, commit_sha,
-                    dependency_git_sources_json, state, created_at, updated_at
+                    dependency_git_sources_json,
+                    dependency_composition_recovery_id,
+                    manual_dependency_git_sources_json,
+                    state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -4397,6 +4513,8 @@ class TeamStateSqliteStore:
                     context["agent_branch"],
                     context.get("commit_sha"),
                     _json_dumps(context.get("dependency_git_sources", [])),
+                    context.get("dependency_composition_recovery_id"),
+                    _json_dumps(context.get("manual_dependency_git_sources", [])),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -6949,6 +7067,7 @@ _STATE_TABLES = (
     "team_memory_tags",
     "team_memory_source_refs",
     "team_memory_artifact_refs",
+    "team_dependency_composition_recoveries",
     "team_git_work_contexts",
     "team_git_promotions",
     "team_worktree_cleanup_candidates",
@@ -7096,6 +7215,17 @@ _PERSISTENCE_GROUPS = (
         ("blocker_events",),
         (("team_blocker_events", "id", "blocker_events"),),
         "_write_blocker_events",
+    ),
+    (
+        ("dependency_composition_recoveries",),
+        (
+            (
+                "team_dependency_composition_recoveries",
+                "id",
+                "dependency_composition_recoveries",
+            ),
+        ),
+        "_write_dependency_composition_recoveries",
     ),
     (
         ("action_records",),
@@ -8176,6 +8306,7 @@ CREATE TABLE IF NOT EXISTS team_dispatch_repositories (
     dispatch_id TEXT NOT NULL,
     position INTEGER NOT NULL,
     managed_repo_id TEXT NOT NULL,
+    directory_path TEXT NOT NULL DEFAULT 'root',
     PRIMARY KEY(dispatch_id, position)
 );
 
@@ -8269,6 +8400,44 @@ CREATE INDEX IF NOT EXISTS idx_team_git_promotions_deliverable
 CREATE INDEX IF NOT EXISTS idx_team_git_promotions_release
     ON team_git_promotions(release_package_id, promotion_kind, state, id);
 
+CREATE TABLE IF NOT EXISTS team_dependency_composition_recoveries (
+    id TEXT PRIMARY KEY,
+    blocker_id TEXT NOT NULL,
+    target_task_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    managed_repo_id TEXT NOT NULL,
+    directory_path TEXT NOT NULL,
+    base_branch TEXT NOT NULL,
+    base_commit_sha TEXT NOT NULL,
+    base_tree_hash TEXT NOT NULL,
+    dependency_git_sources_json TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    preparation_generation TEXT NOT NULL,
+    failed_dependency_task_id TEXT NOT NULL,
+    failed_deliverable_id TEXT NOT NULL,
+    conflict_paths_json TEXT NOT NULL DEFAULT '[]',
+    recovery_task_id TEXT,
+    verified_deliverable_id TEXT,
+    verified_commit_sha TEXT,
+    verified_at TEXT,
+    accepted_deliverable_id TEXT,
+    resolved_commit_sha TEXT,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_dependency_composition_recovery_source
+    ON team_dependency_composition_recoveries(
+        target_task_id,
+        source_fingerprint,
+        preparation_generation
+    );
+CREATE INDEX IF NOT EXISTS idx_team_dependency_composition_recovery_blocker
+    ON team_dependency_composition_recoveries(blocker_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_team_dependency_composition_recovery_task
+    ON team_dependency_composition_recoveries(recovery_task_id, state, id);
+
 CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -8280,6 +8449,8 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     agent_branch TEXT NOT NULL,
     commit_sha TEXT,
     dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
+    dependency_composition_recovery_id TEXT,
+    manual_dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

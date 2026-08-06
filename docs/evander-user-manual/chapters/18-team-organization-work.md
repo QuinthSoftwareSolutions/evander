@@ -150,7 +150,11 @@ Use the relationship that describes the real lifecycle:
   resolve. It does not transfer ownership. For Git-backed work, preparation
   also verifies and composes the accepted current Git deliverables of direct
   dependencies into the successor's worktree. A dependency with no Git
-  deliverable remains lifecycle-only.
+  deliverable remains lifecycle-only. If exact accepted inputs genuinely conflict,
+  Team records immutable conflict evidence instead of exposing a partial checkout.
+  A supervisor explicitly selects an active project resolver and starts one pinned
+  integration child. The reviewed result becomes the successor's composed base only
+  after managed Git proves that it contains the original base and every exact input.
 - <code>originating_task_id</code> records that another task caused independent
   work to be created. It is immutable provenance only: neither task gates the
   other, and the reference confers no visibility or authority.

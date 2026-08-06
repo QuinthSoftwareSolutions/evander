@@ -6435,7 +6435,8 @@ label textarea {
   border-left: 4px solid var(--danger);
 }
 
-.candidate-correction-recovery-status {
+.candidate-correction-recovery-status,
+.dependency-composition-recovery-status {
   display: grid;
   gap: 0.25rem;
   width: 100%;
@@ -6448,7 +6449,8 @@ label textarea {
   overflow-wrap: anywhere;
 }
 
-.candidate-correction-recovery-status .state-pill {
+.candidate-correction-recovery-status .state-pill,
+.dependency-composition-recovery-status .state-pill {
   margin-left: 0.35rem;
 }
 

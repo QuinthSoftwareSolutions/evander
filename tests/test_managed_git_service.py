@@ -158,6 +158,56 @@ def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path
         )
 
 
+def test_verify_branch_commit_ancestry_pins_tip_and_required_history(
+    tmp_path: Path,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    second = _commit(source, "README.md", "second\n", "second")
+    third = _commit(source, "README.md", "third\n", "third")
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    branch = "agents/session-backend/tasks/recovery"
+    _run(
+        "git",
+        f"--git-dir={bare}",
+        "update-ref",
+        f"refs/heads/{branch}",
+        second,
+    )
+
+    assert service.verify_branch_commit_ancestry(
+        repo_id,
+        directory_path="root/team-a/project",
+        branch=branch,
+        commit_sha=second,
+        required_ancestor_shas=[first, first],
+    ) == {
+        "managed_repo_id": repo_id,
+        "directory_path": "root/team-a/project",
+        "branch": branch,
+        "commit_sha": second,
+        "required_ancestor_shas": [first],
+    }
+    with pytest.raises(ValueError, match="does not contain required ancestor"):
+        service.verify_branch_commit_ancestry(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch=branch,
+            commit_sha=second,
+            required_ancestor_shas=[third],
+        )
+    with pytest.raises(ValueError, match="branch .* moved"):
+        service.verify_branch_commit_ancestry(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch=branch,
+            commit_sha=first,
+            required_ancestor_shas=[first],
+        )
+
+
 def test_host_commit_identity_update_is_repository_scoped(tmp_path: Path) -> None:
     source, _, _ = _source_repository(tmp_path)
     service = _service(tmp_path)

@@ -55,6 +55,9 @@ from ..domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
 )
 from ..domain.git_work_contexts import GitCandidateCommitResolver
+from ..domain.dependency_composition_recovery import (
+    DependencyRecoveryCommitVerifier,
+)
 from ..domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
@@ -85,10 +88,16 @@ class TeamCommandExecutor:
         *,
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
+        dependency_recovery_commit_verifier: (
+            DependencyRecoveryCommitVerifier | None
+        ) = None,
     ) -> None:
         self._repository = repository
         self._git_candidate_commit_resolver = git_candidate_commit_resolver
         self._git_default_branch_resolver = git_default_branch_resolver
+        self._dependency_recovery_commit_verifier = (
+            dependency_recovery_commit_verifier
+        )
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -101,6 +110,12 @@ class TeamCommandExecutor:
     @property
     def git_default_branch_resolver(self) -> Callable[..., object] | None:
         return self._git_default_branch_resolver
+
+    @property
+    def dependency_recovery_commit_verifier(
+        self,
+    ) -> DependencyRecoveryCommitVerifier | None:
+        return self._dependency_recovery_commit_verifier
 
     def _execute_team_command(
         self,
@@ -997,7 +1012,9 @@ _DELIVERABLE_SUBMISSION_TOOLS = frozenset(
         "team_submit_deliverable_for_review",
     }
 )
-_BLOCKER_SCOPE_TOOLS = frozenset({"team_update_blocker"})
+_BLOCKER_SCOPE_TOOLS = frozenset(
+    {"team_update_blocker", "team_start_dependency_composition_recovery"}
+)
 _REVIEW_SCOPE_TOOLS = frozenset({"team_decide_review"})
 _STAND_DOWN_DISPATCH_COMPLETION_TOOLS = frozenset(
     {

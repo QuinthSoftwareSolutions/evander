@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-06 - Recoverable Deterministic Dependency Composition
+
+- Made divergent dependency composition commits reproducible across VM and
+  container-worker backends by deriving both Git timestamps from the newest
+  parent timestamp plus one second.
+- Persisted exact base, source commits, failed input, and conflict paths when
+  automatic dependency composition conflicts, and added a typed supervisor or
+  Admin recovery that creates one pinned integration task for a selected resolver.
+- Required the recovery deliverable to name every exact source and pass managed-Git
+  ancestry verification before acceptance; accepting it resolves the blocker and
+  makes the reviewed commit the blocked target task's authoritative composed base.
+- Exposed recovery status and assignment in Team reads, MCP, Admin API, and the
+  blocker UI, while refusing generic resolution of an unresolved composition conflict.
+
 ## 2026-08-06 - Contracted Leaf Task Controls
 
 - Preserved **Require Git provenance** on task creation and editing even when

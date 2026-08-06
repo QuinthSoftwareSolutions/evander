@@ -56,6 +56,7 @@ from evander.events.provider_models import (
 )
 from evander.events.models import TriggerEvent, WorkflowNodeEnvelope
 from evander.execution import ExecutionBackendKind, ExecutionStatusKind
+from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.git_identity import (
     DEFAULT_AGENT_GIT_IDENTITY,
     TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY,
@@ -162,6 +163,11 @@ from .models import (
 from .services.domain.task_assessment import (
     assess_tasks,
     task_payload_with_assessment,
+)
+from .services.domain.dependency_composition_recovery import (
+    accepted_recovery_for_target,
+    record_dependency_composition_conflict,
+    recovery_for_task,
 )
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -312,9 +318,16 @@ _TEAM_REVIEW_ARTIFACT_ID_DEFAULT = "bundle"
 
 
 class DependencyGitPreparationError(RuntimeError):
-    def __init__(self, *, task_id: str, message: str) -> None:
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        message: str,
+        conflict: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.task_id = task_id
+        self.conflict = dict(conflict) if conflict is not None else None
 
 
 class ProjectGitPreparationError(RuntimeError):
@@ -2627,6 +2640,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             lease=lease,
                             task_id=exc.task_id,
                             error=error,
+                            conflict=exc.conflict,
                         )
                         preparation_blocker_ids.extend(
                             _new_preparation_blocker_ids(
@@ -7671,13 +7685,35 @@ def _create_project_repo_git_work_contexts(
             project_repo.get("managed_repo_id"),
             "managed_repo_id",
         )
+        dependency_composition_mode = "automatic"
+        dependency_composition_recovery_id: str | None = None
+        resolved_dependency_branch: str | None = None
+        resolved_dependency_commit_sha: str | None = None
+        manual_dependency_git_sources: list[dict[str, str]] = []
         correction_source = _verified_rejected_candidate_git_source(
             context,
             state=state,
             task_id=task_id,
             managed_repo_id=managed_repo_id,
         )
-        if correction_source is not None:
+        dependency_recovery = recovery_for_task(
+            state,
+            recovery_task_id=task_id,
+        )
+        if dependency_recovery is not None:
+            dependency_git_sources = [
+                source.model_dump(mode="json")
+                for source in dependency_recovery.dependency_git_sources
+            ]
+            effective_base_branch = dependency_recovery.base_branch
+            prior_base_commit = dependency_recovery.base_commit_sha
+            pinned_base_commit = dependency_recovery.base_commit_sha
+            pinned_base_tree = dependency_recovery.base_tree_hash
+            composition_git_sources = dependency_git_sources
+            manual_dependency_git_sources = dependency_git_sources
+            dependency_composition_mode = "manual_recovery"
+            dependency_composition_recovery_id = dependency_recovery.id
+        elif correction_source is not None:
             dependency_git_sources = [
                 source.model_dump(mode="json")
                 for source in correction_source.dependency_git_sources
@@ -7700,6 +7736,45 @@ def _create_project_repo_git_work_contexts(
             pinned_base_commit = None
             pinned_base_tree = None
             composition_git_sources = dependency_git_sources
+            accepted_recovery = accepted_recovery_for_target(
+                state,
+                target_task_id=task_id,
+                dependency_git_sources=dependency_git_sources,
+            )
+            if accepted_recovery is not None:
+                recovery_deliverable = state.deliverables.get(
+                    accepted_recovery.accepted_deliverable_id or ""
+                )
+                if recovery_deliverable is None:
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"accepted dependency recovery {accepted_recovery.id} "
+                            "references a missing deliverable"
+                        ),
+                    )
+                resolved_dependency_branch = _optional_text(
+                    recovery_deliverable.git_refs.agent_branch
+                )
+                resolved_dependency_commit_sha = _optional_text(
+                    accepted_recovery.resolved_commit_sha
+                )
+                if (
+                    resolved_dependency_branch is None
+                    or resolved_dependency_commit_sha is None
+                ):
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"accepted dependency recovery {accepted_recovery.id} "
+                            "has incomplete resolved Git provenance"
+                        ),
+                    )
+                effective_base_branch = accepted_recovery.base_branch
+                pinned_base_commit = accepted_recovery.base_commit_sha
+                pinned_base_tree = accepted_recovery.base_tree_hash
+                dependency_composition_mode = "adopt_resolved"
+                dependency_composition_recovery_id = accepted_recovery.id
         agent_branch = _project_repo_agent_branch(
             session_id,
             task_id=task_id,
@@ -7729,19 +7804,43 @@ def _create_project_repo_git_work_contexts(
             session_id=session_id,
             repo_name=task_worktree_repo_name,
         ):
-            worktree_path, base_commit = _prepare_project_repo_task_worktree(
-                context,
-                project_repo=project_repo,
-                session_id=session_id,
-                task_id=task_id,
-                agent_branch=agent_branch,
-                base_ref=effective_base_branch or "HEAD",
-                prior_base_commit=prior_base_commit,
-                pinned_base_commit=pinned_base_commit,
-                pinned_base_tree=pinned_base_tree,
-                dependency_git_sources=composition_git_sources,
-                dependency_merge_author_identity=dependency_merge_author_identity,
-            )
+            try:
+                worktree_path, base_commit = _prepare_project_repo_task_worktree(
+                    context,
+                    project_repo=project_repo,
+                    session_id=session_id,
+                    task_id=task_id,
+                    agent_branch=agent_branch,
+                    base_ref=effective_base_branch or "HEAD",
+                    prior_base_commit=prior_base_commit,
+                    pinned_base_commit=pinned_base_commit,
+                    pinned_base_tree=pinned_base_tree,
+                    dependency_git_sources=composition_git_sources,
+                    dependency_composition_mode=dependency_composition_mode,
+                    dependency_composition_recovery_id=(
+                        dependency_composition_recovery_id
+                    ),
+                    resolved_dependency_branch=resolved_dependency_branch,
+                    resolved_dependency_commit_sha=resolved_dependency_commit_sha,
+                    dependency_merge_author_identity=dependency_merge_author_identity,
+                )
+            except DependencyGitPreparationError as exc:
+                if exc.conflict is not None:
+                    project = state.projects.get(project_id)
+                    project_git = getattr(project, "git", None)
+                    exc.conflict.update(
+                        {
+                            "target_task_id": task_id,
+                            "project_id": project_id,
+                            "managed_repo_id": managed_repo_id,
+                            "base_branch": effective_base_branch or "HEAD",
+                            "directory_path": (
+                                _optional_text(getattr(project_git, "directory_path", None))
+                                or "root"
+                            ),
+                        }
+                    )
+                raise
             context_id = _project_repo_git_work_context_id(
                 agent_id=agent_id,
                 task_id=task_id,
@@ -7803,6 +7902,10 @@ def _create_project_repo_git_work_contexts(
                         base_commit=base_commit,
                         worktree_path=worktree_path,
                         dependency_git_sources=dependency_git_sources,
+                        dependency_composition_recovery_id=(
+                            dependency_composition_recovery_id
+                        ),
+                        manual_dependency_git_sources=manual_dependency_git_sources,
                     )
                     break
                 try:
@@ -7816,6 +7919,10 @@ def _create_project_repo_git_work_contexts(
                         dispatch_id=dispatch_id,
                         worktree_path=worktree_path,
                         dependency_git_sources=dependency_git_sources,
+                        dependency_composition_recovery_id=(
+                            dependency_composition_recovery_id
+                        ),
+                        manual_dependency_git_sources=manual_dependency_git_sources,
                         expected_revision=state.revision,
                     )
                     break
@@ -7858,6 +7965,8 @@ def _validate_project_repo_git_work_context(
     base_commit: str | None,
     worktree_path: str,
     dependency_git_sources: Sequence[Mapping[str, str]],
+    dependency_composition_recovery_id: str | None = None,
+    manual_dependency_git_sources: Sequence[Mapping[str, str]] = (),
 ) -> None:
     expected = {
         "agent_id": agent_id,
@@ -7868,6 +7977,10 @@ def _validate_project_repo_git_work_context(
         "base_commit": base_commit,
         "worktree_path": worktree_path,
         "dependency_git_sources": [dict(row) for row in dependency_git_sources],
+        "dependency_composition_recovery_id": dependency_composition_recovery_id,
+        "manual_dependency_git_sources": [
+            dict(row) for row in manual_dependency_git_sources
+        ],
     }
     mismatches = [
         field_name
@@ -7877,7 +7990,10 @@ def _validate_project_repo_git_work_context(
                 item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
                 for item in getattr(context_model, field_name, [])
             ]
-            if field_name == "dependency_git_sources"
+            if field_name in {
+                "dependency_git_sources",
+                "manual_dependency_git_sources",
+            }
             else getattr(context_model, field_name, None)
         )
         != expected_value
@@ -8263,6 +8379,10 @@ def _prepare_project_repo_task_worktree(
     pinned_base_commit: str | None = None,
     pinned_base_tree: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
+    dependency_composition_mode: str = "automatic",
+    dependency_composition_recovery_id: str | None = None,
+    resolved_dependency_branch: str | None = None,
+    resolved_dependency_commit_sha: str | None = None,
     dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
 ) -> tuple[str, str | None]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
@@ -8299,10 +8419,24 @@ def _prepare_project_repo_task_worktree(
                 expected_base_commit_sha=pinned_base_commit or prior_base_commit,
                 expected_base_tree_hash=pinned_base_tree,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
+                dependency_composition_mode=dependency_composition_mode,
+                dependency_composition_recovery_id=(
+                    dependency_composition_recovery_id
+                ),
+                resolved_dependency_branch=resolved_dependency_branch,
+                resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                 dependency_merge_author_name=dependency_merge_author_identity.name,
                 dependency_merge_author_email=dependency_merge_author_identity.email,
                 **dependency_composition_kwargs,
             )
+        except ContainerWorkerClientError as exc:
+            payload = exc.payload or {}
+            conflict = payload.get("dependency_composition_conflict")
+            raise DependencyGitPreparationError(
+                task_id=task_id,
+                message=str(exc),
+                conflict=conflict if isinstance(conflict, Mapping) else None,
+            ) from None
         except Exception as exc:
             if dependency_git_sources or pinned_base_commit is not None:
                 raise DependencyGitPreparationError(
@@ -8334,6 +8468,7 @@ def _prepare_project_repo_task_worktree(
             raise RuntimeError(error)
         if (
             pinned_base_commit is not None
+            and dependency_composition_mode != "adopt_resolved"
             and base_commit_sha.casefold() != pinned_base_commit.casefold()
         ):
             raise DependencyGitPreparationError(
@@ -8342,6 +8477,19 @@ def _prepare_project_repo_task_worktree(
                     f"prepared worktree {record.target_dir} reports base "
                     f"{base_commit_sha}, not pinned rejected candidate "
                     f"{pinned_base_commit}"
+                ),
+            )
+        if (
+            dependency_composition_mode == "adopt_resolved"
+            and resolved_dependency_commit_sha is not None
+            and base_commit_sha.casefold()
+            != resolved_dependency_commit_sha.casefold()
+        ):
+            raise DependencyGitPreparationError(
+                task_id=task_id,
+                message=(
+                    f"prepared worktree {record.target_dir} did not adopt resolved "
+                    f"dependency commit {resolved_dependency_commit_sha}"
                 ),
             )
         return record.target_dir, base_commit_sha
@@ -8364,6 +8512,37 @@ def _prepare_project_repo_task_worktree(
         separators=(",", ":"),
     )
     quoted_dependency_provenance = shlex.quote(dependency_provenance_json)
+    if dependency_composition_mode not in {
+        "automatic",
+        "manual_recovery",
+        "adopt_resolved",
+    }:
+        raise ValueError(
+            f"unsupported dependency composition mode {dependency_composition_mode!r}"
+        )
+    recovery_payload_json = json.dumps(
+        {
+            "recovery_id": dependency_composition_recovery_id,
+            "dependency_git_sources": [dict(row) for row in dependency_git_sources],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    quoted_dependency_composition_mode = shlex.quote(dependency_composition_mode)
+    quoted_dependency_recovery_id = shlex.quote(
+        dependency_composition_recovery_id or ""
+    )
+    quoted_manual_recovery_payload = shlex.quote(recovery_payload_json)
+    quoted_resolved_dependency_branch = shlex.quote(
+        validate_branch_name(resolved_dependency_branch)
+        if resolved_dependency_branch is not None
+        else ""
+    )
+    quoted_resolved_dependency_commit = shlex.quote(
+        resolved_dependency_commit_sha.casefold()
+        if resolved_dependency_commit_sha is not None
+        else ""
+    )
     quoted_dependency_author_name = shlex.quote(dependency_merge_author_identity.name)
     quoted_dependency_author_email = shlex.quote(dependency_merge_author_identity.email)
     quoted_dependency_committer_name = shlex.quote(
@@ -8384,6 +8563,7 @@ def _prepare_project_repo_task_worktree(
     dependency_parent_lines: list[str] = []
     dependency_verify_lines: list[str] = []
     dependency_adoption_lines: list[str] = []
+    dependency_timestamp_lines: list[str] = []
     for index, source in enumerate(dependency_git_sources):
         source_branch = shlex.quote(
             validate_branch_name(_required_text(source.get("branch"), "dependency branch"))
@@ -8419,6 +8599,16 @@ def _prepare_project_repo_task_worktree(
                     f'  if ! git -C "$target" merge --no-ff -m '
                     f'"Temporary Team dependency integration" '
                     f'"$dependency_commit_{index}"; then'
+                ),
+                '    conflict_base_tree="$(git -C "$target" rev-parse "$head_before^{tree}")"',
+                '    echo "EVANDER_DEPENDENCY_CONFLICT=1" >&2',
+                '    echo "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT=$head_before" >&2',
+                '    echo "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE=$conflict_base_tree" >&2',
+                f"    echo EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK={source_task} >&2",
+                f"    echo EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE={source_deliverable} >&2",
+                (
+                    '    git -C "$target" diff --name-only --diff-filter=U '
+                    "| sed 's/^/EVANDER_DEPENDENCY_CONFLICT_PATH=/' >&2"
                 ),
                 '    git -C "$target" merge --abort >/dev/null 2>&1 || true',
                 '    git -C "$target" reset --hard "$head_before" >/dev/null',
@@ -8456,6 +8646,20 @@ def _prepare_project_repo_task_worktree(
                 f'if ! git -C "$target" merge-base --is-ancestor '
                 f'"$dependency_commit_{index}" "$head_before"; then '
                 "all_dependencies_present=0; fi"
+            )
+        )
+        dependency_timestamp_lines.extend(
+            (
+                f'if [ "$dependency_needed_{index}" = 1 ]; then',
+                (
+                    f'  parent_timestamp="$(git -C "$target" show -s '
+                    f'--format=%ct "$dependency_commit_{index}")"'
+                ),
+                (
+                    '  if [ "$parent_timestamp" -gt "$max_parent_timestamp" ]; '
+                    'then max_parent_timestamp="$parent_timestamp"; fi'
+                ),
+                "fi",
             )
         )
     for index, _source in enumerate(dependency_git_sources):
@@ -8508,6 +8712,11 @@ def _prepare_project_repo_task_worktree(
         f"pinned_base_commit={quoted_pinned_base}",
         f"pinned_base_tree={quoted_pinned_tree}",
         f"expected_dependency_provenance={quoted_dependency_provenance}",
+        f"dependency_composition_mode={quoted_dependency_composition_mode}",
+        f"dependency_recovery_id={quoted_dependency_recovery_id}",
+        f"manual_recovery_payload={quoted_manual_recovery_payload}",
+        f"resolved_dependency_branch={quoted_resolved_dependency_branch}",
+        f"resolved_dependency_commit={quoted_resolved_dependency_commit}",
         f"dependency_commit_message={quoted_dependency_commit_message}",
         f"lock={quoted_lock}",
         'mkdir -p "$(dirname "$lock")"',
@@ -8562,11 +8771,71 @@ def _prepare_project_repo_task_worktree(
         '    configured_base="$expected_prior_base"',
         "  fi",
         "fi",
+        *dependency_assignment_lines,
+        'if [ "$dependency_composition_mode" = "manual_recovery" ]; then',
+        (
+            '  current_manual_recovery="$(git -C "$target" config --worktree '
+            '--get evander.manualDependencyGitSources || true)"'
+        ),
+        '  if [ -n "$current_manual_recovery" ]; then',
+        '    test "$current_manual_recovery" = "$manual_recovery_payload"',
+        "  else",
+        '    test -z "$(git -C "$target" status --porcelain)"',
+        (
+            '    if [ "$created" != 1 ]; then test -n "$configured_base"; '
+            'test "$head_before" = "$configured_base"; fi'
+        ),
+        *[f"    {line}" for line in dependency_fetch_lines],
+        (
+            '    git -C "$target" config --worktree '
+            'evander.manualDependencyGitSources "$manual_recovery_payload"'
+        ),
+        "  fi",
+        'elif [ "$dependency_composition_mode" = "adopt_resolved" ]; then',
+        '  test -n "$dependency_recovery_id"',
+        '  test -n "$resolved_dependency_branch"',
+        '  test -n "$resolved_dependency_commit"',
+        '  git fetch --no-tags origin "refs/heads/$resolved_dependency_branch"',
+        (
+            '  test "$(git rev-parse --verify FETCH_HEAD^{commit})" '
+            '= "$resolved_dependency_commit"'
+        ),
+        *[f"  {line}" for line in dependency_fetch_lines],
+        (
+            '  git -C "$target" merge-base --is-ancestor '
+            '"$pinned_base_commit" "$resolved_dependency_commit"'
+        ),
+        *[
+            (
+                f'  git -C "$target" merge-base --is-ancestor '
+                f'"$dependency_commit_{index}" "$resolved_dependency_commit"'
+            )
+            for index, _source in enumerate(dependency_git_sources)
+        ],
+        '  test -z "$(git -C "$target" status --porcelain)"',
+        (
+            '  test "$head_before" = "$pinned_base_commit" '
+            '|| test "$head_before" = "$resolved_dependency_commit"'
+        ),
+        '  git -C "$target" reset --hard "$resolved_dependency_commit" >/dev/null',
+        (
+            '  git -C "$target" config --worktree '
+            'evander.dependencyGitProvenance "$expected_dependency_provenance"'
+        ),
+        (
+            '  git -C "$target" config --worktree '
+            'evander.dependencyCompositionRecovery "$dependency_recovery_id"'
+        ),
+        (
+            '  git -C "$target" config --worktree evander.baseCommit '
+            '"$resolved_dependency_commit"'
+        ),
+        '  configured_base="$resolved_dependency_commit"',
+        "else",
         (
             'current_dependency_provenance="$(git -C "$target" config '
             '--worktree --get evander.dependencyGitProvenance || true)"'
         ),
-        *dependency_assignment_lines,
         'if [ -n "$current_dependency_provenance" ]; then',
         ('  test "$current_dependency_provenance" = "$expected_dependency_provenance"'),
         *[f"  {line}" for line in dependency_verify_lines],
@@ -8597,6 +8866,14 @@ def _prepare_project_repo_task_worktree(
         '      set -- git -C "$target" commit-tree "$result_tree" -p "$head_before"',
         *[f"      {line}" for line in dependency_parent_lines],
         '      set -- "$@" -m "$dependency_commit_message"',
+        (
+            '      max_parent_timestamp="$(git -C "$target" show -s '
+            '--format=%ct "$head_before")"'
+        ),
+        *[f"      {line}" for line in dependency_timestamp_lines],
+        '      deterministic_timestamp=$((max_parent_timestamp + 1))',
+        '      export GIT_AUTHOR_DATE="@$deterministic_timestamp +0000"',
+        '      export GIT_COMMITTER_DATE="@$deterministic_timestamp +0000"',
         '      if ! composed_commit="$("$@")"; then',
         '        git -C "$target" reset --hard "$head_before" >/dev/null',
         "        exit 1",
@@ -8610,6 +8887,7 @@ def _prepare_project_repo_task_worktree(
         ),
         ('    git -C "$target" config --worktree evander.baseCommit "$composed_base"'),
         "  fi",
+        "fi",
         "fi",
         (
             'if [ -n "$configured_base" ] && ! git -C "$target" config '
@@ -8642,15 +8920,51 @@ def _prepare_project_repo_task_worktree(
     )
     result = provider.execute()
     if not bool(result.get("success")):
+        failure_evidence = "\n".join(
+            str(result.get(field_name) or "")
+            for field_name in ("error", "message", "stdout", "stderr")
+        )
         error = (
             _optional_text(result.get("error"))
             or _optional_text(result.get("message"))
             or f"failed to prepare task worktree {worktree_path}"
         )
         if dependency_git_sources or pinned_base_commit is not None:
+            conflict: dict[str, object] | None = None
+            if "EVANDER_DEPENDENCY_CONFLICT=1" in failure_evidence:
+                conflict_values: dict[str, str] = {}
+                conflict_paths: list[str] = []
+                for line in failure_evidence.splitlines():
+                    if line.startswith("EVANDER_DEPENDENCY_CONFLICT_PATH="):
+                        path = line.partition("=")[2].strip()
+                        if path and path not in conflict_paths:
+                            conflict_paths.append(path)
+                    elif line.startswith("EVANDER_DEPENDENCY_CONFLICT_") and "=" in line:
+                        key, _separator, value = line.partition("=")
+                        conflict_values[key] = value.strip()
+                conflict = {
+                    "base_branch": base_ref,
+                    "base_commit_sha": conflict_values.get(
+                        "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT"
+                    ),
+                    "base_tree_hash": conflict_values.get(
+                        "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE"
+                    ),
+                    "dependency_git_sources": [
+                        dict(row) for row in dependency_git_sources
+                    ],
+                    "failed_dependency_task_id": conflict_values.get(
+                        "EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK"
+                    ),
+                    "failed_deliverable_id": conflict_values.get(
+                        "EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE"
+                    ),
+                    "conflict_paths": conflict_paths,
+                }
             raise DependencyGitPreparationError(
                 task_id=task_id,
                 message=error,
+                conflict=conflict,
             )
         raise RuntimeError(error)
     base_commit_sha = next(
@@ -9581,6 +9895,7 @@ def _record_dependency_git_preparation_blocker(
     lease: Mapping[str, Any],
     task_id: str,
     error: str,
+    conflict: Mapping[str, object] | None = None,
 ) -> Any:
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
     result: dict[str, Any] = {"events": []}
@@ -9597,14 +9912,27 @@ def _record_dependency_git_preparation_blocker(
             raise RuntimeError(
                 f"cannot route dependency Git preparation blocker without project {task.project_id}"
             )
-        record_task_preparation_failure(
+        effective_now = datetime.now(UTC)
+        blocker = record_task_preparation_failure(
             state,
             task_id=task.id,
             reporter_agent_id=agent.id,
             error=error,
-            reason_code="dependency_git_preparation_failed",
+            reason_code=(
+                "dependency_git_composition_conflict"
+                if conflict is not None
+                else "dependency_git_preparation_failed"
+            ),
             result=result,
+            now=effective_now,
         )
+        if conflict is not None:
+            record_dependency_composition_conflict(
+                state,
+                blocker=blocker,
+                conflict=conflict,
+                now=effective_now,
+            )
         return state
 
     return repo.update_with_outbox(

@@ -12,6 +12,8 @@ from evander_team_addon.models import (
     AgentInboxItem,
     AgentTask,
     Deliverable,
+    DependencyCompositionRecovery,
+    DependencyGitSource,
     HumanReviewAssignment,
     HumanReviewChecklistItem,
     HumanReviewDecision,
@@ -65,9 +67,61 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
         table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
     ]
 
-    assert len(fields) == len(set(fields)) == 37
+    assert len(fields) == len(set(fields)) == 38
     assert len(tables) == len(set(tables))
     assert set(tables) == set(_STATE_TABLES)
+
+
+def test_dependency_composition_recovery_round_trips_exact_git_evidence(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    recovery = DependencyCompositionRecovery(
+        id="depcomp-roundtrip",
+        blocker_id="blocker-roundtrip",
+        target_task_id="task-roundtrip",
+        project_id="project",
+        managed_repo_id=MANAGED_REPO_ID,
+        directory_path="root",
+        base_branch="main",
+        base_commit_sha="a" * 40,
+        base_tree_hash="b" * 40,
+        dependency_git_sources=[
+            DependencyGitSource(
+                dependency_task_id="source-task",
+                deliverable_id="source-deliverable",
+                branch="agents/source/task",
+                commit_sha="c" * 40,
+            )
+        ],
+        source_fingerprint="f" * 64,
+        preparation_generation="generation-one",
+        failed_dependency_task_id="source-task",
+        failed_deliverable_id="source-deliverable",
+        conflict_paths=["src/shared.py"],
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    repository.update(
+        lambda state: (
+            state.dependency_composition_recoveries.__setitem__(recovery.id, recovery)
+            or state
+        )
+    )
+
+    restored = repository.read().dependency_composition_recoveries[recovery.id]
+    assert restored == recovery
+    with repository.store._connect() as connection:
+        row = connection.execute(
+            "SELECT directory_path, dependency_git_sources_json, conflict_paths_json "
+            "FROM team_dependency_composition_recoveries WHERE id = ?",
+            (recovery.id,),
+        ).fetchone()
+    assert row is not None
+    assert row["directory_path"] == "root"
+    assert json.loads(row["dependency_git_sources_json"])[0]["commit_sha"] == "c" * 40
+    assert json.loads(row["conflict_paths_json"]) == ["src/shared.py"]
 
 
 def test_noop_updates_and_empty_wake_checks_preserve_revision_and_skip_state_dml(

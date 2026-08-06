@@ -187,6 +187,14 @@ class GitWorkContextState(str, Enum):
     ABANDONED = "abandoned"
 
 
+class DependencyCompositionRecoveryState(str, Enum):
+    AWAITING_ASSIGNMENT = "awaiting_assignment"
+    IN_PROGRESS = "in_progress"
+    ACCEPTED = "accepted"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
+
+
 class ProjectStatus(str, Enum):
     ACTIVE = "active"
     BLOCKED = "blocked"
@@ -673,6 +681,7 @@ class ProjectGitIdentity(TeamModel):
 
 class ProjectGitConfig(TeamModel):
     managed_repo_id: str
+    directory_path: str
     directory_path: str = "root"
     base_branch: str | None = None
     canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
@@ -1742,6 +1751,128 @@ class DependencyGitSource(TeamModel):
         return normalized
 
 
+class DependencyCompositionRecovery(TeamModel):
+    id: str
+    blocker_id: str
+    target_task_id: str
+    project_id: str
+    managed_repo_id: str
+    directory_path: str
+    base_branch: str
+    base_commit_sha: str
+    base_tree_hash: str
+    dependency_git_sources: list[DependencyGitSource]
+    source_fingerprint: str
+    preparation_generation: str
+    failed_dependency_task_id: str
+    failed_deliverable_id: str
+    conflict_paths: list[str] = Field(default_factory=list)
+    recovery_task_id: str | None = None
+    verified_deliverable_id: str | None = None
+    verified_commit_sha: str | None = None
+    verified_at: datetime | None = None
+    accepted_deliverable_id: str | None = None
+    resolved_commit_sha: str | None = None
+    state: DependencyCompositionRecoveryState = (
+        DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+    @field_validator(
+        "id",
+        "blocker_id",
+        "target_task_id",
+        "project_id",
+        "managed_repo_id",
+        "directory_path",
+        "base_branch",
+        "source_fingerprint",
+        "preparation_generation",
+        "failed_dependency_task_id",
+        "failed_deliverable_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "recovery_task_id",
+        "verified_deliverable_id",
+        "accepted_deliverable_id",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("base_branch")
+    @classmethod
+    def _base_branch(cls, value: str) -> str:
+        return validate_branch_name(value)
+
+    @field_validator(
+        "base_commit_sha",
+        "base_tree_hash",
+        "resolved_commit_sha",
+        "verified_commit_sha",
+    )
+    @classmethod
+    def _git_object_id(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        normalized = value.casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError(f"{info.field_name} must be a full Git object ID")
+        return normalized
+
+    @field_validator("conflict_paths", mode="before")
+    @classmethod
+    def _conflict_paths(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "conflict_paths")
+
+    @model_validator(mode="after")
+    def _validate_recovery_state(self) -> "DependencyCompositionRecovery":
+        if not self.dependency_git_sources:
+            raise ValueError("dependency composition recovery requires Git sources")
+        if self.state == DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT:
+            if self.recovery_task_id is not None:
+                raise ValueError("awaiting recovery cannot reference a recovery task")
+        elif (
+            self.state
+            in {
+                DependencyCompositionRecoveryState.IN_PROGRESS,
+                DependencyCompositionRecoveryState.ACCEPTED,
+            }
+            and self.recovery_task_id is None
+        ):
+            raise ValueError("started dependency composition recovery requires recovery_task_id")
+        if self.state == DependencyCompositionRecoveryState.ACCEPTED:
+            if (
+                self.accepted_deliverable_id is None
+                or self.resolved_commit_sha is None
+                or self.resolved_at is None
+            ):
+                raise ValueError(
+                    "accepted dependency composition recovery requires deliverable, commit, and time"
+                )
+        elif self.accepted_deliverable_id is not None or self.resolved_commit_sha is not None:
+            raise ValueError(
+                "unaccepted dependency composition recovery cannot record a resolved deliverable"
+            )
+        if bool(self.verified_deliverable_id) != bool(self.verified_commit_sha):
+            raise ValueError(
+                "dependency composition recovery verification requires deliverable and commit"
+            )
+        if bool(self.verified_deliverable_id) != bool(self.verified_at):
+            raise ValueError(
+                "dependency composition recovery verification requires verified_at"
+            )
+        return self
+
+
 class GitWorkContext(TeamModel):
     id: str
     agent_id: str
@@ -1753,6 +1884,8 @@ class GitWorkContext(TeamModel):
     dispatch_id: str | None = None
     worktree_path: str | None = None
     dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
+    dependency_composition_recovery_id: str | None = None
+    manual_dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
     state: GitWorkContextState = GitWorkContextState.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1768,6 +1901,7 @@ class GitWorkContext(TeamModel):
         "commit_sha",
         "dispatch_id",
         "worktree_path",
+        "dependency_composition_recovery_id",
         mode="before",
     )
     @classmethod
@@ -3762,6 +3896,9 @@ class TeamState(TeamModel):
     review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     blockers: dict[str, TeamBlocker] = Field(default_factory=dict)
+    dependency_composition_recoveries: dict[str, DependencyCompositionRecovery] = Field(
+        default_factory=dict
+    )
     blocker_events: dict[str, TeamBlockerEvent] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
@@ -4005,6 +4142,7 @@ class TeamState(TeamModel):
             "review_profiles",
             "inbox",
             "blockers",
+            "dependency_composition_recoveries",
             "blocker_events",
             "action_records",
             "memories",

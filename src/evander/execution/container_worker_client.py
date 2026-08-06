@@ -38,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 
 class ContainerWorkerClientError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, payload: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.payload = dict(payload) if payload is not None else None
 
 
 class ContainerWorkerClient:
@@ -356,10 +358,15 @@ class ContainerWorkerClient:
                 f"container worker {method_normalized} {path} failed unexpectedly"
             )
         if response.status_code >= 400:
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = None
             raise ContainerWorkerClientError(
                 f"container worker {method_normalized} {path} returned HTTP "
                 f"{response.status_code}: "
-                f"{self._safe_response_text(response)}"
+                f"{self._safe_response_text(response)}",
+                payload=error_payload if isinstance(error_payload, dict) else None,
             )
         return response
 

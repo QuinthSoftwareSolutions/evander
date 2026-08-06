@@ -717,6 +717,7 @@ function emptyState() {
     inbox: {},
     blockers: {},
     blocker_events: {},
+    dependency_composition_recoveries: {},
     action_records: {},
     release_packages: {},
     dispatches: {},
@@ -2370,6 +2371,40 @@ function bindRecordEditing() {
       return;
     }
 
+    const dependencyCompositionTaskButton = event.target.closest(
+      "[data-dependency-composition-recovery-task-id]",
+    );
+    if (dependencyCompositionTaskButton) {
+      event.preventDefault();
+      openCandidateCorrectionRecoveryTask(
+        dependencyCompositionTaskButton.dataset.dependencyCompositionRecoveryTaskId,
+      );
+      return;
+    }
+
+    const dependencyCompositionStartButton = event.target.closest(
+      "[data-start-dependency-composition-recovery-id]",
+    );
+    if (dependencyCompositionStartButton) {
+      event.preventDefault();
+      const container = dependencyCompositionStartButton.closest(
+        ".dependency-composition-recovery-status",
+      );
+      const resolverAgentId = text(
+        container?.querySelector("[data-dependency-composition-resolver]")?.value,
+      );
+      if (!resolverAgentId) {
+        setStatus("Select an active project agent to resolve the merge.", "error");
+        return;
+      }
+      void startDependencyCompositionRecovery(
+        dependencyCompositionStartButton,
+        dependencyCompositionStartButton.dataset.startDependencyCompositionRecoveryId,
+        resolverAgentId,
+      );
+      return;
+    }
+
     const resolveBlockerButton = event.target.closest("[data-resolve-terminal-blocker-id]");
     if (resolveBlockerButton) {
       event.preventDefault();
@@ -2858,6 +2893,7 @@ const lockedMutationControlSelectors = [
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
   ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
+  ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -13710,6 +13746,61 @@ function candidateCorrectionRecoveryTaskForBlocker(blocker) {
     )[0] || null;
 }
 
+function dependencyCompositionRecoveryForBlocker(blocker) {
+  return values(state.dependency_composition_recoveries)
+    .filter((recovery) => text(recovery.blocker_id) === text(blocker?.id))
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function renderDependencyCompositionRecovery(blocker, recovery, extraClass = "") {
+  const recoveryTask = state.tasks?.[text(recovery.recovery_task_id)];
+  const projectAgents = values(state.agents)
+    .filter((agent) =>
+      text(agent.status) === "active" &&
+      agentProjectIds(agent).includes(text(recovery.project_id)),
+    )
+    .sort(comparePeopleAgents);
+  const sourceSummary = (recovery.dependency_git_sources || [])
+    .map((source) => `${text(source.dependency_task_id)}@${text(source.commit_sha).slice(0, 12)}`)
+    .join(", ");
+  const conflictSummary = uniqueTextList(recovery.conflict_paths).join(", ") || "paths unavailable";
+  return `
+    <div class="dependency-composition-recovery-status" role="status">
+      <div>
+        <strong>Dependency merge recovery</strong>
+        <span class="state-pill ${escapeAttr(recovery.state || "awaiting_assignment")}">${escapeHtml(humanizeToken(recovery.state || "awaiting_assignment"))}</span>
+      </div>
+      <div class="meta-line">Pinned base ${escapeHtml(text(recovery.base_commit_sha).slice(0, 12))} - conflict ${escapeHtml(conflictSummary)}</div>
+      <div class="meta-line">Exact inputs: ${escapeHtml(sourceSummary)}</div>
+      ${
+        recoveryTask
+          ? `<div class="record-actions ${escapeAttr(extraClass)}">
+              <button type="button" class="record-action"
+                data-dependency-composition-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+              >View merge recovery task</button>
+            </div>`
+          : `<div class="record-actions ${escapeAttr(extraClass)}">
+              <label>
+                Resolver
+                <select data-dependency-composition-resolver>
+                  <option value="">Select project agent</option>
+                  ${projectAgents.map((agent) => `<option value="${escapeAttr(agent.id)}">${escapeHtml(agentLabel(agent))}</option>`).join("")}
+                </select>
+              </label>
+              <button type="button" class="record-action"
+                data-start-dependency-composition-recovery-id="${escapeAttr(blocker.id)}"
+                ${lockedAttrs("start dependency composition recoveries")}
+              >Create merge recovery task</button>
+            </div>`
+      }
+    </div>
+  `;
+}
+
 function latestDispatchForTask(taskId) {
   const normalizedTaskId = text(taskId);
   return values(state.dispatches)
@@ -13764,6 +13855,15 @@ function openCandidateCorrectionRecoveryTask(taskId) {
 }
 
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
+  const dependencyRecovery = dependencyCompositionRecoveryForBlocker(blocker);
+  if (
+    blocker &&
+    text(blocker.state) === "open" &&
+    dependencyRecovery &&
+    ["awaiting_assignment", "in_progress"].includes(text(dependencyRecovery.state))
+  ) {
+    return renderDependencyCompositionRecovery(blocker, dependencyRecovery, extraClass);
+  }
   if (
     blocker &&
     text(blocker.state) === "open" &&
@@ -21570,6 +21670,69 @@ async function resolveTerminalBlocker(button, blockerId, note) {
     setStatus(`Resolved blocker ${normalizedBlockerId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Blocker resolution failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function startDependencyCompositionRecovery(button, blockerId, resolverAgentId) {
+  if (!guardTeamMutation("start dependency composition recoveries")) {
+    return;
+  }
+  const normalizedBlockerId = text(blockerId);
+  const normalizedResolverId = text(resolverAgentId);
+  if (!normalizedBlockerId || !normalizedResolverId) {
+    setStatus("A blocker and resolver agent are required.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`Creating merge recovery for ${normalizedBlockerId}.`, "loading");
+  const endpoint = `/blockers/${encodeURIComponent(normalizedBlockerId)}/dependency-composition-recovery`;
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", {
+          resolver_agent_id: normalizedResolverId,
+        }),
+      ),
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the recovery and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const body = await response.json();
+    await applyMutationResultPayload(body);
+    restoreFormDrafts(drafts);
+    const taskId = text(body.dependency_composition_recovery?.recovery_task_id);
+    setStatus(
+      taskId
+        ? `Created dependency merge recovery task ${taskId}.`
+        : `Started dependency merge recovery for ${normalizedBlockerId}.`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Dependency merge recovery failed.",
+      "error",
+    );
   } finally {
     if (button.isConnected) {
       button.disabled = false;
