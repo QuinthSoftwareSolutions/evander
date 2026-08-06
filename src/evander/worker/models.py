@@ -376,6 +376,12 @@ class WorkerTaskWorktreeRequest(BaseModel):
     expected_base_commit_sha: str | None = None
     expected_base_tree_hash: str | None = None
     dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
+    dependency_composition_mode: Literal[
+        "automatic", "manual_recovery", "adopt_resolved"
+    ] = "automatic"
+    dependency_composition_recovery_id: str | None = None
+    resolved_dependency_branch: str | None = None
+    resolved_dependency_commit_sha: str | None = None
     dependency_merge_author_name: str | None = None
     dependency_merge_author_email: str | None = None
     dependency_composition_commit_message: str | None = None
@@ -385,24 +391,40 @@ class WorkerTaskWorktreeRequest(BaseModel):
     def normalize_component(cls, value: object, info: ValidationInfo) -> str:
         return str(validate_worker_component_id(value, field_name=info.field_name))
 
-    @field_validator("branch", "base_ref", mode="before")
+    @field_validator("branch", "base_ref", "resolved_dependency_branch", mode="before")
     @classmethod
-    def normalize_ref(cls, value: object, info: ValidationInfo) -> str:
+    def normalize_ref(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None and info.field_name == "resolved_dependency_branch":
+            return None
         text = str(value or "").strip()
         if not text or "\n" in text or "\r" in text:
             raise ValueError(f"{info.field_name} must be a non-empty single-line Git ref")
         return text
 
-    @field_validator("expected_base_commit_sha", mode="before")
+    @field_validator("dependency_composition_recovery_id", mode="before")
     @classmethod
-    def normalize_expected_base_commit_sha(cls, value: object) -> str | None:
+    def normalize_recovery_id(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or any(character in text for character in ("\0", "\n", "\r")):
+            raise ValueError("dependency_composition_recovery_id must be single-line text")
+        return text
+
+    @field_validator(
+        "expected_base_commit_sha", "resolved_dependency_commit_sha", mode="before"
+    )
+    @classmethod
+    def normalize_expected_base_commit_sha(
+        cls, value: object, info: ValidationInfo
+    ) -> str | None:
         if value is None:
             return None
         text = str(value).strip().casefold()
         if not text:
             return None
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
-            raise ValueError("expected_base_commit_sha must be a full Git object ID")
+            raise ValueError(f"{info.field_name} must be a full Git object ID")
         return text
 
     @field_validator("expected_base_tree_hash", mode="before")
@@ -441,6 +463,40 @@ class WorkerTaskWorktreeRequest(BaseModel):
                 "dependency_merge_author_name and dependency_merge_author_email "
                 "must both be set"
             )
+        if self.dependency_composition_mode == "automatic":
+            if any(
+                value is not None
+                for value in (
+                    self.dependency_composition_recovery_id,
+                    self.resolved_dependency_branch,
+                    self.resolved_dependency_commit_sha,
+                )
+            ):
+                raise ValueError("automatic dependency composition cannot name a recovery")
+        elif self.dependency_composition_mode == "manual_recovery":
+            if self.dependency_composition_recovery_id is None:
+                raise ValueError("manual recovery requires dependency_composition_recovery_id")
+            if self.resolved_dependency_branch or self.resolved_dependency_commit_sha:
+                raise ValueError("manual recovery cannot adopt a resolved dependency commit")
+        else:
+            if (
+                self.dependency_composition_recovery_id is None
+                or self.resolved_dependency_branch is None
+                or self.resolved_dependency_commit_sha is None
+            ):
+                raise ValueError(
+                    "adopt_resolved requires recovery id, resolved branch, and resolved commit"
+                )
+        if self.dependency_composition_mode != "automatic":
+            if not self.dependency_git_sources:
+                raise ValueError("dependency recovery requires dependency_git_sources")
+            if (
+                self.expected_base_commit_sha is None
+                or self.expected_base_tree_hash is None
+            ):
+                raise ValueError(
+                    "dependency recovery requires an immutable expected base commit and tree"
+                )
         return self
 
 

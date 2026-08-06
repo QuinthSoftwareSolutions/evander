@@ -830,6 +830,14 @@ Task-worktree preparation may also carry ordered `dependency_git_sources`. The w
 each named managed branch, requires its tip to equal the accepted full commit ID, and composes
 those commits before task work begins. A single or dominant commit is adopted directly; divergent
 inputs produce one multi-parent commit using the optional composition subject and author identity.
+That commit pins author and committer dates to the newest parent committer timestamp plus one
+second UTC, making the resulting object reproducible for identical inputs. The optional
+`dependency_composition_mode` distinguishes ordinary `automatic` composition from
+`manual_recovery` (verify/fetch exact sources without merging) and `adopt_resolved` (verify an
+exact resolved branch tip contains the base and every source before a clean reset). Recovery
+modes require `dependency_composition_recovery_id`; adoption also requires
+`resolved_dependency_branch` and `resolved_dependency_commit_sha`. Automatic merge conflicts
+return HTTP 409 with structured base, source, failed-input, and conflict-path evidence.
 The worker records compact immutable provenance in worktree-local Git configuration. Reuse
 requires the same provenance; conflicts roll the clean checkout back to its
 pre-composition base and return an error instead of exposing partial dependency state.

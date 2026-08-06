@@ -1887,6 +1887,11 @@ button.team-record-kind-tab strong {
   gap: 0.85rem;
 }
 
+.task-board-view {
+  display: grid;
+  gap: 0.85rem;
+}
+
 .task-board-selectors {
   display: grid;
   grid-template-columns: repeat(2, minmax(12rem, 16rem));
@@ -1908,7 +1913,6 @@ button.team-record-kind-tab strong {
   border-radius: 8px;
   padding: 0.65rem 0.75rem;
   background: var(--panel-alt);
-  margin-bottom: 0.75rem;
 }
 
 .task-board-context strong {
@@ -5224,6 +5228,11 @@ button.people-agent-select:focus-visible,
   line-height: 1.2;
 }
 
+.role-description {
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
 .agent-detail-work-line {
   display: grid;
   grid-template-columns: 4rem minmax(0, 1fr);
@@ -6426,7 +6435,8 @@ label textarea {
   border-left: 4px solid var(--danger);
 }
 
-.candidate-correction-recovery-status {
+.candidate-correction-recovery-status,
+.dependency-composition-recovery-status {
   display: grid;
   gap: 0.25rem;
   width: 100%;
@@ -6439,7 +6449,8 @@ label textarea {
   overflow-wrap: anywhere;
 }
 
-.candidate-correction-recovery-status .state-pill {
+.candidate-correction-recovery-status .state-pill,
+.dependency-composition-recovery-status .state-pill {
   margin-left: 0.35rem;
 }
 

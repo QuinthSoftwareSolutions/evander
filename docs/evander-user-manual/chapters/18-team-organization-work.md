@@ -150,7 +150,11 @@ Use the relationship that describes the real lifecycle:
   resolve. It does not transfer ownership. For Git-backed work, preparation
   also verifies and composes the accepted current Git deliverables of direct
   dependencies into the successor's worktree. A dependency with no Git
-  deliverable remains lifecycle-only.
+  deliverable remains lifecycle-only. If exact accepted inputs genuinely conflict,
+  Team records immutable conflict evidence instead of exposing a partial checkout.
+  A supervisor explicitly selects an active project resolver and starts one pinned
+  integration child. The reviewed result becomes the successor's composed base only
+  after managed Git proves that it contains the original base and every exact input.
 - <code>originating_task_id</code> records that another task caused independent
   work to be created. It is immutable provenance only: neither task gates the
   other, and the reference confers no visibility or authority.
@@ -166,6 +170,13 @@ historical source task, but they never rewrite or become children of that
 accepted historical task.
 
 ### Explicit integration and final-acceptance boundaries
+
+When a leaf task must produce an accepted Git deliverable but does not
+integrate other tasks, select <code>require_git_provenance</code> without making
+it an integration boundary. This contracted leaf cannot finish directly: its
+accepted deliverable must carry the server-verified branch and pinned commit.
+It cannot name <code>required_contribution_task_ids</code> because contribution
+aggregation belongs only to an integration boundary.
 
 Do not infer the task that owns final integration from words such as “root,”
 “lead,” or “integration,” or from hierarchy depth. Set

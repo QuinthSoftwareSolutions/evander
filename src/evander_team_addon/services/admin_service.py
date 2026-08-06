@@ -34,6 +34,7 @@ from ..models import (
     GovernanceGoal,
     GovernanceGroup,
     DependencyGitSource,
+    DependencyCompositionRecoveryState,
     GitWorkContext,
     OutcomeKindDefinition,
     PersistentAgent,
@@ -192,6 +193,10 @@ from .domain.task_supervision import queue_parent_resolution_transitions
 from .domain.work_due import _mark_agent_work_due
 from .domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
+)
+from .domain.dependency_composition_recovery import (
+    release_dependency_composition_recovery_after_task_cancellation,
+    start_dependency_composition_recovery,
 )
 from .commands.blocker_commands import _prepare_blocker_source_for_resolution
 from .commands.outbox import _team_event_outbox_records
@@ -739,6 +744,85 @@ class TeamAdminService:
         )
         result["revision"] = state.revision
         result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
+        return state, result
+
+    def start_dependency_composition_recovery_as_operator(
+        self,
+        *,
+        blocker_id: str,
+        resolver_agent_id: str,
+        operator_actor_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_blocker_id = _required_text(blocker_id, "blocker_id")
+        normalized_resolver_id = _required_text(
+            resolver_agent_id, "resolver_agent_id"
+        )
+        normalized_operator_id = _required_text(
+            operator_actor_id, "operator_actor_id"
+        )
+        result: dict[str, Any] = {
+            "success": False,
+            "blocker_id": normalized_blocker_id,
+            "resolver_agent_id": normalized_resolver_id,
+            "operator_actor_id": normalized_operator_id,
+            "created_task_ids": [],
+            "created_inbox_item_ids": [],
+            "blocker_event_ids": [],
+            "events": [],
+        }
+
+        def _mutate(state: TeamState) -> TeamState:
+            blocker = _require_present(
+                state.blockers, normalized_blocker_id, "blocker"
+            )
+            resolver = _require_present(
+                state.agents, normalized_resolver_id, "resolver agent"
+            )
+            recoveries = [
+                recovery
+                for recovery in state.dependency_composition_recoveries.values()
+                if recovery.blocker_id == blocker.id
+                and recovery.state
+                in {
+                    DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT,
+                    DependencyCompositionRecoveryState.IN_PROGRESS,
+                }
+            ]
+            if len(recoveries) != 1:
+                raise ValueError(
+                    f"blocker {blocker.id} has {len(recoveries)} actionable "
+                    "dependency composition recoveries"
+                )
+            task = start_dependency_composition_recovery(
+                state,
+                recovery=recoveries[0],
+                blocker=blocker,
+                actor=None,
+                operator_actor_id=normalized_operator_id,
+                resolver=resolver,
+                dispatch_id=None,
+                result=result,
+                now=utc_now(),
+            )
+            result.update(
+                {
+                    "success": True,
+                    "recovery_id": recoveries[0].id,
+                    "recovery_task_id": task.id,
+                    "state": recoveries[0].state.value,
+                }
+            )
+            return state
+
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
+        result["revision"] = state.revision
         return state, result
 
     def recover_candidate_correction_successor_as_operator(
@@ -1637,6 +1721,11 @@ class TeamAdminService:
         worktree_path: str | None = None,
         dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
         | None = None,
+        dependency_composition_recovery_id: str | None = None,
+        manual_dependency_git_sources: Sequence[
+            Mapping[str, object] | DependencyGitSource
+        ]
+        | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str]:
         normalized_context_id = _optional_text(context_id)
@@ -1655,6 +1744,15 @@ class TeamAdminService:
             if isinstance(source, DependencyGitSource)
             else DependencyGitSource.model_validate(source)
             for source in dependency_git_sources or []
+        ]
+        normalized_dependency_composition_recovery_id = _optional_text(
+            dependency_composition_recovery_id
+        )
+        normalized_manual_dependency_git_sources = [
+            source
+            if isinstance(source, DependencyGitSource)
+            else DependencyGitSource.model_validate(source)
+            for source in manual_dependency_git_sources or []
         ]
         created_context_id: str | None = None
 
@@ -1722,6 +1820,12 @@ class TeamAdminService:
                 dispatch_id=normalized_dispatch_id,
                 worktree_path=normalized_worktree_path,
                 dependency_git_sources=normalized_dependency_git_sources,
+                dependency_composition_recovery_id=(
+                    normalized_dependency_composition_recovery_id
+                ),
+                manual_dependency_git_sources=(
+                    normalized_manual_dependency_git_sources
+                ),
                 base_branch=effective_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,
@@ -3311,6 +3415,14 @@ class TeamAdminService:
             )
             _set_task_state(task, TeamTaskState.CANCELLED, now=now)
             task.updated_at = now
+            release_dependency_composition_recovery_after_task_cancellation(
+                state_model,
+                task_id=task.id,
+                actor_agent_id=None,
+                dispatch_id=None,
+                operator_actor_id=normalized_actor_id,
+                now=now,
+            )
             finalize_active_git_work_contexts_for_task(
                 state_model,
                 task_id=task.id,

@@ -90,6 +90,9 @@ TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL = "team_send_operator_chat_message"
 TEAM_ESCALATE_OPERATOR_TOOL = "team_escalate_operator"
 TEAM_REPORT_BLOCKER_TOOL = "team_report_blocker"
 TEAM_UPDATE_BLOCKER_TOOL = "team_update_blocker"
+TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL = (
+    "team_start_dependency_composition_recovery"
+)
 TEAM_CREATE_CASE_TOOL = "team_create_case"
 TEAM_UPDATE_CASE_TOOL = "team_update_case"
 TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = (
@@ -171,6 +174,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
     TEAM_UPDATE_BLOCKER_TOOL,
+    TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
@@ -253,6 +257,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
     TEAM_UPDATE_BLOCKER_TOOL,
+    TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
@@ -310,6 +315,7 @@ MCP_TOOL_NAMES = (
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
     TEAM_UPDATE_BLOCKER_TOOL,
+    TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
@@ -418,6 +424,9 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
         repo,
         git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(context),
+        dependency_recovery_commit_verifier=(
+            _team_mcp_dependency_recovery_commit_verifier(context)
+        ),
     )
     review_commands = TeamReviewCommandService(
         repo,
@@ -1863,6 +1872,45 @@ def _register_slice6_tools(
         ),
     )
 
+    def team_start_dependency_composition_recovery(
+        blocker_id: str,
+        resolver_agent_id: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL,
+        )
+        try:
+            _state, result = (
+                blocker_commands.start_dependency_composition_recovery_command(
+                    session_id=caller.session_id,
+                    blocker_id=blocker_id,
+                    resolver_agent_id=resolver_agent_id,
+                    request_id=request_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_start_dependency_composition_recovery,
+        name=TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL,
+        description=(
+            "Start the typed recovery for a deterministic dependency Git composition "
+            "conflict and assign its immutable, review-gated merge task to an active "
+            "project agent. Only agents on the blocker's escalation line may start it."
+        ),
+    )
+
     def team_update_goal(
         project_id: str,
         goal_id: str,
@@ -2755,6 +2803,36 @@ def _team_mcp_git_default_branch_resolver(context: AddonContext):
         return record.get("default_branch")
 
     return _resolve
+
+
+def _team_mcp_dependency_recovery_commit_verifier(context: AddonContext):
+    managed_git = getattr(context.service, "managed_git_admin", None)
+
+    def _verify(recovery, deliverable_id: str, branch: str, commit_sha: str) -> None:
+        del deliverable_id
+        nonlocal managed_git
+        if managed_git is None:
+            from evander.admin.composition import build_admin_runtime
+
+            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
+        verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+        if not callable(verify_ancestry):
+            raise RuntimeError("managed Git ancestry verification is unavailable")
+        verify_ancestry(
+            recovery.managed_repo_id,
+            directory_path=recovery.directory_path,
+            branch=branch,
+            commit_sha=commit_sha,
+            required_ancestor_shas=[
+                recovery.base_commit_sha,
+                *[
+                    source.commit_sha
+                    for source in recovery.dependency_git_sources
+                ],
+            ],
+        )
+
+    return _verify
 
 
 def _team_mcp_memory_artifact_publisher(context: AddonContext):

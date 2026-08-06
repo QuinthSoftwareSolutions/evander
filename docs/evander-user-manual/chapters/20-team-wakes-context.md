@@ -142,6 +142,16 @@ configuration, or current deliverable candidates. Priority, timestamps,
 creator/case bookkeeping, dispatch churn, and denormalized ID lists do not
 pretend the cause changed.
 
+A dependency merge conflict uses a stricter typed recovery. The preparation blocker
+records the exact base tree, ordered accepted source commits, failed input, and
+conflicted paths. Generic resolution is disabled. A supervisor or privileged operator
+selects the resolver, then Team creates one pinned integration-boundary recovery task.
+Its worktree fetches the exact inputs without attempting the failed automatic merge.
+After normal review, managed Git verifies that the submitted branch tip contains the
+base and every source; acceptance resolves the blocker and a fresh target wake adopts
+that reviewed commit. If the source generation changes first, Team supersedes the stale
+recovery rather than mixing old evidence with new inputs.
+
 Review repository or artifact preparation failure is also terminal for that
 immutable attempt before inference: Team blocks the exact review and records
 the missing evidence rather than waking a reviewer without it. Recover with

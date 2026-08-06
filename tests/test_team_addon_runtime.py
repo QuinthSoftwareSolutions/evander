@@ -55,6 +55,8 @@ from evander_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
     DeliverableInitialReleaseDisposition,
+    DependencyCompositionRecovery,
+    DependencyCompositionRecoveryState,
     EphemeralAgentPolicy,
     EphemeralAssignment,
     GitWorkContext,
@@ -72,6 +74,9 @@ from evander_team_addon.models import (
     ReleaseVerificationRun,
     ReviewRequest,
     Team,
+    TeamBlocker,
+    TeamBlockerRoute,
+    TeamBlockerSourceKind,
     TeamCase,
     TeamCaseStatus,
     TeamConversation,
@@ -107,6 +112,7 @@ from evander_team_addon.provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from evander_team_addon.providers import (
+    DependencyGitPreparationError,
     LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS,
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
@@ -129,6 +135,7 @@ from evander_team_addon.providers import (
     _artifact_space_path_segment,
     _build_prompt,
     _build_team_chat_prompt,
+    _create_project_repo_git_work_contexts,
     _review_artifact_destination_path,
     _publish_deliverable_artifact_bundle,
     _publish_team_events,
@@ -6971,7 +6978,237 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "all_dependencies_present=1" in command
     assert "dependency_commit_message='Compose accepted dependencies for task task-ui'" in command
     assert 'set -- git -C "$target" commit-tree' in command
+    assert 'export GIT_AUTHOR_DATE="@$deterministic_timestamp +0000"' in command
+    assert 'export GIT_COMMITTER_DATE="@$deterministic_timestamp +0000"' in command
+    assert "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT" in command
+    assert "EVANDER_DEPENDENCY_CONFLICT_PATH" in command
+    conflict_gate = 'if [ -n "$conflict_paths" ]; then'
+    assert command.index(conflict_gate) < command.index(
+        'echo "EVANDER_DEPENDENCY_CONFLICT=1"'
+    )
     assert 'reset --hard "$frontier_commit"' in command
+
+
+def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    base_commit = "a" * 40
+    base_tree = "b" * 40
+    source_commit = "c" * 40
+    dependency_sources = [
+        {
+            "dependency_task_id": "source-task",
+            "deliverable_id": "source-deliverable",
+            "branch": "agents/source/tasks/source-task",
+            "commit_sha": source_commit,
+        }
+    ]
+
+    def _seed_recovery(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+        )
+        state.tasks["recovery-task"] = AgentTask(
+            id="recovery-task",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            state=TeamTaskState.PENDING,
+            title="Resolve dependency merge",
+            description="Resolve the pinned dependency inputs.",
+            created_by_actor="system:dependency-composition-recovery",
+            parent_task_id="task",
+            dependency_task_ids=["source-task"],
+        )
+        state.blockers["blocker-recovery"] = TeamBlocker(
+            id="blocker-recovery",
+            team_id="team",
+            project_id="project",
+            task_id="task",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id="execution-preparation:task:task:generation:cause",
+            reason_code="dependency_git_composition_conflict",
+            reporter_agent_id="backend",
+            owner_agent_id="lead",
+            route=TeamBlockerRoute.OWNED,
+            state=TeamBlockerState.OPEN,
+            summary="Dependency composition conflict",
+        )
+        state.dependency_composition_recoveries["recovery"] = (
+            DependencyCompositionRecovery(
+                id="recovery",
+                blocker_id="blocker-recovery",
+                target_task_id="task",
+                project_id="project",
+                managed_repo_id="mr_0123456789abcdefabcd",
+                directory_path="root",
+                base_branch="main",
+                base_commit_sha=base_commit,
+                base_tree_hash=base_tree,
+                dependency_git_sources=dependency_sources,
+                source_fingerprint="f" * 64,
+                preparation_generation="generation",
+                failed_dependency_task_id="source-task",
+                failed_deliverable_id="source-deliverable",
+                recovery_task_id="recovery-task",
+                state=DependencyCompositionRecoveryState.IN_PROGRESS,
+            )
+        )
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="dispatch-recovery",
+        )
+        return state
+
+    state = repo.update(_seed_recovery)
+    prepared: dict[str, object] = {}
+
+    def _prepare(_context: object, **kwargs: object) -> tuple[str, str]:
+        prepared.update(kwargs)
+        return "/home/agent/worktrees/repo/recovery-task", base_commit
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: dependency_sources,
+    )
+
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=None),
+        ),
+        repo,
+        state=state,
+        agent_id="backend",
+        session_id="session-backend",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch-recovery",
+        tasks=[
+            {
+                "id": "recovery-task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert prepared["base_ref"] == base_commit
+    assert prepared["pinned_base_commit"] == base_commit
+    assert len(rows) == 1
+    git_context = next(iter(result_state.git_work_contexts.values()))
+    assert git_context.base_branch == "main"
+    assert git_context.base_commit == base_commit
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expects_conflict"),
+    [
+        (
+            "\n".join(
+                (
+                    "CONFLICT (content): Merge conflict in src/shared.py",
+                    "EVANDER_DEPENDENCY_CONFLICT=1",
+                    f"EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT={'a' * 40}",
+                    f"EVANDER_DEPENDENCY_CONFLICT_BASE_TREE={'b' * 40}",
+                    "EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK=task-domain",
+                    "EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE=deliverable-domain",
+                    "EVANDER_DEPENDENCY_CONFLICT_PATH=src/shared.py",
+                )
+            ),
+            True,
+        ),
+        (
+            "fatal: refusing to merge unrelated histories\n"
+            "dependency Git merge failed for task task-domain ",
+            False,
+        ),
+        (
+            "merge hook failed before Git recorded any unmerged paths\n"
+            "EVANDER_DEPENDENCY_CONFLICT=1",
+            False,
+        ),
+    ],
+)
+def test_libvirt_dependency_git_failure_classification_uses_structured_conflict_evidence(
+    stderr: str,
+    expects_conflict: bool,
+) -> None:
+    class _FailingVmExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def vm_exec(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(dict(kwargs))
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": stderr,
+                "exit_code": 1,
+            }
+
+    executor = _FailingVmExecutor()
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": "/runtime"},
+        vm_executor=executor,
+        session_lookup=FakeSessionStore(),
+    )
+    with pytest.raises(DependencyGitPreparationError) as raised:
+        _prepare_project_repo_task_worktree(
+            context,
+            project_repo={
+                "guest_repo_name": "Truman",
+                "target_dir": "/home/agent/Truman",
+                "execution_backend": "libvirt_vm",
+            },
+            session_id="session-backend",
+            task_id="task-ui",
+            agent_branch="agents/session-backend/tasks/task-ui",
+            base_ref="main",
+            dependency_git_sources=[
+                {
+                    "dependency_task_id": "task-domain",
+                    "deliverable_id": "deliverable-domain",
+                    "branch": "agents/session-backend/tasks/task-domain",
+                    "commit_sha": "d" * 40,
+                }
+            ],
+        )
+
+    assert executor.calls[0]["check"] is False
+    if expects_conflict:
+        assert raised.value.conflict == {
+            "base_branch": "main",
+            "base_commit_sha": "a" * 40,
+            "base_tree_hash": "b" * 40,
+            "dependency_git_sources": [
+                {
+                    "dependency_task_id": "task-domain",
+                    "deliverable_id": "deliverable-domain",
+                    "branch": "agents/session-backend/tasks/task-domain",
+                    "commit_sha": "d" * 40,
+                }
+            ],
+            "failed_dependency_task_id": "task-domain",
+            "failed_deliverable_id": "deliverable-domain",
+            "conflict_paths": ["src/shared.py"],
+        }
+    else:
+        assert raised.value.conflict is None
 
 
 def test_dependency_git_preparation_failure_routes_blocker_without_lease(
@@ -7033,6 +7270,67 @@ def test_dependency_git_preparation_failure_routes_blocker_without_lease(
     )
     assert len(repeated_leases) == 1
     assert repo.read().blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_dependency_git_composition_conflict_persists_typed_recovery(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+    lease = leases[0]
+    _record_wake_failure(
+        repo,
+        lease=lease,
+        error="dependency Git composition conflict",
+    )
+    routed = _record_dependency_git_preparation_blocker(
+        repo,
+        lease=lease,
+        task_id="task",
+        error="dependency Git composition conflict for dependency source-two",
+        conflict={
+            "target_task_id": "task",
+            "project_id": "project",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "base_branch": "main",
+            "base_commit_sha": "a" * 40,
+            "base_tree_hash": "b" * 40,
+            "dependency_git_sources": [
+                {
+                    "dependency_task_id": "source-one",
+                    "deliverable_id": "deliverable-one",
+                    "branch": "agents/source/tasks/one",
+                    "commit_sha": "1" * 40,
+                },
+                {
+                    "dependency_task_id": "source-two",
+                    "deliverable_id": "deliverable-two",
+                    "branch": "agents/source/tasks/two",
+                    "commit_sha": "2" * 40,
+                },
+            ],
+            "failed_dependency_task_id": "source-two",
+            "failed_deliverable_id": "deliverable-two",
+            "conflict_paths": ["src/shared.py"],
+        },
+    )
+
+    blocker = next(
+        item
+        for item in routed.blockers.values()
+        if item.reason_code == "dependency_git_composition_conflict"
+    )
+    recovery = next(iter(routed.dependency_composition_recoveries.values()))
+    assert recovery.blocker_id == blocker.id
+    assert recovery.target_task_id == "task"
+    assert recovery.conflict_paths == ["src/shared.py"]
+    assert recovery.failed_deliverable_id == "deliverable-two"
+    restored = TeamStateRepository(tmp_path).read()
+    assert restored.dependency_composition_recoveries[recovery.id] == recovery
 
 
 def test_successive_dispatches_reuse_task_worktree_with_fresh_context_id(

@@ -25,6 +25,9 @@ from evander_team_addon.models import (
     AgentTask,
     AgentVoiceProfile,
     Deliverable,
+    DeliverableGitRefs,
+    DependencyCompositionRecovery,
+    DependencyCompositionRecoveryState,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -45,6 +48,8 @@ from evander_team_addon.models import (
     ReviewRequest,
     Team,
     TeamBlocker,
+    TeamBlockerRoute,
+    TeamBlockerState,
     TeamBlockerSourceKind,
     TeamInboxItemState,
     TeamInboxPriority,
@@ -63,6 +68,22 @@ from evander_team_addon.models import (
 from evander_team_addon.services.domain.task_assessment import (
     TaskAssessmentService,
     assess_task,
+)
+from evander_team_addon.services.commands.blocker_commands import (
+    _prepare_blocker_source_for_resolution,
+)
+from evander_team_addon.services.commands.types import TeamCommandValidationError
+from evander_team_addon.services.domain.deliverables import (
+    _accept_deliverable_and_maybe_task,
+)
+from evander_team_addon.services.domain.dependency_composition_recovery import (
+    accept_dependency_composition_recovery,
+    record_dependency_composition_conflict,
+    start_dependency_composition_recovery,
+    verify_dependency_recovery_submission,
+)
+from evander_team_addon.services.domain.preparation_failures import (
+    task_preparation_generation,
 )
 
 
@@ -2011,3 +2032,250 @@ def test_teamless_persistent_agent_rejects_team_scoped_links() -> None:
 
     agent = PersistentAgent(id="unassigned", session_id="session-unassigned", project_id="project")
     assert not hasattr(agent, "project_id")
+
+
+def test_dependency_composition_recovery_is_pinned_reviewable_and_unblocks_target() -> None:
+    state = _valid_state()
+    now = datetime(2026, 8, 6, 9, 0, tzinfo=UTC)
+    state.tasks["target"] = AgentTask(
+        id="target",
+        owner_agent_id="ui",
+        project_id="project",
+        priority=5,
+        state=TeamTaskState.PENDING,
+        title="Integrate dependencies",
+        description="Continue from the reviewed dependency composition.",
+        created_by_agent_id="lead",
+    )
+    blocker = TeamBlocker(
+        id="blocker-dependency-composition",
+        team_id="team",
+        project_id="project",
+        task_id="target",
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id="execution-preparation:task:target:generation:cause",
+        reason_code="dependency_git_composition_conflict",
+        reporter_agent_id="ui",
+        owner_agent_id="lead",
+        route=TeamBlockerRoute.OWNED,
+        state=TeamBlockerState.OPEN,
+        summary="Dependency Git composition conflicted",
+        created_at=now,
+        updated_at=now,
+    )
+    state.blockers[blocker.id] = blocker
+    source_rows = [
+        {
+            "dependency_task_id": "source-one",
+            "deliverable_id": "deliverable-one",
+            "branch": "agents/source/tasks/one",
+            "commit_sha": "1" * 40,
+        },
+        {
+            "dependency_task_id": "source-two",
+            "deliverable_id": "deliverable-two",
+            "branch": "agents/source/tasks/two",
+            "commit_sha": "2" * 40,
+        },
+    ]
+    recovery = record_dependency_composition_conflict(
+        state,
+        blocker=blocker,
+        conflict={
+            "target_task_id": "target",
+            "project_id": "project",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "base_branch": "main",
+            "base_commit_sha": "a" * 40,
+            "base_tree_hash": "b" * 40,
+            "dependency_git_sources": source_rows,
+            "failed_dependency_task_id": "source-two",
+            "failed_deliverable_id": "deliverable-two",
+            "conflict_paths": ["src/shared.py"],
+        },
+        now=now,
+    )
+
+    with pytest.raises(TeamCommandValidationError, match="typed recovery task"):
+        _prepare_blocker_source_for_resolution(state, blocker=blocker)
+
+    result: dict[str, object] = {"events": []}
+    recovery_task = start_dependency_composition_recovery(
+        state,
+        recovery=recovery,
+        blocker=blocker,
+        actor=state.agents["lead"],
+        resolver=state.agents["ui"],
+        dispatch_id="dispatch-lead",
+        result=result,
+        now=now,
+    )
+    assert recovery.state == DependencyCompositionRecoveryState.IN_PROGRESS
+    assert recovery_task.parent_task_id == "target"
+    assert recovery_task.integration_boundary is True
+    assert recovery_task.git_base_commit_sha == "a" * 40
+    assert recovery_task.deliverable_contract is not None
+    assert recovery_task.deliverable_contract.required_contribution_task_ids == [
+        "source-one",
+        "source-two",
+    ]
+
+    verified: list[tuple[str, str, str]] = []
+    resolved_commit = "c" * 40
+    verify_dependency_recovery_submission(
+        state,
+        task_id=recovery_task.id,
+        deliverable_id="resolved-deliverable",
+        branch="agents/session-ui/tasks/recovery",
+        commit_sha=resolved_commit,
+        source_deliverable_ids=["deliverable-one", "deliverable-two"],
+        verifier=lambda _recovery, deliverable_id, branch, commit: verified.append(
+            (deliverable_id, branch, commit)
+        ),
+        now=now,
+    )
+    assert verified == [
+        (
+            "resolved-deliverable",
+            "agents/session-ui/tasks/recovery",
+            resolved_commit,
+        )
+    ]
+
+    resolved_deliverable = Deliverable(
+        id="resolved-deliverable",
+        task_id=recovery_task.id,
+        producer_agent_id="ui",
+        summary="Resolved exact dependency composition.",
+        state=TeamRecordState.PENDING,
+        source_deliverable_ids=["deliverable-one", "deliverable-two"],
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-ui/tasks/recovery",
+            commit_sha=resolved_commit,
+        ),
+        created_at=now,
+    )
+    state.deliverables[resolved_deliverable.id] = resolved_deliverable
+    recovery_task.deliverable_ids = [resolved_deliverable.id]
+    recovery_task.state = TeamTaskState.IN_PROGRESS
+
+    accepted = _accept_deliverable_and_maybe_task(
+        state,
+        deliverable=resolved_deliverable,
+        task=recovery_task,
+        accepted_by_agent_id="lead",
+        result={"events": []},
+        now=now,
+    )
+    assert accepted is True
+    assert recovery.state == DependencyCompositionRecoveryState.ACCEPTED
+    assert recovery.resolved_commit_sha == resolved_commit
+    assert blocker.state == TeamBlockerState.RESOLVED
+    assert state.tasks["target"].git_base_commit_sha == resolved_commit
+
+
+def test_dependency_composition_recovery_rechecks_generation_at_acceptance() -> None:
+    state = _valid_state()
+    now = datetime(2026, 8, 6, 9, 0, tzinfo=UTC)
+    resolved_commit = "c" * 40
+    state.tasks["target"] = AgentTask(
+        id="target",
+        owner_agent_id="ui",
+        project_id="project",
+        priority=5,
+        state=TeamTaskState.PENDING,
+        title="Integrate dependencies",
+        description="Continue from the reviewed dependency composition.",
+        created_by_agent_id="lead",
+    )
+    state.tasks["recovery-task"] = AgentTask(
+        id="recovery-task",
+        owner_agent_id="ui",
+        project_id="project",
+        priority=5,
+        state=TeamTaskState.WAITING_FOR_REVIEW,
+        title="Resolve dependency merge",
+        description="Merge the pinned dependency inputs.",
+        created_by_actor="system:dependency-composition-recovery",
+        parent_task_id="target",
+    )
+    blocker = TeamBlocker(
+        id="blocker-dependency-composition",
+        team_id="team",
+        project_id="project",
+        task_id="target",
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id="execution-preparation:task:target:generation:cause",
+        reason_code="dependency_git_composition_conflict",
+        reporter_agent_id="ui",
+        owner_agent_id="lead",
+        route=TeamBlockerRoute.OWNED,
+        state=TeamBlockerState.OPEN,
+        summary="Dependency Git composition conflicted",
+        created_at=now,
+        updated_at=now,
+    )
+    state.blockers[blocker.id] = blocker
+    generation = task_preparation_generation(state, "target")
+    recovery = DependencyCompositionRecovery(
+        id="recovery",
+        blocker_id=blocker.id,
+        target_task_id="target",
+        project_id="project",
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path="root",
+        base_branch="main",
+        base_commit_sha="a" * 40,
+        base_tree_hash="b" * 40,
+        dependency_git_sources=[
+            {
+                "dependency_task_id": "source-one",
+                "deliverable_id": "deliverable-one",
+                "branch": "agents/source/tasks/one",
+                "commit_sha": "1" * 40,
+            }
+        ],
+        source_fingerprint="f" * 64,
+        preparation_generation=generation,
+        failed_dependency_task_id="source-one",
+        failed_deliverable_id="deliverable-one",
+        recovery_task_id="recovery-task",
+        verified_deliverable_id="resolved-deliverable",
+        verified_commit_sha=resolved_commit,
+        verified_at=now,
+        state=DependencyCompositionRecoveryState.IN_PROGRESS,
+        created_at=now,
+        updated_at=now,
+    )
+    state.dependency_composition_recoveries[recovery.id] = recovery
+    deliverable = Deliverable(
+        id="resolved-deliverable",
+        task_id="recovery-task",
+        producer_agent_id="ui",
+        summary="Resolved exact dependency composition.",
+        state=TeamRecordState.PENDING,
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-ui/tasks/recovery",
+            commit_sha=resolved_commit,
+        ),
+        created_at=now,
+    )
+    state.deliverables[deliverable.id] = deliverable
+
+    state.tasks["target"].description = "The dependency inputs changed during review."
+
+    with pytest.raises(ValueError, match="is stale for target task target"):
+        accept_dependency_composition_recovery(
+            state,
+            task=state.tasks["recovery-task"],
+            deliverable=deliverable,
+            accepted_by_agent_id="lead",
+            dispatch_id="dispatch-lead",
+            result={"events": []},
+            now=now,
+        )
+
+    assert recovery.state == DependencyCompositionRecoveryState.IN_PROGRESS
+    assert blocker.state == TeamBlockerState.OPEN
+    assert state.tasks["target"].git_base_commit_sha is None

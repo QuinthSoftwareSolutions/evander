@@ -72,6 +72,9 @@ from ..domain.work_due import (
     _mark_agent_work_due,
 )
 from ..domain.wake import _append_agent_wake_requested_event_for_inbox_item
+from ..domain.dependency_composition_recovery import (
+    verify_dependency_recovery_submission,
+)
 
 
 def _require_predecessor_review_coverage(
@@ -313,6 +316,29 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 dispatch_id=resolved.dispatch_id,
                 candidate_commit_resolver=self.git_candidate_commit_resolver,
             )
+            try:
+                recovery_git_refs = dict(normalized_deliverable.get("git_refs") or {})
+                verify_dependency_recovery_submission(
+                    state,
+                    task_id=task.id,
+                    deliverable_id=deliverable_id,
+                    branch=_optional_text(recovery_git_refs.get("agent_branch")) or "",
+                    commit_sha=_optional_text(recovery_git_refs.get("commit_sha")) or "",
+                    source_deliverable_ids=normalized_deliverable[
+                        "source_deliverable_ids"
+                    ],
+                    verifier=self.dependency_recovery_commit_verifier,
+                    now=utc_now(),
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="dependency_composition_recovery_verification_failed",
+                    message=str(exc),
+                    correction_context={
+                        "task_id": task.id,
+                        "deliverable_id": deliverable_id,
+                    },
+                ) from None
             predecessor_id = _optional_text(
                 normalized_deliverable.get("supersedes_deliverable_id")
             )
@@ -774,6 +800,29 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 dispatch_id=resolved.dispatch_id,
                 candidate_commit_resolver=self.git_candidate_commit_resolver,
             )
+            try:
+                recovery_git_refs = dict(normalized_deliverable.get("git_refs") or {})
+                verify_dependency_recovery_submission(
+                    state,
+                    task_id=task.id,
+                    deliverable_id=deliverable_id,
+                    branch=_optional_text(recovery_git_refs.get("agent_branch")) or "",
+                    commit_sha=_optional_text(recovery_git_refs.get("commit_sha")) or "",
+                    source_deliverable_ids=normalized_deliverable[
+                        "source_deliverable_ids"
+                    ],
+                    verifier=self.dependency_recovery_commit_verifier,
+                    now=utc_now(),
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="dependency_composition_recovery_verification_failed",
+                    message=str(exc),
+                    correction_context={
+                        "task_id": task.id,
+                        "deliverable_id": deliverable_id,
+                    },
+                ) from None
             if not normalized_reviews:
                 raise TeamCommandValidationError(
                     code="empty_reviews",

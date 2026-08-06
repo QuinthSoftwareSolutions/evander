@@ -156,6 +156,18 @@ class TeamReadService:
                 key=lambda event: (event.created_at, event.id),
             )
         ]
+        recoveries = sorted(
+            (
+                recovery
+                for recovery in self._state.dependency_composition_recoveries.values()
+                if recovery.blocker_id == blocker.id
+            ),
+            key=lambda recovery: (recovery.created_at, recovery.id),
+        )
+        if recoveries:
+            payload["dependency_composition_recovery"] = recoveries[-1].model_dump(
+                mode="json"
+            )
         return _without_none(payload)
 
     def list_cases(
@@ -831,6 +843,18 @@ class TeamReadService:
         event_count = sum(
             1 for event in self._state.blocker_events.values() if event.blocker_id == blocker.id
         )
+        recovery = next(
+            (
+                item
+                for item in sorted(
+                    self._state.dependency_composition_recoveries.values(),
+                    key=lambda item: (item.created_at, item.id),
+                    reverse=True,
+                )
+                if item.blocker_id == blocker.id
+            ),
+            None,
+        )
         return _without_none(
             {
                 "id": blocker.id,
@@ -853,6 +877,15 @@ class TeamReadService:
                 "follow_up_at": _json_value(blocker.follow_up_at),
                 "last_progress_at": _json_value(blocker.last_progress_at),
                 "event_count": event_count,
+                "dependency_composition_recovery_id": (
+                    recovery.id if recovery is not None else None
+                ),
+                "dependency_composition_recovery_state": (
+                    recovery.state.value if recovery is not None else None
+                ),
+                "dependency_composition_recovery_task_id": (
+                    recovery.recovery_task_id if recovery is not None else None
+                ),
                 "created_at": _json_value(blocker.created_at),
                 "updated_at": _json_value(blocker.updated_at),
                 "resolved_at": _json_value(blocker.resolved_at),

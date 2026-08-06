@@ -228,6 +228,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         email_mailbox_grants = _agent_email_mailbox_grants(
             payload,
+            context=context,
             config=config,
             directory_path=directory_path,
         )
@@ -431,6 +432,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         email_mailbox_grants = _agent_email_mailbox_grants(
             payload,
+            context=context,
             config=config,
             directory_path=directory_path,
         )
@@ -713,6 +715,7 @@ def _agent_communication_allowlists(
 def _agent_email_mailbox_grants(
     payload: Mapping[str, Any],
     *,
+    context: Any,
     config: Any,
     directory_path: str,
 ) -> list[EmailMailboxGrant] | None:
@@ -721,12 +724,13 @@ def _agent_email_mailbox_grants(
     grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
     if grants is None:
         return None
+    policy = context.provider_config_resolver.resolve_policy_for_directory(directory_path)
     return validate_email_mailbox_grants(
         grants,
         mailboxes=config.email_mailboxes,
-        allowed_mailbox_ids=config.email_mailbox_allowlist,
-        folder_allowlist_by_mailbox=config.email_folder_allowlist_by_mailbox,
-        email_send_enabled=config.email_send_enabled,
+        allowed_mailbox_ids=policy.email_mailbox_allowlist,
+        folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_send_enabled=policy.email_send_enabled,
         directory_path=directory_path,
         error_context="effect:agent:create ",
     )

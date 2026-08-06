@@ -293,6 +293,10 @@ class ContainerWorkerVmExecutionBackend:
         expected_base_commit_sha: str | None = None,
         expected_base_tree_hash: str | None = None,
         dependency_git_sources: list[dict[str, str]] | None = None,
+        dependency_composition_mode: str = "automatic",
+        dependency_composition_recovery_id: str | None = None,
+        resolved_dependency_branch: str | None = None,
+        resolved_dependency_commit_sha: str | None = None,
         dependency_merge_author_name: str | None = None,
         dependency_merge_author_email: str | None = None,
         dependency_composition_commit_message: str | None = None,
@@ -310,6 +314,10 @@ class ContainerWorkerVmExecutionBackend:
                     WorkerTaskDependencyGitSource.model_validate(source)
                     for source in dependency_git_sources or []
                 ],
+                dependency_composition_mode=dependency_composition_mode,
+                dependency_composition_recovery_id=dependency_composition_recovery_id,
+                resolved_dependency_branch=resolved_dependency_branch,
+                resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                 dependency_merge_author_name=dependency_merge_author_name,
                 dependency_merge_author_email=dependency_merge_author_email,
                 dependency_composition_commit_message=(
