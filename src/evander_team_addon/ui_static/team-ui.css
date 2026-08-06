@@ -5224,6 +5224,11 @@ button.people-agent-select:focus-visible,
   line-height: 1.2;
 }
 
+.role-description {
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
 .agent-detail-work-line {
   display: grid;
   grid-template-columns: 4rem minmax(0, 1fr);

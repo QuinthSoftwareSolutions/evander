@@ -192,6 +192,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   );
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
+  assert.match(script, /class="meta-line role-description"/);
+  assert.match(
+    stylesheet,
+    /\.role-description\s*\{[\s\S]*?white-space:\s*pre-wrap;/,
+  );
   assert.match(script, /peopleViewTeams/);
   assert.match(script, /data-team-record-group-id/);
   assert.match(script, /data-team-record-toggle/);

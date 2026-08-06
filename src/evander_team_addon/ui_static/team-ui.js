@@ -9095,7 +9095,7 @@ function renderTeamRoleDetail(role) {
       </div>
       ${
         role.description
-          ? `<section class="agent-detail-section"><h3>Description</h3><p class="meta-line">${escapeHtml(role.description)}</p></section>`
+          ? `<section class="agent-detail-section"><h3>Description</h3><p class="meta-line role-description">${escapeHtml(role.description)}</p></section>`
           : ""
       }
       <section class="agent-detail-section">

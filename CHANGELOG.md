@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-06 - Readable Team Role Descriptions
+
+- Preserved line breaks and paragraph spacing in Team role descriptions without changing their
+  normal proportional text styling.
+
 ## 2026-08-06 - Complete Team Git Configuration Surfaces
 
 - Exposed agent author and committer identities in the primary Projects-page creation form so
