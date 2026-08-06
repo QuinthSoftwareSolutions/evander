@@ -7706,6 +7706,7 @@ def _create_project_repo_git_work_contexts(
                 for source in dependency_recovery.dependency_git_sources
             ]
             effective_base_branch = dependency_recovery.base_branch
+            worktree_base_ref = dependency_recovery.base_commit_sha
             prior_base_commit = dependency_recovery.base_commit_sha
             pinned_base_commit = dependency_recovery.base_commit_sha
             pinned_base_tree = dependency_recovery.base_tree_hash
@@ -7719,6 +7720,7 @@ def _create_project_repo_git_work_contexts(
                 for source in correction_source.dependency_git_sources
             ]
             effective_base_branch = correction_source.release_branch
+            worktree_base_ref = effective_base_branch
             prior_base_commit = correction_source.candidate_commit_sha
             pinned_base_commit = correction_source.candidate_commit_sha
             pinned_base_tree = correction_source.candidate_tree_hash
@@ -7733,6 +7735,7 @@ def _create_project_repo_git_work_contexts(
             effective_base_branch = (
                 _optional_text(task.get("git_base_branch")) or base_branch
             )
+            worktree_base_ref = effective_base_branch
             pinned_base_commit = None
             pinned_base_tree = None
             composition_git_sources = dependency_git_sources
@@ -7771,6 +7774,7 @@ def _create_project_repo_git_work_contexts(
                         ),
                     )
                 effective_base_branch = accepted_recovery.base_branch
+                worktree_base_ref = effective_base_branch
                 pinned_base_commit = accepted_recovery.base_commit_sha
                 pinned_base_tree = accepted_recovery.base_tree_hash
                 dependency_composition_mode = "adopt_resolved"
@@ -7811,7 +7815,7 @@ def _create_project_repo_git_work_contexts(
                     session_id=session_id,
                     task_id=task_id,
                     agent_branch=agent_branch,
-                    base_ref=effective_base_branch or "HEAD",
+                    base_ref=worktree_base_ref or "HEAD",
                     prior_base_commit=prior_base_commit,
                     pinned_base_commit=pinned_base_commit,
                     pinned_base_tree=pinned_base_tree,
@@ -8600,20 +8604,23 @@ def _prepare_project_repo_task_worktree(
                     f'"Temporary Team dependency integration" '
                     f'"$dependency_commit_{index}"; then'
                 ),
-                '    conflict_base_tree="$(git -C "$target" rev-parse "$head_before^{tree}")"',
-                '    echo "EVANDER_DEPENDENCY_CONFLICT=1" >&2',
-                '    echo "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT=$head_before" >&2',
-                '    echo "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE=$conflict_base_tree" >&2',
-                f"    echo EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK={source_task} >&2",
-                f"    echo EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE={source_deliverable} >&2",
+                '    conflict_paths="$(git -C "$target" diff --name-only --diff-filter=U)"',
+                '    if [ -n "$conflict_paths" ]; then',
+                '      conflict_base_tree="$(git -C "$target" rev-parse "$head_before^{tree}")"',
+                '      echo "EVANDER_DEPENDENCY_CONFLICT=1" >&2',
+                '      echo "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT=$head_before" >&2',
+                '      echo "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE=$conflict_base_tree" >&2',
+                f"      echo EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK={source_task} >&2",
+                f"      echo EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE={source_deliverable} >&2",
                 (
-                    '    git -C "$target" diff --name-only --diff-filter=U '
+                    '      printf "%s\\n" "$conflict_paths" '
                     "| sed 's/^/EVANDER_DEPENDENCY_CONFLICT_PATH=/' >&2"
                 ),
+                "    fi",
                 '    git -C "$target" merge --abort >/dev/null 2>&1 || true',
                 '    git -C "$target" reset --hard "$head_before" >/dev/null',
                 (
-                    f"    echo dependency Git composition conflict for task "
+                    f"    echo dependency Git merge failed for task "
                     f"{source_task} deliverable {source_deliverable} >&2"
                 ),
                 "    exit 1",
@@ -8726,8 +8733,12 @@ def _prepare_project_repo_task_worktree(
         "git config extensions.worktreeConfig true",
         'if [ -n "$pinned_base_commit" ]; then',
         '  test -n "$pinned_base_tree"',
-        '  git fetch --no-tags origin "refs/heads/$base"',
-        ('  test "$(git rev-parse --verify FETCH_HEAD^{commit})" = "$pinned_base_commit"'),
+        '  if [ "$base" = "$pinned_base_commit" ]; then',
+        ('    test "$(git rev-parse --verify "$base^{commit}")" = "$pinned_base_commit"'),
+        "  else",
+        '    git fetch --no-tags origin "refs/heads/$base"',
+        ('    test "$(git rev-parse --verify FETCH_HEAD^{commit})" = "$pinned_base_commit"'),
+        "  fi",
         ('  test "$(git rev-parse --verify "$pinned_base_commit^{tree}")" = "$pinned_base_tree"'),
         '  base_commitish="$pinned_base_commit"',
         "fi",
@@ -8914,7 +8925,7 @@ def _prepare_project_repo_task_worktree(
             command=command,
             working_directory=clone_dir,
             timeout_seconds=120,
-            check=True,
+            check=False,
         ),
         context,
     )
@@ -8931,10 +8942,14 @@ def _prepare_project_repo_task_worktree(
         )
         if dependency_git_sources or pinned_base_commit is not None:
             conflict: dict[str, object] | None = None
-            if "EVANDER_DEPENDENCY_CONFLICT=1" in failure_evidence:
+            failure_lines = failure_evidence.splitlines()
+            if any(
+                line.strip() == "EVANDER_DEPENDENCY_CONFLICT=1"
+                for line in failure_lines
+            ):
                 conflict_values: dict[str, str] = {}
                 conflict_paths: list[str] = []
-                for line in failure_evidence.splitlines():
+                for line in failure_lines:
                     if line.startswith("EVANDER_DEPENDENCY_CONFLICT_PATH="):
                         path = line.partition("=")[2].strip()
                         if path and path not in conflict_paths:
@@ -8942,25 +8957,39 @@ def _prepare_project_repo_task_worktree(
                     elif line.startswith("EVANDER_DEPENDENCY_CONFLICT_") and "=" in line:
                         key, _separator, value = line.partition("=")
                         conflict_values[key] = value.strip()
-                conflict = {
-                    "base_branch": base_ref,
-                    "base_commit_sha": conflict_values.get(
-                        "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT"
-                    ),
-                    "base_tree_hash": conflict_values.get(
-                        "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE"
-                    ),
-                    "dependency_git_sources": [
-                        dict(row) for row in dependency_git_sources
-                    ],
-                    "failed_dependency_task_id": conflict_values.get(
-                        "EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK"
-                    ),
-                    "failed_deliverable_id": conflict_values.get(
-                        "EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE"
-                    ),
-                    "conflict_paths": conflict_paths,
-                }
+                conflict_base_commit = conflict_values.get(
+                    "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT"
+                )
+                conflict_base_tree = conflict_values.get(
+                    "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE"
+                )
+                failed_task_id = conflict_values.get(
+                    "EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK"
+                )
+                failed_deliverable_id = conflict_values.get(
+                    "EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE"
+                )
+                full_object_id = r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})"
+                if (
+                    conflict_base_commit is not None
+                    and re.fullmatch(full_object_id, conflict_base_commit)
+                    and conflict_base_tree is not None
+                    and re.fullmatch(full_object_id, conflict_base_tree)
+                    and failed_task_id
+                    and failed_deliverable_id
+                    and conflict_paths
+                ):
+                    conflict = {
+                        "base_branch": base_ref,
+                        "base_commit_sha": conflict_base_commit,
+                        "base_tree_hash": conflict_base_tree,
+                        "dependency_git_sources": [
+                            dict(row) for row in dependency_git_sources
+                        ],
+                        "failed_dependency_task_id": failed_task_id,
+                        "failed_deliverable_id": failed_deliverable_id,
+                        "conflict_paths": conflict_paths,
+                    }
             raise DependencyGitPreparationError(
                 task_id=task_id,
                 message=error,

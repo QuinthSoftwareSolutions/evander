@@ -270,7 +270,15 @@ def start_dependency_composition_recovery(
         existing = state.tasks.get(recovery.recovery_task_id or "")
         if existing is None:
             raise ValueError(f"recovery {recovery.id} references a missing recovery task")
-        return existing
+        if existing.state != TeamTaskState.CANCELLED:
+            return existing
+        release_dependency_composition_recovery_after_task_cancellation(
+            state,
+            task_id=existing.id,
+            actor_agent_id=actor.id if actor is not None else None,
+            dispatch_id=dispatch_id,
+            now=now,
+        )
     if recovery.state != DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT:
         raise ValueError(f"recovery {recovery.id} is {recovery.state.value}")
     assignment_error = _resolver_assignment_error(
@@ -291,15 +299,23 @@ def start_dependency_composition_recovery(
     contribution_task_ids = list(
         dict.fromkeys(source.dependency_task_id for source in recovery.dependency_git_sources)
     )
-    recovery_task_id = f"{target.id}-merge-recovery-{recovery.source_fingerprint[:12]}"
+    recovery_task_id_base = (
+        f"{target.id}-merge-recovery-{recovery.source_fingerprint[:12]}"
+    )
+    recovery_task_id = recovery_task_id_base
     existing = state.tasks.get(recovery_task_id)
     if existing is not None:
         if existing.created_by_actor != DEPENDENCY_COMPOSITION_RECOVERY_ACTOR:
             raise ValueError(f"reserved recovery task id {recovery_task_id} is already in use")
-        recovery.recovery_task_id = existing.id
-        recovery.state = DependencyCompositionRecoveryState.IN_PROGRESS
-        recovery.updated_at = now
-        return existing
+        if existing.state != TeamTaskState.CANCELLED:
+            recovery.recovery_task_id = existing.id
+            recovery.state = DependencyCompositionRecoveryState.IN_PROGRESS
+            recovery.updated_at = now
+            return existing
+        attempt = 2
+        while recovery_task_id in state.tasks:
+            recovery_task_id = f"{recovery_task_id_base}-{attempt}"
+            attempt += 1
     source_lines = "\n".join(
         f"- {source.dependency_task_id} / {source.deliverable_id}: "
         f"{source.branch} at {source.commit_sha}"
@@ -461,6 +477,15 @@ def accept_dependency_composition_recovery(
     blocker = state.blockers.get(recovery.blocker_id)
     if blocker is None:
         raise ValueError(f"dependency recovery blocker {recovery.blocker_id} is missing")
+    current_generation = task_preparation_generation(
+        state,
+        recovery.target_task_id,
+    )
+    if recovery.preparation_generation != current_generation:
+        raise ValueError(
+            f"dependency recovery {recovery.id} is stale for target task "
+            f"{recovery.target_task_id}"
+        )
     recovery.state = DependencyCompositionRecoveryState.ACCEPTED
     recovery.accepted_deliverable_id = deliverable.id
     recovery.resolved_commit_sha = commit_sha
@@ -490,6 +515,58 @@ def accept_dependency_composition_recovery(
         target.git_base_commit_sha = commit_sha
         target.updated_at = now
         _mark_agent_work_due(state, agent_id=target.owner_agent_id, now=now)
+    return recovery
+
+
+def release_dependency_composition_recovery_after_task_cancellation(
+    state: TeamState,
+    *,
+    task_id: str,
+    actor_agent_id: str | None,
+    dispatch_id: str | None,
+    now: datetime,
+    operator_actor_id: str | None = None,
+) -> DependencyCompositionRecovery | None:
+    matches = [
+        recovery
+        for recovery in state.dependency_composition_recoveries.values()
+        if recovery.recovery_task_id == task_id
+        and recovery.state == DependencyCompositionRecoveryState.IN_PROGRESS
+    ]
+    if len(matches) > 1:
+        raise ValueError(f"task {task_id} references multiple dependency recoveries")
+    if not matches:
+        return None
+    recovery = matches[0]
+    recovery.recovery_task_id = None
+    recovery.verified_deliverable_id = None
+    recovery.verified_commit_sha = None
+    recovery.verified_at = None
+    recovery.state = DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT
+    recovery.updated_at = now
+    blocker = state.blockers.get(recovery.blocker_id)
+    if blocker is not None and blocker.state == TeamBlockerState.OPEN:
+        blocker.last_progress_at = now
+        blocker.updated_at = now
+        append_blocker_event(
+            state,
+            blocker=blocker,
+            event_type=TeamBlockerEventType.PROGRESS,
+            actor_agent_id=actor_agent_id,
+            dispatch_id=dispatch_id,
+            note=(
+                f"Cancelled dependency merge recovery task {task_id}; "
+                "the pinned recovery is available for reassignment."
+            ),
+            reference_ids=[recovery.id, task_id],
+            metadata={
+                "kind": "dependency_composition_recovery_released",
+                "recovery_id": recovery.id,
+                "cancelled_recovery_task_id": task_id,
+                "operator_actor_id": _optional_text(operator_actor_id),
+            },
+            now=now,
+        )
     return recovery
 
 
@@ -542,6 +619,7 @@ __all__ = [
     "accepted_recovery_for_target",
     "dependency_composition_source_fingerprint",
     "record_dependency_composition_conflict",
+    "release_dependency_composition_recovery_after_task_cancellation",
     "recovery_for_task",
     "start_dependency_composition_recovery",
     "supersede_stale_dependency_recoveries",

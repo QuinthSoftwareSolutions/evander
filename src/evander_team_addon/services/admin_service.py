@@ -195,6 +195,7 @@ from .domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
 )
 from .domain.dependency_composition_recovery import (
+    release_dependency_composition_recovery_after_task_cancellation,
     start_dependency_composition_recovery,
 )
 from .commands.blocker_commands import _prepare_blocker_source_for_resolution
@@ -3414,6 +3415,14 @@ class TeamAdminService:
             )
             _set_task_state(task, TeamTaskState.CANCELLED, now=now)
             task.updated_at = now
+            release_dependency_composition_recovery_after_task_cancellation(
+                state_model,
+                task_id=task.id,
+                actor_agent_id=None,
+                dispatch_id=None,
+                operator_actor_id=normalized_actor_id,
+                now=now,
+            )
             finalize_active_git_work_contexts_for_task(
                 state_model,
                 task_id=task.id,

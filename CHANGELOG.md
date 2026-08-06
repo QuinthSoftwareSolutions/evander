@@ -13,6 +13,10 @@
   makes the reviewed commit the blocked target task's authoritative composed base.
 - Exposed recovery status and assignment in Team reads, MCP, Admin API, and the
   blocker UI, while refusing generic resolution of an unresolved composition conflict.
+- Made recovery preparation use the captured base commit instead of a moving branch,
+  preserved libvirt conflict evidence without treating other Git merge failures as
+  conflicts, rejected stale recoveries at review acceptance, and released cancelled
+  recovery tasks for reassignment.
 
 ## 2026-08-06 - Contracted Leaf Task Controls
 
