@@ -731,6 +731,46 @@ def test_provider_config_resolver_keeps_directory_mode_for_non_claude_sessions(
     assert resolved.model_provider_mode == "openai_public"
 
 
+def test_provider_config_resolver_resolves_email_authorization_from_policy_domain(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        email_mailboxes=[
+            {
+                "mailbox_id": "allowed",
+                "address": "allowed@example.com",
+                "folder_allowlist_defaults": ["inbox", "drafts"],
+            },
+            {
+                "mailbox_id": "secret",
+                "address": "secret@example.com",
+                "folder_allowlist_defaults": ["inbox", "drafts"],
+            },
+        ],
+        email_send_enabled=True,
+    )
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload={
+            "email_mailbox_allowlist": ["allowed"],
+            "email_folder_allowlist_by_mailbox": {"allowed": ["inbox"]},
+            "email_send_enabled": False,
+        },
+    )
+
+    policy = ProviderConfigResolver(config, directory_store=store).resolve_policy_for_directory(
+        "root"
+    )
+
+    assert policy.email_mailbox_allowlist == ["allowed"]
+    assert policy.email_folder_allowlist_by_mailbox["allowed"] == ["inbox"]
+    assert policy.email_send_enabled is False
+
+
 def test_provider_config_resolver_uses_session_model_provider_mode_override(
     tmp_path: Path,
 ) -> None:

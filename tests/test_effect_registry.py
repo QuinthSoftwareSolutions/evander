@@ -63,6 +63,7 @@ from evander.effects.registry import (
     EffectProviderRegistry,
 )
 from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
+from evander.policy_config import EffectivePolicyConfig
 from pydantic import BaseModel, Field, ValidationError
 
 from evander.directory_config import ContactDirectoryConfig
@@ -132,6 +133,14 @@ class _ContainerResolverStub:
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
         del session_id
         return self.config
+
+    def resolve_policy_for_directory(self, directory_path: str | None) -> EffectivePolicyConfig:
+        del directory_path
+        return EffectivePolicyConfig(
+            email_mailbox_allowlist=self.config.email_mailbox_allowlist,
+            email_folder_allowlist_by_mailbox=self.config.email_folder_allowlist_by_mailbox,
+            email_send_enabled=self.config.email_send_enabled,
+        )
 
     def resolve_contacts_for_directory(self, directory_path: str | None) -> ContactDirectoryConfig:
         del directory_path
