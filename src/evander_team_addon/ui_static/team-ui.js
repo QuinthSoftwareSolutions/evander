@@ -7737,8 +7737,43 @@ function buildOrgFlowGraph(focusedTeams) {
   return {
     nodes,
     edges,
+    messageEvents: orgFlowMessageEvents(nodes),
     fitKey: orgFlowLayoutFitKey(nodes, edges),
   };
+}
+
+function orgFlowMessageEvents(nodes) {
+  const visibleAgentIds = new Set(
+    nodes
+      .filter((node) => node.data?.kind === "agent")
+      .map((node) => text(node.data.agentId))
+      .filter(Boolean),
+  );
+  const events = [];
+  visibleAgentIds.forEach((recipientAgentId) => {
+    pendingInboxForAgent(recipientAgentId).forEach((item) => {
+      const itemType = text(item.item_type);
+      const senderAgentId = text(item.sender_agent_id);
+      if (
+        !["status_request", "progress_report"].includes(itemType) ||
+        !senderAgentId ||
+        senderAgentId === recipientAgentId ||
+        !visibleAgentIds.has(senderAgentId)
+      ) {
+        return;
+      }
+      events.push({
+        id: text(item.id),
+        sourceNodeId: `agent:${senderAgentId}`,
+        targetNodeId: `agent:${recipientAgentId}`,
+        sourceLabel: agentLabel(state.agents[senderAgentId]),
+        targetLabel: agentLabel(state.agents[recipientAgentId]),
+        itemType,
+        label: inboxItemDetail(item) || humanizeToken(itemType),
+      });
+    });
+  });
+  return events.filter((event) => event.id);
 }
 
 function orgFlowLayoutFitKey(nodes, edges) {
@@ -7848,7 +7883,7 @@ function orgFlowEdge(source, target, kind) {
     target,
     type: "smoothstep",
     className: `org-flow-edge--${kind}`,
-    animated: kind === "governance",
+    animated: false,
   };
 }
 
@@ -7953,6 +7988,10 @@ function orgAgentNodeData(agentData) {
       },
     ],
     work,
+    activity: {
+      headline: text(agentData.activitySummary?.headline) || work.primary,
+      tone: activityTone || (awake.kind === "awake" ? "working" : awake.kind),
+    },
     detailLines: hierarchyDetailLines(agentData, { focused: true }),
   };
 }

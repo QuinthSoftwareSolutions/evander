@@ -5186,11 +5186,15 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert org_flow_script.status_code == 200
     assert "team-org-flow:edit-agent" in org_flow_script.text
     assert "data-team-org-flow-canvas" in org_flow_script.text
+    assert "org-flow-activity-bubble" in org_flow_script.text
+    assert "org-flow-message-pulse" in org_flow_script.text
 
     org_flow_stylesheet = enabled.get("/addons/team-addon/team-org-flow.css")
     assert org_flow_stylesheet.status_code == 200
     assert ".team-org-flow-canvas" in org_flow_stylesheet.text
     assert ".org-flow-governance-node" in org_flow_stylesheet.text
+    assert "org-flow-active-halo" in org_flow_stylesheet.text
+    assert "prefers-reduced-motion:reduce" in org_flow_stylesheet.text
 
     agent_create_script = enabled.get("/addons/team-addon/team-agent-create.js")
     assert agent_create_script.status_code == 200

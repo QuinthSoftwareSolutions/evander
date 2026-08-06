@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-06 - Calm Live Team Org Chart
+
+- Added restrained live activity to the Team org chart: awake-agent halos, short-lived derived
+  activity bubbles, and one-shot message pulses for newly observed status requests and progress
+  reports.
+- Kept structural edges static, capped simultaneous effects, avoided replaying existing inbox
+  history, preserved the operator's viewport, and respected reduced-motion preferences.
+
 ## 2026-08-06 - Candidate Recovery Instructions
 
 - Added an optional operator-instruction prompt when creating a verified

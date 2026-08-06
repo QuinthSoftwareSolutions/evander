@@ -1,15 +1,19 @@
-import React, { useEffect, useId, useMemo, useRef } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   Background,
+  BaseEdge,
   Controls,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  getStraightPath,
   useReactFlow,
+  useViewport,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
@@ -54,6 +58,15 @@ type AgentNodeData = BaseNodeData & {
     primary: string;
     waiting: string;
   };
+  activity: {
+    headline: string;
+    tone: string;
+  };
+  activityBubble?: {
+    headline: string;
+    tone: string;
+    eventKey: string;
+  };
   detailLines: string[];
 };
 
@@ -95,11 +108,30 @@ type WarningNodeData = BaseNodeData & {
 type OrgNodeData = AgentNodeData | TeamNodeData | GovernanceNodeData | WarningNodeData;
 type OrgNode = Node<OrgNodeData, "teamOrgNode">;
 
+type OrgMessageEvent = {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  sourceLabel: string;
+  targetLabel: string;
+  itemType: "status_request" | "progress_report";
+  label: string;
+};
+
 type OrgFlowPayload = {
   nodes: OrgNode[];
   edges: Edge[];
+  messageEvents: OrgMessageEvent[];
   fitKey: string;
 };
+
+type VisibleActivityBubble = NonNullable<AgentNodeData["activityBubble"]>;
+
+const activityBubbleDurationMs = 5200;
+const messagePulseDurationMs = 1250;
+const maxVisibleActivityBubbles = 2;
+const maxVisibleMessagePulses = 2;
+const activityBubbleMinZoom = 0.5;
 
 declare global {
   interface Window {
@@ -111,6 +143,9 @@ declare global {
 const roots = new WeakMap<Element, Root>();
 const nodeTypes = {
   teamOrgNode: TeamOrgNode,
+};
+const edgeTypes = {
+  messagePulse: MessagePulseEdge,
 };
 
 function TeamOrgFlowApp({ payload }: { payload: OrgFlowPayload | null }) {
@@ -126,9 +161,165 @@ function TeamOrgFlowApp({ payload }: { payload: OrgFlowPayload | null }) {
 
 function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
   const reactFlow = useReactFlow<OrgNode, Edge>();
+  const { zoom } = useViewport();
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const nodes = useMemo(() => payload.nodes, [payload]);
-  const edges = useMemo(() => payload.edges, [payload]);
+  const previousFitKeyRef = useRef<string | null>(null);
+  const activityFingerprintsRef = useRef(new Map<string, string>());
+  const seenMessageEventIdsRef = useRef(new Set<string>());
+  const timeoutIdsRef = useRef<number[]>([]);
+  const [activityBubbles, setActivityBubbles] = useState<Record<string, VisibleActivityBubble>>({});
+  const [messagePulses, setMessagePulses] = useState<OrgMessageEvent[]>([]);
+  const [overflowNotice, setOverflowNotice] = useState<{ eventKey: string; count: number } | null>(null);
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const messageEvents = payload.messageEvents || [];
+  const nodes = useMemo(
+    () =>
+      payload.nodes.map((node) => {
+        if (node.data.kind !== "agent") {
+          return node;
+        }
+        const activityBubble = zoom >= activityBubbleMinZoom ? activityBubbles[node.data.agentId] : undefined;
+        return activityBubble
+          ? { ...node, data: { ...node.data, activityBubble } }
+          : node;
+      }),
+    [activityBubbles, payload.nodes, zoom],
+  );
+  const edges = useMemo(
+    () => [
+      ...payload.edges,
+      ...messagePulses.map((message): Edge => ({
+        id: `message-pulse:${message.id}`,
+        source: message.sourceNodeId,
+        target: message.targetNodeId,
+        type: "messagePulse",
+        className: `org-flow-message-edge org-flow-message-edge--${message.itemType}`,
+        data: message,
+        selectable: false,
+        focusable: false,
+        deletable: false,
+        zIndex: 20,
+      })),
+    ],
+    [messagePulses, payload.edges],
+  );
+
+  useEffect(() => {
+    const activityFingerprints = new Map<string, string>();
+    payload.nodes.forEach((node) => {
+      if (node.data.kind === "agent") {
+        activityFingerprints.set(
+          node.data.agentId,
+          `${node.data.activity.tone}\u0000${node.data.activity.headline}`,
+        );
+      }
+    });
+    const messageEventIds = new Set(messageEvents.map((event) => event.id));
+    const layoutChanged = previousFitKeyRef.current !== payload.fitKey;
+    if (layoutChanged) {
+      previousFitKeyRef.current = payload.fitKey;
+      activityFingerprintsRef.current = activityFingerprints;
+      seenMessageEventIdsRef.current = messageEventIds;
+      setActivityBubbles({});
+      setMessagePulses([]);
+      setOverflowNotice(null);
+      return;
+    }
+
+    const changedActivities = payload.nodes
+      .filter((node): node is OrgNode & { data: AgentNodeData } => node.data.kind === "agent")
+      .flatMap((node) => {
+        const nextFingerprint = activityFingerprints.get(node.data.agentId) || "";
+        const previousFingerprint = activityFingerprintsRef.current.get(node.data.agentId);
+        if (!previousFingerprint || previousFingerprint === nextFingerprint) {
+          return [];
+        }
+        return [{
+          agentId: node.data.agentId,
+          label: node.data.label,
+          headline: node.data.activity.headline,
+          tone: node.data.activity.tone,
+          eventKey: `${node.data.agentId}:${nextFingerprint}`,
+        }];
+      });
+    activityFingerprintsRef.current = activityFingerprints;
+
+    const newMessageEvents = messageEvents.filter(
+      (event) => !seenMessageEventIdsRef.current.has(event.id),
+    );
+    messageEvents.forEach((event) => seenMessageEventIdsRef.current.add(event.id));
+
+    const visibleActivities = changedActivities.slice(0, maxVisibleActivityBubbles);
+    if (visibleActivities.length) {
+      setActivityBubbles((current) => {
+        const next = { ...current };
+        visibleActivities.forEach((activity) => {
+          next[activity.agentId] = {
+            headline: activity.headline,
+            tone: activity.tone,
+            eventKey: activity.eventKey,
+          };
+        });
+        return next;
+      });
+      visibleActivities.forEach((activity) => {
+        const timeoutId = window.setTimeout(() => {
+          setActivityBubbles((current) => {
+            if (current[activity.agentId]?.eventKey !== activity.eventKey) {
+              return current;
+            }
+            const next = { ...current };
+            delete next[activity.agentId];
+            return next;
+          });
+        }, activityBubbleDurationMs);
+        timeoutIdsRef.current.push(timeoutId);
+      });
+    }
+
+    const visibleMessages = prefersReducedMotion
+      ? []
+      : newMessageEvents.slice(0, maxVisibleMessagePulses);
+    if (visibleMessages.length) {
+      setMessagePulses((current) => [...current, ...visibleMessages].slice(-maxVisibleMessagePulses));
+      visibleMessages.forEach((message) => {
+        const timeoutId = window.setTimeout(() => {
+          setMessagePulses((current) => current.filter((item) => item.id !== message.id));
+        }, messagePulseDurationMs);
+        timeoutIdsRef.current.push(timeoutId);
+      });
+    }
+
+    const overflowCount =
+      Math.max(0, changedActivities.length - maxVisibleActivityBubbles) +
+      Math.max(0, newMessageEvents.length - maxVisibleMessagePulses);
+    if (overflowCount) {
+      const eventKey = `${Date.now()}:${overflowCount}`;
+      setOverflowNotice({ eventKey, count: overflowCount });
+      const timeoutId = window.setTimeout(() => {
+        setOverflowNotice((current) => current?.eventKey === eventKey ? null : current);
+      }, messagePulseDurationMs);
+      timeoutIdsRef.current.push(timeoutId);
+    }
+
+    const announcements = [
+      ...visibleActivities.map((activity) => `${activity.label}: ${activity.headline}`),
+      ...newMessageEvents
+        .slice(0, maxVisibleMessagePulses)
+        .map((message) => `${message.sourceLabel} sent ${message.label} to ${message.targetLabel}`),
+    ];
+    if (overflowCount) {
+      announcements.push(`${overflowCount} more updates`);
+    }
+    if (announcements.length) {
+      setLiveAnnouncement(announcements.join(". "));
+    }
+  }, [messageEvents, payload.fitKey, payload.nodes, prefersReducedMotion]);
+
+  useEffect(() => () => {
+    timeoutIdsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -173,6 +364,7 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable
@@ -199,8 +391,53 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
         <Background gap={24} size={1} />
         <Controls position="bottom-left" showInteractive={false} />
       </ReactFlow>
+      {overflowNotice ? (
+        <div className="org-flow-overflow-notice" aria-hidden="true">
+          +{overflowNotice.count} more update{overflowNotice.count === 1 ? "" : "s"}
+        </div>
+      ) : null}
+      <div className="visually-hidden" aria-live="polite" aria-atomic="true">
+        {liveAnnouncement}
+      </div>
     </div>
   );
+}
+
+function MessagePulseEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+}: EdgeProps) {
+  const [edgePath] = getStraightPath({ sourceX, sourceY, targetX, targetY });
+  return (
+    <g className="org-flow-message-pulse" aria-hidden="true">
+      <BaseEdge id={id} path={edgePath} className="org-flow-message-guide" />
+      <circle className="org-flow-message-particle" r="5">
+        <animateMotion dur={`${messagePulseDurationMs}ms`} path={edgePath} fill="freeze" />
+        <animate
+          attributeName="opacity"
+          values="0;1;1;0"
+          keyTimes="0;0.12;0.72;1"
+          dur={`${messagePulseDurationMs}ms`}
+          fill="freeze"
+        />
+      </circle>
+    </g>
+  );
+}
+
+function usePrefersReducedMotion() {
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => query.removeEventListener?.("change", update);
+  }, []);
+  return reducedMotion;
 }
 
 function TeamOrgNode({ data }: NodeProps<OrgNode>) {
@@ -291,6 +528,15 @@ function AgentNode({ data }: { data: AgentNodeData }) {
           <strong>{data.work.waiting}</strong>
         </div>
       </div>
+      {data.activityBubble ? (
+        <span
+          className={`org-flow-activity-bubble org-flow-activity-bubble--${data.activityBubble.tone || "idle"}`}
+          aria-hidden="true"
+        >
+          <small>Activity</small>
+          <strong>{data.activityBubble.headline}</strong>
+        </span>
+      ) : null}
       <div className="hierarchy-node-details org-node-hover-panel">
         {data.detailLines.map((line, index) => (
           <div className="meta-line" key={`${line}-${index}`}>

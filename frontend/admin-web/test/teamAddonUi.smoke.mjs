@@ -229,6 +229,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(orgFlowScript, /stopPropagation\(\)/);
   assert.match(stylesheet, /\.agent-inbox-popover\s*{[\s\S]*pointer-events:\s*auto;/);
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
+  assert.match(orgFlowScript, /org-flow-activity-bubble/);
+  assert.match(orgFlowScript, /org-flow-message-pulse/);
+  assert.match(orgFlowStylesheet, /org-flow-active-halo/);
+  assert.match(orgFlowStylesheet, /prefers-reduced-motion:reduce/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
   assert.match(stylesheet, /\.org-context-menu/);
@@ -5096,6 +5100,140 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     zoomedOrgViewport,
     "saving agent edits should not refit the org chart viewport",
   );
+});
+
+test("team add-on Org chart animates only newly observed activity without refitting", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.agents.backend.activity_summary = {
+    headline: "Working on Build API",
+    working_on: "Build API",
+    waiting_for: "Clear",
+    tone: "working",
+    source: "derived",
+    generated_at: "2026-06-11T08:55:00Z",
+    reason_refs: [{ kind: "task", id: "task_open" }],
+  };
+  const {
+    port,
+    state,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openOrgChart(page);
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected the Team state stream before testing live org activity",
+  );
+  assert.equal(await page.locator(".org-flow-activity-bubble").count(), 0);
+  assert.equal(await page.locator(".org-flow-message-pulse").count(), 0);
+
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  const haloAnimation = await backendCard.locator(".hierarchy-node-avatar-wrap").evaluate((element) =>
+    getComputedStyle(element, "::before").animationName,
+  );
+  assert.equal(haloAnimation, "org-flow-active-halo");
+
+  const zoomedOrgViewport = await zoomOrgChartCanvas(page);
+  state.revision += 1;
+  state.agents.backend.activity_summary = {
+    ...state.agents.backend.activity_summary,
+    headline: "Reviewing API handoff",
+    working_on: "API handoff",
+    generated_at: "2026-06-11T08:56:00Z",
+  };
+  state.inbox["inbox-live-status"] = {
+    id: "inbox-live-status",
+    recipient_agent_id: "worker",
+    item_type: "status_request",
+    sender_agent_id: "backend",
+    task_id: "task_waiting",
+    payload: { question: "Please confirm review readiness." },
+    state: "pending",
+    created_at: "2026-06-11T08:56:00Z",
+    updated_at: "2026-06-11T08:56:00Z",
+  };
+  emitStateSnapshot(state);
+
+  await waitForRevision(page, state.revision);
+  await backendCard.locator(".org-flow-activity-bubble", { hasText: "Reviewing API handoff" }).waitFor({
+    state: "visible",
+  });
+  await page.locator(".org-flow-message-pulse").waitFor({ state: "attached" });
+  assert.equal(
+    await orgChartViewportTransform(page),
+    zoomedOrgViewport,
+    "live activity should not refit the org chart viewport",
+  );
+
+  await page.locator(".org-flow-message-pulse").waitFor({ state: "detached", timeout: 3000 });
+  await backendCard.locator(".org-flow-activity-bubble").waitFor({ state: "detached", timeout: 7000 });
+});
+
+test("team add-on Org chart respects reduced-motion preferences", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.agents.backend.activity_summary = {
+    headline: "Working on Build API",
+    working_on: "Build API",
+    waiting_for: "Clear",
+    tone: "working",
+    source: "derived",
+    generated_at: "2026-06-11T08:55:00Z",
+    reason_refs: [{ kind: "task", id: "task_open" }],
+  };
+  const { port, state, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port, { reducedMotion: "reduce" });
+
+  await waitForRevision(page, 8);
+  await openOrgChart(page);
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected the Team state stream before testing reduced motion",
+  );
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  assert.equal(
+    await backendCard.locator(".hierarchy-node-avatar-wrap").evaluate((element) =>
+      getComputedStyle(element, "::before").animationName,
+    ),
+    "none",
+  );
+
+  state.revision += 1;
+  state.agents.backend.activity_summary = {
+    ...state.agents.backend.activity_summary,
+    headline: "Preparing a calm handoff",
+    working_on: "Calm handoff",
+    generated_at: "2026-06-11T08:56:00Z",
+  };
+  state.inbox["inbox-reduced-motion"] = {
+    id: "inbox-reduced-motion",
+    recipient_agent_id: "worker",
+    item_type: "status_request",
+    sender_agent_id: "backend",
+    task_id: "task_waiting",
+    payload: { question: "Please confirm without animation." },
+    state: "pending",
+    created_at: "2026-06-11T08:56:00Z",
+    updated_at: "2026-06-11T08:56:00Z",
+  };
+  emitStateSnapshot(state);
+
+  await waitForRevision(page, state.revision);
+  await backendCard.locator(".org-flow-activity-bubble", { hasText: "Preparing a calm handoff" }).waitFor({
+    state: "visible",
+  });
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator(".org-flow-message-pulse").count(), 0);
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
