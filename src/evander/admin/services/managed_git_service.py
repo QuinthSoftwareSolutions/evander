@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -788,6 +788,57 @@ class ManagedGitAdminService:
                 bare_path,
                 f"refs/heads/{normalized_branch}",
             )
+
+    def verify_branch_commit_ancestry(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+        commit_sha: str,
+        required_ancestor_shas: Sequence[str],
+    ) -> dict[str, Any]:
+        """Verify one exact branch tip contains every immutable required commit."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_branch = _normalize_branch(branch, field_name="branch")
+        expected_commit = _normalize_object_id(commit_sha, field_name="commit_sha")
+        required = list(
+            dict.fromkeys(
+                _normalize_object_id(value, field_name="required_ancestor_shas")
+                for value in required_ancestor_shas
+            )
+        )
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            actual_commit = self._resolve_ref(
+                bare_path,
+                f"refs/heads/{normalized_branch}",
+            )
+            if actual_commit is None:
+                raise ValueError(f"managed Git branch {normalized_branch!r} does not exist")
+            if actual_commit.casefold() != expected_commit:
+                raise ValueError(
+                    f"managed Git branch {normalized_branch!r} moved: expected "
+                    f"{expected_commit}, found {actual_commit}"
+                )
+            self._require_commit(bare_path, expected_commit)
+            for ancestor in required:
+                self._require_commit(bare_path, ancestor)
+                if not self._is_ancestor(bare_path, ancestor, expected_commit):
+                    raise ValueError(
+                        f"commit {expected_commit} does not contain required ancestor "
+                        f"{ancestor}"
+                    )
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory_path,
+            "branch": normalized_branch,
+            "commit_sha": expected_commit,
+            "required_ancestor_shas": required,
+        }
 
     def set_host_commit_identity(
         self,

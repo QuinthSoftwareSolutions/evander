@@ -17,6 +17,7 @@ from evander.worker.models import (
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
     WorkerTaskWorktreeCleanupRequest,
+    WorkerTaskWorktreeRequest,
     WorkerTelemetryPayload,
 )
 
@@ -591,6 +592,53 @@ def test_container_worker_client_does_not_retry_http_503(
 
     assert len(requests) == 1
     assert sleeps == []
+
+
+def test_container_worker_client_preserves_structured_dependency_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    conflict = {
+        "base_branch": "main",
+        "base_commit_sha": "a" * 40,
+        "base_tree_hash": "b" * 40,
+        "dependency_git_sources": [],
+        "failed_dependency_task_id": "source-task",
+        "failed_deliverable_id": "source-deliverable",
+        "conflict_paths": ["src/shared.py"],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "error": "dependency Git composition conflict",
+                "dependency_composition_conflict": conflict,
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(ContainerWorkerClientError, match="HTTP 409") as raised:
+        worker.prepare_task_worktree(
+            "session-1",
+            WorkerTaskWorktreeRequest(
+                repo_name="repo",
+                worktree_name="task-a-1234",
+                branch="agents/session-1/tasks/task-a-1234",
+                base_ref="main",
+            ),
+        )
+
+    assert raised.value.payload == {
+        "error": "dependency Git composition conflict",
+        "dependency_composition_conflict": conflict,
+    }
 
 
 def test_container_worker_client_does_not_retry_read_timeout(

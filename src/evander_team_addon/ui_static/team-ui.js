@@ -536,7 +536,7 @@ const fieldTooltips = {
   "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
-  "create-task-form:require_git_provenance": "Require the integration deliverable to carry server-verified Git branch and commit provenance.",
+  "create-task-form:require_git_provenance": "Require this task to resolve through an accepted deliverable carrying server-verified Git branch and commit provenance. This can be used with or without an integration boundary.",
   "create-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
@@ -548,7 +548,7 @@ const fieldTooltips = {
   "update-task-form:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "update-task-form:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
   "update-task-form:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
-  "update-task-form:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "update-task-form:require_git_provenance": "Require this task to resolve through an accepted deliverable carrying server-verified Git provenance. This can be used with or without an integration boundary.",
   "update-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "create-review-profile-form:team_id": "Team that owns this review profile.",
@@ -633,7 +633,7 @@ const fieldTooltips = {
   "edit:task:git_base_branch": "The task's durable Git starting branch. It locks after Git preparation, deliverable submission, or promotion creation.",
   "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
   "edit:task:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
-  "edit:task:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "edit:task:require_git_provenance": "Require this task to resolve through an accepted deliverable carrying server-verified Git provenance. This can be used with or without an integration boundary.",
   "edit:task:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
   "edit:review-profile:project_id": "Optional project scope. Clear it to make the profile team-wide.",
   "edit:review-profile:name": "Rename the review profile without changing its immutable ID.",
@@ -717,6 +717,7 @@ function emptyState() {
     inbox: {},
     blockers: {},
     blocker_events: {},
+    dependency_composition_recoveries: {},
     action_records: {},
     release_packages: {},
     dispatches: {},
@@ -2370,6 +2371,40 @@ function bindRecordEditing() {
       return;
     }
 
+    const dependencyCompositionTaskButton = event.target.closest(
+      "[data-dependency-composition-recovery-task-id]",
+    );
+    if (dependencyCompositionTaskButton) {
+      event.preventDefault();
+      openCandidateCorrectionRecoveryTask(
+        dependencyCompositionTaskButton.dataset.dependencyCompositionRecoveryTaskId,
+      );
+      return;
+    }
+
+    const dependencyCompositionStartButton = event.target.closest(
+      "[data-start-dependency-composition-recovery-id]",
+    );
+    if (dependencyCompositionStartButton) {
+      event.preventDefault();
+      const container = dependencyCompositionStartButton.closest(
+        ".dependency-composition-recovery-status",
+      );
+      const resolverAgentId = text(
+        container?.querySelector("[data-dependency-composition-resolver]")?.value,
+      );
+      if (!resolverAgentId) {
+        setStatus("Select an active project agent to resolve the merge.", "error");
+        return;
+      }
+      void startDependencyCompositionRecovery(
+        dependencyCompositionStartButton,
+        dependencyCompositionStartButton.dataset.startDependencyCompositionRecoveryId,
+        resolverAgentId,
+      );
+      return;
+    }
+
     const resolveBlockerButton = event.target.closest("[data-resolve-terminal-blocker-id]");
     if (resolveBlockerButton) {
       event.preventDefault();
@@ -2858,6 +2893,7 @@ const lockedMutationControlSelectors = [
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
   ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
+  ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
@@ -9095,7 +9131,7 @@ function renderTeamRoleDetail(role) {
       </div>
       ${
         role.description
-          ? `<section class="agent-detail-section"><h3>Description</h3><p class="meta-line">${escapeHtml(role.description)}</p></section>`
+          ? `<section class="agent-detail-section"><h3>Description</h3><p class="meta-line role-description">${escapeHtml(role.description)}</p></section>`
           : ""
       }
       <section class="agent-detail-section">
@@ -13710,6 +13746,61 @@ function candidateCorrectionRecoveryTaskForBlocker(blocker) {
     )[0] || null;
 }
 
+function dependencyCompositionRecoveryForBlocker(blocker) {
+  return values(state.dependency_composition_recoveries)
+    .filter((recovery) => text(recovery.blocker_id) === text(blocker?.id))
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function renderDependencyCompositionRecovery(blocker, recovery, extraClass = "") {
+  const recoveryTask = state.tasks?.[text(recovery.recovery_task_id)];
+  const projectAgents = values(state.agents)
+    .filter((agent) =>
+      text(agent.status) === "active" &&
+      agentProjectIds(agent).includes(text(recovery.project_id)),
+    )
+    .sort(comparePeopleAgents);
+  const sourceSummary = (recovery.dependency_git_sources || [])
+    .map((source) => `${text(source.dependency_task_id)}@${text(source.commit_sha).slice(0, 12)}`)
+    .join(", ");
+  const conflictSummary = uniqueTextList(recovery.conflict_paths).join(", ") || "paths unavailable";
+  return `
+    <div class="dependency-composition-recovery-status" role="status">
+      <div>
+        <strong>Dependency merge recovery</strong>
+        <span class="state-pill ${escapeAttr(recovery.state || "awaiting_assignment")}">${escapeHtml(humanizeToken(recovery.state || "awaiting_assignment"))}</span>
+      </div>
+      <div class="meta-line">Pinned base ${escapeHtml(text(recovery.base_commit_sha).slice(0, 12))} - conflict ${escapeHtml(conflictSummary)}</div>
+      <div class="meta-line">Exact inputs: ${escapeHtml(sourceSummary)}</div>
+      ${
+        recoveryTask
+          ? `<div class="record-actions ${escapeAttr(extraClass)}">
+              <button type="button" class="record-action"
+                data-dependency-composition-recovery-task-id="${escapeAttr(recoveryTask.id)}"
+              >View merge recovery task</button>
+            </div>`
+          : `<div class="record-actions ${escapeAttr(extraClass)}">
+              <label>
+                Resolver
+                <select data-dependency-composition-resolver>
+                  <option value="">Select project agent</option>
+                  ${projectAgents.map((agent) => `<option value="${escapeAttr(agent.id)}">${escapeHtml(agentLabel(agent))}</option>`).join("")}
+                </select>
+              </label>
+              <button type="button" class="record-action"
+                data-start-dependency-composition-recovery-id="${escapeAttr(blocker.id)}"
+                ${lockedAttrs("start dependency composition recoveries")}
+              >Create merge recovery task</button>
+            </div>`
+      }
+    </div>
+  `;
+}
+
 function latestDispatchForTask(taskId) {
   const normalizedTaskId = text(taskId);
   return values(state.dispatches)
@@ -13764,6 +13855,15 @@ function openCandidateCorrectionRecoveryTask(taskId) {
 }
 
 function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
+  const dependencyRecovery = dependencyCompositionRecoveryForBlocker(blocker);
+  if (
+    blocker &&
+    text(blocker.state) === "open" &&
+    dependencyRecovery &&
+    ["awaiting_assignment", "in_progress"].includes(text(dependencyRecovery.state))
+  ) {
+    return renderDependencyCompositionRecovery(blocker, dependencyRecovery, extraClass);
+  }
   if (
     blocker &&
     text(blocker.state) === "open" &&
@@ -20100,15 +20200,21 @@ async function submitTaskUpdate(form) {
   const integrationBoundary = Boolean(
     form.elements.integration_boundary?.checked,
   );
+  const requireGitProvenance = Boolean(
+    form.elements.require_git_provenance?.checked,
+  );
+  const requiredContributionTaskIds = splitList(
+    data.required_contribution_task_ids,
+  );
   payload.integration_boundary = integrationBoundary;
-  payload.deliverable_contract = integrationBoundary
+  payload.deliverable_contract = (
+    integrationBoundary
+    || requireGitProvenance
+    || requiredContributionTaskIds.length > 0
+  )
     ? {
-        require_git_provenance: Boolean(
-          form.elements.require_git_provenance?.checked,
-        ),
-        required_contribution_task_ids: splitList(
-          data.required_contribution_task_ids,
-        ),
+        require_git_provenance: requireGitProvenance,
+        required_contribution_task_ids: requiredContributionTaskIds,
       }
     : null;
   await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
@@ -21571,6 +21677,69 @@ async function resolveTerminalBlocker(button, blockerId, note) {
   }
 }
 
+async function startDependencyCompositionRecovery(button, blockerId, resolverAgentId) {
+  if (!guardTeamMutation("start dependency composition recoveries")) {
+    return;
+  }
+  const normalizedBlockerId = text(blockerId);
+  const normalizedResolverId = text(resolverAgentId);
+  if (!normalizedBlockerId || !normalizedResolverId) {
+    setStatus("A blocker and resolver agent are required.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`Creating merge recovery for ${normalizedBlockerId}.`, "loading");
+  const endpoint = `/blockers/${encodeURIComponent(normalizedBlockerId)}/dependency-composition-recovery`;
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", {
+          resolver_agent_id: normalizedResolverId,
+        }),
+      ),
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the recovery and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const body = await response.json();
+    await applyMutationResultPayload(body);
+    restoreFormDrafts(drafts);
+    const taskId = text(body.dependency_composition_recovery?.recovery_task_id);
+    setStatus(
+      taskId
+        ? `Created dependency merge recovery task ${taskId}.`
+        : `Started dependency merge recovery for ${normalizedBlockerId}.`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Dependency merge recovery failed.",
+      "error",
+    );
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
 async function recoverCandidateCorrectionSuccessor(button, blockerId, action, reason = null) {
   if (!guardTeamMutation("recover candidate correction successors")) {
     return;
@@ -22002,15 +22171,21 @@ function payloadForForm(form, data = formData(form)) {
     const integrationBoundary = Boolean(
       form.elements.integration_boundary?.checked,
     );
-    if (integrationBoundary) {
-      payload.integration_boundary = true;
+    const requireGitProvenance = Boolean(
+      form.elements.require_git_provenance?.checked,
+    );
+    const requiredContributionTaskIds = splitList(
+      data.required_contribution_task_ids,
+    );
+    if (
+      integrationBoundary
+      || requireGitProvenance
+      || requiredContributionTaskIds.length > 0
+    ) {
+      payload.integration_boundary = integrationBoundary;
       payload.deliverable_contract = {
-        require_git_provenance: Boolean(
-          form.elements.require_git_provenance?.checked,
-        ),
-        required_contribution_task_ids: splitList(
-          data.required_contribution_task_ids,
-        ),
+        require_git_provenance: requireGitProvenance,
+        required_contribution_task_ids: requiredContributionTaskIds,
       };
     }
     return payload;
@@ -23044,14 +23219,20 @@ function editPayloadForForm(type, form) {
     const integrationBoundary = Boolean(
       form.elements.integration_boundary?.checked,
     );
-    const deliverableContract = integrationBoundary
+    const requireGitProvenance = Boolean(
+      form.elements.require_git_provenance?.checked,
+    );
+    const requiredContributionTaskIds = splitList(
+      data.required_contribution_task_ids,
+    );
+    const deliverableContract = (
+      integrationBoundary
+      || requireGitProvenance
+      || requiredContributionTaskIds.length > 0
+    )
       ? {
-          require_git_provenance: Boolean(
-            form.elements.require_git_provenance?.checked,
-          ),
-          required_contribution_task_ids: splitList(
-            data.required_contribution_task_ids,
-          ),
+          require_git_provenance: requireGitProvenance,
+          required_contribution_task_ids: requiredContributionTaskIds,
         }
       : null;
     const payload = {

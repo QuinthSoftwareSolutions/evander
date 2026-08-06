@@ -34,6 +34,10 @@ from ..domain.common import _ensure_utc, _optional_text, _required_text
 from ..domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
 )
+from ..domain.dependency_composition_recovery import (
+    start_dependency_composition_recovery,
+)
+from ...models import DependencyCompositionRecoveryState
 from ..domain.stand_down import _active_stand_downs_for_agent
 from .executor import TeamCommandExecutor
 from .types import (
@@ -202,6 +206,150 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 if created
                 else [],
                 progress_classification="blocker_progress" if created else "none",
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+        )
+
+    def start_dependency_composition_recovery_command(
+        self,
+        *,
+        session_id: str,
+        blocker_id: str,
+        resolver_agent_id: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_blocker_id = _required_text(blocker_id, "blocker_id")
+        normalized_resolver_id = _required_text(
+            resolver_agent_id, "resolver_agent_id"
+        )
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [], "handled_inbox_item_ids"
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_start_dependency_composition_recovery",
+            request_id=normalized_request_id,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="blocker_progress",
+        )
+        normalized_payload = {
+            "blocker_id": normalized_blocker_id,
+            "resolver_agent_id": normalized_resolver_id,
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            actor = _require_command_agent(
+                resolved, "team_start_dependency_composition_recovery"
+            )
+            blocker = state.blockers.get(normalized_blocker_id)
+            if blocker is None:
+                raise TeamCommandValidationError(
+                    code="blocker_not_found",
+                    message=f"blocker {normalized_blocker_id} does not exist",
+                )
+            if not agent_can_resolve_blocker(
+                state,
+                blocker=blocker,
+                agent_id=actor.id,
+            ):
+                raise TeamCommandValidationError(
+                    code="blocker_resolution_line_required",
+                    message=(
+                        f"agent {actor.id} is not on blocker {blocker.id}'s "
+                        "active escalation line"
+                    ),
+                )
+            resolver = state.agents.get(normalized_resolver_id)
+            if resolver is None:
+                raise TeamCommandValidationError(
+                    code="dependency_recovery_resolver_not_found",
+                    message=f"resolver agent {normalized_resolver_id} does not exist",
+                )
+            recoveries = [
+                recovery
+                for recovery in state.dependency_composition_recoveries.values()
+                if recovery.blocker_id == blocker.id
+                and recovery.state
+                in {
+                    DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT,
+                    DependencyCompositionRecoveryState.IN_PROGRESS,
+                }
+            ]
+            if len(recoveries) != 1:
+                raise TeamCommandValidationError(
+                    code="dependency_composition_recovery_unavailable",
+                    message=(
+                        f"blocker {blocker.id} has {len(recoveries)} actionable "
+                        "dependency composition recoveries"
+                    ),
+                )
+            now = _ensure_utc(utc_now())
+            result: dict[str, Any] = {
+                "success": True,
+                "blocker_id": blocker.id,
+                "recovery_id": recoveries[0].id,
+                "created_task_ids": [],
+                "created_inbox_item_ids": [],
+                "blocker_event_ids": [],
+                "events": [],
+                "progress_made": True,
+            }
+            try:
+                task = start_dependency_composition_recovery(
+                    state,
+                    recovery=recoveries[0],
+                    blocker=blocker,
+                    actor=actor,
+                    resolver=resolver,
+                    dispatch_id=resolved.dispatch_id,
+                    result=result,
+                    now=now,
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="dependency_composition_recovery_invalid",
+                    message=str(exc),
+                    correction_context={
+                        "blocker_id": blocker.id,
+                        "recovery_id": recoveries[0].id,
+                        "resolver_agent_id": resolver.id,
+                    },
+                ) from None
+            result.update(
+                {
+                    "recovery_task_id": task.id,
+                    "resolver_agent_id": resolver.id,
+                    "state": recoveries[0].state.value,
+                    "async_effect_pending": bool(result["events"]),
+                }
+            )
+            return TeamCommandApplyResult(
+                response_payload=result,
+                created_domain_ids=[
+                    *result["created_task_ids"],
+                    *result["created_inbox_item_ids"],
+                    *result["blocker_event_ids"],
+                ],
+                created_event_ids=list(result["blocker_event_ids"]),
+                progress_classification="blocker_progress",
             )
 
         return self._execute_team_command(
@@ -608,6 +756,32 @@ def _prepare_blocker_source_for_resolution(
     blocker: TeamBlocker,
 ) -> None:
     """Restore the source lifecycle instead of blindly resolving its blocker."""
+
+    active_dependency_recoveries = [
+        recovery
+        for recovery in state.dependency_composition_recoveries.values()
+        if recovery.blocker_id == blocker.id
+        and recovery.state
+        in {
+            DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT,
+            DependencyCompositionRecoveryState.IN_PROGRESS,
+        }
+    ]
+    if active_dependency_recoveries:
+        recovery = sorted(active_dependency_recoveries, key=lambda item: item.id)[0]
+        raise TeamCommandValidationError(
+            code="dependency_composition_recovery_required",
+            message=(
+                f"blocker {blocker.id} records an unresolved deterministic Git "
+                "composition conflict; start and accept its typed recovery task"
+            ),
+            correction_context={
+                "blocker_id": blocker.id,
+                "recovery_id": recovery.id,
+                "recovery_task_id": recovery.recovery_task_id,
+                "recommended_tool": "team_start_dependency_composition_recovery",
+            },
+        )
 
     if (
         blocker.source_kind

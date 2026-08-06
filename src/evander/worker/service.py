@@ -99,6 +99,16 @@ from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
 from .store import WorkerJobStore
 
 logger = logging.getLogger(__name__)
+
+
+class WorkerDependencyCompositionConflict(ValueError):
+    """Structured, recoverable conflict while composing exact dependency commits."""
+
+    def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.details = details
+
+
 _CODEX_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
@@ -1272,6 +1282,7 @@ class WorkerDaemon:
         base_commit_sha = self._compose_task_dependency_git_sources(
             repo_dir=repo_dir,
             target_dir=target_dir,
+            base_ref=request.base_ref,
             dependency_git_sources=request.dependency_git_sources,
             created=created,
             base_commit_sha=base_commit_sha,
@@ -1286,6 +1297,12 @@ class WorkerDaemon:
                 request.dependency_composition_commit_message
                 or "Compose accepted Team dependencies"
             ),
+            dependency_composition_mode=request.dependency_composition_mode,
+            dependency_composition_recovery_id=(
+                request.dependency_composition_recovery_id
+            ),
+            resolved_dependency_branch=request.resolved_dependency_branch,
+            resolved_dependency_commit_sha=request.resolved_dependency_commit_sha,
         )
         if base_commit_sha is not None:
             subprocess.run(
@@ -1315,6 +1332,7 @@ class WorkerDaemon:
         *,
         repo_dir: Path,
         target_dir: Path,
+        base_ref: str,
         dependency_git_sources: Sequence[Any],
         created: bool,
         base_commit_sha: str | None,
@@ -1322,6 +1340,10 @@ class WorkerDaemon:
         dependency_merge_author_name: str,
         dependency_merge_author_email: str,
         dependency_composition_commit_message: str,
+        dependency_composition_mode: str,
+        dependency_composition_recovery_id: str | None,
+        resolved_dependency_branch: str | None,
+        resolved_dependency_commit_sha: str | None,
     ) -> str | None:
         """Compose exact dependency commits before exposing a task worktree.
 
@@ -1340,6 +1362,182 @@ class WorkerDaemon:
             sort_keys=True,
             separators=(",", ":"),
         )
+
+        def fetch_exact_branch(branch: str, expected_commit: str) -> None:
+            subprocess.run(
+                ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            fetched = (
+                subprocess.run(
+                    ["git", "rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+                    cwd=repo_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
+            if fetched != expected_commit:
+                raise ValueError(
+                    f"dependency branch {branch!r} moved: expected accepted "
+                    f"commit {expected_commit}, found {fetched}"
+                )
+
+        if dependency_composition_mode == "manual_recovery":
+            recovery_payload = json.dumps(
+                {
+                    "recovery_id": dependency_composition_recovery_id,
+                    "dependency_git_sources": expected_rows,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            configured_recovery = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "--get",
+                    "evander.manualDependencyGitSources",
+                ],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if configured_recovery.returncode == 0:
+                if configured_recovery.stdout.strip() != recovery_payload:
+                    raise ValueError(
+                        "manual dependency recovery worktree does not match the "
+                        "current immutable recovery sources"
+                    )
+                return base_commit_sha
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            head = (
+                subprocess.run(
+                    ["git", "rev-parse", "HEAD^{commit}"],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
+            if status.strip() or (
+                not created and (base_commit_sha is None or head != base_commit_sha)
+            ):
+                raise ValueError(
+                    "manual dependency recovery requires a clean worktree at its "
+                    "authoritative base before source preparation"
+                )
+            for source in expected_rows:
+                fetch_exact_branch(str(source["branch"]), str(source["commit_sha"]))
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "evander.manualDependencyGitSources",
+                    recovery_payload,
+                ],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return base_commit_sha
+
+        if dependency_composition_mode == "adopt_resolved":
+            if base_commit_sha is None:
+                raise ValueError("resolved dependency adoption requires an authoritative base")
+            resolved_commit = str(resolved_dependency_commit_sha)
+            fetch_exact_branch(str(resolved_dependency_branch), resolved_commit)
+            for source in expected_rows:
+                fetch_exact_branch(str(source["branch"]), str(source["commit_sha"]))
+            for required_commit, description in [
+                (base_commit_sha, "authoritative base"),
+                *[
+                    (str(source["commit_sha"]), f"dependency {source['dependency_task_id']}")
+                    for source in expected_rows
+                ],
+            ]:
+                ancestor = subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", required_commit, resolved_commit],
+                    cwd=target_dir,
+                    env=env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if ancestor.returncode != 0:
+                    raise ValueError(
+                        f"resolved dependency commit does not contain {description} "
+                        f"commit {required_commit}"
+                    )
+            head = (
+                subprocess.run(
+                    ["git", "rev-parse", "HEAD^{commit}"],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            if status.strip() or head not in {base_commit_sha, resolved_commit}:
+                raise ValueError(
+                    "resolved dependency commit cannot replace retained authored task work"
+                )
+            subprocess.run(
+                ["git", "reset", "--hard", resolved_commit],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for key, value in (
+                ("evander.dependencyGitProvenance", expected_json),
+                ("evander.dependencyCompositionRecovery", str(dependency_composition_recovery_id)),
+            ):
+                subprocess.run(
+                    ["git", "config", "--worktree", key, value],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            return resolved_commit
+
         configured = subprocess.run(
             [
                 "git",
@@ -1427,31 +1625,7 @@ class WorkerDaemon:
         for source in expected_rows:
             branch = str(source["branch"])
             expected_commit = str(source["commit_sha"])
-            subprocess.run(
-                ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
-                cwd=repo_dir,
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            fetched = (
-                subprocess.run(
-                    ["git", "rev-parse", "--verify", "FETCH_HEAD^{commit}"],
-                    cwd=repo_dir,
-                    env=env,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                .stdout.strip()
-                .casefold()
-            )
-            if fetched != expected_commit:
-                raise ValueError(
-                    f"dependency branch {branch!r} moved: expected accepted "
-                    f"commit {expected_commit}, found {fetched}"
-                )
+            fetch_exact_branch(branch, expected_commit)
             ancestor = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", expected_commit, head_before],
                 cwd=target_dir,
@@ -1559,6 +1733,30 @@ class WorkerDaemon:
                         text=True,
                     )
                     if merge.returncode != 0:
+                        conflict_paths = [
+                            line.strip()
+                            for line in subprocess.run(
+                                ["git", "diff", "--name-only", "--diff-filter=U"],
+                                cwd=target_dir,
+                                env=env,
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                            ).stdout.splitlines()
+                            if line.strip()
+                        ]
+                        base_tree_hash = (
+                            subprocess.run(
+                                ["git", "rev-parse", f"{head_before}^{{tree}}"],
+                                cwd=target_dir,
+                                env=env,
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                            )
+                            .stdout.strip()
+                            .casefold()
+                        )
                         subprocess.run(
                             ["git", "merge", "--abort"],
                             cwd=target_dir,
@@ -1567,10 +1765,21 @@ class WorkerDaemon:
                             capture_output=True,
                             text=True,
                         )
-                        raise ValueError(
+                        raise WorkerDependencyCompositionConflict(
                             "dependency Git composition conflict for dependency "
                             f"{source['dependency_task_id']} deliverable "
-                            f"{source['deliverable_id']}"
+                            f"{source['deliverable_id']}",
+                            details={
+                                "base_branch": base_ref,
+                                "base_commit_sha": head_before,
+                                "base_tree_hash": base_tree_hash,
+                                "dependency_git_sources": expected_rows,
+                                "failed_dependency_task_id": source[
+                                    "dependency_task_id"
+                                ],
+                                "failed_deliverable_id": source["deliverable_id"],
+                                "conflict_paths": conflict_paths,
+                            },
                         )
                 result_tree = (
                     subprocess.run(
@@ -1588,11 +1797,33 @@ class WorkerDaemon:
                 for source in frontier_rows:
                     commit_command.extend(("-p", str(source["commit_sha"])))
                 commit_command.extend(("-m", dependency_composition_commit_message))
+                parent_timestamps = [
+                    int(
+                        subprocess.run(
+                            ["git", "show", "-s", "--format=%ct", parent],
+                            cwd=target_dir,
+                            env=env,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        ).stdout.strip()
+                    )
+                    for parent in [
+                        head_before,
+                        *(str(source["commit_sha"]) for source in frontier_rows),
+                    ]
+                ]
+                deterministic_date = f"@{max(parent_timestamps) + 1} +0000"
+                commit_env = {
+                    **composition_env,
+                    "GIT_AUTHOR_DATE": deterministic_date,
+                    "GIT_COMMITTER_DATE": deterministic_date,
+                }
                 composed_commit = (
                     subprocess.run(
                         commit_command,
                         cwd=target_dir,
-                        env=composition_env,
+                        env=commit_env,
                         check=True,
                         capture_output=True,
                         text=True,

@@ -385,6 +385,19 @@ def _accept_deliverable_and_maybe_task(
         now=now,
     )
     task.updated_at = now
+    from .dependency_composition_recovery import (
+        accept_dependency_composition_recovery,
+    )
+
+    accept_dependency_composition_recovery(
+        state,
+        task=task,
+        deliverable=deliverable,
+        accepted_by_agent_id=accepted_by_agent_id,
+        dispatch_id=None,
+        result=result,
+        now=now,
+    )
     if task.parent_task_id is None:
         for accepted_deliverable in task_deliverables:
             initialize_pending_initial_release_disposition(

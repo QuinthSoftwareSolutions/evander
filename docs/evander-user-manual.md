@@ -5019,6 +5019,13 @@ accepted historical task.
 
 ### Explicit integration and final-acceptance boundaries
 
+When a leaf task must produce an accepted Git deliverable but does not
+integrate other tasks, select <code>require_git_provenance</code> without making
+it an integration boundary. This contracted leaf cannot finish directly: its
+accepted deliverable must carry the server-verified branch and pinned commit.
+It cannot name <code>required_contribution_task_ids</code> because contribution
+aggregation belongs only to an integration boundary.
+
 Do not infer the task that owns final integration from words such as “root,”
 “lead,” or “integration,” or from hierarchy depth. Set
 <code>integration_boundary=true</code> explicitly and attach a
