@@ -10730,6 +10730,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   await createTaskForm.locator('[name="description"]').fill("Keep this task on feature/demo.");
   await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
   await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
+  await createTaskForm.locator('[name="require_git_provenance"]').check();
   await createTaskForm.getByRole("button", { name: "Create task" }).click();
   await waitForCondition(
     () => requests.some((request) => (
@@ -10746,6 +10747,11 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   ));
   assert.equal(createRequest.payload.git_base_branch, "feature/demo");
   assert.equal(createRequest.payload.parent_task_id, "task-planned");
+  assert.equal(createRequest.payload.integration_boundary, false);
+  assert.deepEqual(createRequest.payload.deliverable_contract, {
+    require_git_provenance: true,
+    required_contribution_task_ids: [],
+  });
 });
 
 test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {
@@ -12310,13 +12316,30 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
 
   await cancellableBody.getByRole("button", { name: "Edit" }).click();
   editForm = page.locator("#edit-record-form");
-  await editForm.locator('[name="integration_boundary"]').check();
   await editForm.locator('[name="require_git_provenance"]').check();
+  await editForm.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  const contractedLeafEditRequest = requests.filter(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable",
+  ).at(-1);
+  assert.ok(contractedLeafEditRequest, "expected contracted-leaf task edit");
+  assert.equal(contractedLeafEditRequest.payload.integration_boundary, false);
+  assert.deepEqual(contractedLeafEditRequest.payload.deliverable_contract, {
+    require_git_provenance: true,
+    required_contribution_task_ids: [],
+  });
+
+  await cancellableBody.getByRole("button", { name: "Edit" }).click();
+  editForm = page.locator("#edit-record-form");
+  await editForm.locator('[name="integration_boundary"]').check();
   await editForm
     .locator('[name="required_contribution_task_ids"]')
     .fill("task-successor");
   await editForm.getByRole("button", { name: "Save changes" }).click();
-  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
   const integrationEditRequest = requests.filter(
     (request) =>
       request.method === "PATCH" &&
@@ -12351,7 +12374,7 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
     .locator('[name="successor_task_id"]')
     .selectOption("task-successor");
   await cancellationForm.getByRole("button", { name: "Cancel task" }).click();
-  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
 
   const cancellationRequest = requests.find(
     (request) =>

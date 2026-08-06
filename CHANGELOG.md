@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-06 - Contracted Leaf Task Controls
+
+- Preserved **Require Git provenance** on task creation and editing even when
+  **Integration boundary** is not selected, matching the backend's contracted-leaf
+  lifecycle used by Git-backed correction and recovery tasks.
+- Clarified that contracted leaves require an accepted, server-verified Git
+  deliverable but cannot aggregate required contribution tasks.
+
 ## 2026-08-06 - Spaced Team Task Board
 
 - Restored consistent spacing between Task board context, create, view-switch, filter, and lane or

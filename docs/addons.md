@@ -1425,9 +1425,11 @@ command paths. It contains:
 - invalid legacy reason codes.
 
 `integration_boundary: true` designates the explicit task that integrates and
-accepts a final deliverable. It is valid only with `deliverable_contract`, and a
-contract is invalid on a non-boundary task. The contract has two independent
-controls:
+accepts a final deliverable. It is valid only with `deliverable_contract`. A
+non-boundary task may also carry a deliverable contract when that leaf must
+resolve through an accepted deliverable instead of direct finish; this is used
+for Git-backed correction and recovery work. Only integration-boundary
+contracts may name required contribution tasks. The contract has two controls:
 
 - `require_git_provenance` requires the final deliverable to carry a submitted,
   authoritative Git context with matching
@@ -1444,6 +1446,11 @@ whose `source_deliverable_ids` provide complete contract coverage is accepted,
 and Git provenance is verified when required. Agents can set these fields with
 `team_create_task` or, before any deliverable submission, an authorized
 `team_update_task`; the create/update/edit UI surfaces the same controls.
+
+A contracted non-boundary leaf also cannot resolve through direct finish. It
+resolves through an accepted deliverable, with authoritative Git provenance
+when required, but it does not aggregate other tasks and therefore cannot set
+`required_contribution_task_ids`.
 
 Every task read also includes a non-persisted `inherited_blockers` projection
 for blockers reached through unresolved descendants or unsatisfied

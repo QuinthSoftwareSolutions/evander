@@ -536,7 +536,7 @@ const fieldTooltips = {
   "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
-  "create-task-form:require_git_provenance": "Require the integration deliverable to carry server-verified Git branch and commit provenance.",
+  "create-task-form:require_git_provenance": "Require this task to resolve through an accepted deliverable carrying server-verified Git branch and commit provenance. This can be used with or without an integration boundary.",
   "create-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
@@ -548,7 +548,7 @@ const fieldTooltips = {
   "update-task-form:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "update-task-form:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
   "update-task-form:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
-  "update-task-form:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "update-task-form:require_git_provenance": "Require this task to resolve through an accepted deliverable carrying server-verified Git provenance. This can be used with or without an integration boundary.",
   "update-task-form:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
 
   "create-review-profile-form:team_id": "Team that owns this review profile.",
@@ -633,7 +633,7 @@ const fieldTooltips = {
   "edit:task:git_base_branch": "The task's durable Git starting branch. It locks after Git preparation, deliverable submission, or promotion creation.",
   "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
   "edit:task:integration_boundary": "Designate this task as the explicit integration and final-acceptance boundary.",
-  "edit:task:require_git_provenance": "Require server-verified Git provenance on the accepted integration deliverable.",
+  "edit:task:require_git_provenance": "Require this task to resolve through an accepted deliverable carrying server-verified Git provenance. This can be used with or without an integration boundary.",
   "edit:task:required_contribution_task_ids": "Child or dependency task IDs whose accepted deliverables must be incorporated exactly.",
   "edit:review-profile:project_id": "Optional project scope. Clear it to make the profile team-wide.",
   "edit:review-profile:name": "Rename the review profile without changing its immutable ID.",
@@ -20100,15 +20100,21 @@ async function submitTaskUpdate(form) {
   const integrationBoundary = Boolean(
     form.elements.integration_boundary?.checked,
   );
+  const requireGitProvenance = Boolean(
+    form.elements.require_git_provenance?.checked,
+  );
+  const requiredContributionTaskIds = splitList(
+    data.required_contribution_task_ids,
+  );
   payload.integration_boundary = integrationBoundary;
-  payload.deliverable_contract = integrationBoundary
+  payload.deliverable_contract = (
+    integrationBoundary
+    || requireGitProvenance
+    || requiredContributionTaskIds.length > 0
+  )
     ? {
-        require_git_provenance: Boolean(
-          form.elements.require_git_provenance?.checked,
-        ),
-        required_contribution_task_ids: splitList(
-          data.required_contribution_task_ids,
-        ),
+        require_git_provenance: requireGitProvenance,
+        required_contribution_task_ids: requiredContributionTaskIds,
       }
     : null;
   await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
@@ -22002,15 +22008,21 @@ function payloadForForm(form, data = formData(form)) {
     const integrationBoundary = Boolean(
       form.elements.integration_boundary?.checked,
     );
-    if (integrationBoundary) {
-      payload.integration_boundary = true;
+    const requireGitProvenance = Boolean(
+      form.elements.require_git_provenance?.checked,
+    );
+    const requiredContributionTaskIds = splitList(
+      data.required_contribution_task_ids,
+    );
+    if (
+      integrationBoundary
+      || requireGitProvenance
+      || requiredContributionTaskIds.length > 0
+    ) {
+      payload.integration_boundary = integrationBoundary;
       payload.deliverable_contract = {
-        require_git_provenance: Boolean(
-          form.elements.require_git_provenance?.checked,
-        ),
-        required_contribution_task_ids: splitList(
-          data.required_contribution_task_ids,
-        ),
+        require_git_provenance: requireGitProvenance,
+        required_contribution_task_ids: requiredContributionTaskIds,
       };
     }
     return payload;
@@ -23044,14 +23056,20 @@ function editPayloadForForm(type, form) {
     const integrationBoundary = Boolean(
       form.elements.integration_boundary?.checked,
     );
-    const deliverableContract = integrationBoundary
+    const requireGitProvenance = Boolean(
+      form.elements.require_git_provenance?.checked,
+    );
+    const requiredContributionTaskIds = splitList(
+      data.required_contribution_task_ids,
+    );
+    const deliverableContract = (
+      integrationBoundary
+      || requireGitProvenance
+      || requiredContributionTaskIds.length > 0
+    )
       ? {
-          require_git_provenance: Boolean(
-            form.elements.require_git_provenance?.checked,
-          ),
-          required_contribution_task_ids: splitList(
-            data.required_contribution_task_ids,
-          ),
+          require_git_provenance: requireGitProvenance,
+          required_contribution_task_ids: requiredContributionTaskIds,
         }
       : null;
     const payload = {
