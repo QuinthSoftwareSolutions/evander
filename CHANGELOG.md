@@ -7,6 +7,9 @@
   test, and operator-documentation references.
 - Kept the established `/api/workflow-editor/*` routes, workflow editor UI
   labels, and browser storage keys unchanged as compatibility contracts.
+- Completed the rename migration for the default branding root and manual
+  screenshot tooling, while retaining the legacy tracked bundle path in Ansible's
+  pre-update reset so existing deployments can upgrade with a dirty generated entrypoint.
 
 ## 2026-08-06 - Recoverable Deterministic Dependency Composition
 

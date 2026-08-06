@@ -153,6 +153,9 @@ def test_screenshots_are_sanitized_dark_mode_publication_assets() -> None:
     assert "estimated_cost: 18.42" in fixture
     assert "estimated_cost_usd" not in fixture
     assert 'projectSelect.selectOption("mission-control")' in fixture
+    assert 'path.join(ROOT, "frontend", "admin-web", "dist")' in fixture
+    assert 'path.join(ROOT, "frontend", "admin-web", "package.json")' in fixture
+    assert '"frontend", "workflow-editor"' not in fixture
     for named_core_fixture in (
         "session-imani-telemetry",
         "vm-imani-telemetry",

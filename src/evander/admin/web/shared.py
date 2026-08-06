@@ -45,7 +45,7 @@ DEFAULT_ADMIN_WEB_HEADER_TITLE = "EVANDER"
 DEFAULT_ADMIN_WEB_HEADER_TITLE_VISIBLE = False
 DEFAULT_ADMIN_WEB_HEADER_LOGO_SIZE: AdminWebHeaderLogoSize = "wordmark"
 DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR = (
-    Path(__file__).resolve().parents[4] / "frontend" / "workflow-editor" / "branding"
+    Path(__file__).resolve().parents[4] / "frontend" / "admin-web" / "branding"
 )
 DEFAULT_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL = "evander-logo-light.png"
 DEFAULT_ADMIN_WEB_PRODUCT_LOGO_DARK_URL = "evander-logo-dark.png"

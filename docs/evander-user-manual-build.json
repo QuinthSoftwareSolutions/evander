@@ -9,7 +9,7 @@
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "f1678e597162aa32b67a1426318d49496e3d12c0ad3f358be380b9de13ec8da5",
+  "source_fingerprint": "f4dcccba7371cfe5f6554b167dda2955cf32f92a094c8353a03647f2b6da79ac",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -116,7 +116,7 @@
     "docs/evander-user-manual/package.json": "a285163e89b29586f0ba15f21f9aec4151345645fb9a3ee1a925c8f5b4686ef9",
     "docs/evander-user-manual/puppeteer-config.json": "b16ddabf21f4ff900bba14c58d95438dff962b427f323e48d4867c4ee9184e14",
     "scripts/build_evander_user_manual.py": "f85054739e33a20a49c88323e19361f0f1e6cf8ff6d30fd64ce30098b7993b5c",
-    "scripts/capture_evander_user_manual_screenshots.mjs": "59396a4a75e870fd42bb79a9b2970fe811306fc17f64b855eb65df4fac388007"
+    "scripts/capture_evander_user_manual_screenshots.mjs": "dbebc8658cf32385a1f2e23f0eb7fde67f111171092ebc5555991292ab139fd6"
   },
   "title": "Evander Technical Manual",
   "verified_commit": "418936fa752c95714cf940651149909a9bbb62a4"
