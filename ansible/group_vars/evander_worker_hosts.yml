@@ -251,7 +251,7 @@ evander_worker_playwright_toolchain_enabled: true
 evander_worker_playwright_node_modules_local_path: >-
   {{
     lookup('env', 'HOST_PLAYWRIGHT_NODE_MODULES')
-    | default(playbook_dir ~ '/../frontend/workflow-editor/node_modules', true)
+    | default(playbook_dir ~ '/../frontend/admin-web/node_modules', true)
   }}
 evander_worker_playwright_browsers_local_path: >-
   {{

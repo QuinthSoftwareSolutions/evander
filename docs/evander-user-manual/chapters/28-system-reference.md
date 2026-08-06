@@ -277,6 +277,6 @@ When a command reveals secrets or user content, prefer field names, counts, reda
 - `scripts/install_systemd_units.sh` — persistent control-plane unit inventory.
 - `config/firewall.env.example` — default guest-reachable ports.
 - `docs/configuration-reference.md` — runtime stores and configuration ownership.
-- `frontend/workflow-editor/src/adminRouting.ts` and `frontend/workflow-editor/src/features/workers/WorkersScreen.tsx` — current Admin navigation and Workers semantics.
+- `frontend/admin-web/src/adminRouting.ts` and `frontend/admin-web/src/features/workers/WorkersScreen.tsx` — current Admin navigation and Workers semantics.
 - `src/evander_team_addon/ui_static/index.html` and `src/evander_team_addon/ui_static/team-ui.js` — current Team view inventory and projections.
 - `src/evander/admin/composition.py` and `src/evander/admin/services/` — supported Admin runtime assembly and domain services.

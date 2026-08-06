@@ -4700,7 +4700,7 @@ administration, bootstrap, migration, and owner protection.</li>
 root-owner authorization for the worker-global ChatGPT subscription
 account.</li>
 <li><code>src/evander/admin/services/session_helpers.py</code> and
-<code>frontend/workflow-editor/src/features/sessions/SessionsScreen.tsx</code>
+<code>frontend/admin-web/src/features/sessions/SessionsScreen.tsx</code>
 — canonical session-policy updates and explicit legacy communication
 conversion.</li>
 <li><code>src/evander/models.py</code> — <code>SessionManifest</code>,
@@ -10624,7 +10624,13 @@ acceptance, resolution, and release.</li>
 another task to resolve. It does not transfer ownership. For Git-backed
 work, preparation also verifies and composes the accepted current Git
 deliverables of direct dependencies into the successor&#39;s worktree. A
-dependency with no Git deliverable remains lifecycle-only.</li>
+dependency with no Git deliverable remains lifecycle-only. If exact
+accepted inputs genuinely conflict, Team records immutable conflict
+evidence instead of exposing a partial checkout. A supervisor explicitly
+selects an active project resolver and starts one pinned integration
+child. The reviewed result becomes the successor&#39;s composed base only
+after managed Git proves that it contains the original base and every
+exact input.</li>
 <li><code>originating_task_id</code> records that another task caused
 independent work to be created. It is immutable provenance only: neither
 task gates the other, and the reference confers no visibility or
@@ -11751,6 +11757,17 @@ ownership/state, integration contract, dependencies, project Git
 configuration, or current deliverable candidates. Priority, timestamps,
 creator/case bookkeeping, dispatch churn, and denormalized ID lists do
 not pretend the cause changed.</p>
+<p>A dependency merge conflict uses a stricter typed recovery. The
+preparation blocker records the exact base tree, ordered accepted source
+commits, failed input, and conflicted paths. Generic resolution is
+disabled. A supervisor or privileged operator selects the resolver, then
+Team creates one pinned integration-boundary recovery task. Its worktree
+fetches the exact inputs without attempting the failed automatic merge.
+After normal review, managed Git verifies that the submitted branch tip
+contains the base and every source; acceptance resolves the blocker and
+a fresh target wake adopts that reviewed commit. If the source
+generation changes first, Team supersedes the stale recovery rather than
+mixing old evidence with new inputs.</p>
 <p>Review repository or artifact preparation failure is also terminal
 for that immutable attempt before inference: Team blocks the exact
 review and records the missing evidence rather than waking a reviewer
@@ -17327,9 +17344,9 @@ control-plane unit inventory.</li>
 ports.</li>
 <li><code>docs/configuration-reference.md</code> — runtime stores and
 configuration ownership.</li>
-<li><code>frontend/workflow-editor/src/adminRouting.ts</code> and
-<code>frontend/workflow-editor/src/features/workers/WorkersScreen.tsx</code>
-— current Admin navigation and Workers semantics.</li>
+<li><code>frontend/admin-web/src/adminRouting.ts</code> and
+<code>frontend/admin-web/src/features/workers/WorkersScreen.tsx</code> —
+current Admin navigation and Workers semantics.</li>
 <li><code>src/evander_team_addon/ui_static/index.html</code> and
 <code>src/evander_team_addon/ui_static/team-ui.js</code> — current Team
 view inventory and projections.</li>
@@ -17912,6 +17929,19 @@ task/dependency/project-Git/current-candidate change. Priority,
 timestamps, and dispatch churn do not unlock the same failure</td>
 </tr>
 <tr class="odd">
+<td>Accepted dependency commits conflict during automatic
+composition</td>
+<td><code>dependency_git_composition_conflict</code> blocker and its
+recovery record: base SHA/tree, ordered sources, failed source, and
+conflict paths</td>
+<td>Deterministic multi-parent composition needs semantic human
+resolution</td>
+<td>Do not generically resolve or merge moving branches. Select an
+active project resolver, start the typed recovery, resolve the exact
+pinned inputs, submit every source deliverable ID for normal review, and
+let acceptance adopt the ancestry-verified commit</td>
+</tr>
+<tr class="even">
 <td>Repeated empty wakes stop task dispatch</td>
 <td>Open blocker with <code>source_kind=agent_execution_stall</code>,
 its events, exhausted dispatch, and affected task IDs</td>
@@ -17919,7 +17949,7 @@ its events, exhausted dispatch, and affected task IDs</td>
 <td>Address the cause and resolve the canonical stall blocker through
 source-aware recovery; do not edit task states or counters</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Deliverable was submitted but no review begins</td>
 <td>Deliverable, review request, reviewer assignment, and outbox/event
 state</td>
@@ -17927,7 +17957,7 @@ state</td>
 <td>Trace deliverable ID to review request and dispatch; requeue only if
 no idempotent equivalent exists</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Reviewer rejects but implementer is not reactivated</td>
 <td>Review decision, deliverable cohort ID, every active cohort slot,
 follow-up inbox, and wake</td>
@@ -17937,14 +17967,14 @@ slot settles; recover blocked slots and let the round finish. For an
 independent review with no follow-up, trace the ordinary rejection
 cascade</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Ephemeral delegate never exits</td>
 <td>Delegation task, lease, child session, terminal result</td>
 <td>Cleanup/finalization</td>
 <td>Preserve result/artifacts, then run the supported terminal cleanup;
 do not silently convert it into a persistent agent</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Release is waiting</td>
 <td>Release package, verification records, approved candidate SHA, and
 gate status</td>
@@ -17954,7 +17984,7 @@ verification can receive an authorized reasoned waiver—failed
 verification is unwaivable and requires a corrected reviewed
 candidate</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Release verifier reports <code>pids_limit_exhausted</code> or
 <code>memory_limit_exhausted</code></td>
 <td>Structured worker failure cause, live project
@@ -17965,7 +17995,7 @@ candidate</td>
 evidence before retrying. If an agent-requested retry already failed,
 escalate; another agent retry is forbidden</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Human release review is blocked with no assignee</td>
 <td>Human request, assignment generation, snapshotted groups, current
 Admin membership/RBAC, and assignment-unavailable blocker</td>
@@ -17973,7 +18003,7 @@ Admin membership/RBAC, and assignment-unavailable blocker</td>
 <td>Repair membership or use audited reassignment on the same request;
 never skip the gate or create a replacement attempt</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Human preview failed or expired</td>
 <td>Human request candidate SHA/tree, preparation generation, safe
 target metadata, and blocker reason</td>
@@ -17981,7 +18011,7 @@ target metadata, and blocker reason</td>
 <td>Repair the host-owned workflow target and resume the same request to
 create a new preparation generation</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Human requested changes but no publication follows</td>
 <td>Predecessor decision/findings, correction coordination parent and
 children, preparation blockers, accepted correction deliverables, and
@@ -17991,7 +18021,7 @@ successor link</td>
 preparation blocker, and complete reviewed correction work. Team derives
 proposals and creates the changed successor automatically</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Successor is approved but publication is refused</td>
 <td>Candidate/approved SHA, human approval, confirmed carried finding
 IDs, and linked canonical-push promotion</td>
@@ -17999,7 +18029,7 @@ IDs, and linked canonical-push promotion</td>
 <td>Confirm every carried finding and prove one succeeded canonical push
 for the same SHA/tree and target</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Release reports success but remote ref differs</td>
 <td>Remote ref readback and recorded published SHA</td>
 <td>Publish/readback failure</td>

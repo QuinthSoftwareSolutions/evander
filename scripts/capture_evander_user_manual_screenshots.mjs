@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const ADMIN_DIST = path.join(ROOT, "frontend", "workflow-editor", "dist");
+const ADMIN_DIST = path.join(ROOT, "frontend", "admin-web", "dist");
 const TEAM_STATIC = path.join(ROOT, "src", "evander_team_addon", "ui_static");
 const RAW_DIR = path.join(ROOT, "output", "playwright", "evander-user-manual-screenshots");
 const MANUAL_SCREENSHOT_DIR = path.join(ROOT, "docs", "assets", "evander-user-manual", "screenshots");
@@ -25,7 +25,7 @@ const DIRECTORY = "root/northstar-platform/mission-control";
 const MANAGED_REPO_ID = "mr_0123456789abcdefabcd";
 const VIEWPORT = { width: 1600, height: 1000 };
 
-const frontendRequire = createRequire(path.join(ROOT, "frontend", "workflow-editor", "package.json"));
+const frontendRequire = createRequire(path.join(ROOT, "frontend", "admin-web", "package.json"));
 const { chromium } = frontendRequire("playwright");
 
 const PERMISSIONS = [

@@ -82,8 +82,7 @@ tasks/
 !ansible/roles/worker_mssql/tasks/main.yml
 !ansible/roles/worker_container_egress_policy/tasks/
 !ansible/roles/worker_container_egress_policy/tasks/main.yml
-frontend/workflow-editor/node_modules/
-frontend/workflow-editor/tsconfig.tsbuildinfo
+frontend/admin-web/tsconfig.tsbuildinfo
 **/dist/*
 /integrations/teams-meeting-media-bridge/**/bin/
 /integrations/teams-meeting-media-bridge/**/obj/

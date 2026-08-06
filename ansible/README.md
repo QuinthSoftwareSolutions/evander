@@ -142,10 +142,10 @@ Admin Web public access:
   expose Admin Web through Caddy.
 - The managed Caddy config proxies `/`, `/index.html`, `/api/*`, `/public/*`, and `/healthz` to
   the local Admin Web Python service, while serving hashed frontend assets from
-  `frontend/workflow-editor/dist` directly. The proxied document entrypoints let Admin Web inject
+  `frontend/admin-web/dist` directly. The proxied document entrypoints let Admin Web inject
   the configured title and branding payload before the React app starts.
 - Admin Web defaults to the bundled Evander and Quinth Software Solutions branding under
-  `frontend/workflow-editor/branding`. Runtime overrides still come from `evander_admin_web_env`.
+  `frontend/admin-web/branding`. Runtime overrides still come from `evander_admin_web_env`.
   For custom local logo files, set `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` and use relative logo
   paths so Caddy reaches them through the proxied `/api/admin/branding/assets/...` route.
 - To copy operator-owned logo files from the Ansible controller, set
@@ -176,7 +176,7 @@ Workflow config ownership:
 - The live workflow config, pack, and pack-layout files are ignored by Git. Checked-in examples use
   `config/trigger-orchestrator/config-example.json` and `config/workflow-packs/*-example.json`.
 - The repo checkout role also resets tracked deploy-generated frontend files such as
-  `frontend/workflow-editor/dist/index.html` before updates, because the frontend build can rewrite
+  `frontend/admin-web/dist/index.html` before updates, because the frontend build can rewrite
   those files on the target host.
 
 Secret-bearing variables should come from encrypted inventory or Ansible Vault. The playbook
@@ -404,7 +404,7 @@ enable authentication, and prefer TLS plus ingress policy in front of the servic
 Caddy exposure, set `evander_admin_web_caddy_enabled: true`; Caddy will proxy the HTML
 entrypoints and API/health routes to the local Admin Web service while serving static hashed assets
 directly. The default title and logos come from the product checkout under
-`frontend/workflow-editor/branding`. Put environment-specific Admin Web title, header, and logo
+`frontend/admin-web/branding`. Put environment-specific Admin Web title, header, and logo
 settings in `evander_admin_web_env`; relative logo paths are served from
 `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through `/api/admin/branding/assets/...`. Use
 `evander_admin_web_branding_assets` when Ansible should also copy those logo files from the

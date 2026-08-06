@@ -23,7 +23,7 @@ service. Keep active Admin Web passwords and session secrets in
 `config/admin-web.env` for non-secret listener/auth mode settings, and do not expose
 the service beyond localhost without HTTPS, secure cookies, and ingress policy.
 By default, Admin Web uses the bundled Evander and Quinth Software Solutions branding in
-`frontend/workflow-editor/branding`. Use the Admin Web branding variables in that env file when a
+`frontend/admin-web/branding`. Use the Admin Web branding variables in that env file when a
 deployment needs a different browser title, shell header title, or logo set; relative logo paths
 can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 `/api/admin/branding/assets/...` route.

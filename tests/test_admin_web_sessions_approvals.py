@@ -192,7 +192,7 @@ def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> N
     source = (
         ROOT
         / "frontend"
-        / "workflow-editor"
+        / "admin-web"
         / "src"
         / "features"
         / "sessions"
@@ -212,7 +212,7 @@ def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> N
 
 def test_mcp_tools_page_renders_tool_descriptions() -> None:
     source = (
-        ROOT / "frontend" / "workflow-editor" / "src" / "features" / "mcpTools" / "McpToolsPage.tsx"
+        ROOT / "frontend" / "admin-web" / "src" / "features" / "mcpTools" / "McpToolsPage.tsx"
     ).read_text(encoding="utf-8")
 
     assert "mcp-tool-policy-description" in source

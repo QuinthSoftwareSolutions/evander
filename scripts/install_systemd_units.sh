@@ -287,7 +287,7 @@ PY
 }
 
 admin_frontend_assets_ready() {
-  python3 - "${ROOT_DIR}/frontend/workflow-editor/dist" <<'PY'
+  python3 - "${ROOT_DIR}/frontend/admin-web/dist" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -333,13 +333,13 @@ check_admin_frontend_assets() {
     else
       report_fail \
         "Admin Web frontend assets are missing or stale and npm is not installed." \
-        "No apt candidate was found for Node.js/npm. Install Node.js/npm and build frontend/workflow-editor manually. Missing assets: ${missing}" \
+        "No apt candidate was found for Node.js/npm. Install Node.js/npm and build frontend/admin-web manually. Missing assets: ${missing}" \
         "critical"
     fi
   else
     report_fail \
       "Admin Web frontend assets are missing or stale and npm is not installed." \
-      "Install Node.js/npm and build frontend/workflow-editor, or run guided setup on an apt-based host with sudo available so it can ask before installing them. Missing assets: ${missing}" \
+      "Install Node.js/npm and build frontend/admin-web, or run guided setup on an apt-based host with sudo available so it can ask before installing them. Missing assets: ${missing}" \
       "critical"
   fi
 }

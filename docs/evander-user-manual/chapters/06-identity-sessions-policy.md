@@ -353,7 +353,7 @@ human's group does not automatically revoke an already issued agent session.
 - `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for the worker-global
   ChatGPT subscription account.
 - `src/evander/admin/services/session_helpers.py` and
-  `frontend/workflow-editor/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
+  `frontend/admin-web/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
   updates and explicit legacy communication conversion.
 - `src/evander/models.py` — `SessionManifest`, `SessionToolApprovalLease`, and approval models.
 - `src/evander/policy.py` and `src/evander/policy_config.py` — visibility, grants, denial,

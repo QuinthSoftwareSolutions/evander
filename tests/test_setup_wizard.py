@@ -520,7 +520,7 @@ def test_setup_builds_admin_frontend_assets_when_references_are_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
     project_dir = tmp_path / "project"
-    frontend_dir = project_dir / "frontend" / "workflow-editor"
+    frontend_dir = project_dir / "frontend" / "admin-web"
     dist_dir = frontend_dir / "dist"
     dist_dir.mkdir(parents=True)
     (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
@@ -560,7 +560,7 @@ def test_setup_admin_frontend_asset_build_installs_approved_nodejs_npm(
     tmp_path: Path, monkeypatch
 ) -> None:
     project_dir = tmp_path / "project"
-    frontend_dir = project_dir / "frontend" / "workflow-editor"
+    frontend_dir = project_dir / "frontend" / "admin-web"
     dist_dir = frontend_dir / "dist"
     dist_dir.mkdir(parents=True)
     (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
@@ -620,7 +620,7 @@ def test_setup_admin_frontend_asset_build_installs_approved_nodejs_npm(
 
 
 def test_setup_admin_frontend_tooling_supports_apt_node_18() -> None:
-    frontend_dir = ROOT / "frontend" / "workflow-editor"
+    frontend_dir = ROOT / "frontend" / "admin-web"
     package_json = json.loads((frontend_dir / "package.json").read_text(encoding="utf-8"))
     package_lock = json.loads((frontend_dir / "package-lock.json").read_text(encoding="utf-8"))
 
@@ -637,7 +637,7 @@ def test_setup_admin_frontend_asset_build_stops_when_nodejs_npm_is_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:
     project_dir = tmp_path / "project"
-    frontend_dir = project_dir / "frontend" / "workflow-editor"
+    frontend_dir = project_dir / "frontend" / "admin-web"
     dist_dir = frontend_dir / "dist"
     dist_dir.mkdir(parents=True)
     (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
