@@ -29,7 +29,7 @@ from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import list_relative_files, safe_subprocess_error
-from .service import WorkerDaemon
+from .service import WorkerDaemon, WorkerDependencyCompositionConflict
 
 
 class WorkerAuthMiddleware(BaseHTTPMiddleware):
@@ -146,6 +146,14 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                 daemon.prepare_task_worktree,
                 request.path_params["session_id"],
                 worktree_request,
+            )
+        except WorkerDependencyCompositionConflict as exc:
+            return JSONResponse(
+                {
+                    "error": str(exc),
+                    "dependency_composition_conflict": exc.details,
+                },
+                status_code=409,
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)

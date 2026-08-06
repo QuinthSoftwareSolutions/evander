@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-08-06 - Recoverable Deterministic Dependency Composition
+
+- Made divergent dependency composition commits reproducible across VM and
+  container-worker backends by deriving both Git timestamps from the newest
+  parent timestamp plus one second.
+- Persisted exact base, source commits, failed input, and conflict paths when
+  automatic dependency composition conflicts, and added a typed supervisor or
+  Admin recovery that creates one pinned integration task for a selected resolver.
+- Required the recovery deliverable to name every exact source and pass managed-Git
+  ancestry verification before acceptance; accepting it resolves the blocker and
+  makes the reviewed commit the blocked target task's authoritative composed base.
+- Exposed recovery status and assignment in Team reads, MCP, Admin API, and the
+  blocker UI, while refusing generic resolution of an unresolved composition conflict.
+- Made recovery preparation use the captured base commit instead of a moving branch,
+  preserved libvirt conflict evidence without treating other Git merge failures as
+  conflicts, rejected stale recoveries at review acceptance, and released cancelled
+  recovery tasks for reassignment.
+
+## 2026-08-06 - Contracted Leaf Task Controls
+
+- Preserved **Require Git provenance** on task creation and editing even when
+  **Integration boundary** is not selected, matching the backend's contracted-leaf
+  lifecycle used by Git-backed correction and recovery tasks.
+- Clarified that contracted leaves require an accepted, server-verified Git
+  deliverable but cannot aggregate required contribution tasks.
+
+## 2026-08-06 - Spaced Team Task Board
+
+- Restored consistent spacing between Task board context, create, view-switch, filter, and lane or
+  hierarchy sections, while keeping the Board and Hierarchy tabs visibly separated.
+
+## 2026-08-06 - Readable Team Role Descriptions
+
+- Preserved line breaks and paragraph spacing in Team role descriptions without changing their
+  normal proportional text styling.
+
 ## 2026-08-06 - Complete Team Git Configuration Surfaces
 
 - Exposed agent author and committer identities in the primary Projects-page creation form so
@@ -395,6 +431,12 @@
   authority for deliverables that already belong to a review cohort. Sealed
   cohort reviews now remain with their assigned member, while blocked members
   continue through the explicit retry/replacement path.
+
+## 2026-08-02 - Workflow Mailbox Grant Policy Enforcement
+
+- Validated workflow-created agent mailbox grants against the effective directory policy instead
+  of provider mailbox defaults, preventing workflows from granting unauthorized mailbox, folder,
+  or send access.
 
 ## 2026-07-31 - Review Follow-up Fixes
 

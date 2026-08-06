@@ -29,6 +29,7 @@ from .work_due import _mark_agent_work_due
 
 TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
     {
+        "dependency_git_composition_conflict",
         "dependency_git_preparation_failed",
         # A candidate-rooted correction must never continue from a worktree
         # whose immutable source differs from its pinned rejected candidate.
@@ -372,8 +373,19 @@ def reconcile_stale_task_preparation_blockers(
     now: datetime | None = None,
 ) -> list[str]:
     from .blockers import resolve_blocker
+    from .dependency_composition_recovery import (
+        supersede_stale_dependency_recoveries,
+    )
 
     effective_now = _ensure_utc(now or utc_now())
+    superseded_recovery_ids = supersede_stale_dependency_recoveries(
+        state,
+        now=effective_now,
+    )
+    if superseded_recovery_ids:
+        result.setdefault("superseded_dependency_recovery_ids", []).extend(
+            superseded_recovery_ids
+        )
     resolved_ids: list[str] = []
     for blocker in sorted(state.blockers.values(), key=lambda item: item.id):
         if (

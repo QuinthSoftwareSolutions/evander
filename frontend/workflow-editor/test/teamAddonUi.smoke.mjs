@@ -192,6 +192,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   );
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
+  assert.match(script, /class="meta-line role-description"/);
+  assert.match(
+    stylesheet,
+    /\.role-description\s*\{[\s\S]*?white-space:\s*pre-wrap;/,
+  );
   assert.match(script, /peopleViewTeams/);
   assert.match(script, /data-team-record-group-id/);
   assert.match(script, /data-team-record-toggle/);
@@ -248,6 +253,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   );
   assert.match(stylesheet, /\.task-board-lanes/);
   assert.match(stylesheet, /\.task-board-card-blocked/);
+  assert.match(
+    stylesheet,
+    /\.task-board-view\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*0\.85rem;/,
+  );
   assert.match(
     stylesheet,
     /\.team-record-group-header:hover,[\s\S]*?background: var\(--panel-alt\);/,
@@ -9459,6 +9468,62 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-delivery-page .delivery-row").first().waitFor({ state: "visible" });
 });
 
+test("team add-on Task board keeps space between panels, cards, and view tabs", async (t) => {
+  const { port } = await createTeamAddonServer(t, { initialState: seededGitState() });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 1600 } });
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  await page.locator("#task-board-view .task-board-lanes").waitFor({ state: "visible" });
+
+  const taskBoardSpacing = await page.locator("#task-board-view").evaluate((view) => {
+    const sections = [
+      ".task-board-context",
+      ".task-board-create",
+      ".task-board-toolbar",
+      ".task-board-filters",
+      ".task-board-lanes",
+    ].map((selector) => view.querySelector(selector));
+    const gaps = sections.slice(1).map((section, index) => {
+      const previousRect = sections[index].getBoundingClientRect();
+      const currentRect = section.getBoundingClientRect();
+      return currentRect.top - previousRect.bottom;
+    });
+    const modeSwitch = view.querySelector(".task-board-mode-switch");
+    const modeTabs = [...modeSwitch.querySelectorAll('[role="tab"]')];
+    const firstTabRect = modeTabs[0].getBoundingClientRect();
+    const secondTabRect = modeTabs[1].getBoundingClientRect();
+    return {
+      display: getComputedStyle(view).display,
+      gaps,
+      tabGap: parseFloat(getComputedStyle(modeSwitch).gap),
+      tabDistance: secondTabRect.left - firstTabRect.right,
+    };
+  });
+
+  assert.equal(taskBoardSpacing.display, "grid");
+  assert.ok(
+    taskBoardSpacing.gaps.every((gap) => gap >= 12),
+    `expected separated task-board sections, received gaps ${taskBoardSpacing.gaps.join(", ")}`,
+  );
+  assert.ok(taskBoardSpacing.tabGap >= 8, "expected a visible gap between Board and Hierarchy tabs");
+  assert.ok(
+    taskBoardSpacing.tabDistance >= 8,
+    `expected Board and Hierarchy tabs to be separated, received ${taskBoardSpacing.tabDistance}px`,
+  );
+
+  await page.getByRole("tab", { name: "Hierarchy" }).click();
+  await page.locator("#task-board-view .task-board-hierarchy").waitFor({ state: "visible" });
+  const hierarchyGap = await page.locator("#task-board-view").evaluate((view) => {
+    const filters = view.querySelector(".task-board-filters").getBoundingClientRect();
+    const hierarchy = view.querySelector(".task-board-hierarchy").getBoundingClientRect();
+    return hierarchy.top - filters.bottom;
+  });
+  assert.ok(hierarchyGap >= 12, `expected space before the hierarchy panel, received ${hierarchyGap}px`);
+});
+
 test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededScrollablePeopleTooltipState(),
@@ -10665,6 +10730,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   await createTaskForm.locator('[name="description"]').fill("Keep this task on feature/demo.");
   await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
   await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
+  await createTaskForm.locator('[name="require_git_provenance"]').check();
   await createTaskForm.getByRole("button", { name: "Create task" }).click();
   await waitForCondition(
     () => requests.some((request) => (
@@ -10681,6 +10747,11 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   ));
   assert.equal(createRequest.payload.git_base_branch, "feature/demo");
   assert.equal(createRequest.payload.parent_task_id, "task-planned");
+  assert.equal(createRequest.payload.integration_boundary, false);
+  assert.deepEqual(createRequest.payload.deliverable_contract, {
+    require_git_provenance: true,
+    required_contribution_task_ids: [],
+  });
 });
 
 test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {
@@ -12245,13 +12316,30 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
 
   await cancellableBody.getByRole("button", { name: "Edit" }).click();
   editForm = page.locator("#edit-record-form");
-  await editForm.locator('[name="integration_boundary"]').check();
   await editForm.locator('[name="require_git_provenance"]').check();
+  await editForm.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  const contractedLeafEditRequest = requests.filter(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname ===
+        "/api/addons/team-addon/tasks/task-cancellable",
+  ).at(-1);
+  assert.ok(contractedLeafEditRequest, "expected contracted-leaf task edit");
+  assert.equal(contractedLeafEditRequest.payload.integration_boundary, false);
+  assert.deepEqual(contractedLeafEditRequest.payload.deliverable_contract, {
+    require_git_provenance: true,
+    required_contribution_task_ids: [],
+  });
+
+  await cancellableBody.getByRole("button", { name: "Edit" }).click();
+  editForm = page.locator("#edit-record-form");
+  await editForm.locator('[name="integration_boundary"]').check();
   await editForm
     .locator('[name="required_contribution_task_ids"]')
     .fill("task-successor");
   await editForm.getByRole("button", { name: "Save changes" }).click();
-  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
   const integrationEditRequest = requests.filter(
     (request) =>
       request.method === "PATCH" &&
@@ -12286,7 +12374,7 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
     .locator('[name="successor_task_id"]')
     .selectOption("task-successor");
   await cancellationForm.getByRole("button", { name: "Cancel task" }).click();
-  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
 
   const cancellationRequest = requests.find(
     (request) =>

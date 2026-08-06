@@ -62,6 +62,9 @@ from ..domain.common import (
     _set_task_state,
 )
 from ..domain.context_rotation import _maybe_mark_idle_context_rotation_due
+from ..domain.dependency_composition_recovery import (
+    release_dependency_composition_recovery_after_task_cancellation,
+)
 from ..domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from ..domain.project_status import _recalculate_project_status
 from ..domain.review_handoff import queue_actionable_inbox_item
@@ -492,6 +495,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         },
                     )
             now = utc_now()
+            before_event_ids = set(state_model.blocker_events)
             task.cancellation = TaskCancellation(
                 reason_code=normalized_reason_code,
                 reason=normalized_reason,
@@ -515,7 +519,19 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "git_context_finalization": git_context_finalization,
                 "progress_made": True,
             }
-            before_event_ids = set(state_model.blocker_events)
+            released_recovery = (
+                release_dependency_composition_recovery_after_task_cancellation(
+                    state_model,
+                    task_id=task.id,
+                    actor_agent_id=actor.id,
+                    dispatch_id=resolved.dispatch_id,
+                    now=now,
+                )
+            )
+            if released_recovery is not None:
+                result["released_dependency_composition_recovery_id"] = (
+                    released_recovery.id
+                )
             reconcile_task_blockers_after_cancellation(
                 state_model,
                 task_id=task.id,

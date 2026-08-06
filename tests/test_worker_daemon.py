@@ -28,7 +28,11 @@ from evander.codex_auth import CodexAuthMode, CodexTurnSpec
 from evander.managed_git_grants import managed_git_ssh_alias
 from evander.worker import api as worker_api
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
-from evander.worker.service import WorkerDaemon, _git_subprocess_env
+from evander.worker.service import (
+    WorkerDaemon,
+    WorkerDependencyCompositionConflict,
+    _git_subprocess_env,
+)
 from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
@@ -941,21 +945,19 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         "session-1",
         WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
     )
-    prepared = daemon.prepare_task_worktree(
-        "session-1",
-        WorkerTaskWorktreeRequest(
-            repo_name="repo",
-            worktree_name="task-ui-compact",
-            branch="agents/session-1/tasks/task-ui-compact",
-            base_ref="main",
-            dependency_git_sources=dependency_rows,
-            dependency_merge_author_name="Jonathan Quinth",
-            dependency_merge_author_email="operator@example.invalid",
-            dependency_composition_commit_message=(
-                "Compose accepted dependencies for task task-ui"
-            ),
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-ui-compact",
+        branch="agents/session-1/tasks/task-ui-compact",
+        base_ref="main",
+        dependency_git_sources=dependency_rows,
+        dependency_merge_author_name="Jonathan Quinth",
+        dependency_merge_author_email="operator@example.invalid",
+        dependency_composition_commit_message=(
+            "Compose accepted dependencies for task task-ui"
         ),
     )
+    prepared = daemon.prepare_task_worktree("session-1", request)
     target = (
         tmp_path
         / "worker-root"
@@ -985,6 +987,42 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
     ]
     assert (target / "domain.txt").read_text(encoding="utf-8") == "accepted domain\n"
     assert (target / "client.txt").read_text(encoding="utf-8") == "accepted client\n"
+    parent_timestamps = [
+        int(
+            subprocess.run(
+                ["git", "show", "-s", "--format=%ct", commit],
+                cwd=target,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        for commit in [base_commit, *dependency_commits]
+    ]
+    composition_timestamps = subprocess.run(
+        ["git", "show", "-s", "--format=%at %ct", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    expected_timestamp = max(parent_timestamps) + 1
+    assert composition_timestamps == f"{expected_timestamp} {expected_timestamp}"
+
+    daemon.clone_repo(
+        "session-2",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    reproduced = daemon.prepare_task_worktree(
+        "session-2",
+        request.model_copy(
+            update={
+                "worktree_name": "same-composition",
+                "branch": "agents/session-2/tasks/same-composition",
+            }
+        ),
+    )
+    assert reproduced.commit_sha == prepared.commit_sha
 
 
 def test_worker_adopts_only_clean_retained_dependency_history_with_prior_base(
@@ -1163,7 +1201,6 @@ def test_worker_adopts_only_clean_retained_dependency_history_with_prior_base(
         != 0
     )
 
-
 def test_worker_does_not_merge_missing_dependency_into_retained_task_work(
     tmp_path: Path,
 ) -> None:
@@ -1290,6 +1327,13 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    base_tree_hash = subprocess.run(
+        ["git", "rev-parse", f"{base_commit}^{{tree}}"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     dependency_commits: list[str] = []
     for branch, content in (
         ("agents/predecessor/tasks/first", "first\n"),
@@ -1342,10 +1386,23 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
     )
 
     with pytest.raises(
-        ValueError,
+        WorkerDependencyCompositionConflict,
         match="task-second deliverable deliverable-second",
-    ):
+    ) as raised:
         daemon.prepare_task_worktree("session-1", request)
+
+    assert raised.value.details == {
+        "base_branch": "main",
+        "base_commit_sha": base_commit,
+        "base_tree_hash": base_tree_hash,
+        "dependency_git_sources": [
+            source.model_dump(mode="json")
+            for source in request.dependency_git_sources
+        ],
+        "failed_dependency_task_id": "task-second",
+        "failed_deliverable_id": "deliverable-second",
+        "conflict_paths": ["shared.txt"],
+    }
 
     target = (
         tmp_path
@@ -1391,6 +1448,99 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
         ).returncode
         != 0
     )
+
+    manual = daemon.prepare_task_worktree(
+        "session-1",
+        request.model_copy(
+            update={
+                "expected_base_commit_sha": base_commit,
+                "expected_base_tree_hash": base_tree_hash,
+                "dependency_composition_mode": "manual_recovery",
+                "dependency_composition_recovery_id": "depcomp-test",
+            }
+        ),
+    )
+    assert manual.commit_sha == base_commit
+    manual_payload = json.loads(
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--worktree",
+                "--get",
+                "evander.manualDependencyGitSources",
+            ],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    assert manual_payload["recovery_id"] == "depcomp-test"
+    assert manual_payload["dependency_git_sources"] == [
+        source.model_dump(mode="json") for source in request.dependency_git_sources
+    ]
+
+    resolved_branch = "agents/resolver/tasks/dependency-recovery"
+    subprocess.run(
+        ["git", "checkout", "-q", "-B", resolved_branch, dependency_commits[0]],
+        cwd=source,
+        check=True,
+    )
+    merge = subprocess.run(
+        ["git", "merge", "--no-ff", "--no-edit", dependency_commits[1]],
+        cwd=source,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert merge.returncode != 0
+    (source / "shared.txt").write_text("resolved\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "Resolve dependency composition"],
+        cwd=source,
+        check=True,
+    )
+    resolved_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    adopted = daemon.prepare_task_worktree(
+        "session-1",
+        request.model_copy(
+            update={
+                "worktree_name": "task-adopt-recovery",
+                "branch": "agents/session-1/tasks/task-adopt-recovery",
+                "expected_base_commit_sha": base_commit,
+                "expected_base_tree_hash": base_tree_hash,
+                "dependency_composition_mode": "adopt_resolved",
+                "dependency_composition_recovery_id": "depcomp-test",
+                "resolved_dependency_branch": resolved_branch,
+                "resolved_dependency_commit_sha": resolved_commit,
+            }
+        ),
+    )
+    assert adopted.commit_sha == resolved_commit
+    assert adopted.base_commit_sha == resolved_commit
+    adopted_target = target.parent / "task-adopt-recovery"
+    assert (adopted_target / "shared.txt").read_text(encoding="utf-8") == "resolved\n"
+    assert subprocess.run(
+        [
+            "git",
+            "config",
+            "--worktree",
+            "--get",
+            "evander.dependencyCompositionRecovery",
+        ],
+        cwd=adopted_target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "depcomp-test"
 
 
 def test_worker_task_worktree_metadata_survives_host_container_host_reuse(
@@ -2095,6 +2245,60 @@ def test_worker_cleanup_endpoint_offloads_blocking_git_work(
     assert len(offloaded_calls) == 1
     assert offloaded_calls[0][1][0] == "session-1"
     assert isinstance(offloaded_calls[0][1][1], WorkerTaskWorktreeCleanupRequest)
+
+
+def test_worker_worktree_endpoint_returns_structured_dependency_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    details = {
+        "base_branch": "main",
+        "base_commit_sha": "a" * 40,
+        "base_tree_hash": "b" * 40,
+        "dependency_git_sources": [
+            {
+                "dependency_task_id": "source-task",
+                "deliverable_id": "source-deliverable",
+                "branch": "agents/source/tasks/source-task",
+                "commit_sha": "c" * 40,
+            }
+        ],
+        "failed_dependency_task_id": "source-task",
+        "failed_deliverable_id": "source-deliverable",
+        "conflict_paths": ["src/shared.py"],
+    }
+
+    def _prepare(_session_id: str, _request: WorkerTaskWorktreeRequest) -> None:
+        raise WorkerDependencyCompositionConflict(
+            "dependency Git composition conflict",
+            details=details,
+        )
+
+    monkeypatch.setattr(daemon, "prepare_task_worktree", _prepare)
+
+    with TestClient(daemon.create_app()) as client:
+        response = client.post(
+            "/v1/sessions/session-1/worktrees",
+            headers=_auth(),
+            json={
+                "repo_name": "repo",
+                "worktree_name": "task-a-1234",
+                "branch": "agents/session-1/tasks/task-a-1234",
+                "base_ref": "main",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": "dependency Git composition conflict",
+        "dependency_composition_conflict": details,
+    }
 
 
 def test_worker_prepare_session_endpoint_offloads_blocking_lifecycle_work(

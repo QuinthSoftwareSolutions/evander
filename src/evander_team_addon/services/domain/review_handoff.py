@@ -19,7 +19,7 @@ def queue_actionable_inbox_item(
     state: TeamState,
     *,
     recipient_agent_id: str,
-    sender_agent_id: str,
+    sender_agent_id: str | None,
     payload: Mapping[str, Any],
     result: dict[str, Any] | None,
     now: datetime,

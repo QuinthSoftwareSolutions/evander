@@ -24,6 +24,7 @@ from evander_team_addon.models import (
     DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
     DeliverableVerification,
+    DependencyCompositionRecoveryState,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
     GitWorkContext,
@@ -142,6 +143,9 @@ from evander_team_addon.services.memory_service import (
     team_memory_collection_name,
     team_memory_point_id,
     team_memory_point_payload,
+)
+from evander_team_addon.services.domain.dependency_composition_recovery import (
+    record_dependency_composition_conflict,
 )
 
 
@@ -12691,6 +12695,160 @@ def test_apply_agent_action_escalation_without_target_records_failure(tmp_path: 
     assert state.inbox == {}
     record = next(iter(state.action_records.values()))
     assert record.success is False
+
+
+def test_supervisor_starts_dependency_composition_recovery_and_cannot_bypass_it(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="target", owner_agent_id="backend")
+    now = datetime(2026, 8, 6, 10, 0, tzinfo=UTC)
+
+    def _seed_conflict(state: TeamState) -> TeamState:
+        state.tasks["source-one"] = AgentTask(
+            id="source-one",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            state=TeamTaskState.FINISHED,
+            task_kind=TeamTaskKind.SUPPORT,
+            title="Accepted dependency source",
+            description="Provide the accepted dependency input.",
+            created_by_agent_id="lead",
+            deliverable_ids=["deliverable-one"],
+        )
+        state.deliverables["deliverable-one"] = Deliverable(
+            id="deliverable-one",
+            task_id="source-one",
+            producer_agent_id="backend",
+            summary="Accepted dependency input.",
+            state=TeamRecordState.ACCEPTED,
+        )
+        blocker = TeamBlocker(
+            id="blocker-depcomp",
+            team_id="team",
+            project_id="project",
+            task_id="target",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id="execution-preparation:task:target:generation:cause",
+            reason_code="dependency_git_composition_conflict",
+            reporter_agent_id="backend",
+            owner_agent_id="lead",
+            route=TeamBlockerRoute.OWNED,
+            state=TeamBlockerState.OPEN,
+            summary="Dependency composition conflict",
+            created_at=now,
+            updated_at=now,
+        )
+        state.blockers[blocker.id] = blocker
+        record_dependency_composition_conflict(
+            state,
+            blocker=blocker,
+            conflict={
+                "target_task_id": "target",
+                "project_id": "project",
+                "managed_repo_id": MANAGED_REPO_ID,
+                "directory_path": "root",
+                "base_branch": "main",
+                "base_commit_sha": "a" * 40,
+                "base_tree_hash": "b" * 40,
+                "dependency_git_sources": [
+                    {
+                        "dependency_task_id": "source-one",
+                        "deliverable_id": "deliverable-one",
+                        "branch": "agents/source/tasks/one",
+                        "commit_sha": "1" * 40,
+                    }
+                ],
+                "failed_dependency_task_id": "source-one",
+                "failed_deliverable_id": "deliverable-one",
+                "conflict_paths": ["src/shared.py"],
+            },
+            now=now,
+        )
+        return state
+
+    repo.update(_seed_conflict)
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-start-depcomp",
+    )
+    state, started = _command_service(
+        repo
+    ).start_dependency_composition_recovery_command(
+        session_id="session-lead",
+        blocker_id="blocker-depcomp",
+        resolver_agent_id="backend",
+        request_id="request-start-depcomp",
+    )
+
+    assert started["success"] is True
+    recovery_task = state.tasks[started["recovery_task_id"]]
+    assert recovery_task.owner_agent_id == "backend"
+    assert recovery_task.parent_task_id == "target"
+    assert recovery_task.git_base_commit_sha == "a" * 40
+    recovery = state.dependency_composition_recoveries[started["recovery_id"]]
+    assert recovery.recovery_task_id == recovery_task.id
+
+    unchanged, bypass = _command_service(repo).update_blocker_command(
+        session_id="session-lead",
+        blocker_id="blocker-depcomp",
+        action="resolve",
+        note="Try to bypass typed recovery.",
+        resolution_refs=["manual"],
+        request_id="request-bypass-depcomp",
+    )
+    assert bypass["success"] is False
+    assert bypass["errors"][0]["code"] == "dependency_composition_recovery_required"
+    assert unchanged.blockers["blocker-depcomp"].state == TeamBlockerState.OPEN
+
+    first_recovery_task_id = recovery_task.id
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-cancel-depcomp",
+    )
+
+    cancelled_state, cancelled = _command_service(repo).cancel_task_command(
+        session_id="session-backend",
+        task_id=first_recovery_task_id,
+        reason_code="resolver_unavailable",
+        reason="Return the pinned recovery for reassignment.",
+        request_id="request-cancel-depcomp",
+    )
+
+    assert cancelled["success"] is True, cancelled.get("errors")
+    assert cancelled["released_dependency_composition_recovery_id"] == recovery.id
+    assert cancelled_state.tasks[first_recovery_task_id].state == TeamTaskState.CANCELLED
+    released = cancelled_state.dependency_composition_recoveries[recovery.id]
+    assert released.state == DependencyCompositionRecoveryState.AWAITING_ASSIGNMENT
+    assert released.recovery_task_id is None
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-restart-depcomp",
+    )
+    restarted_state, restarted = _command_service(
+        repo
+    ).start_dependency_composition_recovery_command(
+        session_id="session-lead",
+        blocker_id="blocker-depcomp",
+        resolver_agent_id="backend",
+        request_id="request-restart-depcomp",
+    )
+
+    assert restarted["success"] is True
+    assert restarted["recovery_task_id"] != first_recovery_task_id
+    assert restarted_state.tasks[first_recovery_task_id].state == TeamTaskState.CANCELLED
+    replacement = restarted_state.tasks[restarted["recovery_task_id"]]
+    assert replacement.state == TeamTaskState.PENDING
+    assert replacement.git_base_commit_sha == "a" * 40
+    assert (
+        restarted_state.dependency_composition_recoveries[recovery.id].recovery_task_id
+        == replacement.id
+    )
 
 
 def _seed_task(

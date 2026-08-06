@@ -20,6 +20,7 @@ from evander.directory_config import (
 from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.directories import DirectoryService, DirectoryStore
 from evander.models import SessionManifest
+from evander.policy_config import EffectivePolicyConfig
 from evander.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
@@ -202,6 +203,17 @@ class ProviderConfigResolver:
             )
             payload.update(resolution.effective_config)
         return GatewayConfig.model_validate(payload)
+
+    def resolve_policy_for_directory(self, directory_path: str | None) -> EffectivePolicyConfig:
+        """Resolve authorization policy without GatewayConfig's provider defaults."""
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
+        resolution = self.resolver.resolve_domain(
+            normalized_path,
+            domain="policy",
+            base_config=get_domain_base_config(self.config, "policy"),
+            validator=lambda candidate: validate_effective_domain_payload("policy", candidate),
+        )
+        return EffectivePolicyConfig.model_validate(resolution.effective_config)
 
     def resolve_contacts_for_directory(self, directory_path: str | None) -> ContactDirectoryConfig:
         normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)

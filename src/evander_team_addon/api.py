@@ -182,6 +182,7 @@ TEAM_STATE_COLLECTION_KEYS = (
     "inbox",
     "blockers",
     "blocker_events",
+    "dependency_composition_recoveries",
     "action_records",
     "memories",
     "release_packages",
@@ -206,6 +207,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "inbox",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
         "action_records",
         "deliverables",
         "release_packages",
@@ -226,6 +228,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "review_profiles",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
         "release_packages",
         "dispatches",
         "worktree_cleanup_candidates",
@@ -245,6 +248,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "release_packages",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
         "cases",
         "dispatches",
         "worktree_cleanup_candidates",
@@ -259,6 +263,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "cases",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
         "dispatches",
         "worktree_cleanup_candidates",
         "git_work_contexts",
@@ -287,6 +292,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agents",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
     },
     "planning": {
         "teams",
@@ -298,6 +304,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "review_profiles",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
         "dispatches",
         "worktree_cleanup_candidates",
         "git_work_contexts",
@@ -316,6 +323,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "release_packages",
         "blockers",
         "blocker_events",
+        "dependency_composition_recoveries",
         "inbox",
         "action_records",
         "ephemeral_assignments",
@@ -350,6 +358,7 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "release_packages",
     "blockers",
     "blocker_events",
+    "dependency_composition_recoveries",
     "dispatches",
     "worktree_cleanup_candidates",
     "git_work_contexts",
@@ -376,6 +385,7 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "memories",
     "release_packages",
     "blockers",
+    "dependency_composition_recoveries",
     "stand_downs",
 )
 TEAM_STATE_HISTORY_COLLECTIONS = (
@@ -384,6 +394,7 @@ TEAM_STATE_HISTORY_COLLECTIONS = (
     "release_packages",
     "blockers",
     "blocker_events",
+    "dependency_composition_recoveries",
     "ephemeral_assignments",
     "git_promotions",
     "conversation_messages",
@@ -2581,6 +2592,29 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             extra={"candidate_correction_recovery": result},
         )
 
+    async def start_dependency_composition_recovery(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        blocker_id = request.path_params["blocker_id"]
+        state, result = (
+            admin_service.start_dependency_composition_recovery_as_operator(
+                blocker_id=blocker_id,
+                resolver_agent_id=_required(payload, "resolver_agent_id"),
+                operator_actor_id=_operator_actor_from_request(
+                    context.auth,
+                    request,
+                ),
+                expected_revision=_expected_revision(payload),
+            )
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            extra={"dependency_composition_recovery": result},
+        )
+
     async def create_outcome_kind_definition(
         request: Request,
     ) -> JSONResponse:
@@ -3826,6 +3860,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         route(
+            "/blockers/{blocker_id}/dependency-composition-recovery",
+            start_dependency_composition_recovery,
+            methods=["POST"],
+        ),
+        route(
             "/candidate-correction-recoveries/{blocker_id}",
             recover_candidate_correction_successor,
             methods=["POST"],
@@ -4783,6 +4822,11 @@ def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
             for event in state.blocker_events.values()
             if event.blocker_id in open_blocker_ids
         }
+        ids_by_collection["dependency_composition_recoveries"] = {
+            recovery.id
+            for recovery in state.dependency_composition_recoveries.values()
+            if recovery.blocker_id in open_blocker_ids
+        }
     return ids_by_collection
 
 
@@ -5035,6 +5079,8 @@ def _state_history_item_is_current(collection: str, item: Any) -> bool:
         return _record_state_value(item) != TeamRecordState.ACCEPTED.value
     if collection == "blockers":
         return _record_state_value(item) == "open"
+    if collection == "dependency_composition_recoveries":
+        return _record_state_value(item) in {"awaiting_assignment", "in_progress"}
     if collection == "ephemeral_assignments":
         return _record_state_value(item) not in {
             "accepted",

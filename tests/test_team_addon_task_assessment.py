@@ -817,6 +817,22 @@ def test_contracted_leaf_forbids_direct_finish_without_becoming_integration_boun
     ]
 
 
+def test_contracted_leaf_cannot_require_integration_contributions() -> None:
+    with pytest.raises(
+        ValueError,
+        match="leaf deliverable_contract cannot require contribution tasks",
+    ):
+        AgentTask(
+            **{
+                **_support_task("contracted-leaf").model_dump(),
+                "deliverable_contract": TaskDeliverableContract(
+                    require_git_provenance=True,
+                    required_contribution_task_ids=["dependency"],
+                ),
+            }
+        )
+
+
 def test_scoped_integration_coverage_filters_task_and_deliverable_ids_separately() -> None:
     state = _state()
     integration = AgentTask(
