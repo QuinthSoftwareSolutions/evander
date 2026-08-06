@@ -1616,7 +1616,7 @@ human's group does not automatically revoke an already issued agent session.
 - `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for the worker-global
   ChatGPT subscription account.
 - `src/evander/admin/services/session_helpers.py` and
-  `frontend/workflow-editor/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
+  `frontend/admin-web/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
   updates and explicit legacy communication conversion.
 - `src/evander/models.py` — `SessionManifest`, `SessionToolApprovalLease`, and approval models.
 - `src/evander/policy.py` and `src/evander/policy_config.py` — visibility, grants, denial,
@@ -5002,7 +5002,11 @@ Use the relationship that describes the real lifecycle:
   resolve. It does not transfer ownership. For Git-backed work, preparation
   also verifies and composes the accepted current Git deliverables of direct
   dependencies into the successor's worktree. A dependency with no Git
-  deliverable remains lifecycle-only.
+  deliverable remains lifecycle-only. If exact accepted inputs genuinely conflict,
+  Team records immutable conflict evidence instead of exposing a partial checkout.
+  A supervisor explicitly selects an active project resolver and starts one pinned
+  integration child. The reviewed result becomes the successor's composed base only
+  after managed Git proves that it contains the original base and every exact input.
 - <code>originating_task_id</code> records that another task caused independent
   work to be created. It is immutable provenance only: neither task gates the
   other, and the reference confers no visibility or authority.
@@ -5694,6 +5698,16 @@ instructions, ownership/state, integration contract, dependencies, project Git
 configuration, or current deliverable candidates. Priority, timestamps,
 creator/case bookkeeping, dispatch churn, and denormalized ID lists do not
 pretend the cause changed.
+
+A dependency merge conflict uses a stricter typed recovery. The preparation blocker
+records the exact base tree, ordered accepted source commits, failed input, and
+conflicted paths. Generic resolution is disabled. A supervisor or privileged operator
+selects the resolver, then Team creates one pinned integration-boundary recovery task.
+Its worktree fetches the exact inputs without attempting the failed automatic merge.
+After normal review, managed Git verifies that the submitted branch tip contains the
+base and every source; acceptance resolves the blocker and a fresh target wake adopts
+that reviewed commit. If the source generation changes first, Team supersedes the stale
+recovery rather than mixing old evidence with new inputs.
 
 Review repository or artifact preparation failure is also terminal for that
 immutable attempt before inference: Team blocks the exact review and records
@@ -8760,7 +8774,7 @@ When a command reveals secrets or user content, prefer field names, counts, reda
 - `scripts/install_systemd_units.sh` — persistent control-plane unit inventory.
 - `config/firewall.env.example` — default guest-reachable ports.
 - `docs/configuration-reference.md` — runtime stores and configuration ownership.
-- `frontend/workflow-editor/src/adminRouting.ts` and `frontend/workflow-editor/src/features/workers/WorkersScreen.tsx` — current Admin navigation and Workers semantics.
+- `frontend/admin-web/src/adminRouting.ts` and `frontend/admin-web/src/features/workers/WorkersScreen.tsx` — current Admin navigation and Workers semantics.
 - `src/evander_team_addon/ui_static/index.html` and `src/evander_team_addon/ui_static/team-ui.js` — current Team view inventory and projections.
 - `src/evander/admin/composition.py` and `src/evander/admin/services/` — supported Admin runtime assembly and domain services.
 
@@ -8888,6 +8902,7 @@ The presence of a task, message, or deliverable does not by itself prove that th
 | Agent wakes with irrelevant or apparently incomplete context | Runtime operations payload, `context_mode`, and immutable dispatch ID for that exact wake | Context compaction, retained delta, scope, or stale related records | For `retained_delta`, use `team_get_current_dispatch_context` to hydrate the frozen scope. If the hydrated membership is wrong, fix the selector/relationship; do not expand every wake with the entire Team database |
 | Task remains queued | Task assessment, assignment, unresolved descendants/dependencies, canonical blockers, Team capacity, active dispatches | Planning/dispatch eligibility | Follow the assessment's exact next action and confirm a durable dispatch was actually prepared and leased |
 | Dispatch fails before prompt, then identical setup is not attempted again | Durable `TeamDispatch`, cause-specific preparation blocker, semantic generation, and every required repository/worktree/context | Repository, dependency-Git, or review-artifact preparation suppression | Fix the recorded cause and resolve its blocker, or make a meaningful task/dependency/project-Git/current-candidate change. Priority, timestamps, and dispatch churn do not unlock the same failure |
+| Accepted dependency commits conflict during automatic composition | `dependency_git_composition_conflict` blocker and its recovery record: base SHA/tree, ordered sources, failed source, and conflict paths | Deterministic multi-parent composition needs semantic human resolution | Do not generically resolve or merge moving branches. Select an active project resolver, start the typed recovery, resolve the exact pinned inputs, submit every source deliverable ID for normal review, and let acceptance adopt the ancestry-verified commit |
 | Repeated empty wakes stop task dispatch | Open blocker with `source_kind=agent_execution_stall`, its events, exhausted dispatch, and affected task IDs | Agent-wide no-progress policy | Address the cause and resolve the canonical stall blocker through source-aware recovery; do not edit task states or counters |
 | Deliverable was submitted but no review begins | Deliverable, review request, reviewer assignment, and outbox/event state | Review cascade creation or reviewer capacity | Trace deliverable ID to review request and dispatch; requeue only if no idempotent equivalent exists |
 | Reviewer rejects but implementer is not reactivated | Review decision, deliverable cohort ID, every active cohort slot, follow-up inbox, and wake | Independent cascade failure or a sealed cohort still settling | For a sealed cohort, this is expected until every pending/blocked slot settles; recover blocked slots and let the round finish. For an independent review with no follow-up, trace the ordinary rejection cascade |

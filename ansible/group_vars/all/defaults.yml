@@ -17,7 +17,7 @@ evander_repo_managed_workflow_untracked_config_paths:
   - config/workflow-packs/agent-container-worker.v1.json
   - "{{ evander_workflow_layout_path }}"
 evander_repo_managed_generated_tracked_paths:
-  - frontend/workflow-editor/dist/index.html
+  - frontend/admin-web/dist/index.html
 evander_repo_managed_tracked_config_paths: >-
   {{
     evander_repo_managed_base_tracked_config_paths
@@ -285,7 +285,7 @@ evander_python_install_extras: "[dev]"
 evander_python_install_env: {}
 
 # Admin Web frontend build.
-evander_admin_web_frontend_dir: "{{ evander_deploy_path }}/frontend/workflow-editor"
+evander_admin_web_frontend_dir: "{{ evander_deploy_path }}/frontend/admin-web"
 evander_admin_web_frontend_dist_dir: "{{ evander_admin_web_frontend_dir }}/dist"
 evander_admin_web_frontend_build_enabled: true
 evander_admin_web_caddy_enabled: false

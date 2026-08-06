@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-06 - Admin Web Frontend Naming
+
+- Renamed the full Admin Web frontend project from `frontend/workflow-editor` to
+  `frontend/admin-web`, including setup, deployment, branding, worker-browser,
+  test, and operator-documentation references.
+- Kept the established `/api/workflow-editor/*` routes, workflow editor UI
+  labels, and browser storage keys unchanged as compatibility contracts.
+
 ## 2026-08-06 - Recoverable Deterministic Dependency Composition
 
 - Made divergent dependency composition commits reproducible across VM and

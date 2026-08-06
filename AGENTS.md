@@ -326,7 +326,7 @@ egress, no autoscaling/Kubernetes scheduler, and no replacement for the existing
   password.
 - Workflow pack edits can race with other operators. Use Admin Web/API revision and lock behavior;
   do not rewrite live pack files from stale local copies. Never write directly to live pack files.
-- `frontend/workflow-editor/dist/index.html` is tracked and often churns during builds. If built
+- `frontend/admin-web/dist/index.html` is tracked and often churns during builds. If built
   assets are not in scope, avoid carrying generated hash-pointer changes.
 
 ## Files To Read First
@@ -363,7 +363,7 @@ Focused suites that often matter for control-plane changes:
 
 Do not assume the suite is currently green; run it and inspect failures in the current worktree.
 
-For UI, browser, Playwright, workflow-editor, and broad smoke tests, use explicit command-level
+For UI, browser, Playwright, Admin Web, and broad smoke tests, use explicit command-level
 timeouts and prefer focused tests first. These tests can hang on pending promises, unclosed
 browser/server handles, `networkidle` waits, or missing UI conditions even after nearby assertions
 have passed. If a broad UI/smoke command times out, stop it, report the exact command, timeout, and

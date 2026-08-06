@@ -779,7 +779,7 @@ class SetupManager:
         *,
         approve_nodejs_npm_install: Callable[[dict[str, str]], bool] | None = None,
     ) -> None:
-        frontend_dir = self.project_dir / "frontend" / "workflow-editor"
+        frontend_dir = self.project_dir / "frontend" / "admin-web"
         dist_dir = admin_frontend_dist_dir(self.project_dir)
         if admin_frontend_assets_ready(dist_dir):
             return

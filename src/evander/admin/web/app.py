@@ -162,7 +162,7 @@ def _fallback_html(dist_dir: Path, *, page_title: str, branding_payload: dict[st
     <main>
       <h1>Admin frontend not built</h1>
       <p>The API is available, but the static frontend bundle was not found or is incomplete at <code>{dist_dir}</code>.</p>
-      <p>Build the React app in <code>frontend/workflow-editor</code> and reload this page.</p>
+      <p>Build the React app in <code>frontend/admin-web</code> and reload this page.</p>
     </main>
   </body>
 </html>

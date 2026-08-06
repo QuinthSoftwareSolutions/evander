@@ -11,7 +11,7 @@ _ASSET_REFERENCE_RE = re.compile(r"""(?:src|href)=["'](?P<path>/?assets/[^"']+)[
 
 
 def admin_frontend_dist_dir(project_dir: Path) -> Path:
-    return project_dir / "frontend" / "workflow-editor" / "dist"
+    return project_dir / "frontend" / "admin-web" / "dist"
 
 
 def missing_admin_frontend_assets(dist_dir: Path) -> list[Path]:

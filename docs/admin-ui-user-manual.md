@@ -64,7 +64,7 @@ Logo values can be absolute `https://...` URLs, in-app paths such as `/assets/lo
 Relative asset paths are served by the Admin Web API under `/api/admin/branding/assets/...`, which
 also works when Caddy proxies the HTML entrypoints and serves hashed frontend assets directly.
 When no asset directory is configured, Admin Web serves the bundled defaults from
-`frontend/workflow-editor/branding`.
+`frontend/admin-web/branding`.
 
 ## Shared Shell
 

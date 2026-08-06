@@ -324,7 +324,7 @@ def test_mailbox_grant_contract_is_covered_by_authoritative_docs() -> None:
 
 
 def test_admin_navigation_is_covered_by_manuals() -> None:
-    routing = (ROOT / "frontend/workflow-editor/src/adminRouting.ts").read_text(encoding="utf-8")
+    routing = (ROOT / "frontend/admin-web/src/adminRouting.ts").read_text(encoding="utf-8")
     block = routing.split("export const TABS", 1)[1].split("];", 1)[0]
     labels = set(re.findall(r'label:\s*"([^"]+)"', block))
     assert labels

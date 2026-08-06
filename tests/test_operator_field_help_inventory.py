@@ -48,11 +48,11 @@ def test_operator_field_help_inventory_is_structured_and_discoverable() -> None:
         assert f"`{priority}`" in contents
 
     for source in [
-        "frontend/workflow-editor/src/App.tsx",
-        "frontend/workflow-editor/src/features/approvals/ApprovalsScreen.tsx",
-        "frontend/workflow-editor/src/features/sessions/SessionsScreen.tsx",
-        "frontend/workflow-editor/src/features/toolCalls/ToolCallsPage.tsx",
-        "frontend/workflow-editor/src/features/configuration/ConfigurationScreen.tsx",
+        "frontend/admin-web/src/App.tsx",
+        "frontend/admin-web/src/features/approvals/ApprovalsScreen.tsx",
+        "frontend/admin-web/src/features/sessions/SessionsScreen.tsx",
+        "frontend/admin-web/src/features/toolCalls/ToolCallsPage.tsx",
+        "frontend/admin-web/src/features/configuration/ConfigurationScreen.tsx",
     ]:
         assert source in contents
 
