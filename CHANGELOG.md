@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-06 - Candidate Recovery Instructions
+
+- Added an optional operator-instruction prompt when creating a verified
+  candidate-correction replacement. The instruction is stored in the pinned
+  recovery task so the assignee receives its scope with the normal task wake.
+
 ## 2026-08-06 - Admin Web Frontend Naming
 
 - Renamed the full Admin Web frontend project from `frontend/workflow-editor` to

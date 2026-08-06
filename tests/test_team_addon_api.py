@@ -5073,6 +5073,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-candidate-correction-recovery-task-id" in script.text
     assert "View replacement task" in script.text
     assert "Create verified replacement" in script.text
+    assert "Add instructions for the verified replacement task" in script.text
+    assert "payload.instruction" in script.text
     assert "Authorize waiver instead" in script.text
     assert "existing_recovery_task_id" in script.text
     assert "/candidate-correction-recoveries/" in script.text

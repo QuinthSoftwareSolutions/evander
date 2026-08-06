@@ -436,6 +436,7 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
         blocker_id=blocker.id,
         action="create_verified_replacement",
         operator_actor_id="jonathan",
+        instruction="Also fix the exact client-test blocker and run the full gate.",
         expected_revision=state.revision,
     )
 
@@ -445,6 +446,8 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     assert recovery.dependency_task_ids == []
     assert recovery.git_base_branch == "agents/session-coder/correction"
     assert recovery.git_base_commit_sha == CORRECTION_COMMIT
+    assert "Operator instruction from jonathan:" in recovery.description
+    assert "Also fix the exact client-test blocker and run the full gate." in recovery.description
     assert state.blockers[blocker.id].state == TeamBlockerState.OPEN
     recovery_event = state.blocker_events[result["created_blocker_event_id"]]
     assert recovery_event.event_type == TeamBlockerEventType.PROGRESS
@@ -471,10 +474,13 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
         blocker_id=blocker.id,
         action="create_verified_replacement",
         operator_actor_id="jonathan",
+        instruction="A replay cannot replace the task's original instruction.",
         expected_revision=state.revision,
     )
     assert replay["existing_recovery_task_id"] == recovery.id
     assert "created_recovery_task_id" not in replay
+    assert "Also fix the exact client-test blocker and run the full gate." in recovery.description
+    assert "A replay cannot replace the task's original instruction." not in recovery.description
     assert progress_event_ids == {
         event.id
         for event in state.blocker_events.values()

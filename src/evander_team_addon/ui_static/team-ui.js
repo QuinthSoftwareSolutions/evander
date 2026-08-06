@@ -2352,6 +2352,7 @@ function bindRecordEditing() {
         candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryAction,
       );
       let reason = null;
+      let instruction = null;
       if (action === "authorize_verification_waiver") {
         reason = window.prompt(
           "Why is a verification waiver justified? This reason is recorded on the release.",
@@ -2361,12 +2362,21 @@ function bindRecordEditing() {
           setStatus("A verification-waiver reason is required.", "error");
           return;
         }
+      } else if (action === "create_verified_replacement") {
+        instruction = window.prompt(
+          "Add instructions for the verified replacement task (optional). These become part of its durable task scope.",
+          "",
+        );
+        if (instruction === null) {
+          return;
+        }
       }
       void recoverCandidateCorrectionSuccessor(
         candidateCorrectionRecoveryButton,
         candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryId,
         action,
         text(reason) || null,
+        text(instruction) || null,
       );
       return;
     }
@@ -21740,7 +21750,13 @@ async function startDependencyCompositionRecovery(button, blockerId, resolverAge
   }
 }
 
-async function recoverCandidateCorrectionSuccessor(button, blockerId, action, reason = null) {
+async function recoverCandidateCorrectionSuccessor(
+  button,
+  blockerId,
+  action,
+  reason = null,
+  instruction = null,
+) {
   if (!guardTeamMutation("recover candidate correction successors")) {
     return;
   }
@@ -21758,6 +21774,9 @@ async function recoverCandidateCorrectionSuccessor(button, blockerId, action, re
     const payload = { action: normalizedAction };
     if (text(reason)) {
       payload.reason = text(reason);
+    }
+    if (text(instruction)) {
+      payload.instruction = text(instruction);
     }
     const response = await teamFetch(`${API_BASE}${endpoint}`, {
       method: "POST",

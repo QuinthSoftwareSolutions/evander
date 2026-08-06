@@ -2578,6 +2578,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 blocker_id=blocker_id,
                 action=_required(payload, "action"),
                 reason=_optional(payload, "reason"),
+                instruction=_optional(payload, "instruction"),
                 owner_agent_id=_optional(payload, "owner_agent_id"),
                 operator_actor_id=_operator_actor_from_request(
                     context.auth,
