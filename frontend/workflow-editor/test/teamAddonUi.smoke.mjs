@@ -255,6 +255,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.task-board-card-blocked/);
   assert.match(
     stylesheet,
+    /\.task-board-view\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*0\.85rem;/,
+  );
+  assert.match(
+    stylesheet,
     /\.team-record-group-header:hover,[\s\S]*?background: var\(--panel-alt\);/,
   );
   assert.match(stylesheet, /\.teams-create-team-panel/);
@@ -9462,6 +9466,62 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-workspace-page .workspace-dashboard-actions").getByRole("button", { name: "Delivery" }).click();
   await page.locator("#team-delivery-page").waitFor({ state: "visible" });
   await page.locator("#team-delivery-page .delivery-row").first().waitFor({ state: "visible" });
+});
+
+test("team add-on Task board keeps space between panels, cards, and view tabs", async (t) => {
+  const { port } = await createTeamAddonServer(t, { initialState: seededGitState() });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 1600 } });
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  await page.locator("#task-board-view .task-board-lanes").waitFor({ state: "visible" });
+
+  const taskBoardSpacing = await page.locator("#task-board-view").evaluate((view) => {
+    const sections = [
+      ".task-board-context",
+      ".task-board-create",
+      ".task-board-toolbar",
+      ".task-board-filters",
+      ".task-board-lanes",
+    ].map((selector) => view.querySelector(selector));
+    const gaps = sections.slice(1).map((section, index) => {
+      const previousRect = sections[index].getBoundingClientRect();
+      const currentRect = section.getBoundingClientRect();
+      return currentRect.top - previousRect.bottom;
+    });
+    const modeSwitch = view.querySelector(".task-board-mode-switch");
+    const modeTabs = [...modeSwitch.querySelectorAll('[role="tab"]')];
+    const firstTabRect = modeTabs[0].getBoundingClientRect();
+    const secondTabRect = modeTabs[1].getBoundingClientRect();
+    return {
+      display: getComputedStyle(view).display,
+      gaps,
+      tabGap: parseFloat(getComputedStyle(modeSwitch).gap),
+      tabDistance: secondTabRect.left - firstTabRect.right,
+    };
+  });
+
+  assert.equal(taskBoardSpacing.display, "grid");
+  assert.ok(
+    taskBoardSpacing.gaps.every((gap) => gap >= 12),
+    `expected separated task-board sections, received gaps ${taskBoardSpacing.gaps.join(", ")}`,
+  );
+  assert.ok(taskBoardSpacing.tabGap >= 8, "expected a visible gap between Board and Hierarchy tabs");
+  assert.ok(
+    taskBoardSpacing.tabDistance >= 8,
+    `expected Board and Hierarchy tabs to be separated, received ${taskBoardSpacing.tabDistance}px`,
+  );
+
+  await page.getByRole("tab", { name: "Hierarchy" }).click();
+  await page.locator("#task-board-view .task-board-hierarchy").waitFor({ state: "visible" });
+  const hierarchyGap = await page.locator("#task-board-view").evaluate((view) => {
+    const filters = view.querySelector(".task-board-filters").getBoundingClientRect();
+    const hierarchy = view.querySelector(".task-board-hierarchy").getBoundingClientRect();
+    return hierarchy.top - filters.bottom;
+  });
+  assert.ok(hierarchyGap >= 12, `expected space before the hierarchy panel, received ${hierarchyGap}px`);
 });
 
 test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {

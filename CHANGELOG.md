@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-06 - Spaced Team Task Board
+
+- Restored consistent spacing between Task board context, create, view-switch, filter, and lane or
+  hierarchy sections, while keeping the Board and Hierarchy tabs visibly separated.
+
 ## 2026-08-06 - Readable Team Role Descriptions
 
 - Preserved line breaks and paragraph spacing in Team role descriptions without changing their

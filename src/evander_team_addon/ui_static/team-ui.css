@@ -1887,6 +1887,11 @@ button.team-record-kind-tab strong {
   gap: 0.85rem;
 }
 
+.task-board-view {
+  display: grid;
+  gap: 0.85rem;
+}
+
 .task-board-selectors {
   display: grid;
   grid-template-columns: repeat(2, minmax(12rem, 16rem));
@@ -1908,7 +1913,6 @@ button.team-record-kind-tab strong {
   border-radius: 8px;
   padding: 0.65rem 0.75rem;
   background: var(--panel-alt);
-  margin-bottom: 0.75rem;
 }
 
 .task-board-context strong {
