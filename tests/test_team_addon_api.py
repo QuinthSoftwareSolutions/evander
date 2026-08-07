@@ -19,6 +19,7 @@ from evander.addons import AddonContext
 from evander.admin.services.managed_git_common import ManagedGitConflictError
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
+from evander.config import GatewayConfig
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
@@ -88,6 +89,9 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from evander_team_addon.services.commands.outbox import (
+    TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
+)
 from evander_team_addon.services.domain.human_reviews import (
     HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
     HUMAN_REVIEW_PREPARATION_FAILED,
@@ -111,6 +115,46 @@ def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
 
 def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
     return TeamRuntimeService(repo)
+
+
+def test_team_outbox_publication_wake_is_durable_and_notifies_trigger_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notified_lock_paths: list[Path] = []
+    monkeypatch.setattr(
+        team_addon_api,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
+    )
+    context = AddonContext(
+        addon_id="team-addon",
+        runtime_dir=tmp_path / "runtime",
+        addon_runtime_dir=tmp_path / "runtime" / "addons" / "team-addon",
+        project_dir=tmp_path,
+        config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
+    )
+
+    first = team_addon_api._request_team_outbox_publication(
+        context,
+        correlation_key="candidate-correction-recovery:blocker-1:12",
+    )
+    second = team_addon_api._request_team_outbox_publication(
+        context,
+        correlation_key="candidate-correction-recovery:blocker-1:12",
+    )
+
+    events = InternalEventBus(internal_event_store_path(context.runtime_dir)).list_events()
+    assert first["event_ids"] == second["event_ids"]
+    assert first["wake_notified"] is True
+    assert second["wake_notified"] is True
+    assert len(events) == 1
+    assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    assert events[0].correlation_key == "candidate-correction-recovery:blocker-1:12"
+    assert notified_lock_paths == [
+        context.runtime_dir / "trigger-orchestrator.lock",
+        context.runtime_dir / "trigger-orchestrator.lock",
+    ]
 
 
 def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:

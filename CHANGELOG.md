@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-07 - Prompt Team Outbox Publication
+
+- Woke the Team workflow immediately after operator candidate-correction recovery commits its
+  durable outbox records, while retaining the quarter-hour Team runtime tick as a recovery path.
+
 ## 2026-08-07 - Historical Attention Classification
 
 - Moved escalation notices for superseded or retired reviews and resolved source blockers out of

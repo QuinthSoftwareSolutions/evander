@@ -22,6 +22,9 @@ from ..domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from ..domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 
 
+TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE = "team.outbox.publish_requested"
+
+
 def _team_event_outbox_records(
     events: Sequence[Mapping[str, Any]],
 ) -> list[TeamOutboxRecord]:

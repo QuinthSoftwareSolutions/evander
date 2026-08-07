@@ -228,6 +228,7 @@ from .services.domain.ephemeral import (
     EPHEMERAL_REQUESTED_EVENT_TYPE,
 )
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
 from .services.domain.human_reviews import (
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
@@ -2012,6 +2013,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         OPERATOR_ESCALATION_EVENT_TYPE,
         "Team operator escalation requested",
         "Published when Team automation needs an operator escalation notification.",
+    ),
+    _team_internal_event(
+        TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
+        "Team outbox publication requested",
+        "Published after Team work is committed to the outbox so delivery can begin immediately.",
     ),
     _team_internal_event(
         GIT_PROMOTION_EVENT_TYPE,

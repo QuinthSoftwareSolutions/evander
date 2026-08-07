@@ -37,6 +37,7 @@ from evander.admin.web.rbac import (
 )
 from evander.admin.web.shared import request_has_privileged_operations
 from evander.admin.web.user_store import normalize_admin_web_login
+from evander.config import GatewayConfig
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -52,6 +53,7 @@ from evander.execution.container_worker_client import (
 )
 from evander.email.http_utils import ProviderRequestError
 from evander.models import utc_now
+from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
     VoiceQueryDelegator,
@@ -59,6 +61,7 @@ from evander.voice_sessions import (
     sanitize_voice_metadata,
     voice_query_payload,
 )
+from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 from .avatars import (
     AVATAR_MIME_TYPE,
@@ -122,6 +125,7 @@ from .services.domain.release_packages import ReleasePackageValidationError
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
 from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
+from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
 from .services.admin_service import TeamAdminService
 from .services.chat_service import (
     TeamChatService,
@@ -2586,6 +2590,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 ),
                 expected_revision=_expected_revision(payload),
             )
+        )
+        result["outbox_publication_wake"] = _request_team_outbox_publication(
+            context,
+            correlation_key=(
+                f"candidate-correction-recovery:{blocker_id}:{state.revision}"
+            ),
         )
         return _state_response(
             request,
@@ -6986,6 +6996,63 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         )
         published_ids.append(published.event_id)
     return published_ids
+
+
+def _request_team_outbox_publication(
+    context: AddonContext,
+    *,
+    correlation_key: str,
+) -> dict[str, object]:
+    """Persist and signal a prompt outbox-publisher workflow wake.
+
+    The Team outbox is already committed before this helper is called. If the
+    trigger event or socket notification cannot be created, the periodic Team
+    runtime tick remains the recovery path rather than rolling back the
+    completed operator action.
+    """
+
+    try:
+        project_dir = (
+            Path(context.project_dir)
+            if context.project_dir is not None
+            else Path(context.runtime_dir).parent
+        )
+        base_config = (
+            context.config
+            if isinstance(context.config, GatewayConfig)
+            else GatewayConfig(runtime_dir=context.runtime_dir)
+        )
+        worker_config = load_trigger_orchestrator_worker_global_config(
+            project_dir,
+            base_config=base_config,
+        )
+        bus = InternalEventBus(
+            worker_config.internal_event_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        event = bus.publish(
+            event_type=TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
+            payload={},
+            correlation_key=correlation_key,
+            idempotency_key=(
+                f"{TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE}:{correlation_key}"
+            ),
+            source=InternalEventSource(
+                source_type="team-addon",
+                source_name="team-addon",
+            ),
+        )
+        wake_notified = notify_wake_socket_for_lock(worker_config.lock_path)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "event_ids": [],
+            "wake_notified": False,
+            "error": str(exc),
+        }
+    return {
+        "event_ids": [event.event_id],
+        "wake_notified": wake_notified,
+    }
 
 
 def _required_event_text(value: object, field_name: str) -> str:

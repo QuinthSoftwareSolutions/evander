@@ -421,6 +421,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-external-chat-reply-requested",
         "team-agent-wake-requested",
         "team-governance-wake-requested",
+        "team-outbox-publish-requested",
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
@@ -9776,9 +9777,18 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
 
 def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
     pack = _team_runtime_sections()
+    triggers = {node["id"]: node for node in pack["triggers"]}
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
 
     assert ("team-cron", "team-publish-outbox-events") in edges
+    assert triggers["team-outbox-publish-requested"]["type"] == "trigger:event"
+    assert triggers["team-outbox-publish-requested"]["event_type"] == (
+        "team.outbox.publish_requested"
+    )
+    assert (
+        "team-outbox-publish-requested",
+        "team-publish-outbox-on-request",
+    ) in edges
     assert (
         "team-finalize-persistent-dispatch",
         "team-publish-outbox-after-dispatch",
