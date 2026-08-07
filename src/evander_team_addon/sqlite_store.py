@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 51
+SQLITE_SCHEMA_VERSION = 52
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1303,6 +1303,18 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition="TEXT",
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="review_cohort_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="review_cohort_sealed_at",
+                    definition="TEXT",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_release_packages",
@@ -3740,6 +3752,8 @@ class TeamStateSqliteStore:
                 "review_correction_task_id": row["review_correction_task_id"],
                 "verification_run_ids": _json_loads(row["verification_run_ids_json"]),
                 "review_request_ids": _json_loads(row["review_request_ids_json"]),
+                "review_cohort_id": row["review_cohort_id"],
+                "review_cohort_sealed_at": row["review_cohort_sealed_at"],
                 "manifest": _json_loads(row["manifest_json"]),
                 "gate_failure": (
                     _json_loads(row["gate_failure_json"])
@@ -3774,11 +3788,12 @@ class TeamStateSqliteStore:
                     candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, review_correction_task_id,
                     verification_run_ids_json, review_request_ids_json,
+                    review_cohort_id, review_cohort_sealed_at,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -3798,6 +3813,8 @@ class TeamStateSqliteStore:
                     package.get("review_correction_task_id"),
                     _json_dumps(package.get("verification_run_ids", [])),
                     _json_dumps(package.get("review_request_ids", [])),
+                    package.get("review_cohort_id"),
+                    package.get("review_cohort_sealed_at"),
                     _json_dumps(package.get("manifest") or {}),
                     (
                         _json_dumps(package.get("gate_failure"))
@@ -8131,6 +8148,8 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     review_correction_task_id TEXT,
     verification_run_ids_json TEXT NOT NULL DEFAULT '[]',
     review_request_ids_json TEXT NOT NULL DEFAULT '[]',
+    review_cohort_id TEXT,
+    review_cohort_sealed_at TEXT,
     manifest_json TEXT NOT NULL DEFAULT '{}',
     gate_failure_json TEXT,
     state TEXT NOT NULL,

@@ -1879,6 +1879,17 @@ The candidate also receives a frozen typed manifest containing its deliverable
 verification, waiver audit records, accepted immutable reviews, reviewed change
 manifests, scope result, verification commands, and review requirements.
 
+For a new release-review stage, Team validates the full frozen reviewer/profile
+set and seals it as one cohort before creating any reviewer handoff. A rejection
+is recorded immediately, but it does not create correction work while another
+cohort slot is pending. When every current slot is accepted or rejected, Team
+creates at most one candidate-correction task and wake containing all rejected
+findings in manifest order; if all slots accept, the release advances. A blocked
+slot pauses the cohort until `team_retry_release_gate` replaces that same frozen
+slot against the same candidate. Releases that already had review rows before
+this behavior was introduced are not retroactively grouped and retain the
+legacy eager-rejection behavior.
+
 The optional `release_policy.resource_limits` object configures the disposable
 verification worker with Docker-compatible `memory`, positive `cpus`, and
 positive integer `pids_limit` values. For example:
@@ -1912,8 +1923,9 @@ session is created, including an authorized retry of the same pinned candidate.
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.
 Creating another release with the same deliverables and failed tree is refused.
-Verification candidate failures and rejected agent release reviews create
-candidate-pinned system correction tasks. When the generated task recursively
+Verification candidate failures, closed release-review cohorts containing at
+least one rejection, and legacy uncohorted rejections create candidate-pinned
+system correction tasks. When the generated task recursively
 resolves with current accepted, reviewed Git deliverables, Team creates one
 deterministic successor package and correction-aggregate promotion
 automatically; the project lead does not submit another release request. The

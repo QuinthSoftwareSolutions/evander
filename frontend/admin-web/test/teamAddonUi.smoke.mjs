@@ -11476,9 +11476,21 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
         ],
       },
     ],
+    release_review_cohort: {
+      id: "release-review-cohort-release-human",
+      sealed_at: "2026-06-09T15:40:00Z",
+      status: "accepted",
+      total: 1,
+      resolved: 1,
+      pending_review_request_ids: [],
+      blocked_review_request_ids: [],
+      rejected_review_request_ids: [],
+      accepted_review_request_ids: ["agent-release-review-1"],
+    },
     release_reviews: [
       {
         id: "agent-release-review-1",
+        review_cohort_id: "release-review-cohort-release-human",
         reviewer_agent_id: "alpha-manager",
         state: "accepted",
         instructions: "Review the release manifest.",
@@ -11657,6 +11669,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByRole("heading", { name: "Agent review decisions" }).waitFor({
     state: "visible",
   });
+  await detail
+    .getByText(
+      /Sealed cohort:\s*Accepted · 1 of 1 resolved\. Correction work starts only after every cohort slot is accepted or rejected\./,
+    )
+    .waitFor({ state: "visible" });
   await detail.getByText("Release scope: passed - Scope matches the candidate.").waitFor({
     state: "visible",
   });

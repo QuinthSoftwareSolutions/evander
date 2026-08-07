@@ -30,6 +30,7 @@ from evander_team_addon.models import (
     Team,
     TeamRole,
     TeamTaskState,
+    release_package_payload_with_derived,
 )
 from evander_team_addon.services.domain.release_gates import (
     _materialize_candidate_verification_correction,
@@ -110,6 +111,76 @@ def _result() -> dict[str, list[object]]:
     return {"events": [], "git_promotion_event_ids": []}
 
 
+def _release_review_cohort_fixture() -> tuple[
+    TeamState,
+    ReleasePackage,
+    GitPromotionRecord,
+    dict[str, ReviewRequest],
+]:
+    requirements = [
+        ReleaseReviewRequirement(
+            reviewer_agent_id=f"reviewer-{suffix}",
+            review_profile_id=f"profile-{suffix}",
+        )
+        for suffix in ("a", "b")
+    ]
+    release, promotion = _release_and_promotion(review_requirements=requirements)
+    release.owner_agent_id = "lead"
+    release.candidate_tree_hash = "d" * 40
+    assert release.manifest is not None
+    release.manifest.candidate_tree_hash = release.candidate_tree_hash
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(review_requirements=requirements)
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.project_assignments["lead-project"] = AgentProjectAssignment(
+        id="lead-project",
+        team_id="team",
+        project_id="project",
+        agent_id="lead",
+    )
+    for suffix in ("a", "b"):
+        reviewer_id = f"reviewer-{suffix}"
+        profile_id = f"profile-{suffix}"
+        state.agents[reviewer_id] = PersistentAgent(
+            id=reviewer_id,
+            team_id="team",
+            role_id="reviewer-role",
+            session_id=f"session-{reviewer_id}",
+        )
+        state.review_profiles[profile_id] = ReviewProfile(
+            id=profile_id,
+            team_id="team",
+            project_id="project",
+            name=f"Review {suffix.upper()}",
+        )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+    create_release_reviews_or_approve(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result=_result(),
+    )
+    reviews = {
+        review.reviewer_agent_id: review
+        for review in (state.review_requests[review_id] for review_id in release.review_request_ids)
+    }
+    return state, release, promotion, reviews
+
+
 def test_release_reviews_use_requirements_frozen_in_candidate_manifest() -> None:
     frozen_requirement = ReleaseReviewRequirement(
         reviewer_agent_id="reviewer",
@@ -144,6 +215,179 @@ def test_release_reviews_use_requirements_frozen_in_candidate_manifest() -> None
     review = state.review_requests[release.review_request_ids[0]]
     assert review.reviewer_agent_id == frozen_requirement.reviewer_agent_id
     assert review.review_profile_id == frozen_requirement.review_profile_id
+    assert release.review_cohort_id == f"release-review-cohort-{release.id}"
+    assert release.review_cohort_sealed_at is not None
+    assert review.review_cohort_id == release.review_cohort_id
+    handoff = state.inbox[result["created_inbox_item_ids"][0]]
+    assert handoff.payload["review_cohort_id"] == release.review_cohort_id
+
+
+def test_release_review_cohort_waits_then_materializes_one_consolidated_correction() -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+    first = _result()
+
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-a"],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Use the retained run origin."],
+        projects_to_recalc=set(),
+        result=first,
+    )
+
+    assert release.state == TeamRecordState.PENDING
+    assert release.gate_failure is None
+    assert release.review_correction_task_id is None
+    assert first.get("created_task_ids") is None
+    assert reviews["reviewer-b"].state == TeamRecordState.PENDING
+    cohort = release_package_payload_with_derived(state, release)["release_review_cohort"]
+    assert cohort["status"] == "collecting"
+    assert cohort["resolved"] == 1
+    assert cohort["total"] == 2
+    assert cohort["pending_review_request_ids"] == [reviews["reviewer-b"].id]
+
+    second = _result()
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-b"],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Cover the retained origin in the client regression."],
+        projects_to_recalc=set(),
+        result=second,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.review_correction_task_id is not None
+    correction = state.tasks[release.review_correction_task_id]
+    assert "Use the retained run origin." in correction.description
+    assert "Cover the retained origin in the client regression." in correction.description
+    assert second["created_task_ids"] == [correction.id]
+    cohort = release_package_payload_with_derived(state, release)["release_review_cohort"]
+    assert cohort["status"] == "changes_requested"
+    assert cohort["resolved"] == cohort["total"] == 2
+    correction_notices = [
+        state.inbox[item_id]
+        for item_id in second["created_inbox_item_ids"]
+        if state.inbox[item_id].payload.get("kind")
+        == "release_review_rejection_correction_work"
+    ]
+    assert len(correction_notices) == 1
+    assert correction_notices[0].payload["review_request_ids"] == [
+        reviews["reviewer-a"].id,
+        reviews["reviewer-b"].id,
+    ]
+
+
+def test_release_review_cohort_all_acceptance_advances_release_once_complete() -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-a"],
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+    assert release.approved_commit_sha is None
+
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-b"],
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+
+    assert release.approved_commit_sha == release.candidate_commit_sha
+    assert any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
+
+
+def test_release_review_cohort_blocked_retry_preserves_slot_and_delays_correction() -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+    cohort_id = release.review_cohort_id
+    blocked = reviews["reviewer-a"]
+
+    _cascade_review_decision(
+        state,
+        review=blocked,
+        decision_state=TeamRecordState.BLOCKED,
+        findings=["The candidate checkout is unavailable."],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.review_correction_task_id is None
+    retry_result = _result()
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="review",
+        gate_id=blocked.id,
+        reason="The candidate checkout was restored.",
+        requested_by="operator",
+        result=retry_result,
+    )
+    replacement = state.review_requests[str(retry_result["replacement_gate_id"])]
+    assert replacement.review_cohort_id == cohort_id
+    assert replacement.reviewer_agent_id == blocked.reviewer_agent_id
+    assert replacement.review_profile_id == blocked.review_profile_id
+    assert release.state == TeamRecordState.PENDING
+    assert release.review_correction_task_id is None
+
+
+def test_release_review_cohort_prevalidates_every_member_before_creation() -> None:
+    requirements = [
+        ReleaseReviewRequirement(reviewer_agent_id="reviewer", review_profile_id="profile"),
+        ReleaseReviewRequirement(reviewer_agent_id="missing", review_profile_id="missing-profile"),
+    ]
+    release, promotion = _release_and_promotion(review_requirements=requirements)
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(review_requirements=requirements)
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="session-lead",
+    )
+    state.agents["reviewer"] = PersistentAgent(
+        id="reviewer",
+        team_id="team",
+        role_id="reviewer-role",
+        session_id="session-reviewer",
+    )
+    state.review_profiles["profile"] = ReviewProfile(
+        id="profile",
+        team_id="team",
+        project_id="project",
+        name="Review",
+    )
+
+    create_release_reviews_or_approve(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result=_result(),
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.review_cohort_id is None
+    assert release.review_cohort_sealed_at is None
+    assert release.review_request_ids == []
+    assert state.review_requests == {}
 
 
 def test_successful_verification_only_policy_approves_release() -> None:

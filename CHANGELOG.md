@@ -5,6 +5,15 @@
 - Moved escalation notices for superseded or retired reviews and resolved source blockers out of
   active operational obligations and into retained history, while preserving their audit trail.
 
+## 2026-08-07 - Sealed Release Review Cohorts
+
+- Sealed each new release's complete reviewer/profile set before dispatching it,
+  and deferred candidate-correction work until every cohort member has reached
+  an accepted or rejected decision.
+- Consolidated all rejected cohort findings into one correction task and wake,
+  while keeping blocked reviews retryable in the same frozen slot and leaving
+  existing uncohorted release reviews on their legacy behavior.
+
 ## 2026-08-07 - Contracted Leaf Boundaries
 
 - Prevented contracted non-boundary tasks from acquiring child work or accepting

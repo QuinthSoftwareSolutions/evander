@@ -7135,6 +7135,17 @@ The project policy says how the fixed candidate will be checked and who must rev
 > snapshotted into the candidate manifest rather than reread as mutable policy
 > during the decision.
 
+When a new release reaches agent review, Team first validates the complete
+reviewer/profile set frozen in the manifest and seals those slots as one cohort.
+No reviewer handoff is created unless the whole set is valid. Decisions remain
+independent, but correction does not begin on the first rejection: Team waits
+until every current cohort slot is accepted or rejected, then creates at most
+one correction task and wake containing all rejected findings in manifest
+order. If all reviewers accept, the release advances. A blocked review pauses
+the cohort until a retry replaces the same frozen slot against the same
+candidate. Review rows created before cohort support are not backfilled and
+retain their legacy eager-rejection behavior.
+
 If <code>resource_limits</code> is omitted, a Team release verifier defaults to
 8 CPUs and 2,048 processes/threads; memory uses the worker/host default. A
 configured field overrides its corresponding default. These limits are read
@@ -7163,7 +7174,7 @@ The practical distinction is **content failure versus process failure**. Content
 
 ### Terminal candidate failures
 
-A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. Team creates candidate-pinned correction work. Repair the content and complete its accepted, reviewed Git deliverables; Team then creates one deterministic successor with the new reviewed tree. The project lead does not make a second release request.
+A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. For a sealed review cohort, Team records each decision but waits for every slot to reach <code>accepted</code> or <code>rejected</code>, then creates one candidate-pinned correction containing all rejected findings. Repair the content and complete its accepted, reviewed Git deliverables; Team then creates one deterministic successor with the new reviewed tree. The project lead does not make a second release request.
 
 The review acceptance and successor intent are persisted atomically. Scheduled
 maintenance applies the same idempotent reconciliation to interrupted or older
@@ -7186,7 +7197,7 @@ The system refuses a cosmetic new release of the same failed deliverables and tr
 
 ### Retryable process failures
 
-Verification timeout or infrastructure failure can be retryable. A release review recorded <code>blocked</code> with a concrete process/evidence blocker can also be retried. <code>team_retry_release_gate</code> creates a linked immutable successor attempt against the same candidate SHA with reason and requester identity. It never edits the old run or review.
+Verification timeout or infrastructure failure can be retryable. A release review recorded <code>blocked</code> with a concrete process/evidence blocker can also be retried. <code>team_retry_release_gate</code> creates a linked immutable successor attempt against the same candidate SHA with reason and requester identity. It never edits the old run or review. In a sealed cohort, that successor occupies the same frozen reviewer/profile slot and the cohort remains paused until the blocker is replaced and every slot has a final content decision.
 
 Retry is not polling. An agent should request it only after citing concrete
 evidence that the infrastructure recovered and what changed. If an
@@ -7227,7 +7238,7 @@ is preparing, pending, blocked, or changes-requested.
 |---|---|
 | Verification candidate failure | Terminal rejection; generated correction work requires changed, reviewed content, then Team creates its successor automatically. |
 | Verification infrastructure failure or timeout | Same attempt is blocked and may retry the unchanged candidate only after concrete recovery evidence; a failed agent-requested retry requires operator escalation. |
-| Agent review rejection | Terminal candidate failure; generated correction work must be accepted and reviewed, then Team creates its successor automatically. |
+| Agent review rejection | Candidate failure is recorded immediately. A sealed cohort waits for all other slots, then generates one correction from every rejection; legacy uncohorted reviews keep their eager behavior. |
 | Agent review blocked | Same candidate stays blocked until the typed review recovery runs. |
 | Preview preparation failure or expiry | Same human request and candidate are blocked; preparation can rerun. |
 | Human <code>blocked</code> | Same request and candidate remain recoverable without product changes. |
@@ -7505,7 +7516,7 @@ to the supported records described in Chapters 18–24.
 | Unreviewed changed path | Hard scope failure, never waiver-eligible. Rebuild from reviewed content. |
 | Verification command nonzero | Terminal candidate defect. Complete the generated candidate-pinned correction with accepted, reviewed Git content; Team creates one successor automatically. |
 | Verification infrastructure error, including structured PID or memory exhaustion | Potentially retryable immutable successor run only after concrete recovery evidence. After an agent-requested retry fails, further agent retry is blocked and operator recovery is required. |
-| Release review rejected | Terminal candidate defect. Complete the generated correction; Team creates the successor automatically without a manager release request. |
+| Release review rejected | Terminal candidate defect. For a sealed cohort, wait until all slots decide, then complete the single correction containing every rejection; Team creates the successor automatically without a manager release request. |
 | Resolved generated correction has no successor | Reconciliation must either create or recognize one direct successor. Inspect the durable <code>candidate_correction_successor_failed</code> blocker; do not ask the manager to submit a release request. |
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Human assignment unavailable | Same request and candidate stay blocked. Repair group membership or use audited reassignment; do not skip the gate. |
@@ -7545,17 +7556,19 @@ During release:
 1. Track release package, prerequisite promotions, candidate SHA/tree,
    verification run, agent reviews, human request/preparation/decision, and
    scope validation.
-2. Treat outbox acceptance and effect completion as separate facts.
-3. Retry only typed retryable failures through
+2. For a sealed agent-review cohort, let every unblocked slot finish before
+   expecting correction work; retry a blocked slot against the same candidate.
+3. Treat outbox acceptance and effect completion as separate facts.
+4. Retry only typed retryable failures through
    <code>team_retry_release_gate</code>, cite concrete infrastructure recovery,
    and stop agent retries after an agent-requested attempt fails.
-4. Use <code>team_recover_release</code> only for eligible Git promotion failure.
-5. For a blocked human request, recover or reassign the same request; for
+5. Use <code>team_recover_release</code> only for eligible Git promotion failure.
+6. For a blocked human request, recover or reassign the same request; for
    changes requested, follow the generated case and let Team create the changed
    successor after every finding child has accepted, reviewed work.
-6. For failed candidate verification or a rejected agent release review,
-   complete the generated correction task and let Team create its successor;
-   do not hand a release-request obligation to the project lead.
+7. For failed candidate verification or a closed cohort with rejected agent
+   reviews, complete the generated correction task and let Team create its
+   successor; do not hand a release-request obligation to the project lead.
 
 After release:
 

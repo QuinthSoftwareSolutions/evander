@@ -4971,6 +4971,7 @@ class TeamState(TeamModel):
 
     def _validate_reviews(self, errors: list[str]) -> None:
         current_cohort_reviewers: set[tuple[str, str, str]] = set()
+        current_release_cohort_members: set[tuple[str, str, str, str | None]] = set()
         for review in self.review_requests.values():
             if review.deliverable_id is not None and review.deliverable_id not in self.deliverables:
                 errors.append(
@@ -4980,6 +4981,11 @@ class TeamState(TeamModel):
             deliverable = (
                 self.deliverables.get(review.deliverable_id)
                 if review.deliverable_id is not None
+                else None
+            )
+            release = (
+                self.release_packages.get(review.release_package_id)
+                if review.release_package_id is not None
                 else None
             )
             if (
@@ -5021,6 +5027,43 @@ class TeamState(TeamModel):
                         f"{review.reviewer_agent_id}"
                     )
                 current_cohort_reviewers.add(cohort_reviewer_key)
+            if (
+                review.review_cohort_id is not None
+                and release is not None
+                and review.review_cohort_id != release.review_cohort_id
+            ):
+                errors.append(
+                    f"release review {review.id} cohort {review.review_cohort_id} does not "
+                    f"match release {release.id} cohort {release.review_cohort_id}"
+                )
+            if (
+                release is not None
+                and release.review_cohort_id is not None
+                and review.review_cohort_id != release.review_cohort_id
+            ):
+                errors.append(
+                    f"release review {review.id} must carry release {release.id} cohort "
+                    f"{release.review_cohort_id}"
+                )
+            if (
+                review.release_package_id is not None
+                and review.review_cohort_id is not None
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+            ):
+                release_member_key = (
+                    review.release_package_id,
+                    review.review_cohort_id,
+                    review.reviewer_agent_id,
+                    review.review_profile_id,
+                )
+                if release_member_key in current_release_cohort_members:
+                    errors.append(
+                        f"release {review.release_package_id} cohort "
+                        f"{review.review_cohort_id} has duplicate current reviewer/profile "
+                        f"slot {review.reviewer_agent_id}/{review.review_profile_id}"
+                    )
+                current_release_cohort_members.add(release_member_key)
             if (
                 review.release_package_id is not None
                 and review.release_package_id not in self.release_packages
@@ -5411,6 +5454,32 @@ class TeamState(TeamModel):
                     errors.append(
                         f"release {release.id} references invalid owner {release.owner_agent_id}"
                     )
+            if release.review_cohort_id is not None:
+                if release.manifest is None or not release.manifest.review_requirements:
+                    errors.append(
+                        f"release {release.id} review cohort requires frozen review requirements"
+                    )
+                else:
+                    current_reviews = [
+                        self.review_requests[review_id]
+                        for review_id in release.review_request_ids
+                        if review_id in self.review_requests
+                        and self.review_requests[review_id].superseded_by_review_request_id is None
+                        and self.review_requests[review_id].retired_at is None
+                    ]
+                    current_members = [
+                        (review.reviewer_agent_id, review.review_profile_id)
+                        for review in current_reviews
+                    ]
+                    required_members = [
+                        (requirement.reviewer_agent_id, requirement.review_profile_id)
+                        for requirement in release.manifest.review_requirements
+                    ]
+                    if sorted(current_members) != sorted(required_members):
+                        errors.append(
+                            f"release {release.id} cohort membership does not match its "
+                            "frozen review requirements"
+                        )
             if release.supersedes_release_package_id is not None:
                 predecessor = self.release_packages.get(release.supersedes_release_package_id)
                 if predecessor is None:
@@ -6783,6 +6852,50 @@ def release_package_payload_with_derived(
         for review_id in release.review_request_ids
         if review_id in state.review_requests
     ]
+    if release.review_cohort_id is not None:
+        cohort_reviews = [
+            state.review_requests[review_id]
+            for review_id in release.review_request_ids
+            if review_id in state.review_requests
+            and state.review_requests[review_id].superseded_by_review_request_id is None
+            and state.review_requests[review_id].retired_at is None
+            and state.review_requests[review_id].review_cohort_id
+            == release.review_cohort_id
+        ]
+        blocked_ids = [
+            review.id for review in cohort_reviews if review.state == TeamRecordState.BLOCKED
+        ]
+        pending_ids = [
+            review.id
+            for review in cohort_reviews
+            if review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+        ]
+        rejected_ids = [
+            review.id for review in cohort_reviews if review.state == TeamRecordState.REJECTED
+        ]
+        accepted_ids = [
+            review.id for review in cohort_reviews if review.state == TeamRecordState.ACCEPTED
+        ]
+        cohort_status = (
+            "blocked"
+            if blocked_ids
+            else "collecting"
+            if pending_ids
+            else "changes_requested"
+            if rejected_ids
+            else "accepted"
+        )
+        payload["release_review_cohort"] = {
+            "id": release.review_cohort_id,
+            "sealed_at": release.review_cohort_sealed_at,
+            "status": cohort_status,
+            "total": len(cohort_reviews),
+            "resolved": len(accepted_ids) + len(rejected_ids),
+            "pending_review_request_ids": pending_ids,
+            "blocked_review_request_ids": blocked_ids,
+            "rejected_review_request_ids": rejected_ids,
+            "accepted_review_request_ids": accepted_ids,
+        }
     related_promotions = _release_related_promotions(state, release)
     pending_promotions = [
         promotion.id for promotion in related_promotions if promotion.state == "pending"
@@ -6812,6 +6925,29 @@ def release_package_payload_with_derived(
 
 
 def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str | None:
+    if release.review_cohort_id is not None and release.state == TeamRecordState.PENDING:
+        current_reviews = [
+            state.review_requests[review_id]
+            for review_id in release.review_request_ids
+            if review_id in state.review_requests
+            and state.review_requests[review_id].superseded_by_review_request_id is None
+            and state.review_requests[review_id].retired_at is None
+            and state.review_requests[review_id].review_cohort_id
+            == release.review_cohort_id
+        ]
+        pending_count = sum(
+            review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+            for review in current_reviews
+        )
+        rejected_count = sum(
+            review.state == TeamRecordState.REJECTED for review in current_reviews
+        )
+        if pending_count:
+            return (
+                f"Wait for the remaining {pending_count} release review cohort slot(s). "
+                f"{rejected_count} rejection(s) are recorded, but correction work begins "
+                "only after the sealed cohort closes."
+            )
     if release.state != TeamRecordState.BLOCKED and not release.error:
         return None
     gate_failure = release.gate_failure
@@ -6855,6 +6991,17 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
                 f"Current blocker: {gate_failure.message}"
             )
         if release.state == TeamRecordState.REJECTED:
+            if (
+                release.review_cohort_id is not None
+                and gate_failure.stage == "review"
+                and gate_failure.kind == "rejected"
+                and release.review_correction_task_id is not None
+            ):
+                return (
+                    f"Release review cohort {release.review_cohort_id} is complete and requested "
+                    f"changes. Resolve correction task {release.review_correction_task_id} once "
+                    "against the consolidated findings; Team will create the successor release."
+                )
             return (
                 f"Release {release.id} is terminal because its candidate failed or was "
                 "rejected. Submit changed reviewed content as a new release; unchanged "

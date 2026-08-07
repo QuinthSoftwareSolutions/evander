@@ -194,7 +194,20 @@ def _release_review_correction_is_ready(
         if review_id in state.review_requests
         and state.review_requests[review_id].superseded_by_review_request_id is None
         and state.review_requests[review_id].retired_at is None
+        and (
+            predecessor.review_cohort_id is None
+            or state.review_requests[review_id].review_cohort_id
+            == predecessor.review_cohort_id
+        )
     ]
+    if predecessor.review_cohort_id is not None and (
+        predecessor.review_cohort_sealed_at is None
+        or any(
+            review.review_cohort_id != predecessor.review_cohort_id
+            for review in current_reviews
+        )
+    ):
+        return False
     if not current_reviews or any(
         review.state not in _COMPLETED_RELEASE_REVIEW_STATES
         for review in current_reviews
@@ -215,7 +228,7 @@ def _release_review_correction_is_ready(
         ),
         default=None,
     )
-    if latest_rejection_at is not None and any(
+    if predecessor.review_cohort_id is None and latest_rejection_at is not None and any(
         deliverable.created_at < latest_rejection_at
         for deliverable in state.deliverables.values()
         if deliverable.task_id == correction_task.id

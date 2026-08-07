@@ -17153,7 +17153,7 @@ function renderReleaseDetail(release) {
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
       ${renderReleaseContributionGraph(contributionGraph, release.id)}
       ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [], release.id)}
-      ${renderReleaseAgentReviews(releaseReviews, release.id)}
+      ${renderReleaseAgentReviews(releaseReviews, release.id, release.release_review_cohort)}
       ${renderReleaseHumanRequests(humanRequests, manifest, release.id)}
       ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
     </section>
@@ -17364,13 +17364,21 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
   `;
 }
 
-function renderReleaseAgentReviews(reviews, releaseId) {
+function renderReleaseAgentReviews(reviews, releaseId, cohort = null) {
   if (!reviews.length) {
     return "";
   }
   return `
     <div class="release-detail-section">
       <h4>Agent review decisions</h4>
+      ${cohort ? `
+        <div class="meta-line">
+          <strong>Sealed cohort:</strong>
+          ${escapeHtml(humanizeToken(cohort.status || "collecting"))} ·
+          ${Number(cohort.resolved || 0)} of ${Number(cohort.total || reviews.length)} resolved.
+          Correction work starts only after every cohort slot is accepted or rejected.
+        </div>
+      ` : ""}
       <ul class="delivery-detail-list">
         ${reviews.map((review) => {
           const reviewer = state.agents?.[review.reviewer_agent_id];
@@ -17379,7 +17387,7 @@ function renderReleaseAgentReviews(reviews, releaseId) {
           ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
           ${renderReleaseReviewCriteria(review)}
           ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
-          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
+          ${renderTechnicalDetails([["Review ID", review.id], ["Review cohort ID", review.review_cohort_id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
             disclosureKey: teamDisclosureKey("release-detail", releaseId, "agent-review", review.id, "technical"),
           })}
         </li>`;
