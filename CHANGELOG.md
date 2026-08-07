@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-07 - Release History Filters
+
+- Added state and inclusive activity-date filters to Delivery release history. The date range uses
+  the published date when present and otherwise the prepared date, matching the release card.
+
 ## 2026-08-06 - Calm Live Team Org Chart
 
 - Added restrained live activity to the Team org chart: awake-agent halos, short-lived derived

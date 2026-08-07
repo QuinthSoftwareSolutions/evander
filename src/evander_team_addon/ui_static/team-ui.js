@@ -421,9 +421,13 @@ const deliveryStatusLabels = {
   all: "All",
   attention: "Needs attention",
 };
+const releaseHistoryStates = [...recordStates, "cancelled"];
 
 let selectedDeliveryFilter = "attention";
 let selectedDeliveryProjectId = "";
+let selectedReleaseHistoryState = "";
+let releaseHistoryDateFrom = "";
+let releaseHistoryDateThrough = "";
 let workspaceAttentionPage = 1;
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
@@ -3318,6 +3322,25 @@ function bindDeliveryFilters() {
     renderReleases();
   });
   document.addEventListener("change", (event) => {
+    const releaseHistoryFilter = event.target?.closest?.("[data-release-history-filter]");
+    if (releaseHistoryFilter) {
+      const value = text(releaseHistoryFilter.value);
+      switch (releaseHistoryFilter.dataset.releaseHistoryFilter) {
+        case "state":
+          selectedReleaseHistoryState = releaseHistoryStates.includes(value) ? value : "";
+          break;
+        case "date-from":
+          releaseHistoryDateFrom = value;
+          break;
+        case "date-through":
+          releaseHistoryDateThrough = value;
+          break;
+        default:
+          return;
+      }
+      renderReleases();
+      return;
+    }
     const projectSelect = event.target?.closest?.("[data-delivery-project-filter]");
     if (!projectSelect) {
       return;
@@ -3358,6 +3381,12 @@ function bindDeliveryFilters() {
     if (detailButton) {
       event.preventDefault();
       void toggleReleaseDetail(text(detailButton.dataset.releaseDetailId));
+      return;
+    }
+    if (event.target?.closest?.("[data-clear-release-history-filters]")) {
+      event.preventDefault();
+      resetReleaseHistoryFilters();
+      renderReleases();
       return;
     }
     const resumeButton = event.target?.closest?.("[data-human-review-resume-id]");
@@ -12732,8 +12761,8 @@ function taskMatchesTaskBoardFilters(task, hierarchy) {
       return false;
     }
     const completedAt = taskBoardCompletionTime(task);
-    const from = taskBoardLocalDateBoundary(taskBoardCompletedSince, false);
-    const through = taskBoardLocalDateBoundary(taskBoardCompletedThrough, true);
+    const from = dateInputLocalBoundary(taskBoardCompletedSince, false);
+    const through = dateInputLocalBoundary(taskBoardCompletedThrough, true);
     if (!Number.isFinite(completedAt)) {
       return false;
     }
@@ -12789,7 +12818,7 @@ function taskBoardCompletionTime(task) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-function taskBoardLocalDateBoundary(value, endOfDay) {
+function dateInputLocalBoundary(value, endOfDay) {
   const parts = text(value).split("-").map(Number);
   if (
     parts.length !== 3 ||
@@ -16620,7 +16649,7 @@ function renderReleases() {
       .map((request) => text(request.release_package_id))
       .filter(Boolean),
   );
-  const releases = myHumanReviewsOnly
+  const scopedReleases = myHumanReviewsOnly
     ? allReleases.filter((release) => assignedReleaseIds.has(text(release.id)))
     : allReleases;
   if (
@@ -16638,15 +16667,24 @@ function renderReleases() {
     );
     return;
   }
+  const releases = scopedReleases.filter(releaseMatchesHistoryFilters);
+  const filters = renderReleaseHistoryFilters({
+    visibleCount: releases.length,
+    scopedCount: scopedReleases.length,
+  });
   if (!releases.length) {
     renderIntoActiveTargets(
       "[data-releases-view]",
-      `<p class="empty-state">${myHumanReviewsOnly ? "No human reviews are assigned to you." : "No release packages."}</p>`,
+      `
+        ${filters}
+        <p class="empty-state">${myHumanReviewsOnly && !scopedReleases.length ? "No human reviews are assigned to you." : myHumanReviewsOnly ? "No assigned release packages match these filters." : "No release packages match these filters."}</p>
+      `,
     );
     return;
   }
   if (activeTeamView === "delivery") {
     renderIntoActiveTargets("[data-releases-view]", `
+      ${filters}
       <ul class="release-list compact-record-list">
         ${releases.map((release) => renderReleaseCard(release, { compact: true })).join("")}
       </ul>
@@ -16654,10 +16692,72 @@ function renderReleases() {
     return;
   }
   renderIntoActiveTargets("[data-releases-view]", `
+    ${filters}
     <ul class="release-list compact-record-list">
       ${releases.map((release) => renderReleaseCard(release)).join("")}
     </ul>
   `);
+}
+
+function renderReleaseHistoryFilters({ visibleCount, scopedCount }) {
+  const hasFilters = Boolean(
+    selectedReleaseHistoryState || releaseHistoryDateFrom || releaseHistoryDateThrough,
+  );
+  const summary = hasFilters
+    ? `${visibleCount} of ${scopedCount} release package${scopedCount === 1 ? "" : "s"} shown`
+    : `${scopedCount} release package${scopedCount === 1 ? "" : "s"} in history`;
+  return `
+    <div class="release-history-filters" data-release-history-filters role="group" aria-label="Release history filters">
+      <label>
+        State
+        <select data-release-history-filter="state">
+          ${renderSelectOptions(
+            releaseHistoryStates.map((stateValue) => [stateValue, humanizeToken(stateValue)]),
+            { selectedValue: selectedReleaseHistoryState, placeholder: "Any state" },
+          )}
+        </select>
+      </label>
+      <label>
+        Activity date from
+        <input type="date" value="${escapeAttr(releaseHistoryDateFrom)}" data-release-history-filter="date-from" />
+      </label>
+      <label>
+        Activity date through
+        <input type="date" value="${escapeAttr(releaseHistoryDateThrough)}" data-release-history-filter="date-through" />
+      </label>
+      <button type="button" class="secondary release-history-clear-filters" data-clear-release-history-filters>
+        Clear filters
+      </button>
+      <p class="release-history-filter-summary">${escapeHtml(summary)}. Activity date is published when available; otherwise prepared.</p>
+    </div>
+  `;
+}
+
+function resetReleaseHistoryFilters() {
+  selectedReleaseHistoryState = "";
+  releaseHistoryDateFrom = "";
+  releaseHistoryDateThrough = "";
+}
+
+function releaseMatchesHistoryFilters(release) {
+  if (selectedReleaseHistoryState && text(release.state) !== selectedReleaseHistoryState) {
+    return false;
+  }
+  if (!releaseHistoryDateFrom && !releaseHistoryDateThrough) {
+    return true;
+  }
+  const activityTimestamp = Date.parse(
+    normalizeTimelineTimestampForSort(release.published_at || release.created_at || ""),
+  );
+  if (!Number.isFinite(activityTimestamp)) {
+    return false;
+  }
+  const from = dateInputLocalBoundary(releaseHistoryDateFrom, false);
+  const through = dateInputLocalBoundary(releaseHistoryDateThrough, true);
+  return (
+    (!Number.isFinite(from) || activityTimestamp >= from) &&
+    (!Number.isFinite(through) || activityTimestamp <= through)
+  );
 }
 
 function renderCompactRelease(release) {

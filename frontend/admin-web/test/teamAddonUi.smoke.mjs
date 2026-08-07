@@ -3344,6 +3344,79 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   );
 });
 
+test("team add-on release history filters by state and activity date", async (t) => {
+  const initialState = seededGitState();
+  initialState.release_packages["release-pending-filter"] = {
+    id: "release-pending-filter",
+    project_id: "alpha-project",
+    summary: "Prepare the pending filter candidate.",
+    deliverable_ids: [],
+    state: "pending",
+    created_at: "2026-06-07T12:00:00Z",
+    updated_at: "2026-06-07T12:00:00Z",
+  };
+  initialState.release_packages["release-rejected-filter"] = {
+    id: "release-rejected-filter",
+    project_id: "alpha-project",
+    summary: "Record the rejected filter attempt.",
+    deliverable_ids: [],
+    state: "rejected",
+    created_at: "2026-06-05T12:00:00Z",
+    updated_at: "2026-06-05T12:00:00Z",
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  await page
+    .locator("#team-delivery-page")
+    .getByRole("heading", { name: "Release history" })
+    .waitFor({ state: "visible" });
+  const releaseHistory = page.locator("#team-delivery-page [data-releases-view]");
+  const filters = releaseHistory.getByRole("group", { name: "Release history filters" });
+  await filters.waitFor({ state: "visible" });
+  const stateFilter = filters.locator('[data-release-history-filter="state"]');
+
+  assert.equal(await releaseHistory.locator(".release-card").count(), 3);
+  await stateFilter.selectOption("rejected");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-rejected-filter"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+
+  await stateFilter.selectOption("");
+  const dateFrom = filters.locator('[data-release-history-filter="date-from"]');
+  const dateThrough = filters.locator('[data-release-history-filter="date-through"]');
+  await dateFrom.fill("2026-06-07");
+  await dateFrom.press("Tab");
+  await dateThrough.fill("2026-06-07");
+  await dateThrough.press("Tab");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-pending-filter"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+  assert.match(
+    await releaseHistory.locator(".release-history-filter-summary").innerText(),
+    /Activity date is published when available; otherwise prepared\./,
+  );
+
+  await filters.getByRole("button", { name: "Clear filters" }).click();
+  await dateFrom.fill("2026-06-09");
+  await dateFrom.press("Tab");
+  await dateThrough.fill("2026-06-09");
+  await dateThrough.press("Tab");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-accepted"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+
+  await filters.getByRole("button", { name: "Clear filters" }).click();
+  assert.equal(await stateFilter.inputValue(), "");
+  assert.equal(await dateFrom.inputValue(), "");
+  assert.equal(await dateThrough.inputValue(), "");
+  assert.equal(await releaseHistory.locator(".release-card").count(), 3);
+});
+
 test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
   const initialState = seededOrgChartState();
   const deliverableId = "deliverable-rich-internal-42";

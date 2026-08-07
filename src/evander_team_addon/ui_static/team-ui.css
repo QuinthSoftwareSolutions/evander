@@ -3400,6 +3400,37 @@ button.org-focus-team-tab strong {
   margin-top: 0.9rem;
 }
 
+.release-history-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.6rem;
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem;
+  background: var(--panel-alt);
+}
+
+.release-history-filters label {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.release-history-clear-filters {
+  min-height: 2.45rem;
+}
+
+.release-history-filter-summary {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .delivery-focus-bar {
   display: grid;
   grid-template-columns: minmax(14rem, 22rem) minmax(0, 1fr);
