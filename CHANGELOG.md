@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-07 - Team Chat Attention And Coalescing
+
+- Surfaced plain-text operator Chat steering once in the next Team MCP response for an agent with
+  an active lease, atomically recording the message as seen without requiring a chat reply.
+- Coalesced queued messages from the same conversation and external return path into one Chat
+  dispatch and one covering reply, while leaving attachment-bearing messages on the normal Chat
+  dispatch path.
+
 ## 2026-08-07 - Release History Filters
 
 - Added state and inclusive activity-date filters to Delivery release history. The date range uses

@@ -3301,6 +3301,9 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     message = sent_payload["message"]
     assert message["status"] == "queued"
     assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    assert message["source_message_ids"] == []
+    assert message["seen_at"] is None
+    assert message["seen_dispatch_id"] is None
     reread = TeamStateRepository(tmp_path / "runtime").read()
     assert reread.conversation_messages[message["id"]].status == "queued"
     assert reread.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend"

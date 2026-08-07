@@ -569,6 +569,17 @@ messages. Loading older history preserves the visible anchor as messages are
 prepended, and thread rerenders preserve the current composer text, focus, and
 selection.
 
+When a persistent agent already holds an active Team lease, a newly queued,
+plain-text operator Chat message is soft steering: its next Team MCP response
+atomically includes the message and records it as `seen`. It is not redelivered
+and does not require a Chat reply. Attachment-bearing messages remain queued
+for a normal Chat dispatch because their files must first be copied into the
+agent workspace. Once the agent is available, queued messages from the same
+conversation and external return path are coalesced into one Chat dispatch. The
+prompt supplies all message IDs and one `team_reply_to_chat` reply covers the
+whole batch; messages from different conversations, providers, targets, or
+threads remain separate dispatches.
+
 External communication can enter the same durable Chat lifecycle through
 `effect:team:enqueue-operator-chat-message`, normally after
 `trigger:communication:new-message`. Configure exactly one fixed

@@ -3433,7 +3433,7 @@ def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_r
     assert resumer.calls[0]["dispatch_id"] == dispatch_id
     prompt = str(resumer.calls[0]["prompt"])
     assert "Team Add-on Chat tab" in prompt
-    assert f"Human operator message ID: {message.id}" in prompt
+    assert f"Human operator message IDs: {message.id}" in prompt
     assert f"Reply with the {TEAM_REPLY_TO_CHAT_TOOL} MCP tool" in prompt
     assert "Current dispatch Team state mutation: allowed" in prompt
     assert "ordinary Team MCP tools granted to this chat wake" in prompt

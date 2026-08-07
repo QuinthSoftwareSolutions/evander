@@ -160,7 +160,43 @@ def _matching_team_chat_dispatch(
 ) -> bool:
     return (
         dispatch.cause_kind == "team_chat"
-        and dispatch.cause_id == message.id
+        and (
+            message.id in dispatch.chat_message_ids
+            or dispatch.cause_id == message.id
+        )
+    )
+
+
+def _chat_return_path_key(message: TeamConversationMessage) -> tuple[str, str, str]:
+    external_origin = message.metadata.get("external_origin")
+    if not isinstance(external_origin, dict):
+        return ("internal", "", "")
+    return (
+        _optional_text(external_origin.get("provider")) or "",
+        _optional_text(external_origin.get("communication_target_id")) or "",
+        _optional_text(external_origin.get("source_thread_id")) or "",
+    )
+
+
+def _chat_mutation_scope_key(message: TeamConversationMessage) -> tuple[object, ...]:
+    authorization = _message_team_chat_mutation_authorization(message)
+    if authorization is None:
+        return ("missing",)
+    return (
+        authorization.mode,
+        authorization.source,
+        authorization.principal_id,
+        authorization.recipient_directory_path,
+        tuple(authorization.project_ids),
+        tuple(authorization.managed_repo_ids),
+    )
+
+
+def _chat_batch_key(message: TeamConversationMessage) -> tuple[object, ...]:
+    return (
+        message.conversation_id,
+        *_chat_return_path_key(message),
+        *_chat_mutation_scope_key(message),
     )
 
 
@@ -740,6 +776,7 @@ class TeamChatService:
                     session_id=agent.session_id,
                     cause_kind="team_chat",
                     cause_id=message.id,
+                    chat_message_ids=[message.id],
                     **chat_scope,
                     status=TeamDispatchStatus.LEASED,
                     created_at=now,
@@ -826,6 +863,68 @@ class TeamChatService:
             raise RuntimeError("conversation message dispatch was not queued")
         return state, state.conversation_messages[resolved_message_id]
 
+    def claim_pending_operator_attention_messages(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        limit: int = 5,
+        now: datetime | None = None,
+    ) -> tuple[TeamState, list[TeamConversationMessage]]:
+        """Atomically surface queued text-only operator messages to an active lease once."""
+
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_limit = max(0, int(limit))
+        effective_now = _ensure_utc(now or utc_now())
+        claimed_ids: list[str] = []
+        if normalized_limit == 0:
+            return self._repository.read(), []
+
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            runtime = state.agent_runtimes.get(agent.id)
+            dispatch = state.dispatches.get(normalized_dispatch_id)
+            if (
+                runtime is None
+                or runtime.active_dispatch_id != normalized_dispatch_id
+                or runtime.wake_leased_until is None
+                or _ensure_utc(runtime.wake_leased_until) <= effective_now
+                or dispatch is None
+                or dispatch.agent_id != agent.id
+                or dispatch.session_id != agent.session_id
+                or dispatch.status != TeamDispatchStatus.LEASED
+                or dispatch.lease_expires_at is None
+                or _ensure_utc(dispatch.lease_expires_at) <= effective_now
+            ):
+                return state
+            for message in sorted(
+                state.conversation_messages.values(),
+                key=lambda item: (item.created_at, item.id),
+            ):
+                if len(claimed_ids) >= normalized_limit:
+                    break
+                if (
+                    message.sender != "operator"
+                    or message.message_type != "text"
+                    or message.status != "queued"
+                    or message.attachment_ids
+                ):
+                    continue
+                conversation = state.conversations.get(message.conversation_id)
+                if conversation is None or conversation.agent_id != agent.id:
+                    continue
+                message.status = "seen"
+                message.seen_at = effective_now
+                message.seen_dispatch_id = normalized_dispatch_id
+                message.error = None
+                message.updated_at = effective_now
+                claimed_ids.append(message.id)
+            return state
+
+        state = self._repository.update(_mutate)
+        return state, [state.conversation_messages[message_id] for message_id in claimed_ids]
+
     def claim_pending_chat_message_dispatches(
         self,
         *,
@@ -891,6 +990,20 @@ class TeamChatService:
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
                     continue
+                batch_key = _chat_batch_key(message)
+                batch_messages = [
+                    candidate
+                    for candidate in messages
+                    if (
+                        candidate.sender == "operator"
+                        and candidate.message_type == "text"
+                        and candidate.status == "queued"
+                        and candidate.conversation_id == conversation.id
+                        and _chat_batch_key(candidate) == batch_key
+                    )
+                ]
+                if not batch_messages:
+                    continue
                 _prepare_chat_context_rotation(
                     state,
                     agent=agent,
@@ -914,6 +1027,7 @@ class TeamChatService:
                         session_id=agent.session_id,
                         cause_kind="team_chat",
                         cause_id=message.id,
+                        chat_message_ids=[candidate.id for candidate in batch_messages],
                         **chat_scope,
                         status=TeamDispatchStatus.LEASED,
                         created_at=effective_now,
@@ -933,10 +1047,15 @@ class TeamChatService:
                 runtime.last_wake_at = effective_now
                 runtime.next_wake_at = None
                 runtime.updated_at = effective_now
-                message.status = "running"
-                message.dispatch_id = dispatch_id
-                message.error = None
-                message.updated_at = effective_now
+                for candidate in batch_messages:
+                    candidate.status = "running"
+                    candidate.dispatch_id = dispatch_id
+                    candidate.error = None
+                    candidate.updated_at = effective_now
+                    for ingress in state.external_chat_ingress.values():
+                        if ingress.message_id == candidate.id:
+                            ingress.dispatch_id = dispatch_id
+                            ingress.updated_at = effective_now
                 conversation.updated_at = effective_now
                 claims.append(
                     {
@@ -944,6 +1063,7 @@ class TeamChatService:
                         "session_id": agent.session_id,
                         "conversation_id": conversation.id,
                         "message_id": message.id,
+                        "message_ids": [candidate.id for candidate in batch_messages],
                         "dispatch_id": dispatch_id,
                     }
                 )
@@ -974,6 +1094,16 @@ class TeamChatService:
                 message.conversation_id,
                 "conversation",
             )
+            dispatch = (
+                state.dispatches.get(message.dispatch_id)
+                if message.dispatch_id is not None
+                else None
+            )
+            message_ids = (
+                list(dispatch.chat_message_ids)
+                if dispatch is not None and dispatch.chat_message_ids
+                else [message.id]
+            )
             runtime = state.agent_runtimes.get(conversation.agent_id)
             if (
                 runtime is not None
@@ -985,22 +1115,24 @@ class TeamChatService:
                 runtime.wake_reason = None
                 runtime.updated_at = utc_now()
             now = utc_now()
-            if message.dispatch_id is not None:
-                dispatch = state.dispatches.get(message.dispatch_id)
-                if (
-                    dispatch is not None
-                    and dispatch.status
-                    in {
-                        TeamDispatchStatus.PREPARING,
-                        TeamDispatchStatus.LEASED,
-                    }
-                ):
-                    dispatch.status = TeamDispatchStatus.FAILED
-                    dispatch.completed_at = now
-                    dispatch.error = normalized_error
-            message.status = "failed"
-            message.error = normalized_error
-            message.updated_at = now
+            if (
+                dispatch is not None
+                and dispatch.status
+                in {
+                    TeamDispatchStatus.PREPARING,
+                    TeamDispatchStatus.LEASED,
+                }
+            ):
+                dispatch.status = TeamDispatchStatus.FAILED
+                dispatch.completed_at = now
+                dispatch.error = normalized_error
+            for candidate_id in message_ids:
+                candidate = state.conversation_messages.get(candidate_id)
+                if candidate is None or candidate.status == "replied":
+                    continue
+                candidate.status = "failed"
+                candidate.error = normalized_error
+                candidate.updated_at = now
             _touch_conversation(
                 conversation,
                 now=now,

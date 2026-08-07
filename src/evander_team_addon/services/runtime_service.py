@@ -907,7 +907,12 @@ class TeamRuntimeService:
                         "reason": reason,
                         "dispatch": durable_dispatch.model_dump(mode="json"),
                         "tasks": [
-                            task_payload_with_assessment(state_model, task) for task in active_tasks
+                            task_payload_with_assessment(
+                                state_model,
+                                state_model.tasks[task_id],
+                            )
+                            for task_id in durable_dispatch.task_ids
+                            if task_id in state_model.tasks
                         ],
                         "projects": [
                             {
@@ -1820,21 +1825,19 @@ class TeamRuntimeService:
                     None,
                 )
                 if successful_reply is not None:
-                    replied_id = _mark_chat_dispatch_message_replied_from_activity(
+                    replied_ids = _mark_chat_dispatch_message_replied_from_activity(
                         state,
                         dispatch_id=normalized_dispatch_id,
                     )
-                    if replied_id is not None:
-                        result["replied_chat_message_ids"].append(replied_id)
+                    result["replied_chat_message_ids"].extend(replied_ids)
                 else:
                     chat_terminal_error = _chat_dispatch_finalization_error(failed_activities)
-                    failed_id = _mark_chat_dispatch_message_failed(
+                    failed_ids = _mark_chat_dispatch_message_failed(
                         state,
                         dispatch_id=normalized_dispatch_id,
                         error=chat_terminal_error,
                     )
-                    if failed_id is not None:
-                        result["failed_chat_message_ids"].append(failed_id)
+                    result["failed_chat_message_ids"].extend(failed_ids)
 
             complete_blocker_dispatches(
                 state,

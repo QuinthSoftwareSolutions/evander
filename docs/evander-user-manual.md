@@ -6017,6 +6017,8 @@ The **Files** dialog controls Team Chat's directory-scoped attachment policy. It
 
 The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer with text but cannot attach agent files or change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
 
+If the agent is already working under an active Team lease, a queued plain-text Chat message is delivered once as soft steering in its next Team MCP response and is immediately marked `seen`. It does not require a Chat reply. Messages with attachments remain queued for a normal Chat dispatch so their files can be copied safely into the agent workspace. When the agent is available, queued messages in the same conversation and external return path are grouped into one dispatch; the agent receives every message ID and one reply covers the batch. Different conversations, providers, targets, or threads remain separate.
+
 Live state-stream and automatic Chat refreshes preserve an operator's reading
 position. If the reader is already at the bottom, changes conversations, or
 sends a message, the view intentionally follows the newest message; otherwise
@@ -6027,10 +6029,10 @@ new data does not jump the transcript away from the passage being read.
 > Sending a Chat message does not execute the agent inline in the API request:
 >
 > 1. The Admin API records the operator message and queues <code>team.chat.message_queued</code>.
-> 2. The Team runtime claims a queued message only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy.
-> 3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context. Attached files are first copied into <code>/home/agent/team-chat-attachments/&lt;message-id&gt;/</code> and are identified as untrusted operator input.
-> 4. The agent replies with <code>team_reply_to_chat</code>.
-> 5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
+> 2. The Team runtime claims queued messages only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy. Compatible messages in the same conversation and external return path form one batch.
+> 3. It creates one Chat dispatch and prompts the agent with the human operator identity, every batched message ID, and message context. Attached files are first copied into <code>/home/agent/team-chat-attachments/&lt;message-id&gt;/</code> and are identified as untrusted operator input.
+> 4. The agent replies once with <code>team_reply_to_chat</code>, covering the batch.
+> 5. Dispatch finalization marks every operator message in the batch replied; a dispatch without a successful reply marks the batch failed with the available error context.
 >
 > A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Mutation-enabled Admin Chat requires privileged operations to be unlocked and the sender to hold directory-scoped <code>team_chats.mutate</code> authority over both the recipient agent and each included project. The server snapshots the intersection of that authority and the agent's visible projects when the message is accepted; repository scope is derived from those projects. A mutation-authorized message fails without resuming the agent if that intersection becomes empty before lease. Missing or legacy mutation metadata is reply-only. When a human asks “please change Imani's task priority,” an authorized mutation-enabled dispatch can perform the state change and reply. A reply-only dispatch must answer with text only and without changing Team state.
 >

@@ -1824,6 +1824,64 @@ def test_external_chat_ingress_is_idempotent_and_queues_normal_team_dispatch(
     assert records[0].payload["payload"]["dispatch_id"] == first["dispatch_id"]
 
 
+def test_repository_coalesces_external_chat_messages_with_one_return_path(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    chat = _team_chat_service(repo)
+    state, first = chat.enqueue_external_operator_chat_message(
+        conversation_id=None,
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="First Discord follow-up.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-message-batch-1",
+        source_thread_id=None,
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+    state, second = chat.enqueue_external_operator_chat_message(
+        conversation_id=first["conversation_id"],
+        agent_id=None,
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="Second Discord follow-up.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-message-batch-2",
+        source_thread_id=None,
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+
+    state, claims = chat.claim_pending_chat_message_dispatches(now=datetime.now(UTC))
+
+    assert len(claims) == 1
+    assert claims[0]["message_ids"] == [first["message_id"], second["message_id"]]
+    dispatch_id = first["dispatch_id"]
+    assert state.dispatches[dispatch_id].chat_message_ids == claims[0]["message_ids"]
+
+    state, reply = _command_service(repo).reply_to_chat_command(
+        session_id="session-backend",
+        conversation_id=first["conversation_id"],
+        message_ids=claims[0]["message_ids"],
+        body="One reply covers both Discord messages.",
+        request_id="reply-to-external-chat-batch",
+    )
+
+    assert reply["success"] is True, reply
+    assert reply["replied_chat_message_ids"] == claims[0]["message_ids"]
+    assert len(state.external_chat_deliveries) == 1
+    event = next(
+        event
+        for event in reply["events"]
+        if event["event_type"] == "team.chat.external_reply_requested"
+    )
+    assert event["payload"]["operator_message_ids"] == claims[0]["message_ids"]
+
+
 def test_external_chat_reply_creates_delivery_event_and_records_failure(
     tmp_path: Path,
 ) -> None:
@@ -6723,6 +6781,7 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
             "session_id": "session-backend",
             "conversation_id": conversation.id,
             "message_id": message.id,
+            "message_ids": [message.id],
             "dispatch_id": dispatch_id,
         }
     ]
@@ -6731,6 +6790,86 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     assert state.agent_runtimes["backend"].wake_reason == "team_chat"
     assert state.dispatches[dispatch_id].project_ids == ["project"]
     assert state.dispatches[dispatch_id].managed_repo_ids == []
+
+
+def test_repository_coalesces_queued_chat_messages_and_accepts_one_reply(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime.now(UTC)
+
+    def _mark_backend_busy(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="team-dispatch-active",
+            wake_leased_until=now + timedelta(minutes=10),
+        )
+        return state
+
+    repo.update(_mark_backend_busy)
+    chat = _team_chat_service(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, first = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="First follow-up.",
+        created_by="operator:alice",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+    state, second = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Second follow-up.",
+        created_by="operator:alice",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{first.id}"
+    chat.queue_chat_message_dispatch(message_id=first.id, dispatch_id=dispatch_id)
+    chat.queue_chat_message_dispatch(
+        message_id=second.id,
+        dispatch_id=f"team-chat:{second.id}",
+    )
+
+    def _release_backend(state):
+        state.agent_runtimes["backend"].wake_leased_until = None
+        return state
+
+    repo.update(_release_backend)
+    state, claims = chat.claim_pending_chat_message_dispatches(now=now + timedelta(minutes=1))
+
+    assert claims == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "conversation_id": conversation.id,
+            "message_id": first.id,
+            "message_ids": [first.id, second.id],
+            "dispatch_id": dispatch_id,
+        }
+    ]
+    assert state.dispatches[dispatch_id].chat_message_ids == [first.id, second.id]
+    assert state.conversation_messages[first.id].status == "running"
+    assert state.conversation_messages[second.id].status == "running"
+
+    state, reply = _command_service(repo).reply_to_chat_command(
+        session_id="session-backend",
+        conversation_id=conversation.id,
+        message_id=first.id,
+        body="Both follow-ups are covered.",
+        request_id="reply-to-chat-batch",
+    )
+
+    assert reply["success"] is True, reply
+    assert reply["replied_chat_message_ids"] == [first.id, second.id]
+    assert state.conversation_messages[first.id].status == "replied"
+    assert state.conversation_messages[second.id].status == "replied"
+    reply_message = state.conversation_messages[reply["chat_message_id"]]
+    assert reply_message.source_message_id == second.id
+    assert reply_message.source_message_ids == [first.id, second.id]
 
 
 def test_repository_reply_only_chat_dispatch_has_no_mutation_scope(

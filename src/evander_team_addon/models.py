@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -2044,8 +2044,6 @@ class ReviewRequest(TeamModel):
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
-        if self.release_package_id is not None and self.review_cohort_id is not None:
-            raise ValueError("release review request cannot carry review_cohort_id")
         if self.supersedes_review_request_id is not None and (
             self.retry_reason is None or self.retry_requested_by is None
         ):
@@ -2395,6 +2393,7 @@ class TeamDispatch(TeamModel):
     inbox_item_ids: list[str] = Field(default_factory=list)
     project_ids: list[str] = Field(default_factory=list)
     managed_repo_ids: list[str] = Field(default_factory=list)
+    chat_message_ids: list[str] = Field(default_factory=list)
     review_routing_authorities: list[TeamDispatchReviewRoutingAuthority] = Field(
         default_factory=list
     )
@@ -2424,6 +2423,7 @@ class TeamDispatch(TeamModel):
         "inbox_item_ids",
         "project_ids",
         "managed_repo_ids",
+        "chat_message_ids",
         "initial_release_decision_deliverable_ids",
         mode="before",
     )
@@ -2433,6 +2433,8 @@ class TeamDispatch(TeamModel):
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> "TeamDispatch":
+        if self.chat_message_ids and self.cause_kind != "team_chat":
+            raise ValueError("chat message ids require a team_chat cause")
         authority_keys = [
             (authority.reviewer_agent_id, authority.deliverable_id)
             for authority in self.review_routing_authorities
@@ -2804,6 +2806,7 @@ class TeamConversationMessage(TeamModel):
         "dispatching",
         "queued",
         "running",
+        "seen",
         "replied",
         "failed",
         "sent",
@@ -2812,6 +2815,9 @@ class TeamConversationMessage(TeamModel):
     dispatch_id: str | None = None
     voice_session_id: str | None = None
     source_message_id: str | None = None
+    source_message_ids: list[str] = Field(default_factory=list)
+    seen_at: datetime | None = None
+    seen_dispatch_id: str | None = None
     error: str | None = None
     attachment_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -2828,12 +2834,18 @@ class TeamConversationMessage(TeamModel):
         "dispatch_id",
         "voice_session_id",
         "source_message_id",
+        "seen_dispatch_id",
         "error",
         mode="before",
     )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("source_message_ids", mode="before")
+    @classmethod
+    def _source_message_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "source_message_ids")
 
     @field_validator("metadata", mode="before")
     @classmethod
@@ -3620,6 +3632,8 @@ class ReleasePackage(TeamModel):
     review_correction_task_id: str | None = None
     verification_run_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
+    review_cohort_id: str | None = None
+    review_cohort_sealed_at: datetime | None = None
     manifest: ReleaseCandidateManifest | None = None
     gate_failure: ReleaseGateFailure | None = None
     git_promotion_record_ids: list[str] = Field(default_factory=list)
@@ -3677,6 +3691,7 @@ class ReleasePackage(TeamModel):
         "candidate_tree_hash",
         "approved_commit_sha",
         "review_correction_task_id",
+        "review_cohort_id",
         "summary",
         "error",
         mode="before",
@@ -3727,6 +3742,14 @@ class ReleasePackage(TeamModel):
                 "review_requirements": value.get("review_requirements") or [],
             }
         return value
+
+    @model_validator(mode="after")
+    def _validate_review_cohort(self) -> "ReleasePackage":
+        if (self.review_cohort_id is None) != (self.review_cohort_sealed_at is None):
+            raise ValueError(
+                "release review_cohort_id and review_cohort_sealed_at must be set together"
+            )
+        return self
 
 
 class EphemeralAssignment(TeamModel):
@@ -5267,6 +5290,12 @@ class TeamState(TeamModel):
                     f"conversation message {message.id} references missing source message "
                     f"{message.source_message_id}"
                 )
+            for source_message_id in message.source_message_ids:
+                if source_message_id not in self.conversation_messages:
+                    errors.append(
+                        f"conversation message {message.id} references missing source message "
+                        f"{source_message_id}"
+                    )
             for attachment_id in message.attachment_ids:
                 attachment = self.chat_attachments.get(attachment_id)
                 if attachment is None:
@@ -5299,6 +5328,28 @@ class TeamState(TeamModel):
             if message is not None and attachment.id not in message.attachment_ids:
                 errors.append(
                     f"chat attachment {attachment.id} is not linked from message {message.id}"
+                )
+        for dispatch in self.dispatches.values():
+            chat_conversation_ids: set[str] = set()
+            for message_id in dispatch.chat_message_ids:
+                message = self.conversation_messages.get(message_id)
+                if message is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} references missing chat message {message_id}"
+                    )
+                    continue
+                if message.sender != "operator":
+                    errors.append(
+                        f"dispatch {dispatch.id} chat message {message_id} is not an operator message"
+                    )
+                if message.dispatch_id != dispatch.id:
+                    errors.append(
+                        f"dispatch {dispatch.id} chat message {message_id} has a different dispatch"
+                    )
+                chat_conversation_ids.add(message.conversation_id)
+            if len(chat_conversation_ids) > 1:
+                errors.append(
+                    f"dispatch {dispatch.id} chat messages span multiple conversations"
                 )
 
     def _validate_external_chat_bridge(self, errors: list[str]) -> None:

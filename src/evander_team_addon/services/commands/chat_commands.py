@@ -48,9 +48,10 @@ class TeamChatCommandService(TeamCommandExecutor):
         *,
         session_id: str,
         conversation_id: str,
-        message_id: str,
         body: str,
         request_id: str,
+        message_id: str | None = None,
+        message_ids: Sequence[str] = (),
         attachments: Sequence[PreparedChatAttachment] = (),
         source_attachment_ids: Sequence[str] = (),
         summary: str | None = None,
@@ -60,7 +61,15 @@ class TeamChatCommandService(TeamCommandExecutor):
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_conversation_id = _required_text(conversation_id, "conversation_id")
-        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_message_id = _optional_text(message_id)
+        requested_message_ids = _unique_text_list(message_ids, "message_ids")
+        if normalized_message_id is not None:
+            requested_message_ids = _unique_text_list(
+                [*requested_message_ids, normalized_message_id],
+                "message_ids",
+            )
+        if not requested_message_ids:
+            raise ValueError("message_id or message_ids is required")
         normalized_body = _optional_text(body) or ""
         normalized_summary = _optional_text(summary)
         prepared_attachments = list(attachments)
@@ -82,6 +91,7 @@ class TeamChatCommandService(TeamCommandExecutor):
         normalized_payload = _team_chat_reply_normalized_payload(
             conversation_id=normalized_conversation_id,
             message_id=normalized_message_id,
+            message_ids=requested_message_ids,
             body=normalized_body,
             attachment_ids=normalized_source_attachment_ids,
             summary=normalized_summary,
@@ -116,28 +126,62 @@ class TeamChatCommandService(TeamCommandExecutor):
                 conversation_id=normalized_conversation_id,
                 agent=agent,
             )
-            source_message = _require_command_chat_message(
-                state,
-                message_id=normalized_message_id,
-                conversation_id=conversation.id,
-            )
-            if source_message.sender != "operator":
-                raise TeamCommandValidationError(
-                    code="chat_message_not_operator",
-                    message=f"message {source_message.id} is not an operator message",
-                    correction_context={"message_id": source_message.id},
+            dispatch = state.dispatches.get(resolved.dispatch_id or "")
+            dispatch_message_ids = list(dispatch.chat_message_ids) if dispatch else []
+            if not dispatch_message_ids and dispatch is not None and dispatch.cause_id:
+                dispatch_message_ids = [dispatch.cause_id]
+            if dispatch_message_ids:
+                requested_set = set(requested_message_ids)
+                dispatch_set = set(dispatch_message_ids)
+                if not requested_set.issubset(dispatch_set):
+                    raise TeamCommandValidationError(
+                        code="chat_batch_message_ids_mismatch",
+                        message="message_ids must belong to the active Team Chat dispatch batch",
+                        correction_context={
+                            "active_dispatch_id": resolved.dispatch_id,
+                            "message_ids": dispatch_message_ids,
+                        },
+                    )
+                if len(requested_message_ids) > 1 and requested_set != dispatch_set:
+                    raise TeamCommandValidationError(
+                        code="chat_batch_message_ids_mismatch",
+                        message="message_ids must cover the full active Team Chat dispatch batch",
+                        correction_context={
+                            "active_dispatch_id": resolved.dispatch_id,
+                            "message_ids": dispatch_message_ids,
+                        },
+                    )
+                source_message_ids = dispatch_message_ids
+            else:
+                source_message_ids = requested_message_ids
+            source_messages = [
+                _require_command_chat_message(
+                    state,
+                    message_id=source_message_id,
+                    conversation_id=conversation.id,
                 )
-            if source_message.status == "replied":
-                raise TeamCommandValidationError(
-                    code="chat_message_already_replied",
-                    message=f"message {source_message.id} has already been replied to",
-                    correction_context={"message_id": source_message.id},
-                )
+                for source_message_id in source_message_ids
+            ]
+            for source_message in source_messages:
+                if source_message.sender != "operator":
+                    raise TeamCommandValidationError(
+                        code="chat_message_not_operator",
+                        message=f"message {source_message.id} is not an operator message",
+                        correction_context={"message_id": source_message.id},
+                    )
+                if source_message.status == "replied":
+                    raise TeamCommandValidationError(
+                        code="chat_message_already_replied",
+                        message=f"message {source_message.id} has already been replied to",
+                        correction_context={"message_id": source_message.id},
+                    )
             _require_unclaimed_chat_attachments(state, prepared_attachments)
             now = utc_now()
-            source_message.status = "replied"
-            source_message.error = None
-            source_message.updated_at = now
+            for source_message in source_messages:
+                source_message.status = "replied"
+                source_message.error = None
+                source_message.updated_at = now
+            source_message = source_messages[-1]
             reply_id = f"chatmsg-{uuid4().hex}"
             metadata: dict[str, Any] = {"sender_kind": "team_agent"}
             if normalized_summary is not None:
@@ -151,6 +195,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                 attachment_ids=[attachment.id for attachment in prepared_attachments],
                 status="sent",
                 source_message_id=source_message.id,
+                source_message_ids=source_message_ids,
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
@@ -212,6 +257,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                                 "delivery_id": delivery_id,
                                 "conversation_id": conversation.id,
                                 "operator_message_id": source_message.id,
+                                "operator_message_ids": source_message_ids,
                                 "agent_reply_message_id": reply_id,
                                 "agent_id": agent.id,
                                 "provider": provider,
@@ -237,8 +283,9 @@ class TeamChatCommandService(TeamCommandExecutor):
                     "chat_message_id": reply_id,
                     "conversation_id": conversation.id,
                     "replied_message_id": source_message.id,
+                    "replied_message_ids": source_message_ids,
                     "created_chat_reply_message_ids": [reply_id],
-                    "replied_chat_message_ids": [source_message.id],
+                    "replied_chat_message_ids": source_message_ids,
                     "progress_made": True,
                     "events": events,
                 },

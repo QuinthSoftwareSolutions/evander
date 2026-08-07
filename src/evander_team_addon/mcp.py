@@ -45,6 +45,7 @@ from .chat_attachments import (
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.read_service import TeamReadService
 from .services.runtime_service import TeamRuntimeService
+from .services.chat_service import TeamChatService
 from .services.review_dispatch_steering import steer_closed_review_dispatch
 from .services.commands import (
     TeamAgentControlCommandService,
@@ -464,12 +465,16 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return team_mcp_success(
-            revision=state.revision,
-            progress_made=False,
-            agent_id=caller.agent_id,
-            context_rotation_pending=True,
-            handoff_recorded=True,
+        return _team_mcp_result_with_attention(
+            team_mcp_success(
+                revision=state.revision,
+                progress_made=False,
+                agent_id=caller.agent_id,
+                context_rotation_pending=True,
+                handoff_recorded=True,
+            ),
+            caller=caller,
+            context=context,
         )
 
     @server.tool()
@@ -541,14 +546,18 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return team_mcp_success(
-            revision=state.revision,
-            progress_made=True,
-            agent_id=caller.agent_id,
-            governance_group_id=item.governance_group_id,
-            agenda_item_id=item.id,
-            state=item.state.value,
-            governance_agenda_item=item.model_dump(mode="json"),
+        return _team_mcp_result_with_attention(
+            team_mcp_success(
+                revision=state.revision,
+                progress_made=True,
+                agent_id=caller.agent_id,
+                governance_group_id=item.governance_group_id,
+                agenda_item_id=item.id,
+                state=item.state.value,
+                governance_agenda_item=item.model_dump(mode="json"),
+            ),
+            caller=caller,
+            context=context,
         )
 
     _register_slice5_tools(
@@ -949,11 +958,15 @@ def _register_slice5_tools(
             )
         except Exception as exc:
             raise ToolError(str(exc)) from exc
-        return {
-            "success": True,
-            "revision": caller.state.revision,
-            "attachment": staged.payload(),
-        }
+        return _team_mcp_result_with_attention(
+            {
+                "success": True,
+                "revision": caller.state.revision,
+                "attachment": staged.payload(),
+            },
+            caller=caller,
+            context=context,
+        )
 
     server.add_tool(
         team_stage_chat_attachment,
@@ -967,9 +980,10 @@ def _register_slice5_tools(
 
     def team_reply_to_chat(
         conversation_id: str,
-        message_id: str,
         body: str,
         request_id: str,
+        message_id: str | None = None,
+        message_ids: list[str] | None = None,
         attachment_ids: list[str] | None = None,
         approval_request_id: str | None = None,
         summary: str | None = None,
@@ -987,6 +1001,15 @@ def _register_slice5_tools(
                 session_id=caller.session_id,
                 tool_name=TEAM_REPLY_TO_CHAT_TOOL,
             )
+        approval_payload = {
+            "tool_name": TEAM_REPLY_TO_CHAT_TOOL,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "body": body,
+            "attachment_ids": normalized_attachment_ids,
+        }
+        if message_ids:
+            approval_payload["message_ids"] = list(message_ids)
         prepared_attachments = _prepare_team_chat_agent_attachments(
             context,
             storage=attachment_storage,
@@ -994,13 +1017,7 @@ def _register_slice5_tools(
             caller=caller,
             attachment_ids=normalized_attachment_ids,
             approval_request_id=approval_request_id,
-            approval_payload={
-                "tool_name": TEAM_REPLY_TO_CHAT_TOOL,
-                "conversation_id": conversation_id,
-                "message_id": message_id,
-                "body": body,
-                "attachment_ids": normalized_attachment_ids,
-            },
+            approval_payload=approval_payload,
         )
         newly_promoted_attachments = [
             attachment
@@ -1012,6 +1029,7 @@ def _register_slice5_tools(
                 session_id=caller.session_id,
                 conversation_id=conversation_id,
                 message_id=message_id,
+                message_ids=list(message_ids or []),
                 body=body,
                 attachments=prepared_attachments,
                 source_attachment_ids=normalized_attachment_ids,
@@ -1040,7 +1058,9 @@ def _register_slice5_tools(
         name=TEAM_REPLY_TO_CHAT_TOOL,
         description=(
             "Reply to a human Team Chat operator message for the current chat "
-            "dispatch. Requires conversation_id, message_id, request_id, and either body "
+            "dispatch. Use message_ids to cover a coalesced chat batch; message_id remains "
+            "a compatible shorthand for the active batch. Requires conversation_id, request_id, "
+            "and either body "
             "or staged attachment_ids. Reply-only dispatches accept text only; agent file "
             "sends may require exact approval."
         ),
@@ -3362,11 +3382,15 @@ def _register_read_tools(
             )
         except (FileNotFoundError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return team_mcp_success(
-            revision=caller.state.revision,
-            progress_made=False,
-            agent_id=caller.agent_id,
-            **imported,
+        return _team_mcp_result_with_attention(
+            team_mcp_success(
+                revision=caller.state.revision,
+                progress_made=False,
+                agent_id=caller.agent_id,
+                **imported,
+            ),
+            caller=caller,
+            context=context,
         )
 
     server.add_tool(
@@ -3751,12 +3775,16 @@ def _register_read_tools(
                     limit=limit,
                     score_threshold=score_threshold,
                 )
-                return team_mcp_success(
-                    revision=caller.state.revision,
-                    progress_made=False,
-                    agent_id=caller.agent_id,
-                    semantic=True,
-                    **semantic_result,
+                return _team_mcp_result_with_attention(
+                    team_mcp_success(
+                        revision=caller.state.revision,
+                        progress_made=False,
+                        agent_id=caller.agent_id,
+                        semantic=True,
+                        **semantic_result,
+                    ),
+                    caller=caller,
+                    context=context,
                 )
             except Exception as exc:
                 semantic_error = str(exc)
@@ -3777,14 +3805,18 @@ def _register_read_tools(
         records = [
             memory_record_payload(memory, include_body=False) for memory in result.pop("records")
         ]
-        return team_mcp_success(
-            revision=caller.state.revision,
-            progress_made=False,
-            agent_id=caller.agent_id,
-            semantic=False,
-            semantic_error=semantic_error,
-            records=records,
-            **result,
+        return _team_mcp_result_with_attention(
+            team_mcp_success(
+                revision=caller.state.revision,
+                progress_made=False,
+                agent_id=caller.agent_id,
+                semantic=False,
+                semantic_error=semantic_error,
+                records=records,
+                **result,
+            ),
+            caller=caller,
+            context=context,
         )
 
     server.add_tool(
@@ -3802,11 +3834,14 @@ def _read_service(caller: Any) -> TeamReadService:
 
 
 def _team_read_list_result(result: Mapping[str, Any], *, caller: Any) -> dict[str, Any]:
-    return team_mcp_success(
-        revision=caller.state.revision,
-        progress_made=False,
-        agent_id=caller.agent_id,
-        **dict(result),
+    return _team_mcp_result_with_attention(
+        team_mcp_success(
+            revision=caller.state.revision,
+            progress_made=False,
+            agent_id=caller.agent_id,
+            **dict(result),
+        ),
+        caller=caller,
     )
 
 
@@ -3826,11 +3861,14 @@ def _team_read_get_result(
             record_name=record_name,
             record_id=record_id,
         )
-    return team_mcp_success(
-        revision=caller.state.revision,
-        progress_made=False,
-        agent_id=caller.agent_id,
-        record=dict(record),
+    return _team_mcp_result_with_attention(
+        team_mcp_success(
+            revision=caller.state.revision,
+            progress_made=False,
+            agent_id=caller.agent_id,
+            record=dict(record),
+        ),
+        caller=caller,
     )
 
 
@@ -3869,6 +3907,46 @@ def _team_command_mcp_result(
     if payload.get("errors") and payload.get("error") is None:
         first = payload["errors"][0]
         payload["error"] = first.get("message") if isinstance(first, dict) else str(first)
+    return _team_mcp_result_with_attention(payload, caller=caller, context=context)
+
+
+def _team_mcp_result_with_attention(
+    result: Mapping[str, Any],
+    *,
+    caller: Any,
+    context: AddonContext | None = None,
+) -> dict[str, Any]:
+    payload = dict(result)
+    agent_id = getattr(caller, "agent_id", None)
+    dispatch_id = getattr(caller, "active_dispatch_id", None)
+    repository = getattr(caller, "team_repository", None)
+    if repository is None and context is not None:
+        repository = TeamStateRepository(context.runtime_dir)
+    if not agent_id or not dispatch_id or not isinstance(repository, TeamStateRepository):
+        return payload
+    try:
+        state, messages = TeamChatService(repository).claim_pending_operator_attention_messages(
+            agent_id=agent_id,
+            dispatch_id=dispatch_id,
+        )
+    except Exception as exc:  # Attention must never hide the primary tool result.
+        payload["attention_error"] = str(exc)
+        return payload
+    if not messages:
+        return payload
+    payload["revision"] = state.revision
+    payload["attention"] = {
+        "seen_message_ids": [message.id for message in messages],
+        "messages": [
+            {
+                "message_id": message.id,
+                "conversation_id": message.conversation_id,
+                "body": message.body,
+                "created_at": message.created_at.isoformat(),
+            }
+            for message in messages
+        ],
+    }
     return payload
 
 
