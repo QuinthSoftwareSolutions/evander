@@ -7471,16 +7471,13 @@ function renderRuntimeOperations() {
 
   const sections = [];
 
-  if (runtimeFilter === "all" || runtimeFilter === "needs_attention") {
+  if (runtimeFilter === "all") {
     sections.push(
       renderRuntimeSection({
-        title: runtimeFilter === "all" ? "Persistent runtime state" : "Agents needing attention",
-        count: runtimeFilter === "all" ? `${agents.length} visible` : `${dueLeasedAgents.length} visible`,
-        emptyMessage: runtimeFilter === "all" ? "No agent runtime data yet." : "No due or leased agents.",
-        body: renderRuntimeAgentRows(
-          runtimeFilter === "all" ? agents : dueLeasedAgents,
-          runtimeFilter === "all" ? "No agent runtime data yet." : "No due or leased agents.",
-        ),
+        title: "Persistent runtime state",
+        count: `${agents.length} visible`,
+        emptyMessage: "No agent runtime data yet.",
+        body: renderRuntimeAgentRows(agents, "No agent runtime data yet."),
       }),
     );
   } else if (runtimeFilter === "due_leased_agents") {

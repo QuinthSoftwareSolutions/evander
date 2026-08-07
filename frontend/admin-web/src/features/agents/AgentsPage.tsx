@@ -37,6 +37,7 @@ import type {
   AgentListResponse,
   AgentLogResponse,
   AgentLogView,
+  AgentPromptQueueRecord,
   AgentPromptQueueSummary,
   AgentRecord,
   AgentPolicyUpdateRequest,
@@ -51,6 +52,10 @@ type ActionLogEntry = {
   at: string;
   message: string;
   tone: "info" | "error";
+};
+
+type AgentPromptQueueDisplay = AgentPromptQueueSummary & {
+  records: AgentPromptQueueRecord[];
 };
 
 type OperatorSteeringNoteStatus = "pending" | "injecting" | "delivered" | "cancelled" | "failed";
@@ -835,7 +840,7 @@ function timestampRank(value: string | null): number {
   return Number.isFinite(time) ? time : 0;
 }
 
-const EMPTY_PROMPT_QUEUE_SUMMARY: AgentPromptQueueSummary = {
+const EMPTY_PROMPT_QUEUE_SUMMARY: AgentPromptQueueDisplay = {
   record_count: 0,
   coalesced_count: 0,
   oldest_created_at: null,
@@ -845,8 +850,14 @@ const EMPTY_PROMPT_QUEUE_SUMMARY: AgentPromptQueueSummary = {
   read_error: null,
 };
 
-function promptQueueForAgent(agent: AgentRecord | null | undefined): AgentPromptQueueSummary {
-  return agent?.prompt_queue ?? EMPTY_PROMPT_QUEUE_SUMMARY;
+function promptQueueForAgent(agent: AgentRecord | null | undefined): AgentPromptQueueDisplay {
+  const promptQueue = agent?.prompt_queue;
+  if (!promptQueue) return EMPTY_PROMPT_QUEUE_SUMMARY;
+  return {
+    ...EMPTY_PROMPT_QUEUE_SUMMARY,
+    ...promptQueue,
+    records: Array.isArray(promptQueue.records) ? promptQueue.records : [],
+  };
 }
 
 function promptQueueSummaryText(summary: AgentPromptQueueSummary): string {

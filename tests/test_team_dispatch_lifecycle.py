@@ -338,6 +338,48 @@ def test_immediate_inbox_cause_does_not_narrow_agent_wide_task_scope(
     ]
 
 
+def test_assigned_blocker_recovery_task_is_in_lease_task_payload(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _block_task_for_recovery(state):
+        task = state.tasks["task"]
+        task.state = TeamTaskState.BLOCKED
+        task.state_entered_at = LEASE_NOW
+        open_or_get_blocker(
+            state,
+            source_kind=TeamBlockerSourceKind.TASK,
+            source_id=task.id,
+            summary="Recover the blocked task through its assigned owner.",
+            reporter_actor="operator@example.com",
+            initial_owner_agent_id="worker",
+            route_initial_owner_even_if_unavailable=True,
+            wake_owner=False,
+            team_id="team",
+            project_id="project",
+            task_id=task.id,
+            affected_task_ids=[task.id],
+            now=LEASE_NOW,
+        )
+        return state
+
+    repository.update(_block_task_for_recovery)
+
+    state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
+    lease = leases[0]
+    assert lease["dispatch"]["task_ids"] == ["task"]
+    assert [task["id"] for task in lease["tasks"]] == ["task"]
+    assert lease["tasks"][0]["state"] == TeamTaskState.BLOCKED.value
+    assert state.dispatches[lease["dispatch_id"]].task_ids == ["task"]
+
+
 def test_origin_provenance_does_not_grant_root_authority_or_gate_resolution(
     tmp_path: Path,
 ) -> None:

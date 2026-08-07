@@ -5207,10 +5207,19 @@ test("team add-on Org chart animates only newly observed activity without refitt
   const backendCard = page.locator(".org-focus-node-card").filter({
     has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
   });
-  const haloAnimation = await backendCard.locator(".hierarchy-node-avatar-wrap").evaluate((element) =>
-    getComputedStyle(element, "::before").animationName,
-  );
-  assert.equal(haloAnimation, "org-flow-active-halo");
+  const haloStyle = await backendCard.evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return {
+      animationName: style.animationName,
+      borderWidth: style.borderTopWidth,
+      boxShadow: style.boxShadow,
+      insetTop: style.top,
+    };
+  });
+  assert.equal(haloStyle.animationName, "org-flow-active-halo");
+  assert.equal(haloStyle.borderWidth, "2px");
+  assert.notEqual(haloStyle.boxShadow, "none");
+  assert.ok(Number.parseFloat(haloStyle.insetTop) < 0, `expected an outer card halo, got ${haloStyle.insetTop}`);
 
   const zoomedOrgViewport = await zoomOrgChartCanvas(page);
   state.revision += 1;
@@ -5237,7 +5246,14 @@ test("team add-on Org chart animates only newly observed activity without refitt
   await backendCard.locator(".org-flow-activity-bubble", { hasText: "Reviewing API handoff" }).waitFor({
     state: "visible",
   });
-  await page.locator(".org-flow-message-pulse").waitFor({ state: "attached" });
+  const forwardPulse = page.locator('.react-flow__edge[data-id="message-pulse:inbox-live-status"]');
+  await forwardPulse.waitFor({ state: "attached" });
+  const hierarchyPath = await page
+    .locator('.react-flow__edge[data-id="edge:agent:backend:agent:worker:manager"] .react-flow__edge-path')
+    .getAttribute("d");
+  assert.ok(hierarchyPath);
+  assert.equal(await forwardPulse.locator(".org-flow-message-guide").getAttribute("d"), hierarchyPath);
+  assert.equal(await forwardPulse.locator("animateMotion").getAttribute("keyPoints"), "0;1");
   assert.equal(
     await orgChartViewportTransform(page),
     zoomedOrgViewport,
@@ -5245,6 +5261,27 @@ test("team add-on Org chart animates only newly observed activity without refitt
   );
 
   await page.locator(".org-flow-message-pulse").waitFor({ state: "detached", timeout: 3000 });
+
+  state.revision += 1;
+  state.inbox["inbox-live-progress"] = {
+    id: "inbox-live-progress",
+    recipient_agent_id: "backend",
+    item_type: "progress_report",
+    sender_agent_id: "worker",
+    task_id: "task_waiting",
+    payload: { summary: "The review is ready." },
+    state: "pending",
+    created_at: "2026-06-11T08:57:00Z",
+    updated_at: "2026-06-11T08:57:00Z",
+  };
+  emitStateSnapshot(state);
+
+  await waitForRevision(page, state.revision);
+  const reversePulse = page.locator('.react-flow__edge[data-id="message-pulse:inbox-live-progress"]');
+  await reversePulse.waitFor({ state: "attached" });
+  assert.equal(await reversePulse.locator(".org-flow-message-guide").getAttribute("d"), hierarchyPath);
+  assert.equal(await reversePulse.locator("animateMotion").getAttribute("keyPoints"), "1;0");
+  await reversePulse.waitFor({ state: "detached", timeout: 3000 });
   await backendCard.locator(".org-flow-activity-bubble").waitFor({ state: "detached", timeout: 7000 });
 });
 
@@ -5275,9 +5312,7 @@ test("team add-on Org chart respects reduced-motion preferences", async (t) => {
     has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
   });
   assert.equal(
-    await backendCard.locator(".hierarchy-node-avatar-wrap").evaluate((element) =>
-      getComputedStyle(element, "::before").animationName,
-    ),
+    await backendCard.evaluate((element) => getComputedStyle(element, "::before").animationName),
     "none",
   );
 
@@ -9370,10 +9405,26 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     runtimeAttentionText.some((value) => value.includes("Session expired for Grace Lead")),
     `expected the expired session attention card: ${JSON.stringify(runtimeAttentionText)}`,
   );
+  assert.equal(
+    await page.locator("#team-operations-page").getByRole("heading", { name: "Agents needing attention" }).count(),
+    0,
+  );
+  assert.equal(await page.locator("#team-operations-page .runtime-agent-item").count(), 0);
   await page.locator("#team-operations-page").getByText("session expired").first().waitFor({
     state: "visible",
   });
   assert.equal(await page.locator("#team-operations-page .runtime-item-compact details[open]").count(), 0);
+
+  await page.locator("#team-operations-page").getByRole("button", { name: "Due / leased agents" }).click();
+  await page
+    .locator("#team-operations-page")
+    .getByRole("heading", { name: "Due / leased agents" })
+    .waitFor({ state: "visible" });
+  const dueAgent = page.locator("#team-operations-page .runtime-agent-item").filter({
+    hasText: "alpha-lead",
+  });
+  await dueAgent.waitFor({ state: "visible" });
+  assert.match(await dueAgent.locator("summary").innerText(), /wake due/);
 
   await page.getByRole("tab", { name: "Delivery" }).click();
   await page.locator("#team-delivery-page").waitFor({ state: "visible" });

@@ -221,6 +221,15 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       },
     });
   }
+  const compactAgentsResponse = {
+    ...agentsResponse,
+    items: agentsResponse.items.map((agent) => {
+      if (!agent.prompt_queue) return agent;
+      const promptQueue = { ...agent.prompt_queue };
+      delete promptQueue.records;
+      return { ...agent, prompt_queue: promptQueue };
+    }),
+  };
   const sessionResponse = {
     auth_mode: "none",
     auth_required: false,
@@ -444,7 +453,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         assert.equal(url.searchParams.get("_dashboard"), "1");
         assert.equal(url.searchParams.get("_dashboard_refresh"), null);
       }
-      await route.fulfill(jsonResponse(agentsResponse));
+      await route.fulfill(jsonResponse(compactAgentsResponse));
       return;
     }
 

@@ -9,7 +9,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
-  getStraightPath,
+  getSmoothStepPath,
   useReactFlow,
   useViewport,
   type Edge,
@@ -118,6 +118,10 @@ type OrgMessageEvent = {
   label: string;
 };
 
+type OrgMessagePulseData = OrgMessageEvent & {
+  reverse: boolean;
+};
+
 type OrgFlowPayload = {
   nodes: OrgNode[];
   edges: Edge[];
@@ -189,18 +193,32 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
   const edges = useMemo(
     () => [
       ...payload.edges,
-      ...messagePulses.map((message): Edge => ({
-        id: `message-pulse:${message.id}`,
-        source: message.sourceNodeId,
-        target: message.targetNodeId,
-        type: "messagePulse",
-        className: `org-flow-message-edge org-flow-message-edge--${message.itemType}`,
-        data: message,
-        selectable: false,
-        focusable: false,
-        deletable: false,
-        zIndex: 20,
-      })),
+      ...messagePulses.map((message): Edge => {
+        const hierarchyEdge = payload.edges.find(
+          (edge) =>
+            (edge.source === message.sourceNodeId && edge.target === message.targetNodeId) ||
+            (edge.source === message.targetNodeId && edge.target === message.sourceNodeId),
+        );
+        const reverse = Boolean(
+          hierarchyEdge &&
+            hierarchyEdge.source === message.targetNodeId &&
+            hierarchyEdge.target === message.sourceNodeId,
+        );
+        return {
+          id: `message-pulse:${message.id}`,
+          source: hierarchyEdge?.source || message.sourceNodeId,
+          target: hierarchyEdge?.target || message.targetNodeId,
+          sourceHandle: hierarchyEdge?.sourceHandle,
+          targetHandle: hierarchyEdge?.targetHandle,
+          type: "messagePulse",
+          className: `org-flow-message-edge org-flow-message-edge--${message.itemType}`,
+          data: { ...message, reverse } satisfies OrgMessagePulseData,
+          selectable: false,
+          focusable: false,
+          deletable: false,
+          zIndex: 20,
+        };
+      }),
     ],
     [messagePulses, payload.edges],
   );
@@ -407,15 +425,33 @@ function MessagePulseEdge({
   id,
   sourceX,
   sourceY,
+  sourcePosition,
   targetX,
   targetY,
+  targetPosition,
+  data,
 }: EdgeProps) {
-  const [edgePath] = getStraightPath({ sourceX, sourceY, targetX, targetY });
+  const [edgePath] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+  const reverse = Boolean((data as OrgMessagePulseData | undefined)?.reverse);
   return (
     <g className="org-flow-message-pulse" aria-hidden="true">
       <BaseEdge id={id} path={edgePath} className="org-flow-message-guide" />
       <circle className="org-flow-message-particle" r="5">
-        <animateMotion dur={`${messagePulseDurationMs}ms`} path={edgePath} fill="freeze" />
+        <animateMotion
+          dur={`${messagePulseDurationMs}ms`}
+          path={edgePath}
+          keyPoints={reverse ? "1;0" : "0;1"}
+          keyTimes="0;1"
+          calcMode="linear"
+          fill="freeze"
+        />
         <animate
           attributeName="opacity"
           values="0;1;1;0"
