@@ -1471,6 +1471,14 @@ resolves through an accepted deliverable, with authoritative Git provenance
 when required, but it does not aggregate other tasks and therefore cannot set
 `required_contribution_task_ids`.
 
+A contracted leaf cannot own child tasks. Submit its work directly, or create
+independent follow-up work with `originating_task_id`; when child contributions
+must be composed, designate an explicit integration boundary and its exact
+contract before the first deliverable. Historical non-boundary tasks that
+already persisted source-bearing aggregate deliverables retain legacy
+direct-child coverage for compatibility, but new contracted leaves cannot
+enter that mode.
+
 Every task read also includes a non-persisted `inherited_blockers` projection
 for blockers reached through unresolved descendants or unsatisfied
 dependencies. Each row identifies the upstream task and canonical blocker,

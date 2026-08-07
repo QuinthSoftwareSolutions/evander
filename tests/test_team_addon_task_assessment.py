@@ -817,6 +817,99 @@ def test_contracted_leaf_forbids_direct_finish_without_becoming_integration_boun
     ]
 
 
+def test_contracted_leaf_does_not_aggregate_incidental_child_deliverables() -> None:
+    state = _state()
+    contracted_leaf = AgentTask(
+        **{
+            **_support_task("contracted-leaf").model_dump(),
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+        }
+    )
+    child = _support_task(
+        "incidental-child",
+        state=TeamTaskState.FINISHED,
+        parent_task_id=contracted_leaf.id,
+    )
+    state.tasks = {
+        contracted_leaf.id: contracted_leaf,
+        child.id: child,
+    }
+    child_deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-incidental-child",
+        task_id=child.id,
+    )
+
+    direct = contribution_coverage_for_sources(
+        state,
+        task_id=contracted_leaf.id,
+        source_deliverable_ids=[],
+    )
+    aggregate = contribution_coverage_for_sources(
+        state,
+        task_id=contracted_leaf.id,
+        source_deliverable_ids=[child_deliverable.id],
+    )
+
+    assert direct["complete"] is True
+    assert direct["required_contribution_task_ids"] == []
+    assert aggregate["complete"] is False
+    assert aggregate["unexpected_source_deliverable_ids"] == [
+        child_deliverable.id
+    ]
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_submission(
+            state,
+            task_id=contracted_leaf.id,
+            source_deliverable_ids=[child_deliverable.id],
+        )
+    assert raised.value.code == "contribution_coverage_incomplete"
+
+
+def test_source_bearing_contracted_leaf_preserves_legacy_child_coverage() -> None:
+    state = _state()
+    contracted_leaf = AgentTask(
+        **{
+            **_support_task("legacy-contracted-leaf").model_dump(),
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+        }
+    )
+    child = _support_task(
+        "legacy-child",
+        state=TeamTaskState.FINISHED,
+        parent_task_id=contracted_leaf.id,
+    )
+    state.tasks = {
+        contracted_leaf.id: contracted_leaf,
+        child.id: child,
+    }
+    child_deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-legacy-child",
+        task_id=child.id,
+    )
+    aggregate = _delivered(
+        state,
+        deliverable_id="deliverable-legacy-aggregate",
+        task_id=contracted_leaf.id,
+        source_deliverable_ids=[child_deliverable.id],
+    )
+
+    coverage = contribution_coverage_for_sources(
+        state,
+        task_id=contracted_leaf.id,
+        source_deliverable_ids=list(aggregate.source_deliverable_ids),
+    )
+
+    assert coverage["complete"] is True
+    assert coverage["required_contribution_task_ids"] == [child.id]
+    assert coverage["required_source_deliverable_ids"] == [child_deliverable.id]
+
+
 def test_contracted_leaf_cannot_require_integration_contributions() -> None:
     with pytest.raises(
         ValueError,

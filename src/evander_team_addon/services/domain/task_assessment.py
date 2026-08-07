@@ -221,6 +221,7 @@ class TaskAssessmentService:
             )
 
             integration_task_ids = _required_contribution_task_ids(
+                self._state,
                 task,
                 direct_child_ids=direct_child_ids,
             )
@@ -611,6 +612,7 @@ def contribution_coverage_for_sources(
         if child.parent_task_id == task.id
     )
     required_contribution_task_ids = _required_contribution_task_ids(
+        state,
         task,
         direct_child_ids=direct_child_ids,
     )
@@ -667,6 +669,7 @@ def deliverable_source_lineage(
         allowed_source_task_ids = (
             set(
                 _required_contribution_task_ids(
+                    state,
                     owner_task,
                     direct_child_ids=direct_child_ids,
                 )
@@ -1708,6 +1711,7 @@ def _task_contribution_coverage(
     direct_child_ids: Sequence[str],
 ) -> dict[str, Any]:
     required_contribution_task_ids = _required_contribution_task_ids(
+        state,
         task,
         direct_child_ids=direct_child_ids,
     )
@@ -1868,6 +1872,7 @@ def _coverage_for_source_ids(
 
 
 def _required_contribution_task_ids(
+    state: TeamState,
     task: AgentTask,
     *,
     direct_child_ids: Sequence[str],
@@ -1876,7 +1881,32 @@ def _required_contribution_task_ids(
         return list(
             task.deliverable_contract.required_contribution_task_ids
         )
-    return sorted(set(direct_child_ids))
+    if _uses_legacy_direct_child_contributions(state, task):
+        return sorted(set(direct_child_ids))
+    return []
+
+
+def _uses_legacy_direct_child_contributions(
+    state: TeamState,
+    task: AgentTask,
+) -> bool:
+    """Preserve aggregates that predate explicit integration contracts.
+
+    A contracted non-boundary task is a leaf.  Persisted source-bearing
+    deliverables are the durable evidence that a historical task already acted
+    as a legacy aggregate; supported submission validates contribution coverage
+    before persisting a new deliverable, so a new leaf cannot use this fallback
+    to bootstrap aggregate semantics.
+    """
+
+    if task.integration_boundary:
+        return False
+    if task.deliverable_contract is None:
+        return True
+    return any(
+        deliverable.task_id == task.id and bool(deliverable.source_deliverable_ids)
+        for deliverable in state.deliverables.values()
+    )
 
 
 def _accepted_contribution_deliverables(
@@ -1888,7 +1918,10 @@ def _accepted_contribution_deliverables(
     contribution_task = state.tasks.get(contribution_task_id)
     if contribution_task is None:
         return []
-    legacy_direct_child_policy = not task.integration_boundary
+    legacy_direct_child_policy = _uses_legacy_direct_child_contributions(
+        state,
+        task,
+    )
     if (
         legacy_direct_child_policy
         and contribution_task.state == TeamTaskState.CANCELLED
