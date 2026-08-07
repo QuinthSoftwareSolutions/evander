@@ -193,6 +193,8 @@ def _apply_chat_reply(
             _required_text(message_id, "message_ids") for message_id in raw_message_ids
         ]
     else:
+        source_message_ids = []
+    if not source_message_ids:
         source_message_ids = [_required_text(reply.get("message_id"), "message_id")]
     body = _required_text(reply.get("body"), "body")
     conversation = _require_present(state.conversations, conversation_id, "conversation")

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-07 - Safe Batched Team Chat Reply Validation
+
+- Rejected agent chat replies with neither a non-empty `message_ids` batch nor a legacy
+  `message_id`, recording the malformed reply as a failed chat item instead of aborting the
+  agent-action completion.
+
 ## 2026-08-07 - Prompt Team Outbox Publication
 
 - Woke the Team workflow immediately after operator candidate-correction recovery commits its

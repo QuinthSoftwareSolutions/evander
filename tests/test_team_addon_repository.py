@@ -7087,6 +7087,54 @@ def test_repository_fails_active_team_chat_message_when_reply_item_is_invalid(
     assert state.conversations[conversation.id].last_message_preview.startswith("Reply failed:")
 
 
+def test_repository_fails_chat_reply_with_empty_message_ids(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you summarize the blocker?",
+        expected_revision=state.revision,
+    )
+    dispatch_id = "team-chat:test"
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        lease_seconds=60,
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": dispatch_id,
+            "chat_replies": [
+                {
+                    "conversation_id": conversation.id,
+                    "message_ids": [],
+                    "body": "The dependency task is still open.",
+                }
+            ],
+        },
+        dispatch_id=dispatch_id,
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert result["created_chat_reply_message_ids"] == []
+    assert "chat_replies[0]: message_id must be a non-empty string" in result["errors"]
+    failed_message = state.conversation_messages[message.id]
+    assert failed_message.status == "failed"
+    assert "chat_replies[0]: message_id must be a non-empty string" in (
+        failed_message.error or ""
+    )
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+
+
 def test_repository_records_conversation_voice_call_idempotently(
     tmp_path: Path,
 ) -> None:
