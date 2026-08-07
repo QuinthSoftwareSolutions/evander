@@ -31,6 +31,7 @@ from evander_team_addon.mcp import (
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
+    TEAM_LIST_TASKS_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
@@ -678,6 +679,106 @@ def test_teamless_governance_agent_can_reply_to_active_team_chat(
     reply = stored.conversation_messages[result["chat_message_id"]]
     assert reply.sender == "agent"
     assert reply.body == "Understood."
+
+
+def test_active_team_mcp_result_surfaces_plain_operator_attention_once(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_LIST_TASKS_TOOL],
+    )
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-backend")
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please keep the interface stable while you work.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_LIST_TASKS_TOOL,
+        {"session_id": "session-backend"},
+    )
+
+    assert result["attention"]["seen_message_ids"] == [message.id]
+    attention_message = result["attention"]["messages"]
+    assert len(attention_message) == 1
+    assert attention_message[0]["message_id"] == message.id
+    assert attention_message[0]["conversation_id"] == conversation.id
+    assert attention_message[0]["body"] == "Please keep the interface stable while you work."
+    assert attention_message[0]["created_at"]
+    stored = repo.read()
+    assert stored.conversation_messages[message.id].status == "seen"
+    assert stored.conversation_messages[message.id].seen_dispatch_id == "dispatch-backend"
+
+    replay = _call_tool(
+        server,
+        TEAM_LIST_TASKS_TOOL,
+        {"session_id": "session-backend"},
+    )
+    assert "attention" not in replay
+
+
+def test_active_team_mcp_result_leaves_operator_attachment_for_chat_dispatch(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_LIST_TASKS_TOOL],
+    )
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-backend")
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    attachment = TeamChatAttachmentStorage(context.config.runtime_dir).prepare_upload(
+        content=b"operator notes",
+        filename="notes.txt",
+        mime_type="text/plain",
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Read the attached notes when you can.",
+        attachments=[attachment],
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    result = _call_tool(
+        create_server(context),
+        TEAM_LIST_TASKS_TOOL,
+        {"session_id": "session-backend"},
+    )
+
+    assert "attention" not in result
+    assert repo.read().conversation_messages[message.id].status == "queued"
 
 
 def test_reply_only_team_chat_cannot_stage_attachment(

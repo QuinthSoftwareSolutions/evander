@@ -184,7 +184,9 @@ export type AgentPromptQueueSummary = {
   coalesced_count: number;
   oldest_created_at: string | null;
   newest_updated_at: string | null;
-  records: AgentPromptQueueRecord[];
+  // Agent-list summaries intentionally omit the individual queue records.
+  // The selected-agent detail response supplies them.
+  records?: AgentPromptQueueRecord[];
   truncated_count: number;
   read_error: string | null;
 };

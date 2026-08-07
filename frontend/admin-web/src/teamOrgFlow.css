@@ -15,6 +15,7 @@
 }
 
 .team-org-flow-canvas {
+  position: relative;
   width: 100%;
   height: clamp(34rem, 68vh, 54rem);
   min-height: 32rem;
@@ -61,7 +62,8 @@
 .team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:hover),
 .team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus),
 .team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus-visible),
-.team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus-within) {
+.team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus-within),
+.team-org-flow-canvas .react-flow__node:has(.org-flow-activity-bubble) {
   z-index: 30 !important;
 }
 
@@ -90,6 +92,185 @@
 
 .team-org-flow-canvas .react-flow__edge.org-flow-edge--governance .react-flow__edge-path {
   stroke: rgba(103, 87, 36, 0.72);
+}
+
+.team-org-flow-canvas .org-flow-message-edge .react-flow__edge-path {
+  pointer-events: none;
+}
+
+.team-org-flow-canvas .org-flow-message-guide {
+  stroke: rgba(23, 111, 122, 0.24);
+  stroke-width: 2;
+  stroke-dasharray: 3 7;
+  animation: org-flow-message-guide 1.25s ease-out both;
+}
+
+.team-org-flow-canvas .org-flow-message-edge--status_request .org-flow-message-guide {
+  stroke: rgba(154, 107, 19, 0.3);
+}
+
+.team-org-flow-canvas .org-flow-message-particle {
+  fill: var(--accent-strong);
+  stroke: var(--panel);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 5px rgba(23, 111, 122, 0.58));
+}
+
+.team-org-flow-canvas .org-flow-message-edge--status_request .org-flow-message-particle {
+  fill: var(--amber);
+  filter: drop-shadow(0 0 5px rgba(154, 107, 19, 0.58));
+}
+
+.team-org-flow-canvas .org-focus-node-card--awake::before {
+  content: "";
+  position: absolute;
+  inset: -0.22rem;
+  border: 2px solid color-mix(in srgb, var(--green) 72%, transparent);
+  border-radius: 11px;
+  box-shadow:
+    0 0 0 0.08rem color-mix(in srgb, var(--green) 20%, transparent),
+    0 0 0.7rem color-mix(in srgb, var(--green) 20%, transparent);
+  pointer-events: none;
+  animation: org-flow-active-halo 3.8s ease-in-out infinite;
+}
+
+.org-flow-activity-bubble {
+  position: absolute;
+  right: 1rem;
+  bottom: calc(100% + 0.62rem);
+  left: 1rem;
+  z-index: 35;
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  border: 1px solid rgba(23, 111, 122, 0.34);
+  border-radius: 10px;
+  padding: 0.48rem 0.62rem;
+  background: color-mix(in srgb, var(--panel) 94%, var(--accent) 6%);
+  box-shadow: 0 12px 28px var(--shadow);
+  color: var(--text);
+  pointer-events: none;
+  transform-origin: 1.6rem 100%;
+  animation: org-flow-activity-bubble 5.2s ease both;
+}
+
+.org-flow-activity-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 1.25rem;
+  width: 0.62rem;
+  height: 0.62rem;
+  border-right: 1px solid rgba(23, 111, 122, 0.34);
+  border-bottom: 1px solid rgba(23, 111, 122, 0.34);
+  background: inherit;
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.org-flow-activity-bubble small {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.org-flow-activity-bubble strong {
+  min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+}
+
+.org-flow-activity-bubble--blocked,
+.org-flow-activity-bubble--attention,
+.org-flow-activity-bubble--waiting {
+  border-color: rgba(154, 107, 19, 0.42);
+  background: color-mix(in srgb, var(--panel) 92%, var(--amber) 8%);
+}
+
+.org-flow-activity-bubble--blocked::after,
+.org-flow-activity-bubble--attention::after,
+.org-flow-activity-bubble--waiting::after {
+  border-color: rgba(154, 107, 19, 0.42);
+}
+
+.org-flow-overflow-notice {
+  position: absolute;
+  top: 0.8rem;
+  right: 0.8rem;
+  z-index: 40;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.58rem;
+  background: var(--panel);
+  box-shadow: 0 8px 20px var(--shadow);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  pointer-events: none;
+  animation: org-flow-overflow-notice 1.25s ease both;
+}
+
+@keyframes org-flow-active-halo {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 0.08rem color-mix(in srgb, var(--green) 18%, transparent),
+      0 0 0.55rem color-mix(in srgb, var(--green) 18%, transparent);
+    opacity: 0.68;
+    transform: scale(0.995);
+  }
+  50% {
+    box-shadow:
+      0 0 0 0.2rem color-mix(in srgb, var(--green) 30%, transparent),
+      0 0 1.2rem color-mix(in srgb, var(--green) 34%, transparent);
+    opacity: 1;
+    transform: scale(1.012);
+  }
+}
+
+@keyframes org-flow-message-guide {
+  0% {
+    opacity: 0;
+  }
+  18%,
+  68% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes org-flow-activity-bubble {
+  0% {
+    opacity: 0;
+    transform: translateY(0.3rem) scale(0.97);
+  }
+  8%,
+  82% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-0.12rem) scale(0.99);
+  }
+}
+
+@keyframes org-flow-overflow-notice {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateY(-0.2rem);
+  }
+  15%,
+  75% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .team-org-flow-canvas .react-flow__edge.org-flow-edge--orphan .react-flow__edge-path,
@@ -253,5 +434,22 @@
   .org-flow-team-node,
   .org-flow-governance-node {
     width: min(20rem, 82vw);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-org-flow-canvas .org-focus-node-card--awake::before,
+  .team-org-flow-canvas .org-flow-message-guide,
+  .org-flow-activity-bubble,
+  .org-flow-overflow-notice {
+    animation: none;
+  }
+
+  .team-org-flow-canvas .org-focus-node-card--awake::before {
+    box-shadow:
+      0 0 0 0.12rem color-mix(in srgb, var(--green) 24%, transparent),
+      0 0 0.75rem color-mix(in srgb, var(--green) 24%, transparent);
+    opacity: 0.88;
+    transform: none;
   }
 }

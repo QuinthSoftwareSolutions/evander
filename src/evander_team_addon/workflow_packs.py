@@ -28,6 +28,8 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-wake-requested-governance",
                 "team-wake-governance-managers",
                 "team-publish-outbox-events",
+                "team-outbox-publish-requested",
+                "team-publish-outbox-on-request",
                 "team-publish-outbox-after-dispatch",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
@@ -104,6 +106,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team governance wake requested",
                 "type": "trigger:event",
                 "event_type": "team.governance.wake_requested",
+            },
+            {
+                "id": "team-outbox-publish-requested",
+                "display_name": "Team outbox publication requested",
+                "type": "trigger:event",
+                "event_type": "team.outbox.publish_requested",
             },
             {
                 "id": "team-ephemeral-requested",
@@ -352,6 +360,15 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "limit": 25,
                 "claim_ttl_seconds": 300,
                 "retry_after_seconds": 60,
+            },
+            {
+                "id": "team-publish-outbox-on-request",
+                "display_name": "Publish Team outbox after request",
+                "type": "effect:team:publish-outbox-events",
+                "limit": 25,
+                "claim_ttl_seconds": 300,
+                "retry_after_seconds": 60,
+                "worker_id": "team-outbox-immediate-publisher",
             },
             {
                 "id": "team-publish-outbox-after-dispatch",
@@ -821,6 +838,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             },
             {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
             {"source_id": "team-cron", "target_id": "team-publish-outbox-events"},
+            {
+                "source_id": "team-outbox-publish-requested",
+                "target_id": "team-publish-outbox-on-request",
+            },
             {"source_id": "team-ephemeral-requested", "target_id": "team-create-ephemeral-agent"},
             {
                 "source_id": "team-create-ephemeral-agent",

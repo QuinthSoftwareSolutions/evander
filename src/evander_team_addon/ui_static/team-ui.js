@@ -421,9 +421,13 @@ const deliveryStatusLabels = {
   all: "All",
   attention: "Needs attention",
 };
+const releaseHistoryStates = [...recordStates, "cancelled"];
 
 let selectedDeliveryFilter = "attention";
 let selectedDeliveryProjectId = "";
+let selectedReleaseHistoryState = "";
+let releaseHistoryDateFrom = "";
+let releaseHistoryDateThrough = "";
 let workspaceAttentionPage = 1;
 let myHumanReviewsOnly = initialHumanReviewDeepLink.enabled;
 let focusedHumanReviewRequestId = initialHumanReviewDeepLink.requestId;
@@ -2352,6 +2356,7 @@ function bindRecordEditing() {
         candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryAction,
       );
       let reason = null;
+      let instruction = null;
       if (action === "authorize_verification_waiver") {
         reason = window.prompt(
           "Why is a verification waiver justified? This reason is recorded on the release.",
@@ -2361,12 +2366,21 @@ function bindRecordEditing() {
           setStatus("A verification-waiver reason is required.", "error");
           return;
         }
+      } else if (action === "create_verified_replacement") {
+        instruction = window.prompt(
+          "Add instructions for the verified replacement task (optional). These become part of its durable task scope.",
+          "",
+        );
+        if (instruction === null) {
+          return;
+        }
       }
       void recoverCandidateCorrectionSuccessor(
         candidateCorrectionRecoveryButton,
         candidateCorrectionRecoveryButton.dataset.candidateCorrectionRecoveryId,
         action,
         text(reason) || null,
+        text(instruction) || null,
       );
       return;
     }
@@ -3308,6 +3322,25 @@ function bindDeliveryFilters() {
     renderReleases();
   });
   document.addEventListener("change", (event) => {
+    const releaseHistoryFilter = event.target?.closest?.("[data-release-history-filter]");
+    if (releaseHistoryFilter) {
+      const value = text(releaseHistoryFilter.value);
+      switch (releaseHistoryFilter.dataset.releaseHistoryFilter) {
+        case "state":
+          selectedReleaseHistoryState = releaseHistoryStates.includes(value) ? value : "";
+          break;
+        case "date-from":
+          releaseHistoryDateFrom = value;
+          break;
+        case "date-through":
+          releaseHistoryDateThrough = value;
+          break;
+        default:
+          return;
+      }
+      renderReleases();
+      return;
+    }
     const projectSelect = event.target?.closest?.("[data-delivery-project-filter]");
     if (!projectSelect) {
       return;
@@ -3348,6 +3381,12 @@ function bindDeliveryFilters() {
     if (detailButton) {
       event.preventDefault();
       void toggleReleaseDetail(text(detailButton.dataset.releaseDetailId));
+      return;
+    }
+    if (event.target?.closest?.("[data-clear-release-history-filters]")) {
+      event.preventDefault();
+      resetReleaseHistoryFilters();
+      renderReleases();
       return;
     }
     const resumeButton = event.target?.closest?.("[data-human-review-resume-id]");
@@ -7432,16 +7471,13 @@ function renderRuntimeOperations() {
 
   const sections = [];
 
-  if (runtimeFilter === "all" || runtimeFilter === "needs_attention") {
+  if (runtimeFilter === "all") {
     sections.push(
       renderRuntimeSection({
-        title: runtimeFilter === "all" ? "Persistent runtime state" : "Agents needing attention",
-        count: runtimeFilter === "all" ? `${agents.length} visible` : `${dueLeasedAgents.length} visible`,
-        emptyMessage: runtimeFilter === "all" ? "No agent runtime data yet." : "No due or leased agents.",
-        body: renderRuntimeAgentRows(
-          runtimeFilter === "all" ? agents : dueLeasedAgents,
-          runtimeFilter === "all" ? "No agent runtime data yet." : "No due or leased agents.",
-        ),
+        title: "Persistent runtime state",
+        count: `${agents.length} visible`,
+        emptyMessage: "No agent runtime data yet.",
+        body: renderRuntimeAgentRows(agents, "No agent runtime data yet."),
       }),
     );
   } else if (runtimeFilter === "due_leased_agents") {
@@ -7727,8 +7763,43 @@ function buildOrgFlowGraph(focusedTeams) {
   return {
     nodes,
     edges,
+    messageEvents: orgFlowMessageEvents(nodes),
     fitKey: orgFlowLayoutFitKey(nodes, edges),
   };
+}
+
+function orgFlowMessageEvents(nodes) {
+  const visibleAgentIds = new Set(
+    nodes
+      .filter((node) => node.data?.kind === "agent")
+      .map((node) => text(node.data.agentId))
+      .filter(Boolean),
+  );
+  const events = [];
+  visibleAgentIds.forEach((recipientAgentId) => {
+    pendingInboxForAgent(recipientAgentId).forEach((item) => {
+      const itemType = text(item.item_type);
+      const senderAgentId = text(item.sender_agent_id);
+      if (
+        !["status_request", "progress_report"].includes(itemType) ||
+        !senderAgentId ||
+        senderAgentId === recipientAgentId ||
+        !visibleAgentIds.has(senderAgentId)
+      ) {
+        return;
+      }
+      events.push({
+        id: text(item.id),
+        sourceNodeId: `agent:${senderAgentId}`,
+        targetNodeId: `agent:${recipientAgentId}`,
+        sourceLabel: agentLabel(state.agents[senderAgentId]),
+        targetLabel: agentLabel(state.agents[recipientAgentId]),
+        itemType,
+        label: inboxItemDetail(item) || humanizeToken(itemType),
+      });
+    });
+  });
+  return events.filter((event) => event.id);
 }
 
 function orgFlowLayoutFitKey(nodes, edges) {
@@ -7838,7 +7909,7 @@ function orgFlowEdge(source, target, kind) {
     target,
     type: "smoothstep",
     className: `org-flow-edge--${kind}`,
-    animated: kind === "governance",
+    animated: false,
   };
 }
 
@@ -7943,6 +8014,10 @@ function orgAgentNodeData(agentData) {
       },
     ],
     work,
+    activity: {
+      headline: text(agentData.activitySummary?.headline) || work.primary,
+      tone: activityTone || (awake.kind === "awake" ? "working" : awake.kind),
+    },
     detailLines: hierarchyDetailLines(agentData, { focused: true }),
   };
 }
@@ -12683,8 +12758,8 @@ function taskMatchesTaskBoardFilters(task, hierarchy) {
       return false;
     }
     const completedAt = taskBoardCompletionTime(task);
-    const from = taskBoardLocalDateBoundary(taskBoardCompletedSince, false);
-    const through = taskBoardLocalDateBoundary(taskBoardCompletedThrough, true);
+    const from = dateInputLocalBoundary(taskBoardCompletedSince, false);
+    const through = dateInputLocalBoundary(taskBoardCompletedThrough, true);
     if (!Number.isFinite(completedAt)) {
       return false;
     }
@@ -12740,7 +12815,7 @@ function taskBoardCompletionTime(task) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-function taskBoardLocalDateBoundary(value, endOfDay) {
+function dateInputLocalBoundary(value, endOfDay) {
   const parts = text(value).split("-").map(Number);
   if (
     parts.length !== 3 ||
@@ -16571,7 +16646,7 @@ function renderReleases() {
       .map((request) => text(request.release_package_id))
       .filter(Boolean),
   );
-  const releases = myHumanReviewsOnly
+  const scopedReleases = myHumanReviewsOnly
     ? allReleases.filter((release) => assignedReleaseIds.has(text(release.id)))
     : allReleases;
   if (
@@ -16589,15 +16664,24 @@ function renderReleases() {
     );
     return;
   }
+  const releases = scopedReleases.filter(releaseMatchesHistoryFilters);
+  const filters = renderReleaseHistoryFilters({
+    visibleCount: releases.length,
+    scopedCount: scopedReleases.length,
+  });
   if (!releases.length) {
     renderIntoActiveTargets(
       "[data-releases-view]",
-      `<p class="empty-state">${myHumanReviewsOnly ? "No human reviews are assigned to you." : "No release packages."}</p>`,
+      `
+        ${filters}
+        <p class="empty-state">${myHumanReviewsOnly && !scopedReleases.length ? "No human reviews are assigned to you." : myHumanReviewsOnly ? "No assigned release packages match these filters." : "No release packages match these filters."}</p>
+      `,
     );
     return;
   }
   if (activeTeamView === "delivery") {
     renderIntoActiveTargets("[data-releases-view]", `
+      ${filters}
       <ul class="release-list compact-record-list">
         ${releases.map((release) => renderReleaseCard(release, { compact: true })).join("")}
       </ul>
@@ -16605,10 +16689,72 @@ function renderReleases() {
     return;
   }
   renderIntoActiveTargets("[data-releases-view]", `
+    ${filters}
     <ul class="release-list compact-record-list">
       ${releases.map((release) => renderReleaseCard(release)).join("")}
     </ul>
   `);
+}
+
+function renderReleaseHistoryFilters({ visibleCount, scopedCount }) {
+  const hasFilters = Boolean(
+    selectedReleaseHistoryState || releaseHistoryDateFrom || releaseHistoryDateThrough,
+  );
+  const summary = hasFilters
+    ? `${visibleCount} of ${scopedCount} release package${scopedCount === 1 ? "" : "s"} shown`
+    : `${scopedCount} release package${scopedCount === 1 ? "" : "s"} in history`;
+  return `
+    <div class="release-history-filters" data-release-history-filters role="group" aria-label="Release history filters">
+      <label>
+        State
+        <select data-release-history-filter="state">
+          ${renderSelectOptions(
+            releaseHistoryStates.map((stateValue) => [stateValue, humanizeToken(stateValue)]),
+            { selectedValue: selectedReleaseHistoryState, placeholder: "Any state" },
+          )}
+        </select>
+      </label>
+      <label>
+        Activity date from
+        <input type="date" value="${escapeAttr(releaseHistoryDateFrom)}" data-release-history-filter="date-from" />
+      </label>
+      <label>
+        Activity date through
+        <input type="date" value="${escapeAttr(releaseHistoryDateThrough)}" data-release-history-filter="date-through" />
+      </label>
+      <button type="button" class="secondary release-history-clear-filters" data-clear-release-history-filters>
+        Clear filters
+      </button>
+      <p class="release-history-filter-summary">${escapeHtml(summary)}. Activity date is published when available; otherwise prepared.</p>
+    </div>
+  `;
+}
+
+function resetReleaseHistoryFilters() {
+  selectedReleaseHistoryState = "";
+  releaseHistoryDateFrom = "";
+  releaseHistoryDateThrough = "";
+}
+
+function releaseMatchesHistoryFilters(release) {
+  if (selectedReleaseHistoryState && text(release.state) !== selectedReleaseHistoryState) {
+    return false;
+  }
+  if (!releaseHistoryDateFrom && !releaseHistoryDateThrough) {
+    return true;
+  }
+  const activityTimestamp = Date.parse(
+    normalizeTimelineTimestampForSort(release.published_at || release.created_at || ""),
+  );
+  if (!Number.isFinite(activityTimestamp)) {
+    return false;
+  }
+  const from = dateInputLocalBoundary(releaseHistoryDateFrom, false);
+  const through = dateInputLocalBoundary(releaseHistoryDateThrough, true);
+  return (
+    (!Number.isFinite(from) || activityTimestamp >= from) &&
+    (!Number.isFinite(through) || activityTimestamp <= through)
+  );
 }
 
 function renderCompactRelease(release) {
@@ -17004,7 +17150,7 @@ function renderReleaseDetail(release) {
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
       ${renderReleaseContributionGraph(contributionGraph, release.id)}
       ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [], release.id)}
-      ${renderReleaseAgentReviews(releaseReviews, release.id)}
+      ${renderReleaseAgentReviews(releaseReviews, release.id, release.release_review_cohort)}
       ${renderReleaseHumanRequests(humanRequests, manifest, release.id)}
       ${renderReleaseEvidence(release, deliverableRows, humanRequests)}
     </section>
@@ -17215,13 +17361,21 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
   `;
 }
 
-function renderReleaseAgentReviews(reviews, releaseId) {
+function renderReleaseAgentReviews(reviews, releaseId, cohort = null) {
   if (!reviews.length) {
     return "";
   }
   return `
     <div class="release-detail-section">
       <h4>Agent review decisions</h4>
+      ${cohort ? `
+        <div class="meta-line">
+          <strong>Sealed cohort:</strong>
+          ${escapeHtml(humanizeToken(cohort.status || "collecting"))} ·
+          ${Number(cohort.resolved || 0)} of ${Number(cohort.total || reviews.length)} resolved.
+          Correction work starts only after every cohort slot is accepted or rejected.
+        </div>
+      ` : ""}
       <ul class="delivery-detail-list">
         ${reviews.map((review) => {
           const reviewer = state.agents?.[review.reviewer_agent_id];
@@ -17230,7 +17384,7 @@ function renderReleaseAgentReviews(reviews, releaseId) {
           ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
           ${renderReleaseReviewCriteria(review)}
           ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
-          ${renderTechnicalDetails([["Review ID", review.id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
+          ${renderTechnicalDetails([["Review ID", review.id], ["Review cohort ID", review.review_cohort_id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
             disclosureKey: teamDisclosureKey("release-detail", releaseId, "agent-review", review.id, "technical"),
           })}
         </li>`;
@@ -21740,7 +21894,13 @@ async function startDependencyCompositionRecovery(button, blockerId, resolverAge
   }
 }
 
-async function recoverCandidateCorrectionSuccessor(button, blockerId, action, reason = null) {
+async function recoverCandidateCorrectionSuccessor(
+  button,
+  blockerId,
+  action,
+  reason = null,
+  instruction = null,
+) {
   if (!guardTeamMutation("recover candidate correction successors")) {
     return;
   }
@@ -21758,6 +21918,9 @@ async function recoverCandidateCorrectionSuccessor(button, blockerId, action, re
     const payload = { action: normalizedAction };
     if (text(reason)) {
       payload.reason = text(reason);
+    }
+    if (text(instruction)) {
+      payload.instruction = text(instruction);
     }
     const response = await teamFetch(`${API_BASE}${endpoint}`, {
       method: "POST",

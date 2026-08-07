@@ -832,6 +832,7 @@ class TeamAdminService:
         action: str,
         operator_actor_id: str,
         reason: str | None = None,
+        instruction: str | None = None,
         owner_agent_id: str | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
@@ -847,12 +848,20 @@ class TeamAdminService:
             )
         normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
         normalized_reason = _optional_text(reason)
+        normalized_instruction = _optional_text(instruction)
         normalized_owner_id = _optional_text(owner_agent_id)
         if (
             normalized_action == "authorize_verification_waiver"
             and normalized_reason is None
         ):
             raise ValueError("authorize_verification_waiver requires reason")
+        if (
+            normalized_instruction is not None
+            and normalized_action != "create_verified_replacement"
+        ):
+            raise ValueError(
+                "instruction is supported only when creating a verified replacement"
+            )
         result: dict[str, Any] = {
             "success": False,
             "action": normalized_action,
@@ -868,6 +877,7 @@ class TeamAdminService:
                 action=normalized_action,
                 operator_actor_id=normalized_actor_id,
                 reason=normalized_reason,
+                instruction=normalized_instruction,
                 owner_agent_id=normalized_owner_id,
                 result=result,
             )

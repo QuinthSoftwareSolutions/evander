@@ -1,5 +1,90 @@
 # Changelog
 
+## 2026-08-07 - Safe Batched Team Chat Reply Validation
+
+- Rejected agent chat replies with neither a non-empty `message_ids` batch nor a legacy
+  `message_id`, recording the malformed reply as a failed chat item instead of aborting the
+  agent-action completion.
+
+## 2026-08-07 - Prompt Team Outbox Publication
+
+- Woke the Team workflow immediately after operator candidate-correction recovery commits its
+  durable outbox records, while retaining the quarter-hour Team runtime tick as a recovery path.
+
+## 2026-08-07 - Historical Attention Classification
+
+- Moved escalation notices for superseded or retired reviews and resolved source blockers out of
+  active operational obligations and into retained history, while preserving their audit trail.
+
+## 2026-08-07 - Sealed Release Review Cohorts
+
+- Sealed each new release's complete reviewer/profile set before dispatching it,
+  and deferred candidate-correction work until every cohort member has reached
+  an accepted or rejected decision.
+- Consolidated all rejected cohort findings into one correction task and wake,
+  while keeping blocked reviews retryable in the same frozen slot and leaving
+  existing uncohorted release reviews on their legacy behavior.
+
+## 2026-08-07 - Contracted Leaf Boundaries
+
+- Prevented contracted non-boundary tasks from acquiring child work or accepting
+  aggregate contribution sources, while preserving source-bearing legacy aggregates.
+
+## 2026-08-07 - Blocker Recovery Git Context
+
+- Included blocker-recovery tasks in the immutable dispatch task payload, so recovery dispatches
+  prepare the same task-scoped Git work context that their authorized scope exposes.
+
+## 2026-08-07 - Team Chat Attention And Coalescing
+
+- Surfaced plain-text operator Chat steering once in the next Team MCP response for an agent with
+  an active lease, atomically recording the message as seen without requiring a chat reply.
+- Coalesced queued messages from the same conversation and external return path into one Chat
+  dispatch and one covering reply, while leaving attachment-bearing messages on the normal Chat
+  dispatch path.
+
+## 2026-08-07 - Release History Filters
+
+- Added state and inclusive activity-date filters to Delivery release history. The date range uses
+  the published date when present and otherwise the prepared date, matching the release card.
+
+## 2026-08-06 - Runtime Attention Filter
+
+- Kept routine due or leased agents out of the Operations “Needs attention” view; they remain
+  available through the dedicated “Due / leased agents” filter.
+
+## 2026-08-06 - Visible Awake-Agent Halo
+
+- Moved the Org chart awake pulse from the already-bordered avatar to a restrained glow around
+  the full agent card, keeping the awake state legible in both light and dark themes.
+- Kept message particles on the exact hierarchy connector through their destination, including
+  progress reports that travel in the reverse direction along the same line.
+
+## 2026-08-06 - Candidate Recovery Instructions
+
+- Added an optional operator-instruction prompt when creating a verified
+  candidate-correction replacement. The instruction is stored in the pinned
+  recovery task so the assignee receives its scope with the normal task wake.
+
+## 2026-08-06 - Calm Live Team Org Chart
+
+- Added restrained live activity to the Team org chart: awake-agent halos, short-lived derived
+  activity bubbles, and one-shot message pulses for newly observed status requests and progress
+  reports.
+- Kept structural edges static, capped simultaneous effects, avoided replaying existing inbox
+  history, preserved the operator's viewport, and respected reduced-motion preferences.
+
+## 2026-08-06 - Resilient Agent Prompt Queue Details
+
+- Kept the Agents-page detail view responsive while a selected agent's full
+  queued-prompt records load, even though the performance-oriented list summary
+  intentionally omits those records.
+## 2026-08-07 - JSON-Safe Team Admin API Responses
+
+- Serialize every Team Admin API response at the shared boundary so a derived raw
+  datetime cannot prevent a Delivery view, release detail, or review decision
+  from completing.
+
 ## 2026-08-06 - Admin Web Frontend Naming
 
 - Renamed the full Admin Web frontend project from `frontend/workflow-editor` to

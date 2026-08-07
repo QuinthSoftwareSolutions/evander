@@ -27,6 +27,8 @@ from evander_team_addon.models import (
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
     ReleasePackage,
+    ReleaseReviewRequirement,
+    ReviewProfile,
     ReviewRequest,
     TaskCancellation,
     TaskCompletion,
@@ -224,6 +226,63 @@ def _seed_team_repository(tmp_path: Path) -> TeamStateRepository:
         expected_revision=repository.read().revision,
     )
     return repository
+
+
+def test_repository_round_trips_sealed_release_review_cohort_without_legacy_backfill(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    cohort_id = "release-review-cohort-release-cohort"
+
+    def _seed(state):
+        state.review_profiles["release-profile"] = ReviewProfile(
+            id="release-profile",
+            team_id="team",
+            project_id="project",
+            name="Release review",
+        )
+        state.release_packages["release-cohort"] = ReleasePackage(
+            id="release-cohort",
+            project_id="project",
+            candidate_commit_sha="c" * 40,
+            release_branch="team/team/releases/release-cohort",
+            manifest=ReleaseCandidateManifest(
+                project_id="project",
+                release_package_id="release-cohort",
+                candidate_commit_sha="c" * 40,
+                release_branch="team/team/releases/release-cohort",
+                review_requirements=[
+                    ReleaseReviewRequirement(
+                        reviewer_agent_id="lead",
+                        review_profile_id="release-profile",
+                    )
+                ],
+            ),
+            review_request_ids=["release-review-cohort"],
+            review_cohort_id=cohort_id,
+            review_cohort_sealed_at=NOW,
+            created_at=NOW,
+        )
+        state.review_requests["release-review-cohort"] = ReviewRequest(
+            id="release-review-cohort",
+            release_package_id="release-cohort",
+            candidate_commit_sha="c" * 40,
+            reviewed_commit_sha="c" * 40,
+            reviewer_agent_id="lead",
+            review_profile_id="release-profile",
+            review_cohort_id=cohort_id,
+            created_at=NOW,
+        )
+        return state
+
+    repository.update(_seed)
+    reloaded = TeamStateRepository(tmp_path).read()
+
+    release = reloaded.release_packages["release-cohort"]
+    review = reloaded.review_requests["release-review-cohort"]
+    assert release.review_cohort_id == cohort_id
+    assert release.review_cohort_sealed_at == NOW
+    assert review.review_cohort_id == cohort_id
 
 
 def test_repository_round_trips_integration_and_leaf_deliverable_contracts(

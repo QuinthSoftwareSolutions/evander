@@ -126,6 +126,7 @@ def _create_release_review(
     supersedes: ReviewRequest | None = None,
     retry_reason: str | None = None,
     retry_requested_by: str | None = None,
+    review_cohort_id: str | None = None,
 ) -> ReviewRequest:
     """Create the durable review record shared by initial and retry handoffs."""
 
@@ -142,6 +143,7 @@ def _create_release_review(
             project_id=release.project_id,
         ),
         reviewed_commit_sha=candidate_commit_sha,
+        review_cohort_id=review_cohort_id,
         state=TeamRecordState.PENDING,
         supersedes_review_request_id=supersedes.id if supersedes is not None else None,
         retry_reason=retry_reason,
@@ -175,6 +177,7 @@ def _queue_release_review_handoff(
         "review_request_id": review.id,
         "release_package_id": release.id,
         "candidate_commit_sha": review.candidate_commit_sha,
+        "review_cohort_id": review.review_cohort_id,
         "release_manifest": (
             release.manifest.model_dump(mode="json") if release.manifest is not None else None
         ),
@@ -906,6 +909,21 @@ def materialize_release_review_rejection_correction(
 
     task_id = _release_review_correction_task_id(release.id)
     task = state.tasks.get(task_id)
+    cohort_review_order = {
+        review_id: index for index, review_id in enumerate(release.review_request_ids)
+    }
+    def rejected_review_sort_key(candidate: ReviewRequest) -> tuple[int, datetime, str]:
+        if release.review_cohort_id is not None:
+            return (
+                cohort_review_order.get(candidate.id, len(cohort_review_order)),
+                candidate.created_at or candidate.decision_at or now,
+                candidate.id,
+            )
+        return (
+            0,
+            candidate.decision_at or candidate.created_at or now,
+            candidate.id,
+        )
     rejected_reviews = sorted(
         (
             candidate
@@ -916,7 +934,7 @@ def materialize_release_review_rejection_correction(
             and candidate.superseded_by_review_request_id is None
             and candidate.retired_at is None
         ),
-        key=lambda candidate: (candidate.decision_at or candidate.created_at, candidate.id),
+        key=rejected_review_sort_key,
     )
     if not any(candidate.id == review.id for candidate in rejected_reviews):
         rejected_reviews.append(review)
@@ -984,7 +1002,10 @@ def materialize_release_review_rejection_correction(
 
     late_rework_deliverable_ids: list[str] = []
     review_decision_at = review.decision_at or now
-    if task.state in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}:
+    if (
+        release.review_cohort_id is None
+        and task.state in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+    ):
         for deliverable_id in task.deliverable_ids:
             deliverable = state.deliverables.get(deliverable_id)
             if (
@@ -1230,65 +1251,152 @@ def create_release_reviews_or_approve(
         )
         return
 
-    for requirement in manifest.review_requirements:
-        existing = next(
-            (
-                state.review_requests[review_id]
-                for review_id in reversed(release.review_request_ids)
-                if review_id in state.review_requests
-                and state.review_requests[review_id].superseded_by_review_request_id is None
-                and state.review_requests[review_id].reviewer_agent_id
-                == requirement.reviewer_agent_id
-                and state.review_requests[review_id].review_profile_id
-                == requirement.review_profile_id
-            ),
-            None,
+    requirements = list(manifest.review_requirements)
+    if requirements and release.review_cohort_id is None and not release.review_request_ids:
+        prepared_members: list[tuple[PersistentAgent, ReviewProfile]] = []
+        for requirement in requirements:
+            reviewer = state.agents.get(requirement.reviewer_agent_id)
+            profile = state.review_profiles.get(requirement.review_profile_id)
+            scope_error = _release_review_scope_error(
+                project=project,
+                reviewer=reviewer,
+                profile=profile,
+                reviewer_agent_id=requirement.reviewer_agent_id,
+                review_profile_id=requirement.review_profile_id,
+            )
+            if scope_error is not None:
+                _reject_release(
+                    state,
+                    release,
+                    stage="configuration",
+                    kind="configuration",
+                    error=scope_error,
+                    result=result,
+                )
+                return
+            assert reviewer is not None and profile is not None
+            prepared_members.append((reviewer, profile))
+
+        now = utc_now()
+        cohort_id = f"release-review-cohort-{release.id}"
+        release.review_cohort_id = cohort_id
+        release.review_cohort_sealed_at = now
+        created_reviews: list[tuple[ReviewRequest, PersistentAgent, ReviewProfile]] = []
+        for reviewer, profile in prepared_members:
+            review = _create_release_review(
+                state,
+                release=release,
+                reviewer=reviewer,
+                profile=profile,
+                candidate_commit_sha=candidate,
+                instructions=(
+                    f"Review release candidate {candidate} for release package {release.id}. "
+                    f"This is sealed release review cohort {cohort_id}; decide only the "
+                    "pinned candidate commit. Correction work waits for every cohort slot."
+                ),
+                result=result,
+                now=now,
+                review_cohort_id=cohort_id,
+            )
+            created_reviews.append((review, reviewer, profile))
+        for review, reviewer, profile in created_reviews:
+            _queue_release_review_handoff(
+                state,
+                release=release,
+                project=project,
+                reviewer=reviewer,
+                profile=profile,
+                review=review,
+                result=result,
+                now=now,
+            )
+        result["release_review_cohort_id"] = cohort_id
+        result["release_review_cohort_sealed_at"] = now.isoformat()
+    elif release.review_cohort_id is not None:
+        current_members = sorted(
+            (review.reviewer_agent_id, review.review_profile_id)
+            for review in _current_release_reviews(state, release)
         )
-        if existing is not None:
-            continue
-        reviewer = state.agents.get(requirement.reviewer_agent_id)
-        profile = state.review_profiles.get(requirement.review_profile_id)
-        scope_error = _release_review_scope_error(
-            project=project,
-            reviewer=reviewer,
-            profile=profile,
-            reviewer_agent_id=requirement.reviewer_agent_id,
-            review_profile_id=requirement.review_profile_id,
+        required_members = sorted(
+            (requirement.reviewer_agent_id, requirement.review_profile_id)
+            for requirement in requirements
         )
-        if scope_error is not None:
+        if current_members != required_members:
             _reject_release(
                 state,
                 release,
                 stage="configuration",
                 kind="configuration",
-                error=scope_error,
+                error=(
+                    f"release review cohort {release.review_cohort_id} membership does not "
+                    "match the frozen release requirements"
+                ),
                 result=result,
             )
             return
-        now = utc_now()
-        review = _create_release_review(
-            state,
-            release=release,
-            reviewer=reviewer,
-            profile=profile,
-            candidate_commit_sha=candidate,
-            instructions=(
-                f"Review release candidate {candidate} for release package {release.id}. "
-                "Decide only the pinned candidate commit."
-            ),
-            result=result,
-            now=now,
-        )
-        _queue_release_review_handoff(
-            state,
-            release=release,
-            project=project,
-            reviewer=reviewer,
-            profile=profile,
-            review=review,
-            result=result,
-            now=now,
-        )
+    else:
+        # Existing review sets predate sealed release cohorts and retain their
+        # historical independent-review behavior without an implicit backfill.
+        for requirement in requirements:
+            existing = next(
+                (
+                    state.review_requests[review_id]
+                    for review_id in reversed(release.review_request_ids)
+                    if review_id in state.review_requests
+                    and state.review_requests[review_id].superseded_by_review_request_id is None
+                    and state.review_requests[review_id].reviewer_agent_id
+                    == requirement.reviewer_agent_id
+                    and state.review_requests[review_id].review_profile_id
+                    == requirement.review_profile_id
+                ),
+                None,
+            )
+            if existing is not None:
+                continue
+            reviewer = state.agents.get(requirement.reviewer_agent_id)
+            profile = state.review_profiles.get(requirement.review_profile_id)
+            scope_error = _release_review_scope_error(
+                project=project,
+                reviewer=reviewer,
+                profile=profile,
+                reviewer_agent_id=requirement.reviewer_agent_id,
+                review_profile_id=requirement.review_profile_id,
+            )
+            if scope_error is not None:
+                _reject_release(
+                    state,
+                    release,
+                    stage="configuration",
+                    kind="configuration",
+                    error=scope_error,
+                    result=result,
+                )
+                return
+            assert reviewer is not None and profile is not None
+            now = utc_now()
+            review = _create_release_review(
+                state,
+                release=release,
+                reviewer=reviewer,
+                profile=profile,
+                candidate_commit_sha=candidate,
+                instructions=(
+                    f"Review release candidate {candidate} for release package {release.id}. "
+                    "Decide only the pinned candidate commit."
+                ),
+                result=result,
+                now=now,
+            )
+            _queue_release_review_handoff(
+                state,
+                release=release,
+                project=project,
+                reviewer=reviewer,
+                profile=profile,
+                review=review,
+                result=result,
+                now=now,
+            )
 
     current_reviews = _current_release_reviews(state, release)
     if any(
@@ -1504,6 +1612,7 @@ def retry_release_gate(
         supersedes=current,
         retry_reason=normalized_reason,
         retry_requested_by=normalized_requested_by,
+        review_cohort_id=current.review_cohort_id,
         instructions=(
             f"Retry blocked review {current.id} for unchanged release candidate {candidate}. "
             f"Retry reason: {normalized_reason}"

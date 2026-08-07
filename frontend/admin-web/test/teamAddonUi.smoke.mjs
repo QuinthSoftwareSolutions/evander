@@ -229,6 +229,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(orgFlowScript, /stopPropagation\(\)/);
   assert.match(stylesheet, /\.agent-inbox-popover\s*{[\s\S]*pointer-events:\s*auto;/);
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
+  assert.match(orgFlowScript, /org-flow-activity-bubble/);
+  assert.match(orgFlowScript, /org-flow-message-pulse/);
+  assert.match(orgFlowStylesheet, /org-flow-active-halo/);
+  assert.match(orgFlowStylesheet, /prefers-reduced-motion:reduce/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
   assert.match(stylesheet, /\.org-context-menu/);
@@ -3340,6 +3344,79 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   );
 });
 
+test("team add-on release history filters by state and activity date", async (t) => {
+  const initialState = seededGitState();
+  initialState.release_packages["release-pending-filter"] = {
+    id: "release-pending-filter",
+    project_id: "alpha-project",
+    summary: "Prepare the pending filter candidate.",
+    deliverable_ids: [],
+    state: "pending",
+    created_at: "2026-06-07T12:00:00Z",
+    updated_at: "2026-06-07T12:00:00Z",
+  };
+  initialState.release_packages["release-rejected-filter"] = {
+    id: "release-rejected-filter",
+    project_id: "alpha-project",
+    summary: "Record the rejected filter attempt.",
+    deliverable_ids: [],
+    state: "rejected",
+    created_at: "2026-06-05T12:00:00Z",
+    updated_at: "2026-06-05T12:00:00Z",
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  await page
+    .locator("#team-delivery-page")
+    .getByRole("heading", { name: "Release history" })
+    .waitFor({ state: "visible" });
+  const releaseHistory = page.locator("#team-delivery-page [data-releases-view]");
+  const filters = releaseHistory.getByRole("group", { name: "Release history filters" });
+  await filters.waitFor({ state: "visible" });
+  const stateFilter = filters.locator('[data-release-history-filter="state"]');
+
+  assert.equal(await releaseHistory.locator(".release-card").count(), 3);
+  await stateFilter.selectOption("rejected");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-rejected-filter"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+
+  await stateFilter.selectOption("");
+  const dateFrom = filters.locator('[data-release-history-filter="date-from"]');
+  const dateThrough = filters.locator('[data-release-history-filter="date-through"]');
+  await dateFrom.fill("2026-06-07");
+  await dateFrom.press("Tab");
+  await dateThrough.fill("2026-06-07");
+  await dateThrough.press("Tab");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-pending-filter"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+  assert.match(
+    await releaseHistory.locator(".release-history-filter-summary").innerText(),
+    /Activity date is published when available; otherwise prepared\./,
+  );
+
+  await filters.getByRole("button", { name: "Clear filters" }).click();
+  await dateFrom.fill("2026-06-09");
+  await dateFrom.press("Tab");
+  await dateThrough.fill("2026-06-09");
+  await dateThrough.press("Tab");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-accepted"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+
+  await filters.getByRole("button", { name: "Clear filters" }).click();
+  assert.equal(await stateFilter.inputValue(), "");
+  assert.equal(await dateFrom.inputValue(), "");
+  assert.equal(await dateThrough.inputValue(), "");
+  assert.equal(await releaseHistory.locator(".release-card").count(), 3);
+});
+
 test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
   const initialState = seededOrgChartState();
   const deliverableId = "deliverable-rich-internal-42";
@@ -5096,6 +5173,175 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     zoomedOrgViewport,
     "saving agent edits should not refit the org chart viewport",
   );
+});
+
+test("team add-on Org chart animates only newly observed activity without refitting", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.agents.backend.activity_summary = {
+    headline: "Working on Build API",
+    working_on: "Build API",
+    waiting_for: "Clear",
+    tone: "working",
+    source: "derived",
+    generated_at: "2026-06-11T08:55:00Z",
+    reason_refs: [{ kind: "task", id: "task_open" }],
+  };
+  const {
+    port,
+    state,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openOrgChart(page);
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected the Team state stream before testing live org activity",
+  );
+  assert.equal(await page.locator(".org-flow-activity-bubble").count(), 0);
+  assert.equal(await page.locator(".org-flow-message-pulse").count(), 0);
+
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  const haloStyle = await backendCard.evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return {
+      animationName: style.animationName,
+      borderWidth: style.borderTopWidth,
+      boxShadow: style.boxShadow,
+      insetTop: style.top,
+    };
+  });
+  assert.equal(haloStyle.animationName, "org-flow-active-halo");
+  assert.equal(haloStyle.borderWidth, "2px");
+  assert.notEqual(haloStyle.boxShadow, "none");
+  assert.ok(Number.parseFloat(haloStyle.insetTop) < 0, `expected an outer card halo, got ${haloStyle.insetTop}`);
+
+  const zoomedOrgViewport = await zoomOrgChartCanvas(page);
+  state.revision += 1;
+  state.agents.backend.activity_summary = {
+    ...state.agents.backend.activity_summary,
+    headline: "Reviewing API handoff",
+    working_on: "API handoff",
+    generated_at: "2026-06-11T08:56:00Z",
+  };
+  state.inbox["inbox-live-status"] = {
+    id: "inbox-live-status",
+    recipient_agent_id: "worker",
+    item_type: "status_request",
+    sender_agent_id: "backend",
+    task_id: "task_waiting",
+    payload: { question: "Please confirm review readiness." },
+    state: "pending",
+    created_at: "2026-06-11T08:56:00Z",
+    updated_at: "2026-06-11T08:56:00Z",
+  };
+  emitStateSnapshot(state);
+
+  await waitForRevision(page, state.revision);
+  await backendCard.locator(".org-flow-activity-bubble", { hasText: "Reviewing API handoff" }).waitFor({
+    state: "visible",
+  });
+  const forwardPulse = page.locator('.react-flow__edge[data-id="message-pulse:inbox-live-status"]');
+  await forwardPulse.waitFor({ state: "attached" });
+  const hierarchyPath = await page
+    .locator('.react-flow__edge[data-id="edge:agent:backend:agent:worker:manager"] .react-flow__edge-path')
+    .getAttribute("d");
+  assert.ok(hierarchyPath);
+  assert.equal(await forwardPulse.locator(".org-flow-message-guide").getAttribute("d"), hierarchyPath);
+  assert.equal(await forwardPulse.locator("animateMotion").getAttribute("keyPoints"), "0;1");
+  assert.equal(
+    await orgChartViewportTransform(page),
+    zoomedOrgViewport,
+    "live activity should not refit the org chart viewport",
+  );
+
+  await page.locator(".org-flow-message-pulse").waitFor({ state: "detached", timeout: 3000 });
+
+  state.revision += 1;
+  state.inbox["inbox-live-progress"] = {
+    id: "inbox-live-progress",
+    recipient_agent_id: "backend",
+    item_type: "progress_report",
+    sender_agent_id: "worker",
+    task_id: "task_waiting",
+    payload: { summary: "The review is ready." },
+    state: "pending",
+    created_at: "2026-06-11T08:57:00Z",
+    updated_at: "2026-06-11T08:57:00Z",
+  };
+  emitStateSnapshot(state);
+
+  await waitForRevision(page, state.revision);
+  const reversePulse = page.locator('.react-flow__edge[data-id="message-pulse:inbox-live-progress"]');
+  await reversePulse.waitFor({ state: "attached" });
+  assert.equal(await reversePulse.locator(".org-flow-message-guide").getAttribute("d"), hierarchyPath);
+  assert.equal(await reversePulse.locator("animateMotion").getAttribute("keyPoints"), "1;0");
+  await reversePulse.waitFor({ state: "detached", timeout: 3000 });
+  await backendCard.locator(".org-flow-activity-bubble").waitFor({ state: "detached", timeout: 7000 });
+});
+
+test("team add-on Org chart respects reduced-motion preferences", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.agents.backend.activity_summary = {
+    headline: "Working on Build API",
+    working_on: "Build API",
+    waiting_for: "Clear",
+    tone: "working",
+    source: "derived",
+    generated_at: "2026-06-11T08:55:00Z",
+    reason_refs: [{ kind: "task", id: "task_open" }],
+  };
+  const { port, state, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port, { reducedMotion: "reduce" });
+
+  await waitForRevision(page, 8);
+  await openOrgChart(page);
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected the Team state stream before testing reduced motion",
+  );
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  assert.equal(
+    await backendCard.evaluate((element) => getComputedStyle(element, "::before").animationName),
+    "none",
+  );
+
+  state.revision += 1;
+  state.agents.backend.activity_summary = {
+    ...state.agents.backend.activity_summary,
+    headline: "Preparing a calm handoff",
+    working_on: "Calm handoff",
+    generated_at: "2026-06-11T08:56:00Z",
+  };
+  state.inbox["inbox-reduced-motion"] = {
+    id: "inbox-reduced-motion",
+    recipient_agent_id: "worker",
+    item_type: "status_request",
+    sender_agent_id: "backend",
+    task_id: "task_waiting",
+    payload: { question: "Please confirm without animation." },
+    state: "pending",
+    created_at: "2026-06-11T08:56:00Z",
+    updated_at: "2026-06-11T08:56:00Z",
+  };
+  emitStateSnapshot(state);
+
+  await waitForRevision(page, state.revision);
+  await backendCard.locator(".org-flow-activity-bubble", { hasText: "Preparing a calm handoff" }).waitFor({
+    state: "visible",
+  });
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator(".org-flow-message-pulse").count(), 0);
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
@@ -9159,10 +9405,26 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     runtimeAttentionText.some((value) => value.includes("Session expired for Grace Lead")),
     `expected the expired session attention card: ${JSON.stringify(runtimeAttentionText)}`,
   );
+  assert.equal(
+    await page.locator("#team-operations-page").getByRole("heading", { name: "Agents needing attention" }).count(),
+    0,
+  );
+  assert.equal(await page.locator("#team-operations-page .runtime-agent-item").count(), 0);
   await page.locator("#team-operations-page").getByText("session expired").first().waitFor({
     state: "visible",
   });
   assert.equal(await page.locator("#team-operations-page .runtime-item-compact details[open]").count(), 0);
+
+  await page.locator("#team-operations-page").getByRole("button", { name: "Due / leased agents" }).click();
+  await page
+    .locator("#team-operations-page")
+    .getByRole("heading", { name: "Due / leased agents" })
+    .waitFor({ state: "visible" });
+  const dueAgent = page.locator("#team-operations-page .runtime-agent-item").filter({
+    hasText: "alpha-lead",
+  });
+  await dueAgent.waitFor({ state: "visible" });
+  assert.match(await dueAgent.locator("summary").innerText(), /wake due/);
 
   await page.getByRole("tab", { name: "Delivery" }).click();
   await page.locator("#team-delivery-page").waitFor({ state: "visible" });
@@ -11265,9 +11527,21 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
         ],
       },
     ],
+    release_review_cohort: {
+      id: "release-review-cohort-release-human",
+      sealed_at: "2026-06-09T15:40:00Z",
+      status: "accepted",
+      total: 1,
+      resolved: 1,
+      pending_review_request_ids: [],
+      blocked_review_request_ids: [],
+      rejected_review_request_ids: [],
+      accepted_review_request_ids: ["agent-release-review-1"],
+    },
     release_reviews: [
       {
         id: "agent-release-review-1",
+        review_cohort_id: "release-review-cohort-release-human",
         reviewer_agent_id: "alpha-manager",
         state: "accepted",
         instructions: "Review the release manifest.",
@@ -11446,6 +11720,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByRole("heading", { name: "Agent review decisions" }).waitFor({
     state: "visible",
   });
+  await detail
+    .getByText(
+      /Sealed cohort:\s*Accepted · 1 of 1 resolved\. Correction work starts only after every cohort slot is accepted or rejected\./,
+    )
+    .waitFor({ state: "visible" });
   await detail.getByText("Release scope: passed - Scope matches the candidate.").waitFor({
     state: "visible",
   });

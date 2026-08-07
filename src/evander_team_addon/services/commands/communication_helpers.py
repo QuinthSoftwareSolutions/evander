@@ -63,22 +63,31 @@ def _team_communication_normalized_payload(
 def _team_chat_reply_normalized_payload(
     *,
     conversation_id: str,
-    message_id: str,
+    message_id: str | None,
+    message_ids: Sequence[str],
     body: str,
     attachment_ids: Sequence[str],
     summary: str | None,
     correlation_id: str | None,
     causation_id: str | None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "conversation_id": _required_text(conversation_id, "conversation_id"),
-        "message_id": _required_text(message_id, "message_id"),
         "body": _optional_text(body) or "",
         "attachment_ids": sorted(_unique_text_list(attachment_ids, "attachment_ids")),
         "summary": _optional_text(summary),
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+    normalized_message_id = _optional_text(message_id)
+    normalized_message_ids = sorted(_unique_text_list(message_ids, "message_ids"))
+    if normalized_message_id is not None:
+        payload["message_id"] = normalized_message_id
+    if normalized_message_ids and (
+        normalized_message_id is None or normalized_message_ids != [normalized_message_id]
+    ):
+        payload["message_ids"] = normalized_message_ids
+    return payload
 
 
 def _team_operator_chat_normalized_payload(

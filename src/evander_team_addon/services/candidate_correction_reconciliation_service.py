@@ -194,7 +194,20 @@ def _release_review_correction_is_ready(
         if review_id in state.review_requests
         and state.review_requests[review_id].superseded_by_review_request_id is None
         and state.review_requests[review_id].retired_at is None
+        and (
+            predecessor.review_cohort_id is None
+            or state.review_requests[review_id].review_cohort_id
+            == predecessor.review_cohort_id
+        )
     ]
+    if predecessor.review_cohort_id is not None and (
+        predecessor.review_cohort_sealed_at is None
+        or any(
+            review.review_cohort_id != predecessor.review_cohort_id
+            for review in current_reviews
+        )
+    ):
+        return False
     if not current_reviews or any(
         review.state not in _COMPLETED_RELEASE_REVIEW_STATES
         for review in current_reviews
@@ -215,7 +228,7 @@ def _release_review_correction_is_ready(
         ),
         default=None,
     )
-    if latest_rejection_at is not None and any(
+    if predecessor.review_cohort_id is None and latest_rejection_at is not None and any(
         deliverable.created_at < latest_rejection_at
         for deliverable in state.deliverables.values()
         if deliverable.task_id == correction_task.id
@@ -657,6 +670,7 @@ def recover_candidate_correction_successor(
     action: str,
     operator_actor_id: str,
     reason: str | None,
+    instruction: str | None,
     owner_agent_id: str | None,
     result: dict[str, Any],
     now: datetime | None = None,
@@ -750,6 +764,14 @@ def recover_candidate_correction_successor(
                     f"recovery task owner {owner.id} must be active in team {project.team_id}"
                 )
             effective_now = now or utc_now()
+            operator_instruction = (
+                ""
+                if instruction is None
+                else (
+                    "\n\nOperator instruction from "
+                    f"{operator_actor_id}:\n{instruction}"
+                )
+            )
             recovery_task = AgentTask(
                 id=task_id,
                 owner_agent_id=owner.id,
@@ -764,6 +786,7 @@ def recover_candidate_correction_successor(
                     "the previously failing verification plus the focused checks, and "
                     "submit an accepted Git deliverable with verification passed. Do "
                     "not merge or rebase another base branch and do not request a release."
+                    f"{operator_instruction}"
                 ),
                 created_by_actor="system:candidate-correction-recovery",
                 originating_task_id=correction_task.id,

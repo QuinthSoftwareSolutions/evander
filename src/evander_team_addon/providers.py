@@ -228,6 +228,7 @@ from .services.domain.ephemeral import (
     EPHEMERAL_REQUESTED_EVENT_TYPE,
 )
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
 from .services.domain.human_reviews import (
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
@@ -2014,6 +2015,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         "Published when Team automation needs an operator escalation notification.",
     ),
     _team_internal_event(
+        TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
+        "Team outbox publication requested",
+        "Published after Team work is committed to the outbox so delivery can begin immediately.",
+    ),
+    _team_internal_event(
         GIT_PROMOTION_EVENT_TYPE,
         "Team Git promotion requested",
         "Published when Team release automation requests a Git branch promotion.",
@@ -2710,10 +2716,12 @@ def _dispatch_queued_team_chat_messages(
     for claim in claims:
         agent_id = _required_text(claim.get("agent_id"), "agent_id")
         message_id = _required_text(claim.get("message_id"), "message_id")
+        message_ids = _string_items(claim.get("message_ids")) or [message_id]
         conversation_id = _required_text(claim.get("conversation_id"), "conversation_id")
         dispatch_id = _required_text(claim.get("dispatch_id"), "dispatch_id")
         agent = state.agents[agent_id]
-        message = state.conversation_messages[message_id]
+        messages = [state.conversation_messages[item] for item in message_ids]
+        message = messages[0]
         conversation = state.conversations[conversation_id]
         try:
             agent_payload = agent.model_dump(mode="json")
@@ -2739,6 +2747,7 @@ def _dispatch_queued_team_chat_messages(
                         "session_id": agent.session_id,
                         "conversation_id": conversation_id,
                         "message_id": message_id,
+                        "message_ids": message_ids,
                         "dispatch_id": dispatch_id,
                         "authorization_denied": True,
                         "error": error,
@@ -2751,7 +2760,7 @@ def _dispatch_queued_team_chat_messages(
                 repo=repo,
                 state=state,
                 agent=agent,
-                message=message,
+                messages=messages,
             )
             mutation_allowed = _team_chat_mutation_allowed(message, dispatch)
             chat_tool_names = [TEAM_REPLY_TO_CHAT_TOOL]
@@ -2793,7 +2802,7 @@ def _dispatch_queued_team_chat_messages(
             prompt = _build_team_chat_prompt(
                 state=state,
                 conversation=conversation,
-                message=message,
+                messages=messages,
                 mutation_allowed=mutation_allowed,
                 attachment_paths=attachment_paths,
                 ordinary_team_context=ordinary_team_context,
@@ -2825,9 +2834,10 @@ def _dispatch_queued_team_chat_messages(
             )
             context_rotation: dict[str, Any] | None = None
             if mutation_allowed:
-                state = TeamChatService(repo).mark_chat_message_ordinary_context_seeded(
-                    message_id=message_id,
-                )
+                for source_message_id in message_ids:
+                    state = TeamChatService(repo).mark_chat_message_ordinary_context_seeded(
+                        message_id=source_message_id,
+                    )
                 state = TeamRuntimeService(repo).record_agent_role_description_delivered(
                     agent_id=agent_id,
                     dispatch_id=dispatch_id,
@@ -2852,6 +2862,7 @@ def _dispatch_queued_team_chat_messages(
                 "session_id": agent.session_id,
                 "conversation_id": conversation_id,
                 "message_id": message_id,
+                "message_ids": message_ids,
                 "dispatch_id": dispatch_id,
                 "agent_guidance": guidance_result,
                 "team_chat_mcp_tools": tool_grant_result,
@@ -3094,10 +3105,9 @@ def _copy_team_chat_attachments_for_dispatch(
     repo: TeamStateRepository,
     state: Any,
     agent: Any,
-    message: Any,
+    messages: Sequence[Any],
 ) -> list[dict[str, Any]]:
-    attachment_ids = list(getattr(message, "attachment_ids", None) or [])
-    if not attachment_ids:
+    if not any(getattr(message, "attachment_ids", None) for message in messages):
         return []
     session_repository = _session_repository_from_context(context)
     get_session = getattr(session_repository, "get_session", None)
@@ -3115,38 +3125,43 @@ def _copy_team_chat_attachments_for_dispatch(
     allowed_source_root = storage.assets_dir.resolve(strict=False)
     files: list[dict[str, Any]] = []
     payloads: list[dict[str, Any]] = []
-    for index, attachment_id in enumerate(attachment_ids, start=1):
-        attachment = state.chat_attachments.get(attachment_id)
-        if attachment is None or attachment.message_id != message.id:
-            raise ValueError(f"Team Chat attachment {attachment_id} is not available")
-        source_path = storage.asset_path(attachment.id)
-        if not source_path.is_file():
-            raise FileNotFoundError(f"Team Chat attachment file is missing: {attachment.id}")
-        source_path = source_path.resolve(strict=True)
-        destination_name = f"{index:02d}-{attachment.filename}"
-        destination_path = f"/home/agent/team-chat-attachments/{message.id}/{destination_name}"
-        files.append(
-            {
-                "source_path": str(source_path),
-                "destination_path": destination_path,
-                "mode": "0644",
-                "overwrite": True,
-            }
-        )
-        payloads.append(
-            {
-                "id": attachment.id,
-                "filename": attachment.filename,
-                "mime_type": attachment.mime_type,
-                "byte_count": attachment.byte_count,
-                "sha256": attachment.sha256,
-                "path": destination_path,
-            }
-        )
+    for message in messages:
+        attachment_ids = list(getattr(message, "attachment_ids", None) or [])
+        for index, attachment_id in enumerate(attachment_ids, start=1):
+            attachment = state.chat_attachments.get(attachment_id)
+            if attachment is None or attachment.message_id != message.id:
+                raise ValueError(f"Team Chat attachment {attachment_id} is not available")
+            source_path = storage.asset_path(attachment.id)
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Team Chat attachment file is missing: {attachment.id}")
+            source_path = source_path.resolve(strict=True)
+            destination_name = f"{index:02d}-{attachment.filename}"
+            destination_path = (
+                f"/home/agent/team-chat-attachments/{message.id}/{destination_name}"
+            )
+            files.append(
+                {
+                    "source_path": str(source_path),
+                    "destination_path": destination_path,
+                    "mode": "0644",
+                    "overwrite": True,
+                }
+            )
+            payloads.append(
+                {
+                    "id": attachment.id,
+                    "message_id": message.id,
+                    "filename": attachment.filename,
+                    "mime_type": attachment.mime_type,
+                    "byte_count": attachment.byte_count,
+                    "sha256": attachment.sha256,
+                    "path": destination_path,
+                }
+            )
     provider = AgentCopyFilesEffectProvider()
     provider.initialize(
         AgentCopyFilesEffectDefinition(
-            id=f"team-chat-attachments-{message.id}",
+            id=f"team-chat-attachments-{messages[0].id}",
             display_name="Copy Team Chat attachments",
             type="effect:agent:copy-files",
             session_id=agent.session_id,
@@ -7025,7 +7040,8 @@ def _build_team_chat_prompt(
     *,
     state: Any,
     conversation: Any,
-    message: Any,
+    message: Any | None = None,
+    messages: Sequence[Any] | None = None,
     mutation_allowed: bool,
     attachment_paths: list[dict[str, Any]] | None = None,
     ordinary_team_context: Mapping[str, Any] | None = None,
@@ -7044,12 +7060,17 @@ def _build_team_chat_prompt(
     operator_label = (
         _optional_text(_object_field(conversation, "operator_display_name")) or operator_user_id
     )
-    message_id = _required_text(_object_field(message, "id"), "message.id")
+    batch_messages = list(messages or ([message] if message is not None else []))
+    if not batch_messages:
+        raise ValueError("Team Chat prompt requires at least one message")
+    message_ids = [
+        _required_text(_object_field(item, "id"), "message.id") for item in batch_messages
+    ]
     recent_messages = [
         item
         for item in conversation_messages.values()
         if _object_field(item, "conversation_id") == conversation_id
-        and _optional_text(_object_field(item, "id")) != message_id
+        and _optional_text(_object_field(item, "id")) not in set(message_ids)
     ]
     recent_messages.sort(
         key=lambda item: (
@@ -7137,7 +7158,7 @@ def _build_team_chat_prompt(
         if rotation_handoff_summary is not None
         else ""
     )
-    return (
+    prompt_header = (
         "You have received a message from a human operator in the Team Add-on Chat tab.\n"
         "This is not an agent-to-agent inbox message. Treat it as the current human "
         f"operator request. Reply with the {TEAM_REPLY_TO_CHAT_TOOL} MCP tool. Do "
@@ -7147,15 +7168,19 @@ def _build_team_chat_prompt(
         f"Current agent: {agent_display_name} ({agent_id})\n"
         f"Human operator: {operator_label} ({operator_user_id})\n"
         f"Conversation ID: {conversation_id}\n"
-        f"Human operator message ID: {message_id}\n\n"
+        f"Human operator message IDs: {', '.join(message_ids)}\n"
+        f"Reply once with {TEAM_REPLY_TO_CHAT_TOOL}, passing message_ids for this full batch.\n\n"
         f"{ordinary_context_section}"
         f"{rotation_section}\n"
         "Recent conversation:\n"
         f"{transcript or '(no earlier messages)'}\n\n"
-        "Human operator message:\n"
-        f"{_object_field(message, 'body') or '(attachment-only message)'}"
-        f"{attachment_guidance}"
+        "Human operator messages in this batch:\n"
     )
+    batch_body = "\n\n".join(
+        f"[{message_id}] {_object_field(item, 'body') or '(attachment-only message)'}"
+        for message_id, item in zip(message_ids, batch_messages)
+    )
+    return f"{prompt_header}{batch_body}{attachment_guidance}"
 
 
 def _operator_chat_participant_scope_guidance(

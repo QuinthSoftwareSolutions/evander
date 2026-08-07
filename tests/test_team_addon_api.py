@@ -19,6 +19,7 @@ from evander.addons import AddonContext
 from evander.admin.services.managed_git_common import ManagedGitConflictError
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
+from evander.config import GatewayConfig
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
@@ -88,6 +89,9 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from evander_team_addon.services.commands.outbox import (
+    TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
+)
 from evander_team_addon.services.domain.human_reviews import (
     HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
     HUMAN_REVIEW_PREPARATION_FAILED,
@@ -111,6 +115,46 @@ def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
 
 def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
     return TeamRuntimeService(repo)
+
+
+def test_team_outbox_publication_wake_is_durable_and_notifies_trigger_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notified_lock_paths: list[Path] = []
+    monkeypatch.setattr(
+        team_addon_api,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
+    )
+    context = AddonContext(
+        addon_id="team-addon",
+        runtime_dir=tmp_path / "runtime",
+        addon_runtime_dir=tmp_path / "runtime" / "addons" / "team-addon",
+        project_dir=tmp_path,
+        config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
+    )
+
+    first = team_addon_api._request_team_outbox_publication(
+        context,
+        correlation_key="candidate-correction-recovery:blocker-1:12",
+    )
+    second = team_addon_api._request_team_outbox_publication(
+        context,
+        correlation_key="candidate-correction-recovery:blocker-1:12",
+    )
+
+    events = InternalEventBus(internal_event_store_path(context.runtime_dir)).list_events()
+    assert first["event_ids"] == second["event_ids"]
+    assert first["wake_notified"] is True
+    assert second["wake_notified"] is True
+    assert len(events) == 1
+    assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    assert events[0].correlation_key == "candidate-correction-recovery:blocker-1:12"
+    assert notified_lock_paths == [
+        context.runtime_dir / "trigger-orchestrator.lock",
+        context.runtime_dir / "trigger-orchestrator.lock",
+    ]
 
 
 def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
@@ -1437,6 +1481,7 @@ def test_human_review_bundle_rejects_reserved_manifest_members(
 
 def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_runtime_operations_state(runtime_dir)
@@ -1478,6 +1523,15 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     assert locked.status_code == 403
     assert locked.json()["error"] == "Privileged operations are locked."
 
+    observed_at = datetime(2026, 8, 7, 7, 50, tzinfo=UTC)
+    monkeypatch.setattr(
+        team_addon_api,
+        "human_review_request_detail_payload",
+        lambda *_args, **_kwargs: {
+            "state": "blocked",
+            "decision_projection": {"recorded_at": observed_at},
+        },
+    )
     auth.privileged = True
     decided = client.post(
         "/human-review-requests/human-review-1/decisions",
@@ -1486,6 +1540,9 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     assert decided.status_code == 200, decided.text
     assert decided.json()["result"]["idempotent_replay"] is False
     assert decided.json()["human_review_request"]["state"] == "blocked"
+    assert decided.json()["human_review_request"]["decision_projection"] == {
+        "recorded_at": "2026-08-07T07:50:00Z"
+    }
     first_revision = decided.json()["revision"]
     state = repo.read()
     assert len(state.human_review_decisions) == 1
@@ -3301,6 +3358,9 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     message = sent_payload["message"]
     assert message["status"] == "queued"
     assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    assert message["source_message_ids"] == []
+    assert message["seen_at"] is None
+    assert message["seen_dispatch_id"] is None
     reread = TeamStateRepository(tmp_path / "runtime").read()
     assert reread.conversation_messages[message["id"]].status == "queued"
     assert reread.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend"
@@ -3479,6 +3539,72 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
     assert {
         row["assignment_id"] for row in ephemeral_rows
     } == set(operations_state["ephemeral_assignments"])
+
+
+def test_team_addon_delivery_view_serializes_derived_datetime_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(tmp_path)
+    observed_at = datetime(2026, 8, 7, 7, 30, tzinfo=UTC)
+
+    def _delivery_payload(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "view": "delivery",
+            "generated_at": observed_at,
+            "data": {"state": {"runtime_operations": {"attention": [{"at": observed_at}]}}},
+        }
+
+    monkeypatch.setattr(team_addon_api, "_view_payload_for_request", _delivery_payload)
+
+    response = client.get("/api/addons/team-addon/views/delivery")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["generated_at"] == "2026-08-07T07:30:00Z"
+    assert payload["data"]["state"]["runtime_operations"]["attention"] == [
+        {"at": "2026-08-07T07:30:00Z"}
+    ]
+
+
+def test_team_api_json_response_serializes_derived_datetime_values() -> None:
+    observed_at = datetime(2026, 8, 7, 7, 40, tzinfo=UTC)
+
+    response = team_addon_api.JSONResponse(
+        {"result": {"nested": [{"observed_at": observed_at}]}}
+    )
+
+    assert json.loads(response.body) == {
+        "result": {"nested": [{"observed_at": "2026-08-07T07:40:00Z"}]}
+    }
+
+
+def test_team_addon_release_detail_serializes_derived_datetime_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    sealed_at = datetime(2026, 8, 7, 7, 45, tzinfo=UTC)
+
+    def _release_payload(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "id": "release-1",
+            "release_review_cohort": {
+                "sealed_at": sealed_at,
+                "slot_events": [{"occurred_at": sealed_at}],
+            },
+        }
+
+    monkeypatch.setattr(team_addon_api, "release_package_api_payload", _release_payload)
+
+    response = client.get("/api/addons/team-addon/release-packages/release-1")
+
+    assert response.status_code == 200
+    assert response.json()["release_review_cohort"] == {
+        "sealed_at": "2026-08-07T07:45:00Z",
+        "slot_events": [{"occurred_at": "2026-08-07T07:45:00Z"}],
+    }
 
 
 def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
@@ -5073,6 +5199,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-candidate-correction-recovery-task-id" in script.text
     assert "View replacement task" in script.text
     assert "Create verified replacement" in script.text
+    assert "Add instructions for the verified replacement task" in script.text
+    assert "payload.instruction" in script.text
     assert "Authorize waiver instead" in script.text
     assert "existing_recovery_task_id" in script.text
     assert "/candidate-correction-recoveries/" in script.text
@@ -5184,11 +5312,15 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert org_flow_script.status_code == 200
     assert "team-org-flow:edit-agent" in org_flow_script.text
     assert "data-team-org-flow-canvas" in org_flow_script.text
+    assert "org-flow-activity-bubble" in org_flow_script.text
+    assert "org-flow-message-pulse" in org_flow_script.text
 
     org_flow_stylesheet = enabled.get("/addons/team-addon/team-org-flow.css")
     assert org_flow_stylesheet.status_code == 200
     assert ".team-org-flow-canvas" in org_flow_stylesheet.text
     assert ".org-flow-governance-node" in org_flow_stylesheet.text
+    assert "org-flow-active-halo" in org_flow_stylesheet.text
+    assert "prefers-reduced-motion:reduce" in org_flow_stylesheet.text
 
     agent_create_script = enabled.get("/addons/team-addon/team-agent-create.js")
     assert agent_create_script.status_code == 200

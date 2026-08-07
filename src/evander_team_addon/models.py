@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -2044,8 +2044,6 @@ class ReviewRequest(TeamModel):
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
-        if self.release_package_id is not None and self.review_cohort_id is not None:
-            raise ValueError("release review request cannot carry review_cohort_id")
         if self.supersedes_review_request_id is not None and (
             self.retry_reason is None or self.retry_requested_by is None
         ):
@@ -2395,6 +2393,7 @@ class TeamDispatch(TeamModel):
     inbox_item_ids: list[str] = Field(default_factory=list)
     project_ids: list[str] = Field(default_factory=list)
     managed_repo_ids: list[str] = Field(default_factory=list)
+    chat_message_ids: list[str] = Field(default_factory=list)
     review_routing_authorities: list[TeamDispatchReviewRoutingAuthority] = Field(
         default_factory=list
     )
@@ -2424,6 +2423,7 @@ class TeamDispatch(TeamModel):
         "inbox_item_ids",
         "project_ids",
         "managed_repo_ids",
+        "chat_message_ids",
         "initial_release_decision_deliverable_ids",
         mode="before",
     )
@@ -2433,6 +2433,8 @@ class TeamDispatch(TeamModel):
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> "TeamDispatch":
+        if self.chat_message_ids and self.cause_kind != "team_chat":
+            raise ValueError("chat message ids require a team_chat cause")
         authority_keys = [
             (authority.reviewer_agent_id, authority.deliverable_id)
             for authority in self.review_routing_authorities
@@ -2804,6 +2806,7 @@ class TeamConversationMessage(TeamModel):
         "dispatching",
         "queued",
         "running",
+        "seen",
         "replied",
         "failed",
         "sent",
@@ -2812,6 +2815,9 @@ class TeamConversationMessage(TeamModel):
     dispatch_id: str | None = None
     voice_session_id: str | None = None
     source_message_id: str | None = None
+    source_message_ids: list[str] = Field(default_factory=list)
+    seen_at: datetime | None = None
+    seen_dispatch_id: str | None = None
     error: str | None = None
     attachment_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -2828,12 +2834,18 @@ class TeamConversationMessage(TeamModel):
         "dispatch_id",
         "voice_session_id",
         "source_message_id",
+        "seen_dispatch_id",
         "error",
         mode="before",
     )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("source_message_ids", mode="before")
+    @classmethod
+    def _source_message_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "source_message_ids")
 
     @field_validator("metadata", mode="before")
     @classmethod
@@ -3620,6 +3632,8 @@ class ReleasePackage(TeamModel):
     review_correction_task_id: str | None = None
     verification_run_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
+    review_cohort_id: str | None = None
+    review_cohort_sealed_at: datetime | None = None
     manifest: ReleaseCandidateManifest | None = None
     gate_failure: ReleaseGateFailure | None = None
     git_promotion_record_ids: list[str] = Field(default_factory=list)
@@ -3677,6 +3691,7 @@ class ReleasePackage(TeamModel):
         "candidate_tree_hash",
         "approved_commit_sha",
         "review_correction_task_id",
+        "review_cohort_id",
         "summary",
         "error",
         mode="before",
@@ -3727,6 +3742,14 @@ class ReleasePackage(TeamModel):
                 "review_requirements": value.get("review_requirements") or [],
             }
         return value
+
+    @model_validator(mode="after")
+    def _validate_review_cohort(self) -> "ReleasePackage":
+        if (self.review_cohort_id is None) != (self.review_cohort_sealed_at is None):
+            raise ValueError(
+                "release review_cohort_id and review_cohort_sealed_at must be set together"
+            )
+        return self
 
 
 class EphemeralAssignment(TeamModel):
@@ -4948,6 +4971,7 @@ class TeamState(TeamModel):
 
     def _validate_reviews(self, errors: list[str]) -> None:
         current_cohort_reviewers: set[tuple[str, str, str]] = set()
+        current_release_cohort_members: set[tuple[str, str, str, str | None]] = set()
         for review in self.review_requests.values():
             if review.deliverable_id is not None and review.deliverable_id not in self.deliverables:
                 errors.append(
@@ -4957,6 +4981,11 @@ class TeamState(TeamModel):
             deliverable = (
                 self.deliverables.get(review.deliverable_id)
                 if review.deliverable_id is not None
+                else None
+            )
+            release = (
+                self.release_packages.get(review.release_package_id)
+                if review.release_package_id is not None
                 else None
             )
             if (
@@ -4998,6 +5027,43 @@ class TeamState(TeamModel):
                         f"{review.reviewer_agent_id}"
                     )
                 current_cohort_reviewers.add(cohort_reviewer_key)
+            if (
+                review.review_cohort_id is not None
+                and release is not None
+                and review.review_cohort_id != release.review_cohort_id
+            ):
+                errors.append(
+                    f"release review {review.id} cohort {review.review_cohort_id} does not "
+                    f"match release {release.id} cohort {release.review_cohort_id}"
+                )
+            if (
+                release is not None
+                and release.review_cohort_id is not None
+                and review.review_cohort_id != release.review_cohort_id
+            ):
+                errors.append(
+                    f"release review {review.id} must carry release {release.id} cohort "
+                    f"{release.review_cohort_id}"
+                )
+            if (
+                review.release_package_id is not None
+                and review.review_cohort_id is not None
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+            ):
+                release_member_key = (
+                    review.release_package_id,
+                    review.review_cohort_id,
+                    review.reviewer_agent_id,
+                    review.review_profile_id,
+                )
+                if release_member_key in current_release_cohort_members:
+                    errors.append(
+                        f"release {review.release_package_id} cohort "
+                        f"{review.review_cohort_id} has duplicate current reviewer/profile "
+                        f"slot {review.reviewer_agent_id}/{review.review_profile_id}"
+                    )
+                current_release_cohort_members.add(release_member_key)
             if (
                 review.release_package_id is not None
                 and review.release_package_id not in self.release_packages
@@ -5267,6 +5333,12 @@ class TeamState(TeamModel):
                     f"conversation message {message.id} references missing source message "
                     f"{message.source_message_id}"
                 )
+            for source_message_id in message.source_message_ids:
+                if source_message_id not in self.conversation_messages:
+                    errors.append(
+                        f"conversation message {message.id} references missing source message "
+                        f"{source_message_id}"
+                    )
             for attachment_id in message.attachment_ids:
                 attachment = self.chat_attachments.get(attachment_id)
                 if attachment is None:
@@ -5299,6 +5371,28 @@ class TeamState(TeamModel):
             if message is not None and attachment.id not in message.attachment_ids:
                 errors.append(
                     f"chat attachment {attachment.id} is not linked from message {message.id}"
+                )
+        for dispatch in self.dispatches.values():
+            chat_conversation_ids: set[str] = set()
+            for message_id in dispatch.chat_message_ids:
+                message = self.conversation_messages.get(message_id)
+                if message is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} references missing chat message {message_id}"
+                    )
+                    continue
+                if message.sender != "operator":
+                    errors.append(
+                        f"dispatch {dispatch.id} chat message {message_id} is not an operator message"
+                    )
+                if message.dispatch_id != dispatch.id:
+                    errors.append(
+                        f"dispatch {dispatch.id} chat message {message_id} has a different dispatch"
+                    )
+                chat_conversation_ids.add(message.conversation_id)
+            if len(chat_conversation_ids) > 1:
+                errors.append(
+                    f"dispatch {dispatch.id} chat messages span multiple conversations"
                 )
 
     def _validate_external_chat_bridge(self, errors: list[str]) -> None:
@@ -5360,6 +5454,32 @@ class TeamState(TeamModel):
                     errors.append(
                         f"release {release.id} references invalid owner {release.owner_agent_id}"
                     )
+            if release.review_cohort_id is not None:
+                if release.manifest is None or not release.manifest.review_requirements:
+                    errors.append(
+                        f"release {release.id} review cohort requires frozen review requirements"
+                    )
+                else:
+                    current_reviews = [
+                        self.review_requests[review_id]
+                        for review_id in release.review_request_ids
+                        if review_id in self.review_requests
+                        and self.review_requests[review_id].superseded_by_review_request_id is None
+                        and self.review_requests[review_id].retired_at is None
+                    ]
+                    current_members = [
+                        (review.reviewer_agent_id, review.review_profile_id)
+                        for review in current_reviews
+                    ]
+                    required_members = [
+                        (requirement.reviewer_agent_id, requirement.review_profile_id)
+                        for requirement in release.manifest.review_requirements
+                    ]
+                    if sorted(current_members) != sorted(required_members):
+                        errors.append(
+                            f"release {release.id} cohort membership does not match its "
+                            "frozen review requirements"
+                        )
             if release.supersedes_release_package_id is not None:
                 predecessor = self.release_packages.get(release.supersedes_release_package_id)
                 if predecessor is None:
@@ -6732,6 +6852,50 @@ def release_package_payload_with_derived(
         for review_id in release.review_request_ids
         if review_id in state.review_requests
     ]
+    if release.review_cohort_id is not None:
+        cohort_reviews = [
+            state.review_requests[review_id]
+            for review_id in release.review_request_ids
+            if review_id in state.review_requests
+            and state.review_requests[review_id].superseded_by_review_request_id is None
+            and state.review_requests[review_id].retired_at is None
+            and state.review_requests[review_id].review_cohort_id
+            == release.review_cohort_id
+        ]
+        blocked_ids = [
+            review.id for review in cohort_reviews if review.state == TeamRecordState.BLOCKED
+        ]
+        pending_ids = [
+            review.id
+            for review in cohort_reviews
+            if review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+        ]
+        rejected_ids = [
+            review.id for review in cohort_reviews if review.state == TeamRecordState.REJECTED
+        ]
+        accepted_ids = [
+            review.id for review in cohort_reviews if review.state == TeamRecordState.ACCEPTED
+        ]
+        cohort_status = (
+            "blocked"
+            if blocked_ids
+            else "collecting"
+            if pending_ids
+            else "changes_requested"
+            if rejected_ids
+            else "accepted"
+        )
+        payload["release_review_cohort"] = {
+            "id": release.review_cohort_id,
+            "sealed_at": release.review_cohort_sealed_at,
+            "status": cohort_status,
+            "total": len(cohort_reviews),
+            "resolved": len(accepted_ids) + len(rejected_ids),
+            "pending_review_request_ids": pending_ids,
+            "blocked_review_request_ids": blocked_ids,
+            "rejected_review_request_ids": rejected_ids,
+            "accepted_review_request_ids": accepted_ids,
+        }
     related_promotions = _release_related_promotions(state, release)
     pending_promotions = [
         promotion.id for promotion in related_promotions if promotion.state == "pending"
@@ -6761,6 +6925,29 @@ def release_package_payload_with_derived(
 
 
 def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str | None:
+    if release.review_cohort_id is not None and release.state == TeamRecordState.PENDING:
+        current_reviews = [
+            state.review_requests[review_id]
+            for review_id in release.review_request_ids
+            if review_id in state.review_requests
+            and state.review_requests[review_id].superseded_by_review_request_id is None
+            and state.review_requests[review_id].retired_at is None
+            and state.review_requests[review_id].review_cohort_id
+            == release.review_cohort_id
+        ]
+        pending_count = sum(
+            review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+            for review in current_reviews
+        )
+        rejected_count = sum(
+            review.state == TeamRecordState.REJECTED for review in current_reviews
+        )
+        if pending_count:
+            return (
+                f"Wait for the remaining {pending_count} release review cohort slot(s). "
+                f"{rejected_count} rejection(s) are recorded, but correction work begins "
+                "only after the sealed cohort closes."
+            )
     if release.state != TeamRecordState.BLOCKED and not release.error:
         return None
     gate_failure = release.gate_failure
@@ -6804,6 +6991,17 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
                 f"Current blocker: {gate_failure.message}"
             )
         if release.state == TeamRecordState.REJECTED:
+            if (
+                release.review_cohort_id is not None
+                and gate_failure.stage == "review"
+                and gate_failure.kind == "rejected"
+                and release.review_correction_task_id is not None
+            ):
+                return (
+                    f"Release review cohort {release.review_cohort_id} is complete and requested "
+                    f"changes. Resolve correction task {release.review_correction_task_id} once "
+                    "against the consolidated findings; Team will create the successor release."
+                )
             return (
                 f"Release {release.id} is terminal because its candidate failed or was "
                 "rejected. Submit changed reviewed content as a new release; unchanged "
@@ -8106,6 +8304,7 @@ def _runtime_attention_primary_target(
         return None
     payload = item.payload if isinstance(item.payload, Mapping) else {}
     for field, kind in (
+        ("blocker_id", "blocker"),
         ("review_request_id", "review_request"),
         ("release_package_id", "release_package"),
         ("deliverable_id", "deliverable"),
@@ -8433,7 +8632,13 @@ def _runtime_attention_terminal_context(
             add("release_package", release.id, release.state.value)
     for review_id in links.get("review_request_ids", []):
         review = state.review_requests.get(review_id)
-        if review is not None and review.state in {
+        if review is None:
+            continue
+        if review.retired_at is not None:
+            add("review_request", review.id, "retired")
+        elif review.superseded_by_review_request_id is not None:
+            add("review_request", review.id, "superseded")
+        elif review.state in {
             TeamRecordState.ACCEPTED,
             TeamRecordState.REJECTED,
         }:

@@ -753,6 +753,13 @@ def _task_creation_mandate_error(
         return f"task parent {parent_task_id} is not active"
     if parent.project_id != project_id:
         return None
+    contracted_leaf_error = _contracted_leaf_child_error(
+        parent_task_id=parent.id,
+        integration_boundary=parent.integration_boundary,
+        deliverable_contract=parent.deliverable_contract,
+    )
+    if contracted_leaf_error is not None:
+        return contracted_leaf_error
     if can_create_root:
         return None
     if parent.owner_agent_id == actor.id:
@@ -760,6 +767,22 @@ def _task_creation_mandate_error(
     return (
         f"agent {actor.id} can only create child tasks under its own active tasks "
         f"without {RolePermission.CREATE_ROOT_TASK.value} permission"
+    )
+
+
+def _contracted_leaf_child_error(
+    *,
+    parent_task_id: str,
+    integration_boundary: bool,
+    deliverable_contract: TaskDeliverableContract | None,
+) -> str | None:
+    if integration_boundary or deliverable_contract is None:
+        return None
+    return (
+        f"task parent {parent_task_id} is a contracted leaf and cannot own child "
+        "tasks; submit the work directly on that leaf, create independent work "
+        "with originating_task_id, or designate the parent as an integration "
+        "boundary before its first deliverable"
     )
 
 
@@ -1093,6 +1116,14 @@ def _task_creation_batch_graph_errors(
         task_owners = {task_id: task.owner_agent_id for task_id, task in state.tasks.items()}
         task_states = {task_id: task.state for task_id, task in state.tasks.items()}
         parent_map = {task_id: task.parent_task_id for task_id, task in state.tasks.items()}
+        integration_boundary_map = {
+            task_id: task.integration_boundary
+            for task_id, task in state.tasks.items()
+        }
+        deliverable_contract_map = {
+            task_id: task.deliverable_contract
+            for task_id, task in state.tasks.items()
+        }
         dependency_map = {
             task_id: list(task.dependency_task_ids) for task_id, task in state.tasks.items()
         }
@@ -1101,6 +1132,8 @@ def _task_creation_batch_graph_errors(
             task_owners[plan.task_id] = plan.owner_id
             task_states[plan.task_id] = plan.task_state
             parent_map[plan.task_id] = plan.parent_task_id
+            integration_boundary_map[plan.task_id] = plan.integration_boundary
+            deliverable_contract_map[plan.task_id] = plan.deliverable_contract
             dependency_map[plan.task_id] = list(plan.dependency_task_ids)
 
         next_errors: dict[str, str] = {}
@@ -1109,6 +1142,8 @@ def _task_creation_batch_graph_errors(
                 plan,
                 task_projects=task_projects,
                 parent_map=parent_map,
+                integration_boundary_map=integration_boundary_map,
+                deliverable_contract_map=deliverable_contract_map,
                 dependency_map=dependency_map,
             )
             if graph_error is not None:
@@ -1177,6 +1212,8 @@ def _task_creation_plan_graph_error(
     *,
     task_projects: dict[str, str],
     parent_map: dict[str, str | None],
+    integration_boundary_map: dict[str, bool],
+    deliverable_contract_map: dict[str, TaskDeliverableContract | None],
     dependency_map: dict[str, list[str]],
 ) -> str | None:
     if plan.parent_task_id == plan.task_id:
@@ -1189,6 +1226,16 @@ def _task_creation_plan_graph_error(
             return f"task references missing parent {plan.parent_task_id}"
         if parent_project_id != plan.project_id:
             return f"task parent {plan.parent_task_id} belongs to project {parent_project_id}"
+        contracted_leaf_error = _contracted_leaf_child_error(
+            parent_task_id=plan.parent_task_id,
+            integration_boundary=integration_boundary_map.get(
+                plan.parent_task_id,
+                False,
+            ),
+            deliverable_contract=deliverable_contract_map.get(plan.parent_task_id),
+        )
+        if contracted_leaf_error is not None:
+            return contracted_leaf_error
     for dependency_id in plan.dependency_task_ids:
         dependency_project_id = task_projects.get(dependency_id)
         if dependency_project_id is None:
@@ -1334,6 +1381,18 @@ def _task_graph_edit_error(
             return f"task references missing parent {parent_task_id}"
         if parent.project_id != project_id:
             return f"task parent {parent_task_id} belongs to project {parent.project_id}"
+        parent_edge_changed = (
+            existing_task is None
+            or existing_task.parent_task_id != parent_task_id
+        )
+        if parent_edge_changed:
+            contracted_leaf_error = _contracted_leaf_child_error(
+                parent_task_id=parent.id,
+                integration_boundary=parent.integration_boundary,
+                deliverable_contract=parent.deliverable_contract,
+            )
+            if contracted_leaf_error is not None:
+                return contracted_leaf_error
         if (
             parent.state not in _NON_TERMINAL_TASK_STATES
             and (
@@ -1434,6 +1493,18 @@ def _task_deliverable_contract_scope_error(
         and deliverable_contract.required_contribution_task_ids
     ):
         return "leaf deliverable_contract cannot require contribution tasks"
+    if not integration_boundary and deliverable_contract is not None:
+        direct_child_ids = {
+            candidate.id
+            for candidate in state.tasks.values()
+            if candidate.parent_task_id == task_id
+        }
+        if direct_child_ids:
+            return (
+                f"task {task_id} has direct children and cannot become a contracted "
+                "leaf; designate it as an integration boundary with an exact "
+                "deliverable contribution contract"
+            )
     if deliverable_contract is None:
         return None
     if task_id in deliverable_contract.required_contribution_task_ids:

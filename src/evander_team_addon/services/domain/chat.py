@@ -187,24 +187,36 @@ def _apply_chat_reply(
     result: dict[str, Any],
 ) -> str:
     conversation_id = _required_text(reply.get("conversation_id"), "conversation_id")
-    source_message_id = _required_text(reply.get("message_id"), "message_id")
+    raw_message_ids = reply.get("message_ids")
+    if isinstance(raw_message_ids, Sequence) and not isinstance(raw_message_ids, (str, bytes)):
+        source_message_ids = [
+            _required_text(message_id, "message_ids") for message_id in raw_message_ids
+        ]
+    else:
+        source_message_ids = []
+    if not source_message_ids:
+        source_message_ids = [_required_text(reply.get("message_id"), "message_id")]
     body = _required_text(reply.get("body"), "body")
     conversation = _require_present(state.conversations, conversation_id, "conversation")
     if conversation.agent_id != actor.id:
         raise ValueError(f"agent {actor.id} cannot reply to conversation {conversation_id}")
-    source_message = _require_present(
-        state.conversation_messages,
-        source_message_id,
-        "conversation message",
-    )
-    if source_message.conversation_id != conversation.id:
-        raise ValueError(f"message {source_message_id} is not in conversation {conversation_id}")
-    if source_message.sender != "operator":
-        raise ValueError(f"message {source_message_id} is not an operator message")
+    source_messages = [
+        _require_present(state.conversation_messages, source_message_id, "conversation message")
+        for source_message_id in source_message_ids
+    ]
+    for source_message in source_messages:
+        if source_message.conversation_id != conversation.id:
+            raise ValueError(
+                f"message {source_message.id} is not in conversation {conversation_id}"
+            )
+        if source_message.sender != "operator":
+            raise ValueError(f"message {source_message.id} is not an operator message")
     now = utc_now()
-    source_message.status = "replied"
-    source_message.error = None
-    source_message.updated_at = now
+    for source_message in source_messages:
+        source_message.status = "replied"
+        source_message.error = None
+        source_message.updated_at = now
+    source_message = source_messages[-1]
     reply_id = f"chatmsg-{uuid4().hex}"
     metadata: dict[str, Any] = {}
     summary = _optional_text(reply.get("summary"))
@@ -218,12 +230,13 @@ def _apply_chat_reply(
         body=body,
         status="sent",
         source_message_id=source_message.id,
+        source_message_ids=source_message_ids,
         metadata=metadata,
         created_at=now,
         updated_at=now,
     )
     _touch_conversation(conversation, now=now, preview=_chat_preview(body))
-    result["replied_chat_message_ids"].append(source_message.id)
+    result["replied_chat_message_ids"].extend(source_message_ids)
     return reply_id
 
 
@@ -278,60 +291,76 @@ def _apply_operator_chat_message(
     return message_id
 
 
+def _chat_dispatch_source_messages(
+    state: TeamState,
+    *,
+    dispatch_id: str,
+) -> list[TeamConversationMessage]:
+    dispatch = state.dispatches.get(dispatch_id)
+    message_ids = list(dispatch.chat_message_ids) if dispatch is not None else []
+    if not message_ids and dispatch is not None and dispatch.cause_id:
+        message_ids = [dispatch.cause_id]
+    if message_ids:
+        return [
+            message
+            for message_id in message_ids
+            if (message := state.conversation_messages.get(message_id)) is not None
+            and message.sender == "operator"
+        ]
+    return [
+        message
+        for message in state.conversation_messages.values()
+        if message.dispatch_id == dispatch_id and message.sender == "operator"
+    ]
+
+
 def _mark_chat_dispatch_message_failed(
     state: TeamState,
     *,
     dispatch_id: str | None,
     error: str,
-) -> str | None:
+) -> list[str]:
     normalized_dispatch_id = _optional_text(dispatch_id)
     if normalized_dispatch_id is None or not normalized_dispatch_id.startswith("team-chat:"):
-        return None
-    source_message = next(
-        (
-            message
-            for message in state.conversation_messages.values()
-            if message.dispatch_id == normalized_dispatch_id
-            and message.sender == "operator"
-            and message.status != "replied"
-        ),
-        None,
-    )
-    if source_message is None:
-        return None
-    conversation = state.conversations.get(source_message.conversation_id)
+        return []
+    source_messages = [
+        message
+        for message in _chat_dispatch_source_messages(state, dispatch_id=normalized_dispatch_id)
+        if message.status != "replied"
+    ]
+    if not source_messages:
+        return []
     now = utc_now()
-    source_message.status = "failed"
-    source_message.error = error
-    source_message.updated_at = now
-    if conversation is not None:
-        _touch_conversation(
-            conversation,
-            now=now,
-            preview=f"Reply failed: {_chat_preview(error)}",
-        )
-    return source_message.id
+    for source_message in source_messages:
+        source_message.status = "failed"
+        source_message.error = error
+        source_message.updated_at = now
+        conversation = state.conversations.get(source_message.conversation_id)
+        if conversation is not None:
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=f"Reply failed: {_chat_preview(error)}",
+            )
+    return [message.id for message in source_messages]
 
 
 def _mark_chat_dispatch_message_replied_from_activity(
     state: TeamState,
     *,
     dispatch_id: str,
-) -> str | None:
-    source_message = next(
-        (
-            message
-            for message in state.conversation_messages.values()
-            if message.dispatch_id == dispatch_id
-            and message.sender == "operator"
-            and message.status != "failed"
-        ),
-        None,
-    )
-    if source_message is None:
-        return None
-    if source_message.status != "replied":
-        now = utc_now()
+) -> list[str]:
+    source_messages = [
+        message
+        for message in _chat_dispatch_source_messages(state, dispatch_id=dispatch_id)
+        if message.status != "failed"
+    ]
+    if not source_messages:
+        return []
+    now = utc_now()
+    for source_message in source_messages:
+        if source_message.status == "replied":
+            continue
         source_message.status = "replied"
         source_message.error = None
         source_message.updated_at = now
@@ -342,7 +371,7 @@ def _mark_chat_dispatch_message_replied_from_activity(
                 now=now,
                 preview=f"Replied: {_chat_preview(source_message.body)}",
             )
-    return source_message.id
+    return [message.id for message in source_messages]
 
 
 def _clear_completed_chat_dispatch_lease(
@@ -358,17 +387,8 @@ def _clear_completed_chat_dispatch_lease(
         runtime.wake_leased_until
     ) > _ensure_utc(now):
         return False
-    message = next(
-        (
-            item
-            for item in state.conversation_messages.values()
-            if item.dispatch_id == dispatch_id
-            and item.sender == "operator"
-            and item.status in {"replied", "failed"}
-        ),
-        None,
-    )
-    if message is None:
+    messages = _chat_dispatch_source_messages(state, dispatch_id=dispatch_id)
+    if not messages or not all(message.status in {"replied", "failed"} for message in messages):
         return False
     dispatch = state.dispatches.get(dispatch_id)
     if (
@@ -376,13 +396,14 @@ def _clear_completed_chat_dispatch_lease(
         and dispatch.status
         in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
     ):
+        failed_message = next((message for message in messages if message.status == "failed"), None)
         dispatch.status = (
-            TeamDispatchStatus.COMPLETED
-            if message.status == "replied"
-            else TeamDispatchStatus.FAILED
+            TeamDispatchStatus.FAILED
+            if failed_message is not None
+            else TeamDispatchStatus.COMPLETED
         )
         dispatch.completed_at = now
-        dispatch.error = message.error if message.status == "failed" else None
+        dispatch.error = failed_message.error if failed_message is not None else None
     runtime.active_dispatch_id = None
     runtime.wake_leased_until = None
     runtime.wake_reason = None

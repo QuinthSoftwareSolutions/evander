@@ -569,6 +569,17 @@ messages. Loading older history preserves the visible anchor as messages are
 prepended, and thread rerenders preserve the current composer text, focus, and
 selection.
 
+When a persistent agent already holds an active Team lease, a newly queued,
+plain-text operator Chat message is soft steering: its next Team MCP response
+atomically includes the message and records it as `seen`. It is not redelivered
+and does not require a Chat reply. Attachment-bearing messages remain queued
+for a normal Chat dispatch because their files must first be copied into the
+agent workspace. Once the agent is available, queued messages from the same
+conversation and external return path are coalesced into one Chat dispatch. The
+prompt supplies all message IDs and one `team_reply_to_chat` reply covers the
+whole batch; messages from different conversations, providers, targets, or
+threads remain separate dispatches.
+
 External communication can enter the same durable Chat lifecycle through
 `effect:team:enqueue-operator-chat-message`, normally after
 `trigger:communication:new-message`. Configure exactly one fixed
@@ -1460,6 +1471,14 @@ resolves through an accepted deliverable, with authoritative Git provenance
 when required, but it does not aggregate other tasks and therefore cannot set
 `required_contribution_task_ids`.
 
+A contracted leaf cannot own child tasks. Submit its work directly, or create
+independent follow-up work with `originating_task_id`; when child contributions
+must be composed, designate an explicit integration boundary and its exact
+contract before the first deliverable. Historical non-boundary tasks that
+already persisted source-bearing aggregate deliverables retain legacy
+direct-child coverage for compatibility, but new contracted leaves cannot
+enter that mode.
+
 Every task read also includes a non-persisted `inherited_blockers` projection
 for blockers reached through unresolved descendants or unsatisfied
 dependencies. Each row identifies the upstream task and canonical blocker,
@@ -1860,6 +1879,17 @@ The candidate also receives a frozen typed manifest containing its deliverable
 verification, waiver audit records, accepted immutable reviews, reviewed change
 manifests, scope result, verification commands, and review requirements.
 
+For a new release-review stage, Team validates the full frozen reviewer/profile
+set and seals it as one cohort before creating any reviewer handoff. A rejection
+is recorded immediately, but it does not create correction work while another
+cohort slot is pending. When every current slot is accepted or rejected, Team
+creates at most one candidate-correction task and wake containing all rejected
+findings in manifest order; if all slots accept, the release advances. A blocked
+slot pauses the cohort until `team_retry_release_gate` replaces that same frozen
+slot against the same candidate. Releases that already had review rows before
+this behavior was introduced are not retroactively grouped and retain the
+legacy eager-rejection behavior.
+
 The optional `release_policy.resource_limits` object configures the disposable
 verification worker with Docker-compatible `memory`, positive `cpus`, and
 positive integer `pids_limit` values. For example:
@@ -1893,8 +1923,9 @@ session is created, including an authorized retry of the same pinned candidate.
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.
 Creating another release with the same deliverables and failed tree is refused.
-Verification candidate failures and rejected agent release reviews create
-candidate-pinned system correction tasks. When the generated task recursively
+Verification candidate failures, closed release-review cohorts containing at
+least one rejection, and legacy uncohorted rejections create candidate-pinned
+system correction tasks. When the generated task recursively
 resolves with current accepted, reviewed Git deliverables, Team creates one
 deterministic successor package and correction-aggregate promotion
 automatically; the project lead does not submit another release request. The

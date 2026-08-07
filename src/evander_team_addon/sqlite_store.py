@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 50
+SQLITE_SCHEMA_VERSION = 52
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -899,6 +899,24 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_conversation_messages",
+                    column_name="source_message_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_conversation_messages",
+                    column_name="seen_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_conversation_messages",
+                    column_name="seen_dispatch_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_action_records",
                     column_name="feedback_delivered_by_dispatch_id",
                     definition="TEXT",
@@ -919,6 +937,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_dispatches",
                     column_name="initial_release_decision_deliverable_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="chat_message_ids_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
@@ -1279,6 +1303,18 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition="TEXT",
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="review_cohort_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="review_cohort_sealed_at",
+                    definition="TEXT",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_release_packages",
@@ -3403,6 +3439,9 @@ class TeamStateSqliteStore:
                 "dispatch_id": row["dispatch_id"],
                 "voice_session_id": row["voice_session_id"],
                 "source_message_id": row["source_message_id"],
+                "source_message_ids": _json_loads(row["source_message_ids_json"] or "[]"),
+                "seen_at": row["seen_at"],
+                "seen_dispatch_id": row["seen_dispatch_id"],
                 "error": row["error"],
                 "metadata": _json_loads(row["metadata_json"]),
                 "attachment_ids": _json_loads(row["attachment_ids_json"] or "[]"),
@@ -3421,10 +3460,10 @@ class TeamStateSqliteStore:
                 INSERT INTO team_conversation_messages(
                     id, conversation_id, sender, message_type, body, status,
                     dispatch_id, voice_session_id, source_message_id, error,
-                    metadata_json, created_at, updated_at
-                    , attachment_ids_json
+                    metadata_json, created_at, updated_at, attachment_ids_json,
+                    source_message_ids_json, seen_at, seen_dispatch_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message["id"],
@@ -3441,6 +3480,9 @@ class TeamStateSqliteStore:
                     message["created_at"],
                     message["updated_at"],
                     _json_dumps(message.get("attachment_ids", [])),
+                    _json_dumps(message.get("source_message_ids", [])),
+                    message.get("seen_at"),
+                    message.get("seen_dispatch_id"),
                 ),
             )
 
@@ -3710,6 +3752,8 @@ class TeamStateSqliteStore:
                 "review_correction_task_id": row["review_correction_task_id"],
                 "verification_run_ids": _json_loads(row["verification_run_ids_json"]),
                 "review_request_ids": _json_loads(row["review_request_ids_json"]),
+                "review_cohort_id": row["review_cohort_id"],
+                "review_cohort_sealed_at": row["review_cohort_sealed_at"],
                 "manifest": _json_loads(row["manifest_json"]),
                 "gate_failure": (
                     _json_loads(row["gate_failure_json"])
@@ -3744,11 +3788,12 @@ class TeamStateSqliteStore:
                     candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, review_correction_task_id,
                     verification_run_ids_json, review_request_ids_json,
+                    review_cohort_id, review_cohort_sealed_at,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -3768,6 +3813,8 @@ class TeamStateSqliteStore:
                     package.get("review_correction_task_id"),
                     _json_dumps(package.get("verification_run_ids", [])),
                     _json_dumps(package.get("review_request_ids", [])),
+                    package.get("review_cohort_id"),
+                    package.get("review_cohort_sealed_at"),
                     _json_dumps(package.get("manifest") or {}),
                     (
                         _json_dumps(package.get("gate_failure"))
@@ -4111,6 +4158,7 @@ class TeamStateSqliteStore:
                 "inbox_item_ids": scope_values["inbox_item_ids"].get(dispatch_id, []),
                 "project_ids": scope_values["project_ids"].get(dispatch_id, []),
                 "managed_repo_ids": scope_values["managed_repo_ids"].get(dispatch_id, []),
+                "chat_message_ids": _json_loads(row["chat_message_ids_json"] or "[]"),
                 "review_routing_authorities": _json_loads(
                     row["review_routing_authorities_json"] or "[]"
                 ),
@@ -4136,11 +4184,12 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_dispatches(
                     id, agent_id, session_id, cause_kind, cause_id,
+                    chat_message_ids_json,
                     review_routing_authorities_json,
                     initial_release_decision_deliverable_ids_json, status,
                     created_at, prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4148,6 +4197,7 @@ class TeamStateSqliteStore:
                     dispatch["session_id"],
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
+                    _json_dumps(dispatch.get("chat_message_ids", [])),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
                     _json_dumps(
                         dispatch.get("initial_release_decision_deliverable_ids", [])
@@ -7997,6 +8047,10 @@ CREATE TABLE IF NOT EXISTS team_conversation_messages (
     dispatch_id TEXT,
     voice_session_id TEXT,
     source_message_id TEXT,
+    attachment_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    seen_at TEXT,
+    seen_dispatch_id TEXT,
     error TEXT,
     metadata_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -8094,6 +8148,8 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     review_correction_task_id TEXT,
     verification_run_ids_json TEXT NOT NULL DEFAULT '[]',
     review_request_ids_json TEXT NOT NULL DEFAULT '[]',
+    review_cohort_id TEXT,
+    review_cohort_sealed_at TEXT,
     manifest_json TEXT NOT NULL DEFAULT '{}',
     gate_failure_json TEXT,
     state TEXT NOT NULL,
@@ -8257,6 +8313,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     session_id TEXT NOT NULL,
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
+    chat_message_ids_json TEXT NOT NULL DEFAULT '[]',
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
     initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,

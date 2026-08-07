@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from mcp.server.fastmcp.exceptions import ToolError
@@ -29,6 +29,7 @@ class TeamMcpCallerContext:
     governance_groups: tuple[GovernanceGroup, ...]
     governance_runtimes: tuple[GovernanceRuntime, ...]
     ephemeral_assignments: tuple[EphemeralAssignment, ...]
+    team_repository: TeamStateRepository | None = None
 
     @property
     def agent_id(self) -> str | None:
@@ -80,7 +81,10 @@ class TeamMcpContextResolver:
     def resolve(self, *, session_id: str | None, tool_name: str) -> TeamMcpCallerContext:
         resolved_session_id = self._require_tool(session_id, tool_name)
         state = self._repo.read()
-        return resolve_team_mcp_caller(state, resolved_session_id)
+        return replace(
+            resolve_team_mcp_caller(state, resolved_session_id),
+            team_repository=self._repo,
+        )
 
     def require_persistent_action_context(
         self,

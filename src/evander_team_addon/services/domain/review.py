@@ -2118,7 +2118,16 @@ def _cascade_release_review_decision(
         release.updated_at = utc_now()
         projects_to_recalc.add(release.project_id)
         if result is not None:
-            result["errors"].append(release.error)
+            result.setdefault("errors", []).append(release.error)
+        return
+    if release.review_cohort_id is not None:
+        _recalculate_release_review_cohort(
+            state,
+            release=release,
+            closed_review=review,
+            projects_to_recalc=projects_to_recalc,
+            result=result,
+        )
         return
     if decision_state == TeamRecordState.REJECTED:
         release.state = TeamRecordState.REJECTED
@@ -2176,6 +2185,116 @@ def _cascade_release_review_decision(
         result=result if result is not None else {"events": []},
     )
     release.updated_at = utc_now()
+    projects_to_recalc.add(release.project_id)
+
+
+def _recalculate_release_review_cohort(
+    state: TeamState,
+    *,
+    release: Any,
+    closed_review: ReviewRequest,
+    projects_to_recalc: set[str],
+    result: dict[str, Any] | None,
+) -> None:
+    """Resolve one release candidate only after its sealed review set closes."""
+
+    cohort_id = release.review_cohort_id
+    if closed_review.review_cohort_id != cohort_id:
+        raise ValueError(
+            f"release review {closed_review.id} does not belong to release cohort {cohort_id}"
+        )
+    current_reviews = [
+        state.review_requests[review_id]
+        for review_id in release.review_request_ids
+        if review_id in state.review_requests
+        and state.review_requests[review_id].superseded_by_review_request_id is None
+        and state.review_requests[review_id].retired_at is None
+        and state.review_requests[review_id].review_cohort_id == cohort_id
+    ]
+    now = utc_now()
+    blocked_reviews = [
+        review for review in current_reviews if review.state == TeamRecordState.BLOCKED
+    ]
+    if blocked_reviews:
+        blocker = blocked_reviews[0]
+        message = "; ".join(blocker.findings) or f"release review {blocker.id} blocked"
+        release.state = TeamRecordState.BLOCKED
+        release.error = message
+        release.gate_failure = ReleaseGateFailure(
+            stage="review",
+            kind="blocked",
+            source_id=blocker.id,
+            message=message,
+        )
+        if closed_review.state == TeamRecordState.BLOCKED:
+            reviewer = _require_present(
+                state.agents,
+                closed_review.reviewer_agent_id,
+                "reviewer",
+            )
+            open_or_get_blocker(
+                state,
+                source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                source_id=closed_review.id,
+                summary=f"Release review {closed_review.id} is blocked",
+                details=(
+                    "; ".join(closed_review.findings)
+                    or "Reviewer cannot complete the release review."
+                ),
+                reporter_agent_id=reviewer.id,
+                team_id=reviewer.team_id,
+                project_id=release.project_id,
+                result=result,
+                now=now,
+            )
+    elif any(
+        review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+        for review in current_reviews
+    ):
+        release.state = TeamRecordState.PENDING
+        release.error = None
+        release.gate_failure = None
+    else:
+        rejected_reviews = [
+            review for review in current_reviews if review.state == TeamRecordState.REJECTED
+        ]
+        if rejected_reviews:
+            source_review = rejected_reviews[0]
+            attributed_findings = [
+                f"{review.id}: {finding}"
+                for review in rejected_reviews
+                for finding in review.findings
+            ]
+            message = "; ".join(attributed_findings) or (
+                f"release review cohort {cohort_id} rejected the candidate"
+            )
+            release.state = TeamRecordState.REJECTED
+            release.error = message
+            release.gate_failure = ReleaseGateFailure(
+                stage="review",
+                kind="rejected",
+                source_id=source_review.id,
+                message=message,
+            )
+            from .release_gates import materialize_release_review_rejection_correction
+
+            materialize_release_review_rejection_correction(
+                state,
+                release=release,
+                review=source_review,
+                findings=list(source_review.findings),
+                result=result if result is not None else {"events": []},
+                now=now,
+            )
+        else:
+            from .release_gates import advance_release_gates
+
+            advance_release_gates(
+                state,
+                release=release,
+                result=result if result is not None else {"events": []},
+            )
+    release.updated_at = now
     projects_to_recalc.add(release.project_id)
 
 
