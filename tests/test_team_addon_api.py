@@ -1481,6 +1481,7 @@ def test_human_review_bundle_rejects_reserved_manifest_members(
 
 def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_runtime_operations_state(runtime_dir)
@@ -1522,6 +1523,15 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     assert locked.status_code == 403
     assert locked.json()["error"] == "Privileged operations are locked."
 
+    observed_at = datetime(2026, 8, 7, 7, 50, tzinfo=UTC)
+    monkeypatch.setattr(
+        team_addon_api,
+        "human_review_request_detail_payload",
+        lambda *_args, **_kwargs: {
+            "state": "blocked",
+            "decision_projection": {"recorded_at": observed_at},
+        },
+    )
     auth.privileged = True
     decided = client.post(
         "/human-review-requests/human-review-1/decisions",
@@ -1530,6 +1540,9 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
     assert decided.status_code == 200, decided.text
     assert decided.json()["result"]["idempotent_replay"] is False
     assert decided.json()["human_review_request"]["state"] == "blocked"
+    assert decided.json()["human_review_request"]["decision_projection"] == {
+        "recorded_at": "2026-08-07T07:50:00Z"
+    }
     first_revision = decided.json()["revision"]
     state = repo.read()
     assert len(state.human_review_decisions) == 1
@@ -3526,6 +3539,72 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
     assert {
         row["assignment_id"] for row in ephemeral_rows
     } == set(operations_state["ephemeral_assignments"])
+
+
+def test_team_addon_delivery_view_serializes_derived_datetime_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(tmp_path)
+    observed_at = datetime(2026, 8, 7, 7, 30, tzinfo=UTC)
+
+    def _delivery_payload(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "view": "delivery",
+            "generated_at": observed_at,
+            "data": {"state": {"runtime_operations": {"attention": [{"at": observed_at}]}}},
+        }
+
+    monkeypatch.setattr(team_addon_api, "_view_payload_for_request", _delivery_payload)
+
+    response = client.get("/api/addons/team-addon/views/delivery")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["generated_at"] == "2026-08-07T07:30:00Z"
+    assert payload["data"]["state"]["runtime_operations"]["attention"] == [
+        {"at": "2026-08-07T07:30:00Z"}
+    ]
+
+
+def test_team_api_json_response_serializes_derived_datetime_values() -> None:
+    observed_at = datetime(2026, 8, 7, 7, 40, tzinfo=UTC)
+
+    response = team_addon_api.JSONResponse(
+        {"result": {"nested": [{"observed_at": observed_at}]}}
+    )
+
+    assert json.loads(response.body) == {
+        "result": {"nested": [{"observed_at": "2026-08-07T07:40:00Z"}]}
+    }
+
+
+def test_team_addon_release_detail_serializes_derived_datetime_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    sealed_at = datetime(2026, 8, 7, 7, 45, tzinfo=UTC)
+
+    def _release_payload(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "id": "release-1",
+            "release_review_cohort": {
+                "sealed_at": sealed_at,
+                "slot_events": [{"occurred_at": sealed_at}],
+            },
+        }
+
+    monkeypatch.setattr(team_addon_api, "release_package_api_payload", _release_payload)
+
+    response = client.get("/api/addons/team-addon/release-packages/release-1")
+
+    assert response.status_code == 200
+    assert response.json()["release_review_cohort"] == {
+        "sealed_at": "2026-08-07T07:45:00Z",
+        "slot_events": [{"occurred_at": "2026-08-07T07:45:00Z"}],
+    }
 
 
 def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:

@@ -79,6 +79,11 @@
 - Kept the Agents-page detail view responsive while a selected agent's full
   queued-prompt records load, even though the performance-oriented list summary
   intentionally omits those records.
+## 2026-08-07 - JSON-Safe Team Admin API Responses
+
+- Serialize every Team Admin API response at the shared boundary so a derived raw
+  datetime cannot prevent a Delivery view, release detail, or review decision
+  from completing.
 
 ## 2026-08-06 - Admin Web Frontend Naming
 

@@ -15,11 +15,16 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from pydantic_core import to_jsonable_python
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse as StarletteJSONResponse,
+    StreamingResponse,
+)
 from starlette.routing import Route
 
 from evander.addons import AddonContext
@@ -140,6 +145,18 @@ from .services.memory_service import list_memory_records, memory_record_payload
 from .services.runtime_service import TeamRuntimeService
 from .services.review_dispatch_steering import steer_closed_review_dispatch
 from .providers import _session_records_by_id, build_voice_reconciliation_context
+
+
+class TeamJSONResponse(StarletteJSONResponse):
+    """JSON response for Team API payloads containing derived model values."""
+
+    def render(self, content: Any) -> bytes:
+        return super().render(to_jsonable_python(content))
+
+
+# Keep every existing Team API route on the serialization-safe response class.
+JSONResponse = TeamJSONResponse
+
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
