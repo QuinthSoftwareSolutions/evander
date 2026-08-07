@@ -8157,6 +8157,7 @@ def _runtime_attention_primary_target(
         return None
     payload = item.payload if isinstance(item.payload, Mapping) else {}
     for field, kind in (
+        ("blocker_id", "blocker"),
         ("review_request_id", "review_request"),
         ("release_package_id", "release_package"),
         ("deliverable_id", "deliverable"),
@@ -8484,7 +8485,13 @@ def _runtime_attention_terminal_context(
             add("release_package", release.id, release.state.value)
     for review_id in links.get("review_request_ids", []):
         review = state.review_requests.get(review_id)
-        if review is not None and review.state in {
+        if review is None:
+            continue
+        if review.retired_at is not None:
+            add("review_request", review.id, "retired")
+        elif review.superseded_by_review_request_id is not None:
+            add("review_request", review.id, "superseded")
+        elif review.state in {
             TeamRecordState.ACCEPTED,
             TeamRecordState.REJECTED,
         }:

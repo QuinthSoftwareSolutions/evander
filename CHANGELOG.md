@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-07 - Historical Attention Classification
+
+- Moved escalation notices for superseded or retired reviews and resolved source blockers out of
+  active operational obligations and into retained history, while preserving their audit trail.
+
 ## 2026-08-07 - Team Chat Attention And Coalescing
 
 - Surfaced plain-text operator Chat steering once in the next Team MCP response for an agent with

@@ -1587,6 +1587,72 @@ def test_runtime_attention_reconciles_pending_inbox_from_its_primary_target() ->
     assert reconciled["reconciliation_required"] is True
 
 
+def test_runtime_attention_retains_superseded_review_and_resolved_blocker_escalations() -> None:
+    state = _state_with_runtime_operations()
+    now = datetime(2026, 8, 1, 12, tzinfo=UTC)
+    state.review_requests["blocked-review"] = ReviewRequest(
+        id="blocked-review",
+        deliverable_id="deliverable",
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.BLOCKED,
+        superseded_by_review_request_id="replacement-review",
+    )
+    state.inbox["blocked-review-escalation"] = AgentInboxItem(
+        id="blocked-review-escalation",
+        recipient_agent_id="lead",
+        sender_agent_id="reviewer",
+        item_type=TeamInboxItemType.ESCALATION,
+        response_requested=True,
+        state=TeamInboxItemState.PENDING,
+        payload={"review_request_id": "blocked-review"},
+    )
+    state.blockers["resolved-blocker"] = TeamBlocker(
+        id="resolved-blocker",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id="review-recovery",
+        owner_agent_id="lead",
+        state=TeamBlockerState.RESOLVED,
+        route=TeamBlockerRoute.RESOLVED,
+        summary="Recovered review input",
+        resolved_at=now,
+    )
+    state.inbox["resolved-blocker-escalation"] = AgentInboxItem(
+        id="resolved-blocker-escalation",
+        recipient_agent_id="manager",
+        sender_agent_id="lead",
+        item_type=TeamInboxItemType.ESCALATION,
+        response_requested=True,
+        state=TeamInboxItemState.PENDING,
+        payload={"blocker_id": "resolved-blocker"},
+    )
+
+    payload = runtime_operations_payload(state, now=now)
+    rows = {
+        row["inbox_item_id"]: row
+        for row in payload["attention"]
+        if row.get("inbox_item_id")
+        in {"blocked-review-escalation", "resolved-blocker-escalation"}
+    }
+
+    blocked_review = rows["blocked-review-escalation"]
+    assert blocked_review["attention_group"] == "retained_history"
+    assert blocked_review["attention_reason"] == "terminal_work_pending_reconciliation"
+    assert blocked_review["reconciliation_required"] is True
+    assert {tuple(context.values()) for context in blocked_review["terminal_context"]} >= {
+        ("review_request", "blocked-review", "superseded"),
+    }
+
+    resolved_blocker = rows["resolved-blocker-escalation"]
+    assert resolved_blocker["attention_group"] == "retained_history"
+    assert resolved_blocker["attention_reason"] == "terminal_work_pending_reconciliation"
+    assert resolved_blocker["reconciliation_required"] is True
+    assert {tuple(context.values()) for context in resolved_blocker["terminal_context"]} >= {
+        ("blocker", "resolved-blocker", "resolved"),
+    }
+
+
 @pytest.mark.parametrize(
     "terminal_state",
     [TeamRecordState.ACCEPTED, TeamRecordState.REJECTED],
