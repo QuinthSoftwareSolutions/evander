@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-09 - Review MCP Capability Receipts
+
+- Recorded a compact, persisted proof of the review-decision MCP capability for each review
+  dispatch, using only the required tool, a transport fingerprint, and status rather than a full
+  tool catalogue.
+- Confirmed the dynamic policy grant before resuming a reviewer, retried a verified capability
+  mismatch once without consuming no-progress allowance, and then terminally routed a durable
+  blocker while suppressing further wakes for that review.
+
 ## 2026-08-07 - Safe Batched Team Chat Reply Validation
 
 - Rejected agent chat replies with neither a non-empty `message_ids` batch nor a legacy

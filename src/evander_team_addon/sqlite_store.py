@@ -942,6 +942,12 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_dispatches",
+                    column_name="mcp_capability_receipt_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
                     column_name="chat_message_ids_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
@@ -4165,6 +4171,9 @@ class TeamStateSqliteStore:
                 "initial_release_decision_deliverable_ids": _json_loads(
                     row["initial_release_decision_deliverable_ids_json"] or "[]"
                 ),
+                "mcp_capability_receipt": _json_loads(
+                    row["mcp_capability_receipt_json"] or "null"
+                ),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "prepared_at": row["prepared_at"],
@@ -4186,10 +4195,11 @@ class TeamStateSqliteStore:
                     id, agent_id, session_id, cause_kind, cause_id,
                     chat_message_ids_json,
                     review_routing_authorities_json,
-                    initial_release_decision_deliverable_ids_json, status,
+                    initial_release_decision_deliverable_ids_json,
+                    mcp_capability_receipt_json, status,
                     created_at, prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4202,6 +4212,7 @@ class TeamStateSqliteStore:
                     _json_dumps(
                         dispatch.get("initial_release_decision_deliverable_ids", [])
                     ),
+                    _json_dumps(dispatch.get("mcp_capability_receipt")),
                     dispatch["status"],
                     dispatch["created_at"],
                     dispatch.get("prepared_at"),
@@ -8316,6 +8327,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     chat_message_ids_json TEXT NOT NULL DEFAULT '[]',
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
     initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',
+    mcp_capability_receipt_json TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     prepared_at TEXT,

@@ -65,6 +65,7 @@ from evander.git_identity import (
 from evander.models import tool_name_value
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
+from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
 from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
@@ -2372,16 +2373,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     ),
                 }
                 context_handoff_preparation = lease.get("reason") == "context_handoff"
-                tool_grant_result = _set_session_team_mcp_tools(
-                    context,
-                    session_id=agent["session_id"],
-                    tool_names=(
-                        [TEAM_RECORD_CONTEXT_HANDOFF_TOOL]
-                        if context_handoff_preparation
-                        else _ordinary_team_tools_for_agent(agent)
-                    ),
-                    dispatch_id=lease["dispatch_id"],
-                )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
                     dispatch_scope = (
@@ -2447,6 +2438,51 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
                 }
                 leases[lease_index] = lease
+                tool_grant_result = _set_session_team_mcp_tools(
+                    context,
+                    session_id=agent["session_id"],
+                    tool_names=(
+                        [TEAM_RECORD_CONTEXT_HANDOFF_TOOL]
+                        if context_handoff_preparation
+                        else _ordinary_team_tools_for_agent(agent)
+                    ),
+                    dispatch_id=lease["dispatch_id"],
+                )
+                if tool_grant_result["error"] is not None:
+                    dispatch = state.dispatches[lease["dispatch_id"]]
+                    receipt = dispatch.mcp_capability_receipt
+                    if receipt is not None:
+                        state, finalization = TeamRuntimeService(
+                            repo
+                        ).finalize_agent_dispatch_from_activity(
+                            session_id=agent["session_id"],
+                            dispatch_id=lease["dispatch_id"],
+                            agent_id=agent["id"],
+                            mcp_capability_observation={
+                                "verification_status": "missing",
+                                "missing_tool_names": receipt.required_tool_names,
+                                "diagnostic": (
+                                    "MCP policy grant confirmation failed before resume: "
+                                    f"{tool_grant_result['error']}"
+                                ),
+                            },
+                        )
+                        errors.append(f"{agent['id']}: {tool_grant_result['error']}")
+                        dispatches.append(
+                            {
+                                "agent_id": agent["id"],
+                                "session_id": agent["session_id"],
+                                "dispatch_id": lease["dispatch_id"],
+                                "agent_guidance": guidance_result,
+                                "team_mcp_tools": tool_grant_result,
+                                "mcp_capability_receipt": finalization.get(
+                                    "mcp_capability_receipt"
+                                ),
+                                "error": tool_grant_result["error"],
+                            }
+                        )
+                        continue
+                    raise RuntimeError(str(tool_grant_result["error"]))
                 review_artifacts = _prepare_review_artifacts_for_lease(
                     context,
                     lease=lease,
@@ -3305,6 +3341,9 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        dispatch = repo.read().dispatches.get(
+            _required_text(payload.get("dispatch_id"), "dispatch_id")
+        )
         try:
             state, result = TeamRuntimeService(repo).finalize_agent_dispatch_from_activity(
                 session_id=_required_text(payload.get("session_id"), "session_id"),
@@ -3313,6 +3352,10 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
                 expected_revision=_optional_int(
                     payload.get("expected_revision"),
                     default=None,
+                ),
+                mcp_capability_observation=_review_mcp_capability_observation(
+                    self.runtime_context,
+                    dispatch=dispatch,
                 ),
             )
         except TeamStateConflictError as exc:
@@ -4399,10 +4442,15 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if session_id is None:
                 continue
             agent_id = active_dispatches[dispatch_id]
+            dispatch = state.dispatches.get(dispatch_id)
             state, result = TeamRuntimeService(repo).finalize_agent_dispatch_from_activity(
                 session_id=session_id,
                 dispatch_id=dispatch_id,
                 agent_id=agent_id,
+                mcp_capability_observation=_review_mcp_capability_observation(
+                    context,
+                    dispatch=dispatch,
+                ),
             )
             if not result.get("finalized"):
                 continue
@@ -6918,6 +6966,10 @@ def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
     return (
         "Assigned deliverable review procedure for this wake:\n"
         f"- Pending assigned reviews: {labels}.\n"
+        f"- {TEAM_DECIDE_REVIEW_TOOL} is granted for this review dispatch. "
+        "ALL_TOOLS and MCP resource listings do not enumerate Team action tools; "
+        "treat only MCP tool discovery or an actual tool-call error as evidence of "
+        "unavailability.\n"
         f"- Before deciding each review, call {TEAM_GET_DELIVERABLE_TOOL} for the "
         f"complete deliverable, resolve its task_id, and call {TEAM_GET_TASK_TOOL}. "
         "Read the complete task description/specification, outcome_contract, "
@@ -9781,10 +9833,68 @@ def _set_session_team_mcp_tools(
             setattr(session, "allowed_tools", next_allowed_values)
             updated_session = session
         repository.upsert_session(updated_session)
+    confirmed_session = repository.get_session(normalized_session_id)
+    confirmed_values = {
+        tool_name_value(tool)
+        for tool in getattr(confirmed_session, "allowed_tools", [])
+    }
+    missing_requested_tools = [
+        tool for tool in requested_tools if tool not in confirmed_values
+    ]
+    if missing_requested_tools:
+        result["error"] = (
+            "Team MCP policy did not retain requested tool(s): "
+            + ", ".join(missing_requested_tools)
+        )
     result["already_allowed_tools"] = already_allowed
     result["granted_tools"] = granted
     result["removed_tools"] = removed
     return result
+
+
+def _review_mcp_capability_observation(
+    context: Any,
+    *,
+    dispatch: TeamDispatch | None,
+) -> dict[str, Any] | None:
+    """Summarize post-lease tools/list evidence without retaining its catalogue."""
+
+    receipt = dispatch.mcp_capability_receipt if dispatch is not None else None
+    if receipt is None or not receipt.required_tool_names:
+        return None
+    cutoff = dispatch.leased_at or dispatch.prepared_at or dispatch.created_at
+    bindings = JsonMcpTransportBindingRepository.from_runtime_dir(_runtime_dir(context))
+    try:
+        candidates = [
+            binding
+            for binding in bindings.read_all().values()
+            if binding.bound_session_id == dispatch.session_id
+            and binding.last_tools_list_at is not None
+            and _team_datetime_utc(binding.last_tools_list_at) >= _team_datetime_utc(cutoff)
+        ]
+    except Exception:
+        candidates = []
+    if not candidates:
+        return None
+    binding = max(
+        candidates,
+        key=lambda item: _team_datetime_utc(item.last_tools_list_at),
+    )
+    visible_tool_names = set(binding.last_visible_tool_names)
+    missing_tool_names = sorted(set(receipt.required_tool_names) - visible_tool_names)
+    return {
+        "verification_status": "missing" if missing_tool_names else "verified",
+        "observed_transport_session_id": binding.transport_session_id,
+        "observed_at": binding.last_tools_list_at.isoformat(),
+        "observed_tool_fingerprint": binding.last_visible_tool_fingerprint,
+        "missing_tool_names": missing_tool_names,
+        "diagnostic": (
+            "The authenticated MCP tools/list response did not include the required "
+            "review tool(s)."
+            if missing_tool_names
+            else None
+        ),
+    }
 
 
 def _active_team_mcp_tools_for_other_dispatches(

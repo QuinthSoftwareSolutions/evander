@@ -260,6 +260,7 @@ class TeamBlockerSourceKind(str, Enum):
     RELEASE_PACKAGE = "release_package"
     HUMAN_REVIEW_REQUEST = "human_review_request"
     AGENT_EXECUTION_STALL = "agent_execution_stall"
+    MCP_CAPABILITY = "mcp_capability"
     CANDIDATE_CORRECTION_SUCCESSOR = "candidate_correction_successor"
     EXPLICIT = "explicit"
 
@@ -2339,11 +2340,45 @@ class TeamDispatchStatus(str, Enum):
     FAILED = "failed"
 
 
+class TeamDispatchMcpCapabilityStatus(str, Enum):
+    PENDING = "pending"
+    VERIFIED = "verified"
+    MISSING = "missing"
+
+
 class WorktreeCleanupState(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     SUCCEEDED = "succeeded"
     RECOVERY_REQUIRED = "recovery_required"
+
+
+class TeamDispatchMcpCapabilityReceipt(TeamModel):
+    """Compact evidence for MCP capabilities required by one Team dispatch."""
+
+    required_tool_names: list[str] = Field(default_factory=list)
+    attempt: int = Field(default=1, ge=1)
+    verification_status: TeamDispatchMcpCapabilityStatus = TeamDispatchMcpCapabilityStatus.PENDING
+    observed_transport_session_id: str | None = None
+    observed_at: datetime | None = None
+    observed_tool_fingerprint: str | None = None
+    missing_tool_names: list[str] = Field(default_factory=list)
+    diagnostic: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("required_tool_names", "missing_tool_names", mode="before")
+    @classmethod
+    def _tool_names(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator(
+        "observed_transport_session_id",
+        "observed_tool_fingerprint",
+        "diagnostic",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class TeamDispatchReviewRoutingAuthority(TeamModel):
@@ -2398,6 +2433,7 @@ class TeamDispatch(TeamModel):
         default_factory=list
     )
     initial_release_decision_deliverable_ids: list[str] = Field(default_factory=list)
+    mcp_capability_receipt: TeamDispatchMcpCapabilityReceipt | None = None
     status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
     created_at: datetime = Field(default_factory=utc_now)
     prepared_at: datetime | None = None
@@ -5209,6 +5245,19 @@ class TeamState(TeamModel):
                 TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: blocker.source_id
                 in self.human_review_requests,
                 TeamBlockerSourceKind.AGENT_EXECUTION_STALL: blocker.source_id in self.agents,
+                TeamBlockerSourceKind.MCP_CAPABILITY: (
+                    ":" in blocker.source_id
+                    and blocker.source_id.split(":", 1)[0] in self.agents
+                    and any(
+                        review_id
+                        for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                    )
+                    and all(
+                        review_id in self.review_requests
+                        for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                        if review_id
+                    )
+                ),
                 TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: (
                     blocker.source_id.startswith("candidate-correction-successor:")
                     and blocker.source_id.removeprefix(
@@ -6795,6 +6844,7 @@ def team_state_payload(
             TeamBlockerSourceKind.RELEASE_PACKAGE: "release_packages",
             TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: "human_review_requests",
             TeamBlockerSourceKind.AGENT_EXECUTION_STALL: "agents",
+            TeamBlockerSourceKind.MCP_CAPABILITY: None,
             TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: None,
             TeamBlockerSourceKind.EXPLICIT: None,
         }[blocker.source_kind]

@@ -370,6 +370,86 @@ def open_or_update_agent_execution_stall(
     return blocker
 
 
+def open_agent_mcp_capability_blocker(
+    state: TeamState,
+    *,
+    agent_id: str,
+    review_request_ids: Sequence[str],
+    affected_task_ids: Sequence[str],
+    dispatch_id: str,
+    required_tool_names: Sequence[str],
+    diagnostic: str,
+    result: dict[str, Any],
+    now: datetime | None = None,
+) -> TeamBlocker:
+    """Route a durable incident when a required Team MCP tool is unavailable."""
+
+    effective_now = _ensure_utc(now or utc_now())
+    agent = state.agents.get(_required_text(agent_id, "agent_id"))
+    if agent is None or agent.team_id is None:
+        raise ValueError(f"agent {agent_id} is not assigned to a Team")
+    normalized_review_ids = sorted(
+        {
+            review_id
+            for raw_review_id in review_request_ids
+            if (review_id := _optional_text(raw_review_id)) is not None
+        }
+    )
+    if not normalized_review_ids:
+        raise ValueError("MCP capability blocker requires review_request_ids")
+    normalized_tools = sorted(
+        {
+            tool_name
+            for raw_tool_name in required_tool_names
+            if (tool_name := _optional_text(raw_tool_name)) is not None
+        }
+    )
+    if not normalized_tools:
+        raise ValueError("MCP capability blocker requires required_tool_names")
+    current_task_ids = sorted(
+        {
+            task_id
+            for raw_task_id in affected_task_ids
+            if (task_id := _optional_text(raw_task_id)) is not None
+            and task_id in state.tasks
+        }
+    )
+    blocker, _created = open_or_get_blocker(
+        state,
+        source_kind=TeamBlockerSourceKind.MCP_CAPABILITY,
+        source_id=f"{agent.id}:{'|'.join(normalized_review_ids)}",
+        reason_code="required_review_tool_unavailable",
+        summary=f"Agent {agent.id} cannot access a required review MCP tool",
+        details=(
+            f"Dispatch {dispatch_id} could not verify required review tool(s) "
+            f"{', '.join(normalized_tools)} after one retry. {diagnostic}"
+        ),
+        priority=TeamInboxPriority.HIGH,
+        reporter_agent_id=agent.id,
+        team_id=agent.team_id,
+        affected_task_ids=current_task_ids,
+        result=result,
+        now=effective_now,
+    )
+    if blocker.state == TeamBlockerState.OPEN and blocker.route in {
+        TeamBlockerRoute.OWNED,
+        TeamBlockerRoute.DELEGATED,
+    }:
+        route_blocker_terminal(
+            state,
+            blocker=blocker,
+            actor_agent_id=agent.id,
+            dispatch_id=dispatch_id,
+            reason=(
+                "A required review MCP tool remained unavailable after one retry; "
+                "route the capability failure to the configured terminal authority."
+            ),
+            result=result,
+            now=effective_now,
+        )
+    return blocker
+
+
 def nearest_available_superior(
     state: TeamState,
     agent: PersistentAgent,
@@ -1917,6 +1997,7 @@ __all__ = [
     "handle_blocker_inbox_for_agent",
     "nearest_available_agent",
     "nearest_available_superior",
+    "open_agent_mcp_capability_blocker",
     "open_or_update_agent_execution_stall",
     "open_or_get_blocker",
     "open_deliverable_blocker",
