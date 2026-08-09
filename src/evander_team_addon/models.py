@@ -2094,6 +2094,26 @@ class AgentInboxItem(TeamModel):
         return _optional_text(value)
 
 
+class TeamMcpCapabilityBlockerIdentity(TeamModel):
+    """Unambiguous identity for a review MCP capability incident."""
+
+    agent_id: str
+    review_request_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("agent_id", mode="before")
+    @classmethod
+    def _agent_id(cls, value: object) -> str:
+        return _required_text(value, "agent_id")
+
+    @field_validator("review_request_ids", mode="before")
+    @classmethod
+    def _review_request_ids(cls, value: object) -> list[str]:
+        review_request_ids = _unique_text_list(value or [], "review_request_ids")
+        if not review_request_ids:
+            raise ValueError("review_request_ids must not be empty")
+        return review_request_ids
+
+
 class TeamBlocker(TeamModel):
     id: str
     team_id: str
@@ -2101,6 +2121,7 @@ class TeamBlocker(TeamModel):
     task_id: str | None = None
     source_kind: TeamBlockerSourceKind
     source_id: str
+    mcp_capability_identity: TeamMcpCapabilityBlockerIdentity | None = None
     reason_code: str = "unspecified"
     reporter_agent_id: str | None = None
     reporter_actor: str | None = None
@@ -2358,6 +2379,7 @@ class TeamDispatchMcpCapabilityReceipt(TeamModel):
 
     required_tool_names: list[str] = Field(default_factory=list)
     attempt: int = Field(default=1, ge=1)
+    grant_confirmed_at: datetime | None = None
     verification_status: TeamDispatchMcpCapabilityStatus = TeamDispatchMcpCapabilityStatus.PENDING
     observed_transport_session_id: str | None = None
     observed_at: datetime | None = None
@@ -5246,16 +5268,29 @@ class TeamState(TeamModel):
                 in self.human_review_requests,
                 TeamBlockerSourceKind.AGENT_EXECUTION_STALL: blocker.source_id in self.agents,
                 TeamBlockerSourceKind.MCP_CAPABILITY: (
-                    ":" in blocker.source_id
-                    and blocker.source_id.split(":", 1)[0] in self.agents
-                    and any(
-                        review_id
-                        for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                    (
+                        blocker.mcp_capability_identity is not None
+                        and blocker.mcp_capability_identity.agent_id in self.agents
+                        and all(
+                            review_id in self.review_requests
+                            for review_id in blocker.mcp_capability_identity.review_request_ids
+                        )
                     )
-                    and all(
-                        review_id in self.review_requests
-                        for review_id in blocker.source_id.split(":", 1)[1].split("|")
-                        if review_id
+                    or (
+                        # Compatibility for blockers persisted before capability
+                        # identity received dedicated structured storage.
+                        blocker.mcp_capability_identity is None
+                        and ":" in blocker.source_id
+                        and blocker.source_id.split(":", 1)[0] in self.agents
+                        and any(
+                            review_id
+                            for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                        )
+                        and all(
+                            review_id in self.review_requests
+                            for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                            if review_id
+                        )
                     )
                 ),
                 TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: (

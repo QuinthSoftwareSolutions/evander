@@ -2454,18 +2454,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     if receipt is not None:
                         state, finalization = TeamRuntimeService(
                             repo
-                        ).finalize_agent_dispatch_from_activity(
+                        ).record_agent_mcp_capability_preparation_failure(
                             session_id=agent["session_id"],
                             dispatch_id=lease["dispatch_id"],
                             agent_id=agent["id"],
-                            mcp_capability_observation={
-                                "verification_status": "missing",
-                                "missing_tool_names": receipt.required_tool_names,
-                                "diagnostic": (
-                                    "MCP policy grant confirmation failed before resume: "
-                                    f"{tool_grant_result['error']}"
-                                ),
-                            },
+                            diagnostic=(
+                                "MCP policy grant confirmation failed before resume: "
+                                f"{tool_grant_result['error']}"
+                            ),
                         )
                         errors.append(f"{agent['id']}: {tool_grant_result['error']}")
                         dispatches.append(
@@ -2483,6 +2479,22 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         )
                         continue
                     raise RuntimeError(str(tool_grant_result["error"]))
+                dispatch = state.dispatches[lease["dispatch_id"]]
+                if dispatch.mcp_capability_receipt is not None:
+                    state = TeamRuntimeService(
+                        repo
+                    ).confirm_agent_dispatch_mcp_capability_grant(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        granted_tool_names=tool_grant_result["requested_tools"],
+                    )
+                    lease = {
+                        **lease,
+                        "dispatch": state.dispatches[
+                            lease["dispatch_id"]
+                        ].model_dump(mode="json"),
+                    }
+                    leases[lease_index] = lease
                 review_artifacts = _prepare_review_artifacts_for_lease(
                     context,
                     lease=lease,
@@ -9860,9 +9872,13 @@ def _review_mcp_capability_observation(
     """Summarize post-lease tools/list evidence without retaining its catalogue."""
 
     receipt = dispatch.mcp_capability_receipt if dispatch is not None else None
-    if receipt is None or not receipt.required_tool_names:
+    if (
+        receipt is None
+        or not receipt.required_tool_names
+        or receipt.grant_confirmed_at is None
+    ):
         return None
-    cutoff = dispatch.leased_at or dispatch.prepared_at or dispatch.created_at
+    cutoff = receipt.grant_confirmed_at
     bindings = JsonMcpTransportBindingRepository.from_runtime_dir(_runtime_dir(context))
     try:
         candidates = [
@@ -9870,7 +9886,7 @@ def _review_mcp_capability_observation(
             for binding in bindings.read_all().values()
             if binding.bound_session_id == dispatch.session_id
             and binding.last_tools_list_at is not None
-            and _team_datetime_utc(binding.last_tools_list_at) >= _team_datetime_utc(cutoff)
+            and _team_datetime_utc(binding.last_tools_list_at) > _team_datetime_utc(cutoff)
         ]
     except Exception:
         candidates = []

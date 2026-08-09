@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 52
+SQLITE_SCHEMA_VERSION = 53
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -943,6 +943,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_dispatches",
                     column_name="mcp_capability_receipt_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_blockers",
+                    column_name="mcp_capability_identity_json",
                     definition="TEXT",
                 )
                 _ensure_column(
@@ -3119,6 +3125,9 @@ class TeamStateSqliteStore:
                 "task_id": row["task_id"],
                 "source_kind": row["source_kind"],
                 "source_id": row["source_id"],
+                "mcp_capability_identity": _json_loads(
+                    row["mcp_capability_identity_json"] or "null"
+                ),
                 "reporter_agent_id": row["reporter_agent_id"],
                 "reporter_actor": row["reporter_actor"],
                 "reason_code": row["reason_code"],
@@ -3148,13 +3157,14 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_blockers(
                     id, team_id, project_id, task_id, source_kind, source_id,
+                    mcp_capability_identity_json,
                     reporter_agent_id, reporter_actor, reason_code, resolution_scope,
                     owner_agent_id, delegate_agent_id, state, route,
                     summary, details, priority, escalation_depth, active_dispatch_id,
                     follow_up_at, last_progress_at, terminal_reference_ids_json,
                     created_at, updated_at, resolved_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     blocker["id"],
@@ -3163,6 +3173,7 @@ class TeamStateSqliteStore:
                     blocker.get("task_id"),
                     blocker["source_kind"],
                     blocker["source_id"],
+                    _json_dumps(blocker.get("mcp_capability_identity")),
                     blocker.get("reporter_agent_id"),
                     blocker.get("reporter_actor"),
                     blocker.get("reason_code", "unspecified"),
@@ -7904,6 +7915,7 @@ CREATE TABLE IF NOT EXISTS team_blockers (
     task_id TEXT,
     source_kind TEXT NOT NULL,
     source_id TEXT NOT NULL,
+    mcp_capability_identity_json TEXT,
     reporter_agent_id TEXT,
     reporter_actor TEXT,
     reason_code TEXT NOT NULL DEFAULT 'unspecified',

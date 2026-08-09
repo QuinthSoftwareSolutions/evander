@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from evander.models import utc_now
+from evander.models import digest_payload, utc_now
 
 from ...models import (
     AgentInboxItem,
@@ -22,6 +22,7 @@ from ...models import (
     TeamBlockerRoute,
     TeamBlockerSourceKind,
     TeamBlockerState,
+    TeamMcpCapabilityBlockerIdentity,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
@@ -414,10 +415,15 @@ def open_agent_mcp_capability_blocker(
             and task_id in state.tasks
         }
     )
+    identity = TeamMcpCapabilityBlockerIdentity(
+        agent_id=agent.id,
+        review_request_ids=normalized_review_ids,
+    )
+    source_digest = digest_payload(identity.model_dump(mode="json"))
     blocker, _created = open_or_get_blocker(
         state,
         source_kind=TeamBlockerSourceKind.MCP_CAPABILITY,
-        source_id=f"{agent.id}:{'|'.join(normalized_review_ids)}",
+        source_id=f"mcp-capability:{source_digest}",
         reason_code="required_review_tool_unavailable",
         summary=f"Agent {agent.id} cannot access a required review MCP tool",
         details=(
@@ -431,6 +437,7 @@ def open_agent_mcp_capability_blocker(
         result=result,
         now=effective_now,
     )
+    blocker.mcp_capability_identity = identity
     if blocker.state == TeamBlockerState.OPEN and blocker.route in {
         TeamBlockerRoute.OWNED,
         TeamBlockerRoute.DELEGATED,

@@ -15,6 +15,10 @@
 - Confirmed the dynamic policy grant before resuming a reviewer, retried a verified capability
   mismatch once without consuming no-progress allowance, and then terminally routed a durable
   blocker while suppressing further wakes for that review.
+- Kept pre-execution capability failures from completing unrelated blocker or Git scopes, and
+  applied review suppression and capability receipts consistently to manager-fallback dispatches.
+- Stored capability blocker identity structurally so valid delimiter-bearing IDs remain safe, and
+  started transport evidence at the confirmed policy-grant time.
 
 ## 2026-08-07 - Safe Batched Team Chat Reply Validation
 

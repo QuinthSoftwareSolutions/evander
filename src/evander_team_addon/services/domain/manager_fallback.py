@@ -16,6 +16,7 @@ from ...models import (
     TeamDispatchReviewRoutingAuthority,
     TeamInboxItemState,
     TeamState,
+    TeamTaskState,
     agent_project_ids,
 )
 
@@ -58,6 +59,38 @@ def _manager_fallback_task_visible_for_work(
     )
 
 
+def _manager_fallback_inbox_references_review_ids(
+    item: AgentInboxItem,
+    review_request_ids: set[str],
+) -> bool:
+    if not review_request_ids or not isinstance(item.payload, Mapping):
+        return False
+    review_request_id = _optional_text(item.payload.get("review_request_id"))
+    return review_request_id in review_request_ids
+
+
+def _manager_fallback_task_only_has_excluded_reviews(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    visible_reviews: Sequence[ReviewRequest],
+    excluded_review_ids: set[str],
+) -> bool:
+    if task.state != TeamTaskState.WAITING_FOR_REVIEW or not excluded_review_ids:
+        return False
+    deliverable_ids = {
+        deliverable.id
+        for deliverable in _active_task_deliverables(state, task)
+    }
+    pending_review_ids = {
+        review.id
+        for review in visible_reviews
+        if review.deliverable_id in deliverable_ids
+        and review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+    }
+    return bool(pending_review_ids) and pending_review_ids <= excluded_review_ids
+
+
 def _manager_fallback_summary_payload(
     state: TeamState,
     *,
@@ -65,7 +98,9 @@ def _manager_fallback_summary_payload(
     manager: PersistentAgent,
     now: datetime,
     routing_gap_limit: int | None = _MANAGER_FALLBACK_ROUTING_GAP_LIMIT,
+    excluded_review_request_ids: set[str] | None = None,
 ) -> dict[str, Any]:
+    excluded_review_ids = set(excluded_review_request_ids or ())
     project_ids = {project.id for project in state.projects.values() if project.team_id == team.id}
     team_agents = sorted(
         (
@@ -103,6 +138,10 @@ def _manager_fallback_summary_payload(
             and (item.sender_agent_id is None or item.sender_agent_id in team_agent_ids)
             and (item.task_id is None or item.task_id in visible_task_ids)
             and item.state == TeamInboxItemState.PENDING
+            and not _manager_fallback_inbox_references_review_ids(
+                item,
+                excluded_review_ids,
+            )
         ),
         key=lambda item: (item.created_at, item.id),
     )
@@ -141,6 +180,32 @@ def _manager_fallback_summary_payload(
         review
         for review in visible_reviews
         if review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+        and review.id not in excluded_review_ids
+    ]
+    suppressed_task_ids = {
+        task.id
+        for task in visible_tasks
+        if _manager_fallback_task_only_has_excluded_reviews(
+            state,
+            task=task,
+            visible_reviews=visible_reviews,
+            excluded_review_ids=excluded_review_ids,
+        )
+    }
+    actionable_visible_tasks = [
+        task for task in visible_tasks if task.id not in suppressed_task_ids
+    ]
+    displayed_deliverables = [
+        deliverable
+        for deliverable in visible_deliverables
+        if deliverable.task_id not in suppressed_task_ids
+    ]
+    displayed_reviews = [
+        review
+        for review in visible_reviews
+        if review.id not in excluded_review_ids
+        and review.deliverable_id
+        in {deliverable.id for deliverable in displayed_deliverables}
     ]
     pending_initial_release_rows = [
         _manager_fallback_initial_release_row(
@@ -165,18 +230,18 @@ def _manager_fallback_summary_payload(
         _manager_fallback_task_row(
             state,
             task=task,
-            visible_reviews=visible_reviews,
+            visible_reviews=displayed_reviews,
         )
-        for task in visible_tasks
+        for task in actionable_visible_tasks
     ]
     deliverable_rows = [
         _manager_fallback_deliverable_row(
             deliverable=deliverable,
-            visible_reviews=visible_reviews,
+            visible_reviews=displayed_reviews,
         )
-        for deliverable in visible_deliverables
+        for deliverable in displayed_deliverables
     ]
-    review_rows = [_manager_fallback_review_row(review) for review in visible_reviews]
+    review_rows = [_manager_fallback_review_row(review) for review in displayed_reviews]
     inbox_rows = [_manager_fallback_inbox_row(item) for item in visible_pending_inbox]
     failed_action_rows = [
         _manager_fallback_failed_action_row(record) for record in visible_action_records
@@ -258,12 +323,13 @@ def _manager_fallback_summary_payload(
         ],
         "summary_counts": {
             "active_agent_count": len(team_agents),
-            "open_task_count": len(visible_tasks),
+            "open_task_count": len(actionable_visible_tasks),
             "actionable_open_task_count": sum(
-                task.state in _NON_TERMINAL_TASK_STATES for task in visible_tasks
+                task.state in _NON_TERMINAL_TASK_STATES
+                for task in actionable_visible_tasks
             ),
-            "active_deliverable_count": len(visible_deliverables),
-            "review_request_count": len(visible_reviews),
+            "active_deliverable_count": len(displayed_deliverables),
+            "review_request_count": len(displayed_reviews),
             "pending_review_request_count": len(visible_pending_reviews),
             "pending_inbox_count": len(visible_pending_inbox),
             "failed_action_count": len(visible_action_records),
@@ -277,7 +343,7 @@ def _manager_fallback_summary_payload(
                 state,
                 agent=agent,
                 now=now,
-                visible_tasks=visible_tasks,
+                visible_tasks=actionable_visible_tasks,
                 visible_pending_reviews=visible_pending_reviews,
                 visible_pending_inbox=visible_pending_inbox,
                 visible_failed_actions=visible_action_records,
