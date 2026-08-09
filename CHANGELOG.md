@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-09 - Team Context Reset Usage
+
+- Added reset-bounded input-token totals and the latest completed reset time to selected Team
+  agents, while excluding agents that reset context on every wake.
+
 ## 2026-08-09 - Review MCP Capability Receipts
 
 - Recorded a compact, persisted proof of the review-decision MCP capability for each review

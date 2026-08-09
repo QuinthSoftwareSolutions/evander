@@ -10464,6 +10464,18 @@ function agentRuntimeDetailRows(details) {
       }`,
     );
   }
+  if (runtime.contextClearingPolicy !== "every_wake") {
+    if (!runtime.lastContextRotatedAt) {
+      rows.push("Latest context reset: no completed context reset yet");
+    } else {
+      rows.push(`Latest context reset: ${formatTimelineTimestamp(runtime.lastContextRotatedAt)}`);
+      rows.push(
+        runtime.inputTokensSinceContextReset === null
+          ? "Input tokens since latest reset: unavailable"
+          : `Input tokens since latest reset: ${formatCount(runtime.inputTokensSinceContextReset)}`,
+      );
+    }
+  }
   return rows;
 }
 
@@ -10815,6 +10827,7 @@ function runtimeSummary(agentId) {
       autoContextClearingEnabled: false,
       contextRotationPending: false,
       lastContextRotatedAt: null,
+      inputTokensSinceContextReset: null,
       lastHandoffSummary: null,
     };
   }
@@ -10830,6 +10843,9 @@ function runtimeSummary(agentId) {
   const contextClearingPolicy = contextClearingPolicyValue(runtime);
   const autoContextClearingEnabled = contextClearingPolicy !== "off";
   const lastContextRotatedAt = text(runtime.last_context_rotated_at);
+  const inputTokensSinceContextReset = numberOrNull(
+    runtime.context_reset_usage?.input_tokens_since_reset,
+  );
   const parts = [];
   if (activeDispatchId) {
     parts.push(`dispatch ${activeDispatchId}`);
@@ -10852,8 +10868,8 @@ function runtimeSummary(agentId) {
   if (contextRotationPending) {
     parts.push("context clearing pending");
   }
-  if (lastContextRotatedAt) {
-    parts.push(`last context ${lastContextRotatedAt}`);
+  if (lastContextRotatedAt && contextClearingPolicy !== "every_wake") {
+    parts.push(`last context reset ${lastContextRotatedAt}`);
   }
   return {
     present: true,
@@ -10871,6 +10887,7 @@ function runtimeSummary(agentId) {
     autoContextClearingEnabled,
     contextRotationPending,
     lastContextRotatedAt: lastContextRotatedAt || null,
+    inputTokensSinceContextReset,
     lastHandoffSummary: text(runtime.last_handoff_summary) || null,
   };
 }

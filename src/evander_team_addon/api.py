@@ -58,6 +58,7 @@ from evander.execution.container_worker_client import (
 )
 from evander.email.http_utils import ProviderRequestError
 from evander.models import utc_now
+from evander.model_usage.runtime import MODEL_USAGE_STORE_FILENAME, model_usage_store
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
@@ -457,6 +458,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             context.auth,
             request,
             state,
+            runtime_dir=context.runtime_dir,
             session_records=_session_records_by_id(_session_repository_from_context(context)),
             agent_execution_records=_agent_execution_records_by_session(context.service),
         )
@@ -653,6 +655,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 request,
                 state,
                 view=view,
+                runtime_dir=context.runtime_dir,
                 session_repository=_session_repository_from_context(context),
             )
         )
@@ -4397,6 +4400,7 @@ def _team_state_payload_for_request(
     request: Request,
     state: TeamState,
     *,
+    runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -4415,6 +4419,8 @@ def _team_state_payload_for_request(
             )
     apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)
+    if runtime_dir is not None:
+        _add_context_reset_usage(payload, state, runtime_dir=runtime_dir)
     if not _can_view_all_team_chats(auth, request):
         identity = _operator_identity_from_request(auth, request)
         allowed_conversation_ids = {
@@ -4526,6 +4532,7 @@ def _view_payload_for_request(
     state: TeamState,
     *,
     view: str,
+    runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
     session_repository: Any | None = None,
@@ -4595,6 +4602,7 @@ def _view_payload_for_request(
             state,
             collections=collections,
             ids_by_collection=ids_by_collection,
+            runtime_dir=runtime_dir,
             session_records=session_records,
             agent_execution_records=agent_execution_records,
             session_repository=session_repository,
@@ -4865,6 +4873,7 @@ def _state_slice_payload_for_request(
     *,
     collections: set[str],
     ids_by_collection: Mapping[str, set[str]] | None = None,
+    runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
     session_repository: Any | None = None,
@@ -4909,6 +4918,8 @@ def _state_slice_payload_for_request(
         agent_payload = payload.get("agents", {}).get(agent_id)
         if isinstance(agent_payload, dict):
             agent_payload["activity_summary"] = summary
+    if runtime_dir is not None:
+        _add_context_reset_usage(payload, state, runtime_dir=runtime_dir)
     _add_team_resource_tokens_for_collections(
         payload,
         state,
@@ -4921,6 +4932,58 @@ def _state_slice_payload_for_request(
         history_limit=_query_state_history_limit(request),
     )
     return payload
+
+
+def _add_context_reset_usage(
+    payload: dict[str, Any],
+    state: TeamState,
+    *,
+    runtime_dir: Path,
+) -> None:
+    """Attach reset-bounded input-token totals to eligible runtime payloads."""
+    runtime_payloads = payload.get("agent_runtimes")
+    if not isinstance(runtime_payloads, dict):
+        return
+
+    usage_store = None
+    usage_store_unavailable = False
+    if (Path(runtime_dir) / MODEL_USAGE_STORE_FILENAME).is_file():
+        try:
+            usage_store = model_usage_store(runtime_dir)
+        except Exception:
+            usage_store_unavailable = True
+
+    for agent_id, runtime_payload in runtime_payloads.items():
+        if not isinstance(runtime_payload, dict):
+            continue
+        runtime = state.agent_runtimes.get(agent_id)
+        agent = state.agents.get(agent_id)
+        if runtime is None or agent is None:
+            continue
+        policy = str(
+            getattr(runtime.context_clearing_policy, "value", runtime.context_clearing_policy)
+            or "off"
+        )
+        if policy == "every_wake":
+            continue
+
+        input_tokens_since_reset: int | None = None
+        if runtime.last_context_rotated_at is not None:
+            if usage_store_unavailable:
+                input_tokens_since_reset = None
+            elif usage_store is None:
+                input_tokens_since_reset = 0
+            else:
+                try:
+                    input_tokens_since_reset = usage_store.sum_input_tokens(
+                        session_id=agent.session_id,
+                        occurred_after=runtime.last_context_rotated_at,
+                    )
+                except Exception:
+                    input_tokens_since_reset = None
+        runtime_payload["context_reset_usage"] = {
+            "input_tokens_since_reset": input_tokens_since_reset,
+        }
 
 
 def _state_collection_slice_payload(

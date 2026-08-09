@@ -41,6 +41,7 @@ from evander_team_addon.api import (
 )
 from evander_team_addon.models import (
     AgentActionRecord,
+    AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
     AgentStandDownSource,
@@ -6714,6 +6715,106 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["auto_context_clearing_enabled"] is True
     assert runtime["context_rotation_pending"] is False
     assert runtime["next_wake_at"] is None
+
+
+def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    reset_at = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+
+    def _set_reset_boundaries(state):
+        state.agent_runtimes["backend"].last_context_rotated_at = reset_at
+        state.agent_runtimes["lead"].last_context_rotated_at = reset_at
+        state.agent_runtimes["manager"] = AgentRuntime(agent_id="manager")
+        return state
+
+    repo.update(_set_reset_boundaries)
+    _team_admin_service(repo).update_agent(
+        agent_id="lead",
+        context_clearing_policy=AgentContextClearingPolicy.IDLE,
+        set_context_clearing_policy=True,
+    )
+    usage_store = ModelUsageStore(runtime_dir / "model-usage.db")
+    for event_id, occurred_at, session_id, input_tokens in (
+        ("before-reset", reset_at - timedelta(seconds=1), "session-backend", 3),
+        ("at-reset", reset_at, "session-backend", 5),
+        ("after-reset-1", reset_at + timedelta(seconds=1), "session-backend", 7),
+        ("after-reset-2", reset_at + timedelta(minutes=1), "session-backend", 9),
+        ("unavailable-usage", reset_at + timedelta(minutes=2), "session-backend", None),
+        ("other-session", reset_at + timedelta(seconds=1), "session-manager", 99),
+        ("lead-after-reset", reset_at + timedelta(seconds=1), "session-lead", 11),
+    ):
+        usage_store.upsert_event(
+            ModelInferenceUsageEvent(
+                event_id=event_id,
+                occurred_at=occurred_at,
+                provider="openai",
+                provider_endpoint_identifier="responses",
+                input_tokens=input_tokens,
+                request_status="success",
+                normalized_usage_status=("available" if input_tokens is not None else "usage_unavailable"),
+                raw_usage_metadata={},
+                session_id=session_id,
+            )
+        )
+
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/state")
+
+    assert response.status_code == 200
+    runtimes = response.json()["agent_runtimes"]
+    assert runtimes["backend"]["last_context_rotated_at"] == "2026-06-16T12:00:00Z"
+    assert runtimes["backend"]["context_reset_usage"] == {
+        "input_tokens_since_reset": 16,
+    }
+    assert runtimes["lead"]["context_reset_usage"] == {
+        "input_tokens_since_reset": 11,
+    }
+    assert runtimes["manager"]["context_reset_usage"] == {
+        "input_tokens_since_reset": None,
+    }
+
+    people_response = client.get("/api/addons/team-addon/views/people")
+
+    assert people_response.status_code == 200
+    people_runtime = people_response.json()["data"]["state"]["agent_runtimes"]["backend"]
+    assert people_runtime["context_reset_usage"]["input_tokens_since_reset"] == 16
+
+
+def test_team_addon_state_omits_reset_usage_for_every_wake_agents(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    reset_at = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+
+    def _set_reset_boundary(state):
+        state.agent_runtimes["backend"].last_context_rotated_at = reset_at
+        return state
+
+    repo.update(_set_reset_boundary)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    ModelUsageStore(runtime_dir / "model-usage.db").upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="after-reset",
+            occurred_at=reset_at + timedelta(seconds=1),
+            provider="openai",
+            provider_endpoint_identifier="responses",
+            input_tokens=7,
+            request_status="success",
+            normalized_usage_status="available",
+            raw_usage_metadata={},
+            session_id="session-backend",
+        )
+    )
+
+    response = _client(tmp_path).get("/api/addons/team-addon/state")
+
+    assert response.status_code == 200
+    assert "context_reset_usage" not in response.json()["agent_runtimes"]["backend"]
 
 
 def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) -> None:

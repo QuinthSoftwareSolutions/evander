@@ -329,6 +329,27 @@ class ModelUsageStore:
             rows = connection.execute(query, params).fetchall()
         return [ModelInferenceUsageEvent.model_validate_json(row["payload_json"]) for row in rows]
 
+    def sum_input_tokens(
+        self,
+        *,
+        session_id: object,
+        occurred_after: datetime,
+    ) -> int:
+        """Return recorded input tokens for one session strictly after a time boundary."""
+        normalized_session_id = _storage_optional_text(session_id)
+        if normalized_session_id is None:
+            return 0
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(input_tokens), 0) AS total_input_tokens
+                FROM model_usage_events
+                WHERE session_id = ? AND occurred_at > ?
+                """,
+                (normalized_session_id, _storage_datetime(occurred_after)),
+            ).fetchone()
+        return int(row["total_input_tokens"] or 0) if row is not None else 0
+
     def upsert_correlation_context(self, context: ModelUsageCorrelationContext) -> None:
         validated = ModelUsageCorrelationContext.model_validate(context)
         with self._lock, self._connect() as connection:

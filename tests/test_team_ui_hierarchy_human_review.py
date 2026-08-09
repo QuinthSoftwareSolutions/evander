@@ -546,3 +546,25 @@ def test_live_release_verification_retries_after_transient_request_failure() -> 
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_selected_agent_runtime_shows_reset_bounded_input_usage() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    detail_source = source[
+        source.index("function agentRuntimeDetailRows(details)") : source.index(
+            "function renderAgentOpenTasks(openTasks)"
+        )
+    ]
+    runtime_source = source[
+        source.index("function runtimeSummary(agentId)") : source.index(
+            "function runtimeOperationForAgent(agentId)"
+        )
+    ]
+
+    assert "Latest context reset: no completed context reset yet" in detail_source
+    assert "Input tokens since latest reset" in detail_source
+    assert 'runtime.contextClearingPolicy !== "every_wake"' in detail_source
+    assert "runtime.context_reset_usage?.input_tokens_since_reset" in runtime_source
+    assert 'contextClearingPolicy !== "every_wake"' in runtime_source
