@@ -3309,7 +3309,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "receptionist-session"
     assert resume_calls[0]["prompt"] == "Continue the investigation"
-    assert resume_calls[0]["model"] is None
+    assert resume_calls[0]["model"] == "gpt-5.4"
     assert resume_calls[0]["vm_user"] == "agent"
     assert str(resume_calls[0]["dispatch_id"]).startswith(
         "dispatch-admin-agent-prompt:libvirt_vm:receptionist-session-"

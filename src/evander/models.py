@@ -1067,6 +1067,17 @@ class VmActionResult(BaseModel):
     provider_operation_id: str | None = None
     provider_details: dict[str, Any] = Field(default_factory=dict)
     thread_id: str | None = None
+    queued: bool = False
+    queue_key: str | None = None
+    queue_reason: str | None = None
+    dispatch_id: str | None = None
+    session_id: str | None = None
+    model: str | None = None
+    model_provider_mode: str | None = None
+    local_inference_capacity_enabled: bool = False
+    local_inference_active_count: int = 0
+    local_inference_max_concurrency: int | None = None
+    local_inference_slot_id: str | None = None
     target_dir: str | None = None
     guest_repo_name: str | None = None
     remote_url: str | None = None

@@ -24,6 +24,27 @@ from evander.vm.templates import (
 )
 
 
+def test_local_openai_max_concurrency_is_root_only(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    child = service.create(parent="root", name="team")
+
+    assert config_store.write(
+        "root",
+        domain="providers",
+        payload={"local_openai_max_concurrency": 2},
+    ) == {"local_openai_max_concurrency": 2}
+
+    with pytest.raises(ValueError, match="host-global"):
+        config_store.write(
+            child.path,
+            domain="providers",
+            payload={"local_openai_max_concurrency": 1},
+        )
+
+
 def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(
     tmp_path: Path,
 ) -> None:

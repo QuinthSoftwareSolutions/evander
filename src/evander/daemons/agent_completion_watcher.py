@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from evander.admin.composition import build_admin_runtime
 from evander.events.models import TriggerEvent
+from evander.local_inference_capacity import local_inference_capacity_store
 from evander.models import VmSummary
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
@@ -128,6 +129,7 @@ def await_agent_completion_and_publish(
     trigger_id: str = _DEFAULT_TRIGGER_ID,
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    local_inference_slot_id: str | None = None,
 ) -> bool:
     admin_runtime = build_admin_runtime(runtime_dir=runtime_dir)
     if orchestration_store_backend == "sqlite":
@@ -179,6 +181,8 @@ def await_agent_completion_and_publish(
             _mark_wake_completed_from_event(admin_service=admin_runtime, event=event)
             if not already_queued and record.event_id == event.event_id:
                 notify_wake_socket_for_lock(resolved_effect_lock_path)
+            if local_inference_slot_id:
+                local_inference_capacity_store(runtime_dir).release(local_inference_slot_id)
             return True
         time.sleep(max(0.1, poll_interval_seconds))
     return False
@@ -200,6 +204,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vm-user", default=_DEFAULT_VM_USER)
     parser.add_argument("--session-id")
     parser.add_argument("--directory-path")
+    parser.add_argument("--local-inference-slot-id")
     parser.add_argument("--trigger-id", default=_DEFAULT_TRIGGER_ID)
     parser.add_argument(
         "--poll-interval-seconds", type=float, default=_DEFAULT_POLL_INTERVAL_SECONDS
@@ -238,6 +243,7 @@ def main() -> int:
         trigger_id=args.trigger_id,
         poll_interval_seconds=args.poll_interval_seconds,
         timeout_seconds=args.timeout_seconds,
+        local_inference_slot_id=args.local_inference_slot_id,
     )
     if not published:
         logger.warning(

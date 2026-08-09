@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-09 - Local Inference Concurrency Admission
+
+- Added an optional root provider setting, `local_openai_max_concurrency`, that limits concurrent
+  agent turns using the fully resolved `local_openai` model provider across VM and container
+  backends; omitting it preserves unlimited concurrency.
+- Queued excess local-inference prompts durably in FIFO order and tied capacity release to the
+  prompt-completion lifecycle, including recovery of abandoned launch reservations.
+- Kept Team Runtime, Team Chat, and governance dispatches unleased while their local-inference
+  prompts wait for capacity, starting the dispatch lease only after prompt delivery is accepted.
+
 ## 2026-08-09 - Team Context Reset Usage
 
 - Added reset-bounded input-token totals and the latest completed reset time to selected Team

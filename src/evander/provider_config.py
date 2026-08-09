@@ -104,6 +104,7 @@ class EffectProviderConfig(BaseModel):
     local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
     local_openai_api_key: str = "ollama"
     local_openai_provider_name: str = "local_openai"
+    local_openai_max_concurrency: int | None = Field(default=None, ge=1)
     anthropic_api_base_url: str = "https://api.anthropic.com"
     anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
     anthropic_api_version: str = "2023-06-01"

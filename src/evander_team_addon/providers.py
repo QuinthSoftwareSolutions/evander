@@ -2303,6 +2303,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 context,
                 session_id=session_id,
             ),
+            defer_activation=True,
         )
         chat_dispatches: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -2427,17 +2428,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             project_repo=project_repo,
                         )
                     )
-                state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
-                    agent_id=agent["id"],
-                    dispatch_id=lease["dispatch_id"],
-                    lease_seconds=(120 if context_handoff_preparation else agent_lease_seconds),
-                )
-                lease = {
-                    **lease,
-                    "runtime": state.agent_runtimes[agent["id"]].model_dump(mode="json"),
-                    "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
-                }
-                leases[lease_index] = lease
                 tool_grant_result = _set_session_team_mcp_tools(
                     context,
                     session_id=agent["session_id"],
@@ -2558,7 +2548,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     dispatch_id=lease["dispatch_id"],
                     effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
                 )
-                result = resumer.resume_agent(
+                result = _enqueue_team_agent_prompt(
+                    resumer,
                     target=agent["session_id"],
                     prompt=prompt,
                     resume_mode=effective_resume_mode,
@@ -2570,6 +2561,30 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                if bool(result_payload.get("queued")):
+                    dispatches.append(
+                        {
+                            "agent_id": agent["id"],
+                            "session_id": agent["session_id"],
+                            "dispatch_id": lease["dispatch_id"],
+                            "agent_guidance": guidance_result,
+                            "team_mcp_tools": tool_grant_result,
+                            "result": result_payload,
+                            "queued": True,
+                        }
+                    )
+                    continue
+                state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
+                    agent_id=agent["id"],
+                    dispatch_id=lease["dispatch_id"],
+                    lease_seconds=(120 if context_handoff_preparation else agent_lease_seconds),
+                )
+                lease = {
+                    **lease,
+                    "runtime": state.agent_runtimes[agent["id"]].model_dump(mode="json"),
+                    "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
+                }
+                leases[lease_index] = lease
                 if not context_handoff_preparation:
                     state = TeamRuntimeService(repo).record_agent_role_description_delivered(
                         agent_id=agent["id"],
@@ -2861,7 +2876,8 @@ def _dispatch_queued_team_chat_messages(
                     else None
                 ),
             )
-            result = resumer.resume_agent(
+            result = _enqueue_team_agent_prompt(
+                resumer,
                 target=agent.session_id,
                 prompt=prompt,
                 resume_mode=effective_resume_mode,
@@ -2876,6 +2892,23 @@ def _dispatch_queued_team_chat_messages(
                 )
                 errors.append(f"{agent_id}: {error}")
                 continue
+            if bool(result_payload.get("queued")):
+                dispatches.append(
+                    {
+                        "agent_id": agent_id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation_id,
+                        "message_id": message_id,
+                        "message_ids": message_ids,
+                        "dispatch_id": dispatch_id,
+                        "queued": True,
+                        "result": result_payload,
+                    }
+                )
+                continue
+            state = TeamChatService(repo).activate_chat_message_dispatch(
+                dispatch_id=dispatch_id,
+            )
             runtime_payload = chat_lease.get("runtime")
             context_rotation_pending = isinstance(runtime_payload, Mapping) and bool(
                 runtime_payload.get("context_rotation_pending")
@@ -3267,6 +3300,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             ),
             cost_warning_ratio=_optional_text(payload.get("cost_warning_ratio")) or "0.8",
             cost_payload=cost_payload,
+            defer_activation=True,
         )
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
         dispatches: list[dict[str, Any]] = []
@@ -3274,6 +3308,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
         for lease in leases:
             agent = lease["agent"]
             group = lease["governance_group"]
+            queued_for_delivery = False
             try:
                 guidance_result = _seed_team_governance_guidance(context, agent=agent)
                 tool_grant_result = _set_session_team_mcp_tools(
@@ -3288,7 +3323,8 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                     dispatch_id=lease["dispatch_id"],
                     effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
                 )
-                result = resumer.resume_agent(
+                result = _enqueue_team_agent_prompt(
+                    resumer,
                     target=agent["session_id"],
                     prompt=_build_governance_prompt(lease),
                     resume_mode=resume_mode,
@@ -3298,6 +3334,15 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 if _result_reports_failure(result_payload):
                     errors.append(
                         f"{group['id']}/{agent['id']}: {_resume_failure_message(result_payload)}"
+                    )
+                elif bool(result_payload.get("queued")):
+                    queued_for_delivery = True
+                else:
+                    state = TeamRuntimeService(repo).activate_governance_dispatch(
+                        governance_group_id=group["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        lease_seconds=_optional_int(payload.get("lease_seconds"), default=900)
+                        or 900,
                     )
                 dispatches.append(
                     {
@@ -3309,15 +3354,17 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                         "governance_agent_guidance": guidance_result,
                         "governance_mcp_tools": tool_grant_result,
                         "result": result_payload,
+                        "queued": queued_for_delivery,
                     }
                 )
             except Exception as exc:  # pragma: no cover - defensive provider diagnostics
                 errors.append(f"{group['id']}/{agent['id']}: {exc}")
             finally:
-                state = TeamRuntimeService(repo).complete_governance_dispatch(
-                    governance_group_id=group["id"],
-                    dispatch_id=lease["dispatch_id"],
-                )
+                if not queued_for_delivery:
+                    state = TeamRuntimeService(repo).complete_governance_dispatch(
+                        governance_group_id=group["id"],
+                        dispatch_id=lease["dispatch_id"],
+                    )
         return {
             "success": not errors,
             "revision": state.revision,
@@ -4435,6 +4482,64 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             return 0
         repo = TeamStateRepository(runtime_dir)
         state = repo.read()
+        activated_count = 0
+        pending_governance = {
+            runtime.active_dispatch_id: group_id
+            for group_id, runtime in state.governance_runtimes.items()
+            if runtime.active_dispatch_id is not None and runtime.wake_leased_until is None
+        }
+        if pending_governance:
+            for record in _waiting_agent_prompt_records(worker):
+                dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
+                if dispatch_id is None or dispatch_id not in pending_governance:
+                    continue
+                group_id = pending_governance[dispatch_id]
+                try:
+                    state = TeamRuntimeService(repo).activate_governance_dispatch(
+                        governance_group_id=group_id,
+                        dispatch_id=dispatch_id,
+                    )
+                    state = TeamRuntimeService(repo).complete_governance_dispatch(
+                        governance_group_id=group_id,
+                        dispatch_id=dispatch_id,
+                    )
+                except (RuntimeError, ValueError, TeamStateConflictError):
+                    continue
+                activated_count += 1
+                pending_governance.pop(dispatch_id, None)
+                if not pending_governance:
+                    break
+        preparing_dispatches = {
+            dispatch_id: dispatch
+            for dispatch_id, dispatch in state.dispatches.items()
+            if dispatch.status.value == "preparing"
+        }
+        if preparing_dispatches:
+            for record in _waiting_agent_prompt_records(worker):
+                outputs = _record_outputs(record)
+                dispatch_id = _optional_text(outputs.get("dispatch_id"))
+                if dispatch_id is None or dispatch_id not in preparing_dispatches:
+                    continue
+                dispatch = preparing_dispatches[dispatch_id]
+                if _optional_text(outputs.get("session_id")) != dispatch.session_id:
+                    continue
+                try:
+                    if dispatch.cause_kind == "team_chat":
+                        state = TeamChatService(repo).activate_chat_message_dispatch(
+                            dispatch_id=dispatch_id,
+                        )
+                    else:
+                        state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
+                            agent_id=dispatch.agent_id,
+                            dispatch_id=dispatch_id,
+                            lease_seconds=(120 if dispatch.cause_kind == "context_handoff" else 900),
+                        )
+                except (RuntimeError, ValueError, TeamStateConflictError):
+                    continue
+                activated_count += 1
+                preparing_dispatches.pop(dispatch_id, None)
+                if not preparing_dispatches:
+                    break
         active_dispatches = {
             dispatch_id: agent_id
             for agent_id, runtime in state.agent_runtimes.items()
@@ -4442,7 +4547,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             and (dispatch_id.startswith("team-dispatch-") or dispatch_id.startswith("team-chat:"))
         }
         if not active_dispatches:
-            return 0
+            return activated_count
 
         context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
         finalized_count = 0
@@ -4511,7 +4616,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 claim_ttl_seconds=300,
                 retry_after_seconds=60,
             )
-        return finalized_count
+        return activated_count + finalized_count
 
 
 class TeamMarkEphemeralSpawnedEffectProvider(EffectProviderBase):
@@ -10951,6 +11056,13 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     if hasattr(value, "__dict__"):
         return dict(vars(value))
     return {"result": value}
+
+
+def _enqueue_team_agent_prompt(resumer: Any, **kwargs: Any) -> Any:
+    enqueue = getattr(resumer, "enqueue_agent_prompt", None)
+    if callable(enqueue):
+        return enqueue(**kwargs)
+    return resumer.resume_agent(**kwargs)
 
 
 def _result_reports_failure(result: Mapping[str, Any]) -> bool:

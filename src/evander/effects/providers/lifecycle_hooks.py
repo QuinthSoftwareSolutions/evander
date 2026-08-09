@@ -22,6 +22,11 @@ from evander.model_usage.runtime import (
     register_model_usage_correlation_context,
     resolve_runtime_dir,
 )
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityAdmission,
+    local_inference_capacity_store,
+)
 from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.effects.providers.resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
@@ -233,9 +238,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
         dispatched = 0
         container_queue_keys = self._container_queue_keys(worker=worker, records=queued_records)
-        for queue_key in sorted(container_queue_keys):
+        for queue_key in self._fifo_queue_keys(queued_records, container_queue_keys):
             record = queued_records.get(queue_key)
             if record is None:
+                continue
+            if self._has_earlier_local_capacity_record(
+                records=queued_records,
+                queue_key=queue_key,
+                candidates=set(queued_records) - container_queue_keys,
+            ):
                 continue
             if not self._scheduled_wake_queue_record_is_current(
                 worker=worker,
@@ -275,7 +286,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             )
             return dispatched
 
-        for queue_key, record in sorted(queued_records.items()):
+        for queue_key in self._fifo_queue_keys(queued_records):
+            record = queued_records[queue_key]
             if not self._scheduled_wake_queue_record_is_current(
                 worker=worker,
                 queue_store=queue_store,
@@ -322,6 +334,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 getattr(prompt_lock_claim, "claimed", False)
             ):
                 continue
+            capacity_admission = self._claim_local_inference_capacity_for_record(
+                worker=worker,
+                record=record,
+                config=self._config_for_libvirt_record(
+                    worker=worker,
+                    session_id=_session_id or "",
+                    session=session,
+                ),
+                queue_key=queue_key,
+                dispatch_id=dispatch_id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            )
+            if not capacity_admission.admitted:
+                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
+                continue
             result = dispatch_agent_prompt(
                 worker,
                 target=record.target,
@@ -337,6 +364,10 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 ),
             )
             if result is not None and bool(getattr(result, "success", False)):
+                self._mark_local_inference_running(
+                    worker=worker,
+                    admission=capacity_admission,
+                )
                 self._persist_chat_assistant_thread_id(
                     worker=worker,
                     record=record,
@@ -356,22 +387,66 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     result=result,
                     effective_resume_thread_id=effective_resume_thread_id,
                     prompt_lock_metadata=self._prompt_lock_metadata_from_claim(prompt_lock_claim),
+                    capacity_metadata=capacity_admission.output_metadata(),
                 )
                 if not recorded:
                     continue
                 queue_store.delete(queue_key)
                 dispatched += 1
             else:
+                self._release_local_inference_capacity(
+                    worker=worker,
+                    admission=capacity_admission,
+                )
                 self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
 
         return dispatched
 
     @staticmethod
+    def _fifo_queue_keys(
+        records: dict[str, Any],
+        candidates: set[str] | None = None,
+    ) -> list[str]:
+        selected = candidates if candidates is not None else set(records)
+        return sorted(
+            (key for key in selected if key in records),
+            key=lambda key: (
+                getattr(records[key], "created_at", datetime.min.replace(tzinfo=UTC)),
+                key,
+            ),
+        )
+
+    @classmethod
+    def _has_earlier_local_capacity_record(
+        cls,
+        *,
+        records: dict[str, Any],
+        queue_key: str,
+        candidates: set[str],
+    ) -> bool:
+        current = records.get(queue_key)
+        if current is None or getattr(current, "queue_reason", None) != LOCAL_INFERENCE_QUEUE_REASON:
+            return False
+        ordered = cls._fifo_queue_keys(records, candidates | {queue_key})
+        return any(
+            key != queue_key
+            and getattr(records[key], "queue_reason", None) == LOCAL_INFERENCE_QUEUE_REASON
+            for key in ordered[: ordered.index(queue_key)]
+        )
+
+    @staticmethod
     def _is_dispatchable_libvirt_record(*, effect: Any | None, record: Any) -> bool:
-        if effect is not None and getattr(effect, "type", "") == "effect:agent:enqueue-prompt":
+        if effect is not None and getattr(effect, "type", "") in {
+            "effect:agent:enqueue-prompt",
+            "effect:agent:prompt",
+        }:
             return True
         effect_id = str(getattr(record, "effect_id", "") or "").strip()
         queue_key = str(getattr(record, "queue_key", "") or "").strip()
+        if effect_id.startswith((SCHEDULED_WAKE_QUEUE_PREFIX, "wake-prompt:")) and queue_key.startswith(
+            (SCHEDULED_WAKE_QUEUE_PREFIX, "wake-prompt:")
+        ):
+            return True
         return effect_id.startswith(_ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX) and queue_key.startswith(
             _ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX
         )
@@ -472,6 +547,56 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 exc_info=True,
             )
 
+    def _claim_local_inference_capacity_for_record(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+        config: Any,
+        queue_key: str,
+        dispatch_id: str,
+        execution_backend: str,
+    ) -> LocalInferenceCapacityAdmission:
+        provider_mode = str(
+            getattr(record, "model_provider_mode", None)
+            or getattr(config, "model_provider_mode", None)
+            or ""
+        ).strip()
+        if provider_mode != "local_openai":
+            return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is None:
+            return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        return local_inference_capacity_store(runtime_dir).claim(
+            max_concurrency=getattr(config, "local_openai_max_concurrency", None),
+            owner_id=f"queued-agent-prompt:{queue_key}:{dispatch_id}",
+            model=str(getattr(record, "model", None) or "unknown-local-model"),
+            session_id=str(getattr(record, "session_id", None) or "").strip() or None,
+            dispatch_id=dispatch_id,
+            effect_id=str(getattr(record, "effect_id", None) or "").strip() or None,
+            execution_backend=execution_backend,
+        )
+
+    @staticmethod
+    def _mark_local_inference_running(
+        *, worker: Any, admission: LocalInferenceCapacityAdmission
+    ) -> None:
+        if admission.slot_id is None:
+            return
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is not None:
+            local_inference_capacity_store(runtime_dir).mark_running(admission.slot_id)
+
+    @staticmethod
+    def _release_local_inference_capacity(
+        *, worker: Any, admission: LocalInferenceCapacityAdmission
+    ) -> None:
+        if admission.slot_id is None:
+            return
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is not None:
+            local_inference_capacity_store(runtime_dir).release(admission.slot_id)
+
     @staticmethod
     def _prompt_lock_metadata_from_claim(claim: Any | None) -> dict[str, Any]:
         if claim is None or not bool(getattr(claim, "claimed", False)):
@@ -541,6 +666,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         )
         if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
+            return False
+        capacity_admission = self._claim_local_inference_capacity_for_record(
+            worker=worker,
+            record=record,
+            config=config,
+            queue_key=queue_key,
+            dispatch_id=dispatch_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+        )
+        if not capacity_admission.admitted:
+            self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
         execution_id = safe_effect_execution_id("agent", session_id)
         record_metadata = getattr(record, "metadata", {})
@@ -626,8 +762,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 )
             )
         except Exception:
+            self._release_local_inference_capacity(
+                worker=worker,
+                admission=capacity_admission,
+            )
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
+        self._mark_local_inference_running(worker=worker, admission=capacity_admission)
         if not self._record_container_waiting_execution(
             worker=worker,
             record=record,
@@ -640,6 +781,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             agent_harness=agent_harness,
             effective_resume_thread_id=effective_resume_thread_id,
             prompt_lock_metadata=self._prompt_lock_metadata_from_claim(prompt_lock_claim),
+            capacity_metadata=capacity_admission.output_metadata(),
         ):
             destroyed = False
             try:
@@ -648,6 +790,10 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             except Exception:
                 pass
             if destroyed:
+                self._release_local_inference_capacity(
+                    worker=worker,
+                    admission=capacity_admission,
+                )
                 self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
         queue_store.delete(queue_key)
@@ -741,6 +887,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         agent_harness: str,
         effective_resume_thread_id: str | None,
         prompt_lock_metadata: dict[str, Any] | None = None,
+        capacity_metadata: dict[str, Any] | None = None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
         record_execution = getattr(execution_store, "record_execution", None)
@@ -770,6 +917,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             wake_dispatch_id = str(record.metadata.get("wake_dispatch_id") or "").strip()
         restored_metadata = self._queued_prompt_restored_metadata(record)
         lock_metadata = dict(prompt_lock_metadata or {})
+        local_capacity_metadata = dict(capacity_metadata or {})
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -788,6 +936,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "wake_dispatch_id": wake_dispatch_id,
             **restored_metadata,
             **lock_metadata,
+            **local_capacity_metadata,
         }
         outputs = {
             "dispatch_id": dispatch_id,
@@ -804,6 +953,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "wake_dispatch_id": wake_dispatch_id,
             **restored_metadata,
             **lock_metadata,
+            **local_capacity_metadata,
         }
         input_payload = {
             "target": record.target,
@@ -819,6 +969,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "queue_key": queue_key,
             **restored_metadata,
             **lock_metadata,
+            **local_capacity_metadata,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
@@ -891,6 +1042,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         result: Any,
         effective_resume_thread_id: str | None,
         prompt_lock_metadata: dict[str, Any] | None = None,
+        capacity_metadata: dict[str, Any] | None = None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
         record_execution = getattr(execution_store, "record_execution", None)
@@ -922,6 +1074,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         effective_thread_id = thread_id or str(effective_resume_thread_id or "").strip()
         model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
         record_metadata = getattr(record, "metadata", {})
+        wake_dispatch_id = (
+            str(record_metadata.get("wake_dispatch_id") or "").strip()
+            if isinstance(record_metadata, dict)
+            else ""
+        )
         directory_path = (
             str(getattr(session, "directory_path", None) or "").strip()
             or (
@@ -943,7 +1100,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
+            "wake_dispatch_id": wake_dispatch_id,
             **dict(prompt_lock_metadata or {}),
+            **dict(capacity_metadata or {}),
         }
         outputs = {
             "dispatch_id": dispatch_id,
@@ -954,7 +1113,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "session_id": session_id,
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
+            "wake_dispatch_id": wake_dispatch_id,
             **dict(prompt_lock_metadata or {}),
+            **dict(capacity_metadata or {}),
         }
         if effective_thread_id:
             outputs["thread_id"] = effective_thread_id
@@ -969,7 +1130,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,
+            "wake_dispatch_id": wake_dispatch_id,
             **dict(prompt_lock_metadata or {}),
+            **dict(capacity_metadata or {}),
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(

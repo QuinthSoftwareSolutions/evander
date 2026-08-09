@@ -307,6 +307,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "local_openai_provider_name": (
         "Provider name stored in model-usage records for local_openai relay traffic."
     ),
+    "local_openai_max_concurrency": (
+        "Optional host-wide limit for concurrent local_openai agent runs. When the limit is "
+        "full, resolved local prompts wait in the durable prompt queue. Configure this only "
+        "on the root directory; leave blank for unlimited concurrency."
+    ),
     "anthropic_api_base_url": (
         "Upstream Anthropic-compatible API base URL used by the host relay in anthropic mode."
     ),

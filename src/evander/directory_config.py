@@ -167,6 +167,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "local_openai_api_base_url",
             "local_openai_api_key",
             "local_openai_provider_name",
+            "local_openai_max_concurrency",
             "azure_openai_endpoint",
             "azure_openai_auth_mode",
             "azure_openai_api_key_env",
@@ -676,6 +677,15 @@ class DirectoryConfigStore:
             payload = provider_payload
         normalized = self.validate_domain_payload(domain, payload)
         directory = self._service.show(reference).directory
+        if (
+            domain == "providers"
+            and directory.path != "root"
+            and "local_openai_max_concurrency" in normalized
+        ):
+            raise ValueError(
+                "local_openai_max_concurrency is host-global and may be configured only "
+                "in root providers.json"
+            )
         path = self._domain_file_path(directory.path, domain=domain)
         if not normalized:
             if path.exists():
@@ -1004,6 +1014,14 @@ class DirectoryConfigResolver:
                 continue
             if domain == "providers":
                 overlay = DirectoryConfigStore._canonicalize_provider_domain_payload(overlay)
+                if (
+                    directory.path != "root"
+                    and "local_openai_max_concurrency" in overlay
+                ):
+                    raise ValueError(
+                        "local_openai_max_concurrency is host-global and may be configured only "
+                        "in root providers.json"
+                    )
             applied_layers.append(
                 DirectoryConfigLayer(
                     directory_id=directory.id,

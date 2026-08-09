@@ -16,6 +16,79 @@ from evander.admin.services.vm_agent.common import (
 
 
 class VmAgentPromptMixin:
+    def enqueue_agent_prompt(
+        self,
+        target: str,
+        prompt: str,
+        *,
+        model: str | None = None,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
+        mcp_gateway_url: str | None = None,
+    ) -> Any:
+        del persist_thread_id, mcp_gateway_url
+        backend = "libvirt_vm"
+        try:
+            session, _record = self._resolve_container_agent_session(
+                target,
+                require_session=False,
+            )
+        except ValueError as exc:
+            if str(exc).startswith("Ambiguous container worker session target"):
+                raise
+            session = None
+        if session is not None and self._is_container_session(session):
+            backend = "container_worker_vm"
+        response = self.prompt_admin_agent(
+            target,
+            backend=backend,
+            payload={
+                "prompt": prompt,
+                "model": model,
+                "vm_user": vm_user,
+                "dispatch_id": dispatch_id,
+                "resume_thread_id": resume_thread_id,
+                "resume_mode": resume_mode,
+            },
+        )
+        from evander.models import VmActionResult
+
+        return VmActionResult(
+            success=bool(response.get("success", True)),
+            vm_name=str(response.get("target_name") or target),
+            action=str(response.get("action") or "prompt-agent"),
+            message=str(response.get("message") or ""),
+            provider=backend,
+            provider_details=dict(response),
+            thread_id=str(response.get("thread_id") or "").strip() or None,
+            queued=bool(response.get("queued")),
+            queue_key=str(response.get("queue_key") or "").strip() or None,
+            queue_reason=str(response.get("queue_reason") or "").strip() or None,
+            dispatch_id=str(response.get("dispatch_id") or dispatch_id or "").strip() or None,
+            session_id=str(response.get("session_id") or "").strip() or None,
+            model=str(response.get("model") or model or "").strip() or None,
+            model_provider_mode=(
+                str(response.get("model_provider_mode") or "").strip() or None
+            ),
+            local_inference_capacity_enabled=bool(
+                response.get("local_inference_capacity_enabled")
+            ),
+            local_inference_active_count=int(
+                response.get("local_inference_active_count") or 0
+            ),
+            local_inference_max_concurrency=(
+                int(response["local_inference_max_concurrency"])
+                if response.get("local_inference_max_concurrency") is not None
+                else None
+            ),
+            local_inference_slot_id=(
+                str(response.get("local_inference_slot_id") or "").strip() or None
+            ),
+        )
+
     def prompt_admin_agent(
         self,
         agent_id: str,

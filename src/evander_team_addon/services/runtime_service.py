@@ -591,8 +591,13 @@ class TeamRuntimeService:
                     continue
                 if (
                     runtime is not None
-                    and runtime.wake_leased_until is not None
-                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                    and (
+                        _runtime_has_active_dispatch_reservation(state_model, runtime)
+                        or (
+                            runtime.wake_leased_until is not None
+                            and _ensure_utc(runtime.wake_leased_until) > effective_now
+                        )
+                    )
                 ):
                     teams_with_lease.add(agent.team_id)
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
@@ -624,8 +629,11 @@ class TeamRuntimeService:
                     now=effective_now,
                 )
                 if (
-                    runtime.wake_leased_until is not None
-                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                    _runtime_has_active_dispatch_reservation(state_model, runtime)
+                    or (
+                        runtime.wake_leased_until is not None
+                        and _ensure_utc(runtime.wake_leased_until) > effective_now
+                    )
                 ):
                     continue
                 active_tasks = actionable_dispatch_tasks(
@@ -905,7 +913,11 @@ class TeamRuntimeService:
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
-                runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                runtime.wake_leased_until = (
+                    None
+                    if defer_activation
+                    else effective_now + timedelta(seconds=lease_seconds)
+                )
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
                 runtime.updated_at = effective_now
                 if reservation_scope is not None:
@@ -1163,7 +1175,11 @@ class TeamRuntimeService:
                 manager_runtime.active_dispatch_id = dispatch_id
                 manager_runtime.wake_reason = "manager_fallback"
                 manager_runtime.last_wake_at = effective_now
-                manager_runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                manager_runtime.wake_leased_until = (
+                    None
+                    if defer_activation
+                    else effective_now + timedelta(seconds=lease_seconds)
+                )
                 manager_runtime.next_wake_at = effective_now + timedelta(
                     seconds=wake_interval_seconds
                 )
@@ -1713,6 +1729,7 @@ class TeamRuntimeService:
         governance_group_id: str | None = None,
         cost_payload: Mapping[str, Any] | None = None,
         cost_warning_ratio: Decimal | str | float = Decimal("0.8"),
+        defer_activation: bool = False,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_group_id = _optional_text(governance_group_id)
@@ -1734,8 +1751,16 @@ class TeamRuntimeService:
                 manager_runtime = state_model.agent_runtimes.get(manager.id)
                 if (
                     manager_runtime is not None
-                    and manager_runtime.wake_leased_until is not None
-                    and _ensure_utc(manager_runtime.wake_leased_until) > effective_now
+                    and (
+                        _runtime_has_active_dispatch_reservation(
+                            state_model,
+                            manager_runtime,
+                        )
+                        or (
+                            manager_runtime.wake_leased_until is not None
+                            and _ensure_utc(manager_runtime.wake_leased_until) > effective_now
+                        )
+                    )
                 ):
                     continue
                 runtime = state_model.governance_runtimes.setdefault(
@@ -1743,8 +1768,11 @@ class TeamRuntimeService:
                     GovernanceRuntime(governance_group_id=group.id),
                 )
                 if (
-                    runtime.wake_leased_until is not None
-                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                    runtime.active_dispatch_id is not None
+                    or (
+                        runtime.wake_leased_until is not None
+                        and _ensure_utc(runtime.wake_leased_until) > effective_now
+                    )
                 ):
                     continue
 
@@ -1803,7 +1831,11 @@ class TeamRuntimeService:
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
-                runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                runtime.wake_leased_until = (
+                    None
+                    if defer_activation
+                    else effective_now + timedelta(seconds=lease_seconds)
+                )
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
                 runtime.last_cost_signal_fingerprints = cost_signal_fingerprints
                 runtime.last_blocked_signal_fingerprints = blocked_signal_fingerprints
@@ -1835,6 +1867,36 @@ class TeamRuntimeService:
             return self._repository.read(), []
         state = self._repository.update(_mutate)
         return state, leases
+
+    def activate_governance_dispatch(
+        self,
+        *,
+        governance_group_id: str,
+        dispatch_id: str,
+        lease_seconds: int = 900,
+        now: datetime | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = _require_present(
+                state.governance_runtimes,
+                normalized_group_id,
+                "governance runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"governance dispatch {normalized_dispatch_id} no longer owns its reservation"
+                )
+            runtime.wake_leased_until = effective_now + timedelta(
+                seconds=max(1, int(lease_seconds))
+            )
+            runtime.updated_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
 
     def complete_governance_dispatch(
         self,
@@ -2610,6 +2672,20 @@ def _fail_dispatch_preparation_in_state(
         completed_at=completed_at,
         error=error,
     )
+
+
+def _runtime_has_active_dispatch_reservation(
+    state: TeamState,
+    runtime: AgentRuntime,
+) -> bool:
+    dispatch_id = _optional_text(runtime.active_dispatch_id)
+    if dispatch_id is None:
+        return False
+    dispatch = state.dispatches.get(dispatch_id)
+    return dispatch is not None and dispatch.status in {
+        TeamDispatchStatus.PREPARING,
+        TeamDispatchStatus.LEASED,
+    }
 
 
 def _dispatch_staleness_errors(

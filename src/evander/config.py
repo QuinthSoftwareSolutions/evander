@@ -418,6 +418,7 @@ class GatewayConfig(BaseModel):
     local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
     local_openai_api_key: str = "ollama"
     local_openai_provider_name: str = "local_openai"
+    local_openai_max_concurrency: int | None = Field(default=None, ge=1)
     azure_openai_endpoint: str | None = None
     azure_openai_auth_mode: Literal["api_key"] = "api_key"
     azure_openai_api_key_env: str | None = None

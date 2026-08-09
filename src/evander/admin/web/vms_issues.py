@@ -426,7 +426,7 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
                     )
                     if validation_error:
                         raise ValueError(validation_error)
-                    return service.vm_agent_admin.resume_agent(
+                    return service.vm_agent_admin.enqueue_agent_prompt(
                         vm_name,
                         prompt,
                         model=str(payload.get("model") or "").strip() or None,

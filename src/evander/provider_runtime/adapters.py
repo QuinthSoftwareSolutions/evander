@@ -226,6 +226,17 @@ class AdminRuntimeProviderAdapter:
     def resume_agent(self, **kwargs: Any) -> Any:
         return self._call_required(self._vm_agent_method("resume_agent"), "resume_agent", **kwargs)
 
+    def enqueue_agent_prompt(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._vm_agent_method("enqueue_agent_prompt"),
+            "enqueue_agent_prompt",
+            **kwargs,
+        )
+
+    def dispatch_agent_prompt(self, **kwargs: Any) -> Any:
+        """Bypass queue-aware entry points after an effect has won admission."""
+        return self._call_required(self._vm_agent_method("resume_agent"), "resume_agent", **kwargs)
+
     def start_vm(self, target: str) -> Any:
         return self._call_required(self._vm_agent_method("start_vm"), "start_vm", target)
 

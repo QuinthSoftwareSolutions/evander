@@ -51,6 +51,10 @@ from evander.messaging.agent_prompt_queue import (
     QueuedAgentPromptRecord,
 )
 from evander.messaging.agent_prompt_lock import AgentPromptLockStore, agent_prompt_lock_key
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityStore,
+)
 from evander.model_usage.runtime import model_usage_store
 from evander.orchestration.host_polling import HostFileLockManager
 from evander.events.models import TriggerEvent
@@ -4531,6 +4535,144 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
         (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
     )
     assert "vm-1" in queued_payload
+
+
+def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "First local prompt",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "first",
+                    "model": "resolved-local-model-a",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Second local prompt",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-2",
+                    "prompt": "second",
+                    "model": "resolved-local-model-b",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("trigger-1", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.admin_service.runtime.provider_config = _ProviderConfigResolver(config)
+    resume_calls: list[dict[str, object]] = []
+    running_vms: set[str] = set()
+
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "list_vms",
+        lambda **_kwargs: [
+            VmSummary(
+                vm_name=vm_name,
+                libvirt_state="running",
+                agent_state="running" if vm_name in running_vms else "idle",
+                session_ids=[],
+            )
+            for vm_name in ("vm-1", "vm-2")
+        ],
+    )
+
+    def _resume_agent(**kwargs: object) -> object:
+        resume_calls.append(dict(kwargs))
+        running_vms.add(str(kwargs["target"]))
+        return SimpleNamespace(
+            success=True,
+            thread_id=f"thread-{len(resume_calls)}",
+        )
+
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "resume_agent",
+        _resume_agent,
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-local-capacity",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-local-capacity",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    assert [call["model"] for call in resume_calls] == ["resolved-local-model-a"]
+    executions = worker.execution_store.read_all().values()
+    by_effect = {record.effect_id: record for record in executions}
+    assert by_effect["effect-1"].status == "waiting"
+    assert by_effect["effect-2"].status == "succeeded"
+    assert by_effect["effect-2"].outputs["queued"] is True
+    assert by_effect["effect-2"].outputs["queue_reason"] == LOCAL_INFERENCE_QUEUE_REASON
+    queued = worker.queued_agent_prompt_store.get("vm-2")
+    assert queued is not None
+    assert queued.model == "resolved-local-model-b"
+    assert queued.model_provider_mode == "local_openai"
+    assert queued.queue_reason == LOCAL_INFERENCE_QUEUE_REASON
+    assert len(LocalInferenceCapacityStore(runtime_dir).read_all()) == 1
+
+    first_dispatch_id = str(by_effect["effect-1"].outputs["dispatch_id"])
+    running_vms.discard("vm-1")
+    finalized = AgentEnqueuePromptEffectProvider.on_completion_event(
+        worker=worker,
+        queue_record=TriggerQueueRecord(
+            event_id="event-local-capacity-completed",
+            trigger_id="__await-agent-completion__",
+            trigger_type="trigger:agent:run:completed",
+            occurred_at=datetime(2026, 8, 9, 12, 5, tzinfo=timezone.utc),
+            payload={
+                "dispatch_id": first_dispatch_id,
+                "vm_name": "vm-1",
+                "agent_state": "idle",
+            },
+            trace_id="trace-local-capacity",
+        ),
+    )
+    assert finalized == 1
+
+    worker._run_post_completion_dispatch_hooks()
+
+    assert [call["model"] for call in resume_calls] == [
+        "resolved-local-model-a",
+        "resolved-local-model-b",
+    ]
+    assert worker.queued_agent_prompt_store.read_all() == {}
+    slots = LocalInferenceCapacityStore(runtime_dir).read_all()
+    assert len(slots) == 1
+    assert next(iter(slots.values())).model == "resolved-local-model-b"
 
 
 def test_agent_enqueue_prompt_queues_racing_prompt_while_dispatch_is_inflight(

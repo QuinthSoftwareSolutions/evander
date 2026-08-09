@@ -39,10 +39,17 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityAdmission,
+    local_inference_capacity_store,
+)
 from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
+from evander.messaging.scheduled_wake_queue import scheduled_wake_queue_key
 from evander.models import WakeDispatchRecord, WakeResumePromptPayload
 from evander.orchestration.host_polling import single_instance_lock
 from evander.runtime import RuntimeContext
+from evander.provider_config import EffectProviderConfig
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
 from evander.session_auth import session_mcp_auth_token
 from evander.worker_directory_context import WorkerDirectoryContextResolver
@@ -232,35 +239,115 @@ class HostWakeDispatcher:
         directory_path: str | None,
         source: str,
     ) -> GatewayConfig:
-        if self.directory_context_resolver is None:
-            return self.config
-        try:
-            resolution = self.directory_context_resolver.resolve_effective_domain_for_session(
-                session_id,
-                domain="wake",
-                fallback_directory_path=directory_path,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to resolve directory-scoped wake config source=%s session_id=%s directory_path=%s",
-                source,
-                session_id,
-                directory_path or "root",
-                exc_info=True,
-            )
-            return self.config
-        if resolution.validation_errors:
-            logger.warning(
-                "Invalid directory-scoped wake config source=%s session_id=%s directory_path=%s errors=%s",
-                source,
-                session_id,
-                resolution.selected_directory.path,
-                resolution.validation_errors,
-            )
-            return self.config
-        payload = self.config.model_dump(mode="json")
-        payload.update(resolution.effective_config)
+        scoped_config = self.config
+        if self.directory_context_resolver is not None:
+            try:
+                resolution = self.directory_context_resolver.resolve_effective_domain_for_session(
+                    session_id,
+                    domain="wake",
+                    fallback_directory_path=directory_path,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to resolve directory-scoped wake config source=%s session_id=%s directory_path=%s",
+                    source,
+                    session_id,
+                    directory_path or "root",
+                    exc_info=True,
+                )
+            else:
+                if resolution.validation_errors:
+                    logger.warning(
+                        "Invalid directory-scoped wake config source=%s session_id=%s directory_path=%s errors=%s",
+                        source,
+                        session_id,
+                        resolution.selected_directory.path,
+                        resolution.validation_errors,
+                    )
+                else:
+                    payload = self.config.model_dump(mode="json")
+                    payload.update(resolution.effective_config)
+                    scoped_config = GatewayConfig.model_validate(payload)
+        return self._resolve_prompt_provider_config(
+            scoped_config,
+            session_id=session_id,
+            directory_path=directory_path,
+        )
+
+    def _resolve_prompt_provider_config(
+        self,
+        config: GatewayConfig,
+        *,
+        session_id: str | None,
+        directory_path: str | None,
+    ) -> GatewayConfig:
+        resolver = getattr(self.runtime, "provider_config", None)
+        resolved: Any | None = None
+        if resolver is not None and session_id:
+            resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
+            if callable(resolve_for_session_id):
+                try:
+                    resolved = resolve_for_session_id(session_id)
+                except ValueError:
+                    pass
+        if resolver is not None and resolved is None:
+            resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+            if callable(resolve_for_directory):
+                try:
+                    resolved = resolve_for_directory(directory_path)
+                except ValueError:
+                    pass
+        if resolved is None:
+            return config
+        resolved_payload = resolved.model_dump(mode="json")
+        payload = config.model_dump(mode="json")
+        for field_name in EffectProviderConfig.model_fields:
+            if field_name in resolved_payload:
+                payload[field_name] = resolved_payload[field_name]
         return GatewayConfig.model_validate(payload)
+
+    def _claim_local_inference_capacity(
+        self,
+        *,
+        config: GatewayConfig,
+        dispatch_id: str,
+        session_id: str,
+        model: str,
+        execution_backend: str,
+    ) -> LocalInferenceCapacityAdmission:
+        if config.model_provider_mode != "local_openai":
+            return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        return local_inference_capacity_store(config.runtime_dir).claim(
+            max_concurrency=config.local_openai_max_concurrency,
+            owner_id=f"wake:{dispatch_id}",
+            model=model,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            effect_id=f"wake-prompt:{dispatch_id}",
+            execution_backend=execution_backend,
+        )
+
+    @staticmethod
+    def _mark_local_inference_running(
+        config: GatewayConfig,
+        admission: LocalInferenceCapacityAdmission,
+    ) -> None:
+        if admission.slot_id is not None:
+            local_inference_capacity_store(config.runtime_dir).mark_running(admission.slot_id)
+
+    @staticmethod
+    def _release_local_inference_capacity(
+        config: GatewayConfig,
+        admission: LocalInferenceCapacityAdmission,
+    ) -> None:
+        if admission.slot_id is not None:
+            local_inference_capacity_store(config.runtime_dir).release(admission.slot_id)
+
+    @staticmethod
+    def _wake_prompt_queue_key(*, request_id: str | None, dispatch_id: str) -> str:
+        if request_id:
+            return scheduled_wake_queue_key(request_id)
+        return f"wake-prompt:{dispatch_id}"
 
     def is_host_disabled(self, binding: SessionWakeBinding) -> bool:
         if self.agent_control_store is None or not binding.vm_id:
@@ -284,6 +371,11 @@ class HostWakeDispatcher:
         wake_store = getattr(self.runtime, "wake_store", None)
         dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}"
         session = self.runtime.session_repository.get_session(binding.session_id)
+        worker_config = self._resolve_prompt_provider_config(
+            worker_config,
+            session_id=binding.session_id,
+            directory_path=binding.directory_path,
+        )
         if session is not None:
             try:
                 ensure_session_not_expired(session)
@@ -380,6 +472,101 @@ class HostWakeDispatcher:
             scoped_config=worker_config,
             agent_provider=agent_provider,
         )
+        resolved_model = agent_model or default_agent_model_for_provider(
+            agent_provider,
+            worker_config,
+        )
+        capacity_admission = self._claim_local_inference_capacity(
+            config=worker_config,
+            dispatch_id=dispatch_id,
+            session_id=binding.session_id,
+            model=resolved_model,
+            execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+        )
+        if not capacity_admission.admitted:
+            queue_key = self._wake_prompt_queue_key(
+                request_id=request_id,
+                dispatch_id=dispatch_id,
+            )
+            queue_metadata: dict[str, str] = {
+                "source": dispatch_source,
+                "resume_mode": resume_mode,
+                "backend": ExecutionBackendKind.LIBVIRT_VM.value,
+                "target_name": binding.vm_id,
+                "wake_dispatch_id": dispatch_id,
+                "directory_path": binding.directory_path or "root",
+                "queue_reason": LOCAL_INFERENCE_QUEUE_REASON,
+            }
+            if request_id:
+                queue_metadata["request_id"] = request_id
+            try:
+                queued_record = enqueue_agent_prompt(
+                    runtime_dir=worker_config.runtime_dir,
+                    target=binding.session_id,
+                    vm_name=binding.vm_id,
+                    session_id=binding.session_id,
+                    prompt=prompt,
+                    model=resolved_model,
+                    model_provider_mode=worker_config.model_provider_mode,
+                    queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+                    vm_user=worker_config.wake_vm_user,
+                    dispatch_id=dispatch_id,
+                    resume_thread_id=None,
+                    effect_id=queue_key,
+                    resume_mode=resume_mode,
+                    queue_key=queue_key,
+                    metadata=queue_metadata,
+                    max_retries=worker_config.agent_prompt_queue_max_retries,
+                )
+            except Exception as exc:
+                error, failure_metadata = _build_dispatch_failure_details(
+                    backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    exception=exc,
+                    agent_provider=agent_provider,
+                    agent_model=resolved_model,
+                )
+                dispatch_record = self._build_dispatch_record(
+                    dispatch_id=dispatch_id,
+                    request_id=request_id,
+                    session_id=binding.session_id,
+                    status="failed",
+                    resume_prompt=WakeResumePromptPayload(prompt=prompt),
+                    resume_mode=resume_mode,
+                    scheduled_for=scheduled_for,
+                    source=dispatch_source,
+                    dispatch_source=dispatch_source,
+                    wake_metadata={**queue_metadata, **(wake_metadata or {}), **failure_metadata},
+                    backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                    vm_id=binding.vm_id,
+                    error=error,
+                )
+                if wake_store is not None:
+                    wake_store.record_dispatch(dispatch_record)
+                return dispatch_record
+            dispatch_record = self._build_dispatch_record(
+                dispatch_id=dispatch_id,
+                request_id=request_id,
+                session_id=binding.session_id,
+                status="queued",
+                resume_prompt=WakeResumePromptPayload(prompt=prompt),
+                resume_mode=resume_mode,
+                scheduled_for=scheduled_for,
+                source=dispatch_source,
+                dispatch_source=dispatch_source,
+                wake_metadata={
+                    **queue_metadata,
+                    **(wake_metadata or {}),
+                    "queue_key": queued_record.queue_key,
+                    **capacity_admission.output_metadata(),
+                },
+                backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                vm_id=binding.vm_id,
+            )
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
         agent_env = {"AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)}
         if agent_provider:
             agent_env["AGENT_PROVIDER"] = agent_provider
@@ -389,6 +576,7 @@ class HostWakeDispatcher:
         try:
             completed = subprocess.run(cmd, **run_kwargs)
         except OSError as exc:
+            self._release_local_inference_capacity(worker_config, capacity_admission)
             logger.warning(
                 "Resume script invocation failed path=%s session_id=%s vm_id=%s",
                 script_path,
@@ -423,6 +611,7 @@ class HostWakeDispatcher:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
         except subprocess.TimeoutExpired:
+            self._release_local_inference_capacity(worker_config, capacity_admission)
             logger.warning(
                 "Resume script timed out path=%s session_id=%s vm_id=%s timeout_seconds=%.3f",
                 script_path,
@@ -459,6 +648,7 @@ class HostWakeDispatcher:
             return dispatch_record
 
         if completed.returncode == 0:
+            self._mark_local_inference_running(worker_config, capacity_admission)
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
                 request_id=request_id,
@@ -469,21 +659,30 @@ class HostWakeDispatcher:
                 scheduled_for=scheduled_for,
                 source=dispatch_source,
                 dispatch_source=dispatch_source,
-                wake_metadata=wake_metadata,
+                wake_metadata={
+                    **(wake_metadata or {}),
+                    **capacity_admission.output_metadata(),
+                },
                 backend=self.config.execution_backend,
                 vm_id=binding.vm_id,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
+            watcher_kwargs: dict[str, Any] = {
+                "vm_name": binding.vm_id,
+                "dispatch_id": dispatch_id,
+                "vm_user": worker_config.wake_vm_user,
+                "session_id": binding.session_id,
+                "directory_path": binding.directory_path,
+            }
+            if capacity_admission.slot_id is not None:
+                watcher_kwargs["local_inference_slot_id"] = capacity_admission.slot_id
             self._spawn_agent_completion_watcher(
-                vm_name=binding.vm_id,
-                dispatch_id=dispatch_id,
-                vm_user=worker_config.wake_vm_user,
-                session_id=binding.session_id,
-                directory_path=binding.directory_path,
+                **watcher_kwargs,
             )
             return dispatch_record
 
+        self._release_local_inference_capacity(worker_config, capacity_admission)
         error, failure_metadata = _build_dispatch_failure_details(
             backend=self.config.execution_backend,
             session_id=binding.session_id,
@@ -565,9 +764,11 @@ class HostWakeDispatcher:
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
-        base_config = worker_config.model_copy(
-            update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
-        )
+        base_config = self._resolve_prompt_provider_config(
+            worker_config,
+            session_id=session_id,
+            directory_path=directory_path,
+        ).model_copy(update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value})
         binding_for_resolution = SessionWakeBinding(
             session_id=session_id,
             vm_id=None,
@@ -583,6 +784,9 @@ class HostWakeDispatcher:
             scoped_config=base_config,
             agent_provider=agent_provider,
         )
+        resolved_model = agent_model or str(getattr(session, "model", "") or "").strip()
+        if not resolved_model:
+            resolved_model = default_agent_model_for_provider(agent_provider, base_config)
         try:
             backend = build_execution_backend(
                 base_config,
@@ -595,7 +799,7 @@ class HostWakeDispatcher:
                 target_name=target_name,
                 exception=exc,
                 agent_provider=agent_provider,
-                agent_model=agent_model,
+                agent_model=resolved_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -615,28 +819,52 @@ class HostWakeDispatcher:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
 
-        if self._container_session_is_busy_for_backend(backend=backend, session_id=session_id):
-            queue_key = f"scheduled-wake:{request_id or session_id}"
+        session_is_busy = self._container_session_is_busy_for_backend(
+            backend=backend,
+            session_id=session_id,
+        )
+        capacity_admission = LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        if not session_is_busy:
+            capacity_admission = self._claim_local_inference_capacity(
+                config=base_config,
+                dispatch_id=dispatch_id,
+                session_id=session_id,
+                model=resolved_model,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            )
+        if session_is_busy or not capacity_admission.admitted:
+            queue_key = self._wake_prompt_queue_key(
+                request_id=request_id,
+                dispatch_id=dispatch_id,
+            )
+            queue_reason = (
+                LOCAL_INFERENCE_QUEUE_REASON if not capacity_admission.admitted else None
+            )
             queue_metadata: dict[str, str] = {
                 "source": dispatch_source,
                 "resume_mode": effective_resume_mode,
                 "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 "target_name": target_name,
                 "wake_dispatch_id": dispatch_id,
+                "directory_path": directory_path,
             }
             if agent_provider:
                 queue_metadata["agent_provider"] = agent_provider
             if request_id:
                 queue_metadata["request_id"] = request_id
+            if queue_reason:
+                queue_metadata["queue_reason"] = queue_reason
             try:
                 queued_record = enqueue_agent_prompt(
-                    runtime_dir=worker_config.runtime_dir,
+                    runtime_dir=base_config.runtime_dir,
                     target=session_id,
                     vm_name=target_name,
                     session_id=session_id,
                     prompt=prompt,
-                    model=agent_model,
-                    vm_user=worker_config.wake_vm_user,
+                    model=resolved_model,
+                    model_provider_mode=base_config.model_provider_mode,
+                    queue_reason=queue_reason,
+                    vm_user=base_config.wake_vm_user,
                     dispatch_id=dispatch_id,
                     resume_thread_id=None,
                     effect_id=queue_key,
@@ -644,7 +872,7 @@ class HostWakeDispatcher:
                     queue_key=queue_key,
                     metadata=queue_metadata,
                     max_retries=int(
-                        getattr(worker_config, "agent_prompt_queue_max_retries", 3) or 3
+                        getattr(base_config, "agent_prompt_queue_max_retries", 3) or 3
                     ),
                 )
             except Exception as exc:
@@ -654,7 +882,7 @@ class HostWakeDispatcher:
                     target_name=target_name,
                     exception=exc,
                     agent_provider=agent_provider,
-                    agent_model=agent_model,
+                    agent_model=resolved_model,
                 )
                 dispatch_record = self._build_dispatch_record(
                     dispatch_id=dispatch_id,
@@ -683,9 +911,9 @@ class HostWakeDispatcher:
                 dispatch_source=dispatch_source,
                 wake_metadata={
                     **(wake_metadata or {}),
-                    "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
-                    "target_name": target_name,
+                    **queue_metadata,
                     "queue_key": queued_record.queue_key,
+                    **capacity_admission.output_metadata(),
                 },
                 status="queued",
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
@@ -696,7 +924,6 @@ class HostWakeDispatcher:
             return dispatch_record
 
         execution_id = safe_effect_execution_id("agent", session_id)
-        resolved_model = agent_model or str(getattr(session, "model", "") or "").strip()
         mcp_gateway_url = gateway_url_with_session_context(
             container_worker_guest_gateway_url(base_config),
             session_id=session_id,
@@ -740,9 +967,7 @@ class HostWakeDispatcher:
                             "dispatch_id": dispatch_id,
                             "resume_mode": effective_resume_mode,
                             "agent_provider": agent_provider,
-                            "model": (
-                                agent_model or str(getattr(session, "model", "") or "").strip()
-                            ),
+                            "model": resolved_model,
                             "model_provider_mode": base_config.model_provider_mode,
                             **(
                                 {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -754,13 +979,14 @@ class HostWakeDispatcher:
                 )
             )
         except Exception as exc:
+            self._release_local_inference_capacity(base_config, capacity_admission)
             error, failure_metadata = _build_dispatch_failure_details(
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 session_id=session_id,
                 target_name=execution_id,
                 exception=exc,
                 agent_provider=agent_provider,
-                agent_model=agent_model,
+                agent_model=resolved_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -780,6 +1006,7 @@ class HostWakeDispatcher:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
 
+        self._mark_local_inference_running(base_config, capacity_admission)
         dispatch_record = self._build_dispatch_record(
             dispatch_id=dispatch_id,
             session_id=session_id,
@@ -793,6 +1020,7 @@ class HostWakeDispatcher:
                 "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 "target_name": execution_id,
                 "execution_id": getattr(handle, "execution_id", execution_id),
+                **capacity_admission.output_metadata(),
             },
             status="dispatched",
             backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
@@ -800,14 +1028,17 @@ class HostWakeDispatcher:
         )
         if wake_store is not None:
             wake_store.record_dispatch(dispatch_record)
-        self._spawn_container_completion_monitor(
-            backend=backend,
-            execution_id=getattr(handle, "execution_id", execution_id),
-            dispatch_id=dispatch_id,
-            session_id=session_id,
-            directory_path=directory_path,
-            vm_user=worker_config.wake_vm_user,
-        )
+        monitor_kwargs: dict[str, Any] = {
+            "backend": backend,
+            "execution_id": getattr(handle, "execution_id", execution_id),
+            "dispatch_id": dispatch_id,
+            "session_id": session_id,
+            "directory_path": directory_path,
+            "vm_user": base_config.wake_vm_user,
+        }
+        if capacity_admission.slot_id is not None:
+            monitor_kwargs["local_inference_slot_id"] = capacity_admission.slot_id
+        self._spawn_container_completion_monitor(**monitor_kwargs)
         return dispatch_record
 
     def _spawn_agent_completion_watcher(
@@ -818,6 +1049,7 @@ class HostWakeDispatcher:
         vm_user: str,
         session_id: str | None,
         directory_path: str | None,
+        local_inference_slot_id: str | None = None,
     ) -> None:
         runtime_dir = self.config.runtime_dir
         watcher_cmd = [
@@ -851,6 +1083,8 @@ class HostWakeDispatcher:
             watcher_cmd.extend(["--session-id", session_id])
         if directory_path:
             watcher_cmd.extend(["--directory-path", directory_path])
+        if local_inference_slot_id:
+            watcher_cmd.extend(["--local-inference-slot-id", local_inference_slot_id])
         try:
             subprocess.Popen(
                 watcher_cmd,
@@ -879,6 +1113,7 @@ class HostWakeDispatcher:
         session_id: str,
         directory_path: str,
         vm_user: str,
+        local_inference_slot_id: str | None = None,
     ) -> None:
         thread = threading.Thread(
             target=self._monitor_container_execution_completion,
@@ -889,6 +1124,7 @@ class HostWakeDispatcher:
                 "session_id": session_id,
                 "directory_path": directory_path,
                 "vm_user": vm_user,
+                "local_inference_slot_id": local_inference_slot_id,
             },
             daemon=True,
             name=f"wake-container-monitor:{session_id}:{dispatch_id}",
@@ -904,11 +1140,10 @@ class HostWakeDispatcher:
         session_id: str,
         directory_path: str,
         vm_user: str,
+        local_inference_slot_id: str | None = None,
     ) -> None:
         wake_store = getattr(self.runtime, "wake_store", None)
         mark_completed = getattr(wake_store, "mark_completed_by_dispatch_id", None)
-        if not callable(mark_completed):
-            return
         timeout_seconds = float(
             getattr(self.config, "container_worker_job_timeout_seconds", 1800.0)
         )
@@ -924,7 +1159,11 @@ class HostWakeDispatcher:
             if normalized_status.casefold() in _ACTIVE_CONTAINER_STATUSES:
                 time.sleep(poll_interval_seconds)
                 continue
-            if normalized_status != ExecutionStatusKind.STOPPED.value:
+            if normalized_status not in {
+                ExecutionStatusKind.STOPPED.value,
+                ExecutionStatusKind.FAILED.value,
+                ExecutionStatusKind.DESTROYED.value,
+            }:
                 return
             if normalized_status != ExecutionStatusKind.DESTROYED.value:
                 try:
@@ -942,18 +1181,23 @@ class HostWakeDispatcher:
                 "agent_state": "idle",
                 "completed_at": completed_at.isoformat().replace("+00:00", "Z"),
             }
-            try:
-                mark_completed(
-                    dispatch_id,
-                    completed_at=completed_at,
-                    evidence=evidence,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to mark container wake completed dispatch_id=%s execution_id=%s",
-                    dispatch_id,
-                    execution_id,
-                    exc_info=True,
+            if callable(mark_completed):
+                try:
+                    mark_completed(
+                        dispatch_id,
+                        completed_at=completed_at,
+                        evidence=evidence,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to mark container wake completed dispatch_id=%s execution_id=%s",
+                        dispatch_id,
+                        execution_id,
+                        exc_info=True,
+                    )
+            if local_inference_slot_id:
+                local_inference_capacity_store(self.config.runtime_dir).release(
+                    local_inference_slot_id
                 )
             return
         logger.warning(

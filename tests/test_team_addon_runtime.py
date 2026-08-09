@@ -4141,6 +4141,62 @@ def test_wake_due_agents_provider_limit_zero_dispatches_no_queued_chat(
     assert runtime is None or runtime.wake_leased_until is None
 
 
+def test_governance_dispatch_reservation_is_not_released_or_replaced_before_delivery(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="portfolio-manager",
+        session_id="session-portfolio-manager",
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="portfolio-manager",
+        member_team_ids=["team"],
+        goals=[{"id": "cost", "description": "Keep Team under budget"}],
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review weekly status",
+        summary="Check whether Team is blocked.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+
+    state, leases = runtime.lease_due_governance_managers(
+        now=now,
+        wake_interval_seconds=1,
+        defer_activation=True,
+    )
+
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+    governance_runtime = state.governance_runtimes["portfolio"]
+    assert governance_runtime.active_dispatch_id == dispatch_id
+    assert governance_runtime.wake_leased_until is None
+
+    _state, overlapping = runtime.lease_due_governance_managers(
+        now=now + timedelta(seconds=2),
+        wake_interval_seconds=1,
+        defer_activation=True,
+    )
+    assert overlapping == []
+
+    activated = runtime.activate_governance_dispatch(
+        governance_group_id="portfolio",
+        dispatch_id=dispatch_id,
+        now=now + timedelta(seconds=2),
+    )
+    assert activated.governance_runtimes["portfolio"].wake_leased_until is not None
+
+
 def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     tmp_path: Path,
 ) -> None:
@@ -7441,7 +7497,8 @@ def test_wake_due_agents_prepares_every_scoped_repo_before_leasing_and_resume(
         events.append("resume")
         dispatches = list(repo.read().dispatches.values())
         assert len(dispatches) == 1
-        assert dispatches[0].status == TeamDispatchStatus.LEASED
+        assert dispatches[0].status == TeamDispatchStatus.PREPARING
+        assert dispatches[0].leased_at is None
 
     repo_cloner = FakeRepoCloner(on_clone=lambda: events.append("clone"))
     resumer = FakeResumer(on_resume=_on_resume)
@@ -8019,11 +8076,204 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     runtime = reread.agent_runtimes["backend"]
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
-    assert runtime.no_progress_count == 1
-    assert [record.error for record in reread.action_records.values()] == ["vm not ready"]
+    assert runtime.no_progress_count == 0
+    assert reread.action_records == {}
+    failed_dispatch = next(iter(reread.dispatches.values()))
+    assert failed_dispatch.status == TeamDispatchStatus.FAILED
+    assert failed_dispatch.error == "vm not ready"
+
+
+def test_wake_due_agents_keeps_local_capacity_queued_dispatch_unleased(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    resumer = FakeResumer(
+        {
+            "success": True,
+            "queued": True,
+            "queue_reason": "local_inference_capacity",
+            "queue_key": "team:dispatch",
+        }
+    )
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["queued"] is True
+    reread = TeamStateRepository(tmp_path).read()
+    dispatch = next(iter(reread.dispatches.values()))
+    runtime = reread.agent_runtimes["backend"]
+    assert dispatch.status == TeamDispatchStatus.PREPARING
+    assert dispatch.leased_at is None
+    assert dispatch.lease_expires_at is None
+    assert runtime.active_dispatch_id == dispatch.id
+    assert runtime.wake_leased_until is None
     assert len(session_store.calls) == 1
     assert "action_contract" not in session_store.calls[0]["metadata"]["team_addon"]
     assert "agent_guidance" in session_store.calls[0]["metadata"]["team_addon"]
+
+
+def test_wake_due_agents_keeps_capacity_queued_chat_unleased_and_skips_regular_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    _state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Handle this before the pending task wake.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+    )
+    resumer = FakeResumer(
+        {
+            "success": True,
+            "queued": True,
+            "queue_reason": "local_inference_capacity",
+            "queue_key": "team:chat-dispatch",
+        }
+    )
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"] == []
+    assert result["chat_dispatches"][0]["queued"] is True
+    state = repo.read()
+    dispatch = state.dispatches[dispatch_id]
+    assert dispatch.status == TeamDispatchStatus.PREPARING
+    assert dispatch.leased_at is None
+    assert dispatch.lease_expires_at is None
+    assert state.agent_runtimes["backend"].active_dispatch_id == dispatch_id
+    assert state.agent_runtimes["backend"].wake_leased_until is None
+    assert state.conversation_messages[message.id].status == "dispatching"
+
+
+def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_delivered(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    prepared = repo.read()
+    assert prepared.dispatches[dispatch_id].status == TeamDispatchStatus.PREPARING
+    assert prepared.dispatches[dispatch_id].lease_expires_at is None
+    assert prepared.agent_runtimes["backend"].wake_leased_until is None
+
+    record = SimpleNamespace(
+        execution_id="exec-delivered-team-prompt",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
+            "success": True,
+            "queued": False,
+        },
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=worker) == 1
+
+    leased = repo.read()
+    dispatch = leased.dispatches[dispatch_id]
+    runtime = leased.agent_runtimes["backend"]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.leased_at is not None
+    assert dispatch.lease_expires_at is not None
+    assert runtime.wake_leased_until == dispatch.lease_expires_at
+
+
+def test_chat_dispatch_lease_starts_only_when_preparing_prompt_is_delivered(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please reply when local inference capacity is available.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        agent_id="backend",
+        defer_activation=True,
+    )
+
+    assert len(claims) == 1
+    dispatch_id = claims[0]["dispatch_id"]
+    assert state.dispatches[dispatch_id].status == TeamDispatchStatus.PREPARING
+    assert state.dispatches[dispatch_id].lease_expires_at is None
+    assert state.agent_runtimes["backend"].wake_leased_until is None
+    assert state.conversation_messages[message.id].status == "dispatching"
+
+    activated = _team_chat_service(repo).activate_chat_message_dispatch(
+        dispatch_id=dispatch_id,
+    )
+
+    dispatch = activated.dispatches[dispatch_id]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.lease_expires_at is not None
+    assert activated.agent_runtimes["backend"].wake_leased_until == dispatch.lease_expires_at
+    assert activated.conversation_messages[message.id].status == "running"
 
 
 def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(
