@@ -2113,6 +2113,7 @@ class TeamAdminService:
             if set_context_clearing_idle_grace_seconds
             else None
         )
+        idle_rotation_result: dict[str, Any] = {"events": []}
 
         def _mutate(state: TeamState) -> TeamState:
             now = utc_now()
@@ -2248,6 +2249,7 @@ class TeamAdminService:
                         runtime=runtime,
                         grace_seconds=normalized_context_clearing_idle_grace_seconds,
                         now=now,
+                        result=idle_rotation_result,
                     )
             if normalized_context_clearing_policy is not None:
                 _set_context_clearing_policy(
@@ -2256,6 +2258,7 @@ class TeamAdminService:
                     runtime=runtime,
                     policy=normalized_context_clearing_policy,
                     now=now,
+                    result=idle_rotation_result,
                 )
             if set_reports_to_agent_id and not detached_from_team:
                 old_superior_id = agent.reports_to_agent_id
@@ -2301,7 +2304,13 @@ class TeamAdminService:
                 )
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                idle_rotation_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
 
     def set_agent_avatar(
         self,
@@ -2904,6 +2913,7 @@ class TeamAdminService:
                         state_model,
                         agent_id=task.owner_agent_id,
                         now=now,
+                        result=blocker_result,
                     )
                 return state_model
             effective_task_id = normalized_task_id or _generated_id(
@@ -3023,6 +3033,7 @@ class TeamAdminService:
                     state_model,
                     agent_id=normalized_owner_agent_id,
                     now=now,
+                    result=blocker_result,
                 )
             return state_model
 
@@ -3344,6 +3355,7 @@ class TeamAdminService:
                     state_model,
                     agent_id=task.owner_agent_id,
                     now=task.updated_at,
+                    result=blocker_result,
                 )
             if (
                 previous_state != task.state
@@ -3404,6 +3416,7 @@ class TeamAdminService:
         normalized_reason = _required_text(reason, "reason")
         normalized_actor_id = _required_text(actor_id, "actor_id")
         normalized_successor_id = _optional_text(successor_task_id)
+        idle_rotation_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
@@ -3486,12 +3499,16 @@ class TeamAdminService:
                 state_model,
                 agent_id=task.owner_agent_id,
                 now=now,
+                result=idle_rotation_result,
             )
             _recalculate_project_status(state_model, task.project_id)
             return state_model
 
-        return self._repository.update(
+        return self._repository.update_with_outbox(
             _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                idle_rotation_result.get("events") or []
+            ),
             expected_revision=expected_revision,
         )
 
@@ -4576,6 +4593,7 @@ class TeamAdminService:
                 state_model,
                 agent_id=review.reviewer_agent_id,
                 now=utc_now(),
+                result=blocker_result,
             )
             return state_model
 

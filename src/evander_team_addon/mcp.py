@@ -4003,13 +4003,18 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        run_at = _optional_event_datetime(event.get("run_at"))
         delay_seconds = _optional_event_float(event.get("delay_seconds"))
-        if delay_seconds is not None and delay_seconds > 0:
+        if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
             scheduled, _created = scheduled_store.schedule_event(
                 event_type=_required_event_text(event.get("event_type"), "event_type"),
                 payload=dict(payload),
                 correlation_key=_optional_event_text(event.get("correlation_key")),
-                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                run_at=(
+                    run_at
+                    if run_at is not None
+                    else datetime.now(UTC) + timedelta(seconds=delay_seconds or 0.0)
+                ),
                 idempotency_key=_optional_event_text(event.get("idempotency_key")),
                 source=InternalEventSource(
                     source_type="team-addon",
@@ -4052,6 +4057,19 @@ def _optional_event_float(value: object) -> float | None:
     if isinstance(value, bool):
         raise ValueError("number value is required")
     return float(value)
+
+
+def _optional_event_datetime(value: object) -> datetime | None:
+    text = _optional_event_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("run_at must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _register_persistent_placeholder(

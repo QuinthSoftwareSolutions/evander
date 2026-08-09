@@ -12,6 +12,7 @@ from ...models import (
 
 from .common import _ensure_utc
 from .stand_down import _active_stand_downs_for_agent
+from .work_due import _clear_idle_context_tracking
 from .wake import (
     _active_tasks_for_agent,
     _append_agent_wake_requested_event,
@@ -28,7 +29,7 @@ def _maybe_mark_idle_context_rotation_due(
     *,
     agent_id: str,
     now: datetime,
-    result: dict[str, Any] | None = None,
+    result: dict[str, Any],
 ) -> None:
     agent = state.agents.get(agent_id)
     if agent is None:
@@ -45,6 +46,10 @@ def _maybe_mark_idle_context_rotation_due(
         _clear_idle_context_tracking(runtime)
         return
 
+    if not _is_agent_truly_idle(state, agent=agent, runtime=runtime, now=normalized_now):
+        _clear_idle_context_tracking(runtime)
+        return
+
     idle_due_at = runtime.context_idle_rotation_due_at
     if idle_due_at is not None and _ensure_utc(idle_due_at) <= normalized_now:
         _mark_context_rotation_pending(
@@ -56,9 +61,6 @@ def _maybe_mark_idle_context_rotation_due(
             requested_at=normalized_now,
             request_note=None,
         )
-        return
-    if not _is_agent_truly_idle(state, agent=agent, runtime=runtime, now=normalized_now):
-        _clear_idle_context_tracking(runtime)
         return
 
     grace_seconds = runtime.context_clearing_idle_grace_seconds
@@ -84,13 +86,12 @@ def _maybe_mark_idle_context_rotation_due(
     runtime.context_idle_rotation_due_at = desired_due_at
     runtime.next_wake_at = desired_due_at
     runtime.updated_at = normalized_now
-    if result is not None:
-        _append_idle_context_rotation_wake_requested_event(
-            state,
-            agent_id=agent.id,
-            result=result,
-            now=normalized_now,
-        )
+    _append_idle_context_rotation_wake_requested_event(
+        state,
+        agent_id=agent.id,
+        result=result,
+        now=normalized_now,
+    )
 
 
 def _append_idle_context_rotation_wake_requested_event(
@@ -112,7 +113,7 @@ def _append_idle_context_rotation_wake_requested_event(
         result=result,
         reason="idle_grace_expired",
         now=normalized_now,
-        delay_seconds=max(0.0, (due_at - normalized_now).total_seconds()),
+        run_at=due_at,
         idempotency_suffix=f"idle-grace:{due_key}",
         payload_extra={
             "context_idle_rotation_due_at": due_at.isoformat().replace("+00:00", "Z")
@@ -264,6 +265,7 @@ def _set_context_clearing_policy(
     runtime: AgentRuntime,
     policy: AgentContextClearingPolicy,
     now: datetime,
+    result: dict[str, Any],
 ) -> None:
     previous_policy = runtime.context_clearing_policy
     if previous_policy != policy:
@@ -272,7 +274,12 @@ def _set_context_clearing_policy(
     runtime.auto_context_clearing_enabled = policy != AgentContextClearingPolicy.OFF
     runtime.updated_at = now
     if policy == AgentContextClearingPolicy.IDLE:
-        _maybe_mark_idle_context_rotation_due(state, agent_id=agent.id, now=now)
+        _maybe_mark_idle_context_rotation_due(
+            state,
+            agent_id=agent.id,
+            now=now,
+            result=result,
+        )
 
 
 def _context_clearing_idle_grace_seconds_from_value(value: object) -> int:
@@ -300,6 +307,7 @@ def _set_context_clearing_idle_grace_seconds(
     runtime: AgentRuntime,
     grace_seconds: int,
     now: datetime,
+    result: dict[str, Any],
 ) -> None:
     runtime.context_clearing_idle_grace_seconds = grace_seconds
     runtime.updated_at = now
@@ -311,7 +319,12 @@ def _set_context_clearing_idle_grace_seconds(
                 seconds=grace_seconds
             )
             runtime.next_wake_at = runtime.context_idle_rotation_due_at
-        _maybe_mark_idle_context_rotation_due(state, agent_id=agent.id, now=now)
+        _maybe_mark_idle_context_rotation_due(
+            state,
+            agent_id=agent.id,
+            now=now,
+            result=result,
+        )
 
 
 def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
@@ -332,14 +345,6 @@ def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
     runtime.context_handoff_preparation_status = None
     runtime.last_agent_handoff_summary = None
     runtime.last_agent_handoff_at = None
-
-
-def _clear_idle_context_tracking(runtime: AgentRuntime) -> None:
-    idle_due_at = runtime.context_idle_rotation_due_at
-    runtime.context_idle_since_at = None
-    runtime.context_idle_rotation_due_at = None
-    if idle_due_at is not None and runtime.next_wake_at == idle_due_at:
-        runtime.next_wake_at = None
 
 
 def _build_context_handoff_summary(

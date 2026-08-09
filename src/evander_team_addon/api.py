@@ -2271,12 +2271,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
         created_by_agent_id = _optional(payload, "created_by_agent_id")
+        owner_agent_id = _required(payload, "owner_agent_id")
         task_id = _optional(payload, "id") or _optional(payload, "task_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.create_or_reprioritize_task(
                 task_id=task_id,
-                owner_agent_id=_required(payload, "owner_agent_id"),
+                owner_agent_id=owner_agent_id,
                 project_id=_required(payload, "project_id"),
                 case_id=_optional(payload, "case_id"),
                 set_case_id="case_id" in payload,
@@ -2319,6 +2320,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state,
             status_code=201,
             rebased_from_revision=rebased_from_revision,
+            extra=_idle_context_rotation_outbox_publication_extra(
+                context,
+                state=state,
+                agent_id=owner_agent_id,
+            ),
         )
 
     async def patch_task(request: Request) -> JSONResponse:
@@ -2354,7 +2360,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="tasks",
             target_id=task_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        task = state.tasks.get(task_id)
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=task.owner_agent_id,
+                )
+                if task is not None
+                else None
+            ),
+        )
 
     async def cancel_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -2376,6 +2396,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=state.tasks[task_id].owner_agent_id,
+                )
+                if task_id in state.tasks
+                else None
+            ),
         )
 
     async def repair_task_state(request: Request) -> JSONResponse:
@@ -2394,10 +2423,20 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="tasks",
             target_id=task_id,
         )
+        task = state.tasks.get(task_id)
         return _state_response(
             request,
             state,
             rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=task.owner_agent_id,
+                )
+                if task is not None
+                else None
+            ),
         )
 
     async def record_deliverable(request: Request) -> JSONResponse:
@@ -2492,7 +2531,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="review_requests",
             target_id=review_request_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        review = state.review_requests.get(review_request_id)
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=review.reviewer_agent_id,
+                )
+                if review is not None
+                else None
+            ),
+        )
 
     async def retire_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -7098,13 +7151,18 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        run_at = _optional_event_datetime(event.get("run_at"))
         delay_seconds = _optional_event_float(event.get("delay_seconds"))
-        if delay_seconds is not None and delay_seconds > 0:
+        if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
             scheduled, _created = scheduled_store.schedule_event(
                 event_type=_required_event_text(event.get("event_type"), "event_type"),
                 payload=dict(payload),
                 correlation_key=_optional_event_text(event.get("correlation_key")),
-                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                run_at=(
+                    run_at
+                    if run_at is not None
+                    else datetime.now(UTC) + timedelta(seconds=delay_seconds or 0.0)
+                ),
                 idempotency_key=_optional_event_text(event.get("idempotency_key")),
                 source=InternalEventSource(
                     source_type="team-addon",
@@ -7181,6 +7239,27 @@ def _request_team_outbox_publication(
     }
 
 
+def _idle_context_rotation_outbox_publication_extra(
+    context: AddonContext,
+    *,
+    state: TeamState,
+    agent_id: str,
+) -> dict[str, object] | None:
+    runtime = state.agent_runtimes.get(agent_id)
+    if runtime is None or runtime.context_idle_rotation_due_at is None:
+        return None
+    due_at = runtime.context_idle_rotation_due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=UTC)
+    due_key = int(due_at.astimezone(UTC).timestamp() * 1_000_000)
+    return {
+        "outbox_publication_wake": _request_team_outbox_publication(
+            context,
+            correlation_key=f"idle-context-rotation:{agent_id}:{due_key}",
+        )
+    }
+
+
 def _required_event_text(value: object, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -7201,6 +7280,19 @@ def _optional_event_float(value: object) -> float | None:
     if isinstance(value, bool):
         raise ValueError("number value is required")
     return float(value)
+
+
+def _optional_event_datetime(value: object) -> datetime | None:
+    text = _optional_event_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("run_at must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 async def _read_payload(request: Request) -> Mapping[str, Any]:

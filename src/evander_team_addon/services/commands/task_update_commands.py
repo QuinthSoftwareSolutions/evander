@@ -557,6 +557,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 state_model,
                 agent_id=task.owner_agent_id,
                 now=now,
+                result=result,
             )
             _recalculate_project_status(state_model, task.project_id)
             return TeamCommandApplyResult(
@@ -1020,6 +1021,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     state_model,
                     agent_id=old_owner_id,
                     now=now,
+                    result=reconciliation_result,
                 )
                 if task.state in _NON_TERMINAL_TASK_STATES:
                     _mark_agent_work_due(state_model, agent_id=new_owner_id, now=now)
@@ -1040,6 +1042,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         state_model,
                         agent_id=task.owner_agent_id,
                         now=now,
+                        result=reconciliation_result,
                     )
                 if next_state is not None or has_owner_reassignment:
                     _recalculate_project_status(state_model, task.project_id)

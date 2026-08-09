@@ -8,6 +8,10 @@ from evander.admin.user_notifications import AdminUserNotificationStore
 from evander.admin.web.rbac import TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION
 from evander.admin.web.user_store import AdminWebUserStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.scheduled import (
+    ScheduledInternalEventStore,
+    scheduled_internal_event_store_path,
+)
 from evander_team_addon.models import (
     HumanReviewAssignment,
     HumanReviewRequest,
@@ -156,6 +160,51 @@ def test_publish_outbox_events_claims_publishes_and_completes_record(
     events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
     assert [event.event_type for event in events] == ["team.ephemeral.requested"]
     assert events[0].payload["assignment_id"] == "assignment-1"
+
+
+def test_publish_outbox_event_preserves_absolute_run_at(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    run_at = datetime(2026, 1, 1, 1, tzinfo=UTC)
+    repo.enqueue_outbox_record(
+        TeamOutboxRecord(
+            id="outbox-idle-grace",
+            intent_type="team.agent.wake_requested",
+            aggregate_type="team_event",
+            aggregate_id="team.agent.wake_requested:backend",
+            idempotency_key="team-addon:idle-grace:backend",
+            payload={
+                "event_type": "team.agent.wake_requested",
+                "correlation_key": "team.agent.wake_requested:backend",
+                "run_at": run_at.isoformat().replace("+00:00", "Z"),
+                "payload": {
+                    "team_id": "team",
+                    "agent_id": "backend",
+                    "session_id": "session-backend",
+                    "reason": "idle_grace_expired",
+                },
+            },
+        )
+    )
+    provider = TeamPublishOutboxEventsEffectProvider()
+    provider.initialize(
+        TeamPublishOutboxEventsEffectDefinition(
+            id="publish",
+            display_name="Publish outbox",
+            type="effect:team:publish-outbox-events",
+            limit=5,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    scheduled = ScheduledInternalEventStore(
+        scheduled_internal_event_store_path(tmp_path)
+    ).list_due(run_at)
+    assert len(scheduled) == 1
+    assert scheduled[0].run_at == run_at
+    assert scheduled[0].payload["reason"] == "idle_grace_expired"
 
 
 def test_publish_outbox_events_requeues_failed_publish(tmp_path: Path) -> None:

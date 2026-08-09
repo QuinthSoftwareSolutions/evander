@@ -6319,17 +6319,21 @@ def test_idle_context_grace_keeps_context_for_work_arriving_before_expiry(
     assert idle_since_at is not None
     assert idle_due_at == idle_since_at + timedelta(hours=1)
     assert runtime.context_rotation_pending is False
+    [idle_wake_outbox] = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert idle_wake_outbox.payload["payload"]["reason"] == "idle_grace_expired"
+    assert idle_wake_outbox.payload["run_at"] == idle_due_at.isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert "delay_seconds" not in idle_wake_outbox.payload
 
     _state, idle_tick_leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=idle_since_at + timedelta(minutes=15),
     )
     assert idle_tick_leases == []
-    [idle_wake_outbox] = repo.list_outbox_records(
-        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
-    )
-    assert idle_wake_outbox.payload["payload"]["reason"] == "idle_grace_expired"
-    assert idle_wake_outbox.payload["delay_seconds"] == 45 * 60
+    assert len(repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)) == 1
 
     admin.create_or_reprioritize_task(
         task_id="work-within-grace",
@@ -6353,7 +6357,40 @@ def test_idle_context_grace_keeps_context_for_work_arriving_before_expiry(
     assert runtime.context_idle_rotation_due_at is None
 
 
-def test_idle_context_grace_expiry_handoffs_before_new_work(tmp_path: Path) -> None:
+def test_admin_task_cancellation_enqueues_idle_grace_expiry_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.IDLE,
+        set_context_clearing_policy=True,
+        context_clearing_idle_grace_seconds=3600,
+        set_context_clearing_idle_grace_seconds=True,
+    )
+
+    state = admin.cancel_task(
+        task_id="task",
+        reason_code="operator_cancelled",
+        reason="The task is no longer required.",
+        actor_id="operator:test",
+    )
+
+    due_at = state.agent_runtimes["backend"].context_idle_rotation_due_at
+    assert due_at is not None
+    [idle_wake_outbox] = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert idle_wake_outbox.payload["payload"]["reason"] == "idle_grace_expired"
+    assert idle_wake_outbox.payload["run_at"] == due_at.isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def test_stale_idle_context_grace_expiry_does_not_handoff_active_work(
+    tmp_path: Path,
+) -> None:
     repo = _seed_team(tmp_path)
     admin = _team_admin_service(repo)
     admin.update_agent(
@@ -6367,46 +6404,37 @@ def test_idle_context_grace_expiry_handoffs_before_new_work(tmp_path: Path) -> N
     idle_due_at = state.agent_runtimes["backend"].context_idle_rotation_due_at
     assert idle_due_at is not None
     admin.create_or_reprioritize_task(
-        task_id="work-after-grace",
+        task_id="work-within-grace",
         owner_agent_id="backend",
         project_id="project",
         priority=1,
-        title="Work after idle grace",
-        description="The expired grace must hand off before this work.",
+        title="Work within idle grace",
+        description="A delayed expiry wake must not rotate this active work.",
         created_by_agent_id="lead",
     )
 
+    def _restore_stale_expiry(state_model: TeamState) -> TeamState:
+        runtime_model = state_model.agent_runtimes["backend"]
+        runtime_model.context_idle_since_at = idle_due_at - timedelta(hours=1)
+        runtime_model.context_idle_rotation_due_at = idle_due_at
+        runtime_model.next_wake_at = idle_due_at
+        return state_model
+
+    repo.update(_restore_stale_expiry)
+
     state, leases = _team_runtime_service(repo).lease_due_agents(
-        agent_id="backend",
-        now=idle_due_at,
-    )
-
-    assert len(leases) == 1
-    assert leases[0]["reason"] == "context_handoff"
-    assert leases[0]["tasks"] == []
-    runtime = state.agent_runtimes["backend"]
-    assert runtime.context_rotation_reason == "idle"
-    assert runtime.context_idle_since_at is None
-    assert runtime.context_idle_rotation_due_at is None
-
-    _state, duplicate_leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=idle_due_at + timedelta(seconds=1),
     )
-    assert duplicate_leases == []
 
-    _team_runtime_service(repo).record_agent_context_handoff(
-        agent_id="backend",
-        dispatch_id=str(leases[0]["dispatch_id"]),
-        summary="The idle burst ended before the new task arrived.",
-    )
-    _state, work_leases = _team_runtime_service(repo).lease_due_agents(
-        agent_id="backend",
-        now=idle_due_at + timedelta(seconds=2),
-    )
-    assert len(work_leases) == 1
-    assert work_leases[0]["reason"] == "scheduled"
-    assert work_leases[0]["runtime"]["context_rotation_pending"] is True
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "scheduled"
+    assert [task["id"] for task in leases[0]["tasks"]] == ["work-within-grace"]
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.context_rotation_reason is None
+    assert runtime.context_idle_since_at is None
+    assert runtime.context_idle_rotation_due_at is None
 
 
 def test_idle_context_grace_change_recomputes_from_original_idle_start(

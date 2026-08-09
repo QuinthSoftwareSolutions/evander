@@ -10356,13 +10356,18 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        run_at = _team_event_run_at(event.get("run_at"))
         delay_seconds = _optional_float(event.get("delay_seconds"), default=None)
-        if delay_seconds is not None and delay_seconds > 0:
+        if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
             scheduled, _created = scheduled_store.schedule_event(
                 event_type=_required_text(event.get("event_type"), "event_type"),
                 payload=dict(payload),
                 correlation_key=_optional_text(event.get("correlation_key")),
-                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                run_at=(
+                    run_at
+                    if run_at is not None
+                    else datetime.now(UTC) + timedelta(seconds=delay_seconds or 0.0)
+                ),
                 idempotency_key=_optional_text(event.get("idempotency_key")),
                 source=InternalEventSource(
                     source_type="team-addon",
@@ -10380,6 +10385,16 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
         )
         published_ids.append(published.event_id)
     return published_ids
+
+
+def _team_event_run_at(value: object) -> datetime | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return _team_datetime_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError as exc:
+        raise ValueError("run_at must be an ISO 8601 datetime") from exc
 
 
 def _internal_event_bus(context: Any) -> InternalEventBus:

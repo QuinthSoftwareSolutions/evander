@@ -6744,6 +6744,9 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert scheduled[0].payload["context_idle_rotation_due_at"] == (
         runtime["context_idle_rotation_due_at"]
     )
+    assert scheduled[0].run_at == datetime.fromisoformat(
+        runtime["context_idle_rotation_due_at"].replace("Z", "+00:00")
+    )
 
     for invalid_grace in (-1, 604801, 1.5, True):
         invalid_response = client.patch(
@@ -6754,6 +6757,90 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
             },
         )
         assert invalid_response.status_code == 400
+
+
+def test_team_addon_admin_task_idle_transition_requests_prompt_outbox_publication(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    admin.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
+    admin.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+    create_response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 1,
+            "title": "Finish through Admin",
+            "description": "Finishing this task starts the idle grace.",
+            "created_by_agent_id": "lead",
+            "expected_revision": 4,
+        },
+    )
+    assert create_response.status_code == 201
+    policy_response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "context_clearing_policy": "idle",
+            "context_clearing_idle_grace_seconds": 3600,
+            "expected_revision": 5,
+        },
+    )
+    assert policy_response.status_code == 200
+    assert (
+        policy_response.json()["agent_runtimes"]["backend"][
+            "context_idle_rotation_due_at"
+        ]
+        is None
+    )
+
+    response = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={"state": "finished", "expected_revision": 6},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    due_at = body["agent_runtimes"]["backend"]["context_idle_rotation_due_at"]
+    assert due_at is not None
+    assert body["outbox_publication_wake"]["event_ids"]
+    [idle_outbox] = repo.list_outbox_records(
+        intent_type="team.agent.wake_requested"
+    )
+    assert idle_outbox.payload["run_at"] == due_at.replace("+00:00", "Z")
+    published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    assert [event.event_type for event in published] == [
+        TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    ]
 
 
 def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) -> None:

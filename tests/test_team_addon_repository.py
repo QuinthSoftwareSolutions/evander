@@ -11848,6 +11848,76 @@ def test_auto_context_rotation_marks_pending_when_enabled_agent_becomes_idle(
     assert "Active tasks:" not in runtime.last_handoff_summary
 
 
+def test_task_update_command_enqueues_idle_grace_expiry_wake(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.IDLE,
+        set_context_clearing_policy=True,
+        context_clearing_idle_grace_seconds=3600,
+        set_context_clearing_idle_grace_seconds=True,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="finish-through-command",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Finish through command",
+        description="The project lead will finish this task.",
+        created_by_agent_id="lead",
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.services.domain.context_rotation._is_agent_truly_idle",
+        lambda *_args, **_kwargs: True,
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-finish-backend-task",
+    )
+
+    def _restore_idle_policy(state_model: TeamState) -> TeamState:
+        runtime = state_model.agent_runtimes["backend"]
+        runtime.context_clearing_policy = AgentContextClearingPolicy.IDLE
+        runtime.context_clearing_idle_grace_seconds = 3600
+        return state_model
+
+    repo.update(_restore_idle_policy)
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="finish-through-command",
+        state=TeamTaskState.FINISHED.value,
+        request_id="request-finish-backend-task",
+    )
+
+    assert result["success"] is True, result.get("errors")
+    due_at = state.agent_runtimes["backend"].context_idle_rotation_due_at
+    assert due_at is not None
+    idle_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and event["payload"]["reason"] == "idle_grace_expired"
+    ]
+    assert len(idle_events) == 1
+    assert idle_events[0]["run_at"] == due_at.isoformat().replace("+00:00", "Z")
+    idle_outbox = [
+        record
+        for record in repo.list_outbox_records(
+            intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+        )
+        if record.payload["payload"]["reason"] == "idle_grace_expired"
+        and record.payload["run_at"] == idle_events[0]["run_at"]
+    ]
+    assert len(idle_outbox) == 1
+    assert idle_outbox[0].payload["run_at"] == idle_events[0]["run_at"]
+
+
 def test_auto_context_rotation_waits_for_activity_after_fresh_context(
     tmp_path: Path,
 ) -> None:

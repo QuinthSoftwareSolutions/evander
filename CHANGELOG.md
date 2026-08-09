@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-09 - Team Idle Context Grace Reliability
+
+- Cancelled a pending idle-grace rotation when work makes the agent active, including when the
+  expiry wake is processed after its persisted deadline.
+- Enqueued the precise expiry wake for Admin and agent-command idle transitions, and preserved
+  the absolute grace deadline through durable outbox publication and retries.
+
 ## 2026-08-09 - Team Idle Context Grace
 
 - Added a per-agent `context_clearing_idle_grace_seconds` setting for the existing `idle`
