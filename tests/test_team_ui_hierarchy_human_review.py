@@ -568,3 +568,30 @@ def test_selected_agent_runtime_shows_reset_bounded_input_usage() -> None:
     assert 'runtime.contextClearingPolicy !== "every_wake"' in detail_source
     assert "runtime.context_reset_usage?.input_tokens_since_reset" in runtime_source
     assert 'contextClearingPolicy !== "every_wake"' in runtime_source
+
+
+def test_agent_editor_round_trips_idle_context_grace_minutes() -> None:
+    source = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
+    ).read_text(encoding="utf-8")
+    editor_source = source[
+        source.index('if (type === "agent") {', source.index("function renderEditFields")) :
+        source.index('if (type === "role") {', source.index("function renderEditFields"))
+    ]
+    payload_source = source[
+        source.index('if (type === "agent") {', source.index("function editPayloadForForm")) :
+        source.index('if (type === "role") {', source.index("function editPayloadForForm"))
+    ]
+    binding_source = source[
+        source.index("function bindAgentEditTeamScopedSelects") :
+        source.index("function refreshAgentEditTeamScopedSelects")
+    ]
+
+    assert "contextClearingIdleGraceMinutesForEdit" in editor_source
+    assert 'numberField("Idle grace minutes"' in editor_source
+    assert "max: 10080" in editor_source
+    assert "context_clearing_idle_grace_seconds" in payload_source
+    assert "context_clearing_idle_grace_minutes" in payload_source
+    assert "* 60" in payload_source
+    assert 'select[name="context_clearing_policy"]' in binding_source
+    assert 'graceInput.value = "60"' in binding_source

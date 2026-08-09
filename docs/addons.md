@@ -1017,8 +1017,18 @@ set:
   nor seeds ordinary Team context and leaves any pending ordinary reset
   pending. An unsuccessful mutation-enabled resume likewise seeds nothing.
   Each persistent agent can set `context_clearing_policy` to `off`, `idle`, or
-  `every_wake`. `idle` preserves the original automatic behavior by rotating
-  after real work has completed and the agent becomes idle. Manual and idle
+  `every_wake`. `idle` rotates after real work has completed and the agent
+  becomes truly idle. Its per-agent `context_clearing_idle_grace_seconds`
+  setting accepts `0` through `604800` seconds. `0` preserves the original
+  immediate behavior; a positive value starts a continuous idle window and
+  retains the current context if new work arrives before its deadline. At or
+  after the deadline, expiry wins over newly queued work so the existing
+  handoff and fresh-context dispatch happen first. The idle start and next
+  expiry are persisted, and a delayed wake requests precise reconciliation;
+  the 15-minute Team runtime tick remains the fallback. Existing records
+  migrate to `0`. Admin Web suggests 60 minutes when an operator switches an
+  agent from another policy to `idle` while its saved grace is still zero.
+  Manual and expired-idle
   rotations first lease a 120-second `context_handoff` preparation dispatch in
   the retained conversation. Its sole Team tool is
   `team_record_context_handoff`, which accepts one advisory summary of at most

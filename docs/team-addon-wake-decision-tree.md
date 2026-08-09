@@ -233,7 +233,7 @@ flowchart LR
 
     subgraph Rotation["Context rotation"]
         manual["Manual request<br/>handoff preparation first"]
-        idle["idle policy after real work and truly idle<br/>handoff preparation first"]
+        idle["idle policy after real work and truly idle<br/>start configured continuous grace"]
         every_wake["every_wake policy<br/>direct fresh context on otherwise eligible wake"]
     end
 
@@ -252,12 +252,15 @@ flowchart LR
 
 ### Context-Handoff Ordering
 
-Manual and idle rotation are deliberately two dispatches. The advisory handoff
+Manual and expired-idle rotation are deliberately two dispatches. The advisory handoff
 must happen before the conversation is reset:
 
 ```mermaid
 flowchart LR
-    request["Manual request or idle policy"] --> pending["context_rotation_pending<br/>context_handoff_preparation_pending"]
+    idle_start["Idle policy becomes truly idle<br/>persist idle start and expiry"] --> before{"New work before expiry?"}
+    before -->|Yes| retain["Cancel idle window<br/>retain current context"]
+    before -->|No; deadline reached| pending
+    request["Manual request"] --> pending["context_rotation_pending<br/>context_handoff_preparation_pending"]
     pending --> handoff["context_handoff dispatch<br/>packaged mode: same_context<br/>120-second lease"]
     handoff --> sole["Sole Team tool:<br/>team_record_context_handoff<br/>one summary, max 1,200 chars"]
     sole --> outcome{"Summary recorded?"}
@@ -273,9 +276,9 @@ flowchart LR
     classDef wake fill:#e8fff0,stroke:#208a42,color:#102a16;
     classDef skip fill:#fff1f0,stroke:#b42318,color:#3a0b07;
     classDef process fill:#f5f8ff,stroke:#3867d6,color:#102044;
-    class fresh,recorded wake;
+    class fresh,recorded,retain wake;
     class failed skip;
-    class request,pending,handoff,sole,due,every,eligible process;
+    class idle_start,before,request,pending,handoff,sole,due,every,eligible process;
 ```
 
 An invalid or oversized handoff call does not release the active preparation

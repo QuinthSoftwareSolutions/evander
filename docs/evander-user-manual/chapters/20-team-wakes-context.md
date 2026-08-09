@@ -199,10 +199,10 @@ Each persistent agent has one of three policies:
 | Policy | Behavior |
 |---|---|
 | <code>off</code> | No automatic context rotation. Manual rotation remains possible. |
-| <code>idle</code> | After substantive activity, when the agent becomes truly idle, prepare a durable handoff and rotate on its next eligible wake. |
+| <code>idle</code> | After substantive activity, when the agent becomes truly idle, wait for its configured continuous idle grace, then prepare a durable handoff and rotate before later work. |
 | <code>every_wake</code> | Mark an otherwise-eligible wake to start with a fresh context. It does not make an idle agent eligible by itself. |
 
-“Truly idle” means no active lease, active tasks, pending wakeable work, reviews, or ephemeral acceptance needing that agent. The system first creates a handoff summary so a new conversation does not discard durable orientation.
+“Truly idle” means no active lease, active tasks, pending wakeable work, reviews, or ephemeral acceptance needing that agent. The per-agent <code>context_clearing_idle_grace_seconds</code> value can be from 0 through 604800 seconds. Zero preserves immediate idle clearing. A positive value records the idle start and next expiry. Work arriving before the expiry cancels the idle window and retains the current context. Work arriving at or after the expiry waits behind the normal bounded handoff and fresh-context reset. A delayed wake requests reconciliation at the precise expiry, while the 15-minute Team runtime tick remains a fallback. Existing agents migrate to zero; the editor suggests 60 minutes when an operator switches a zero-grace agent from another policy to idle.
 
 The prompt labels the context lifecycle explicitly:
 
@@ -218,7 +218,7 @@ model names, and provider names do not. During a retained delta,
 scope and its task, inbox, blocker, review, project, and Git records without
 widening membership.
 
-Manual and idle rotations also make one bounded 120-second attempt to resume
+Manual and expired-idle rotations also make one bounded 120-second attempt to resume
 the prior context and record a single advisory self-handoff. The summary is
 limited to 1,200 characters, is clearly separate from durable Team state, and
 cannot delay the fresh-context reset if it is missing, rejected, or times out.
@@ -238,7 +238,7 @@ operator message is exact and singular, while historical transcript bodies are
 bounded. Only a successful mutation-enabled Chat dispatch seeds ordinary Team
 context; a reply-only Chat dispatch leaves a pending ordinary reset intact.
 
-For Northstar, Imani might use <code>idle</code>: the telemetry implementation stays in one context while active, then rotates after all substantive work is handed off. Rowan might use <code>every_wake</code> for strongly isolated review passes. That does not make Rowan poll constantly; Rowan still needs a review or other wake reason.
+For Northstar, Imani might use <code>idle</code> with a 60-minute grace: related telemetry reviews stay in one context across short gaps, then rotate after a genuine break. Rowan might use <code>every_wake</code> for strongly isolated review passes. That does not make Rowan poll constantly; Rowan still needs a review or other wake reason.
 
 ## Stand-down
 

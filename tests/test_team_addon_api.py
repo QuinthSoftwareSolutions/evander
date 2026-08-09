@@ -6716,6 +6716,45 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["context_rotation_pending"] is False
     assert runtime["next_wake_at"] is None
 
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "context_clearing_policy": "idle",
+            "context_clearing_idle_grace_seconds": 3600,
+            "expected_revision": 7,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    runtime = body["agent_runtimes"]["backend"]
+    assert runtime["context_clearing_policy"] == "idle"
+    assert runtime["context_clearing_idle_grace_seconds"] == 3600
+    assert runtime["context_idle_since_at"] is not None
+    assert runtime["context_idle_rotation_due_at"] is not None
+    assert runtime["context_rotation_pending"] is False
+    assert len(body["published_event_ids"]) == 1
+    scheduled = ScheduledInternalEventStore(
+        scheduled_internal_event_store_path(runtime_dir)
+    ).list_due(datetime.now(UTC) + timedelta(hours=2))
+    assert len(scheduled) == 1
+    assert scheduled[0].event_type == "team.agent.wake_requested"
+    assert scheduled[0].payload["agent_id"] == "backend"
+    assert scheduled[0].payload["reason"] == "idle_grace_expired"
+    assert scheduled[0].payload["context_idle_rotation_due_at"] == (
+        runtime["context_idle_rotation_due_at"]
+    )
+
+    for invalid_grace in (-1, 604801, 1.5, True):
+        invalid_response = client.patch(
+            "/api/addons/team-addon/agents/backend",
+            json={
+                "context_clearing_idle_grace_seconds": invalid_grace,
+                "expected_revision": 8,
+            },
+        )
+        assert invalid_response.status_code == 400
+
 
 def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"

@@ -140,8 +140,10 @@ from .domain.common import (
     _unique_id_from_base,
 )
 from .domain.context_rotation import (
+    _context_clearing_idle_grace_seconds_from_value,
     _maybe_mark_idle_context_rotation_due,
     _resolved_context_clearing_policy,
+    _set_context_clearing_idle_grace_seconds,
     _set_context_clearing_policy,
 )
 from .domain.deliverables import (
@@ -2087,6 +2089,8 @@ class TeamAdminService:
         set_voice_profile: bool = False,
         context_clearing_policy: AgentContextClearingPolicy | str | None = None,
         set_context_clearing_policy: bool = False,
+        context_clearing_idle_grace_seconds: int | None = None,
+        set_context_clearing_idle_grace_seconds: bool = False,
         auto_context_clearing_enabled: bool | None = None,
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
@@ -2101,6 +2105,13 @@ class TeamAdminService:
             set_context_clearing_policy=set_context_clearing_policy,
             auto_context_clearing_enabled=auto_context_clearing_enabled,
             set_auto_context_clearing_enabled=set_auto_context_clearing_enabled,
+        )
+        normalized_context_clearing_idle_grace_seconds = (
+            _context_clearing_idle_grace_seconds_from_value(
+                context_clearing_idle_grace_seconds
+            )
+            if set_context_clearing_idle_grace_seconds
+            else None
         )
 
         def _mutate(state: TeamState) -> TeamState:
@@ -2222,11 +2233,23 @@ class TeamAdminService:
                     if voice_profile is not None and voice_profile.configured
                     else None
                 )
-            if normalized_context_clearing_policy is not None:
+            if (
+                normalized_context_clearing_policy is not None
+                or normalized_context_clearing_idle_grace_seconds is not None
+            ):
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
                 )
+                if normalized_context_clearing_idle_grace_seconds is not None:
+                    _set_context_clearing_idle_grace_seconds(
+                        state,
+                        agent=agent,
+                        runtime=runtime,
+                        grace_seconds=normalized_context_clearing_idle_grace_seconds,
+                        now=now,
+                    )
+            if normalized_context_clearing_policy is not None:
                 _set_context_clearing_policy(
                     state,
                     agent=agent,

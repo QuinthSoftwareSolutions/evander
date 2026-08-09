@@ -127,6 +127,9 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.domain.case_task import TaskGitBaseValidationError
+from .services.domain.context_rotation import (
+    _append_idle_context_rotation_wake_requested_event,
+)
 from .services.domain.release_packages import ReleasePackageValidationError
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
@@ -1144,6 +1147,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 set_voice_profile="voice_profile" in payload,
                 context_clearing_policy=_optional(payload, "context_clearing_policy"),
                 set_context_clearing_policy="context_clearing_policy" in payload,
+                context_clearing_idle_grace_seconds=_optional(
+                    payload,
+                    "context_clearing_idle_grace_seconds",
+                ),
+                set_context_clearing_idle_grace_seconds=(
+                    "context_clearing_idle_grace_seconds" in payload
+                ),
                 auto_context_clearing_enabled=_optional_bool(
                     payload,
                     "auto_context_clearing_enabled",
@@ -1154,7 +1164,32 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="agents",
             target_id=agent_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        idle_wake_result: dict[str, Any] = {"events": []}
+        if (
+            "context_clearing_policy" in payload
+            or "context_clearing_idle_grace_seconds" in payload
+            or "auto_context_clearing_enabled" in payload
+        ):
+            _append_idle_context_rotation_wake_requested_event(
+                state,
+                agent_id=agent_id,
+                result=idle_wake_result,
+                now=datetime.now(UTC),
+            )
+        published_event_ids = _publish_team_events(
+            context,
+            idle_wake_result.get("events"),
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=(
+                {"published_event_ids": published_event_ids}
+                if published_event_ids
+                else None
+            ),
+        )
 
     async def create_avatar_preview(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -5322,6 +5357,9 @@ def _team_resource_value_for_token(
                     runtime.context_clearing_policy,
                 ),
                 "auto_context_clearing_enabled": runtime.auto_context_clearing_enabled,
+                "context_clearing_idle_grace_seconds": (
+                    runtime.context_clearing_idle_grace_seconds
+                ),
             }
             if runtime is not None
             else None
@@ -6704,6 +6742,14 @@ def _build_agent_voice_projection(
             "last_progress_at": _datetime_text(getattr(runtime, "last_progress_at", None)),
             "context_clearing_policy": _enum_value(
                 getattr(runtime, "context_clearing_policy", "off")
+            ),
+            "context_clearing_idle_grace_seconds": getattr(
+                runtime,
+                "context_clearing_idle_grace_seconds",
+                0,
+            ),
+            "context_idle_rotation_due_at": _datetime_text(
+                getattr(runtime, "context_idle_rotation_due_at", None)
             ),
             "auto_context_clearing_enabled": getattr(
                 runtime,

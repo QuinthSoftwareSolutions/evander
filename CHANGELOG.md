@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-09 - Team Idle Context Grace
+
+- Added a per-agent `context_clearing_idle_grace_seconds` setting for the existing `idle`
+  context-clearing policy, preserving the current context when new work arrives during a
+  continuous idle window and using the existing bounded handoff once that window expires.
+- Persisted the idle start and next expiry for reconciliation and operator visibility, scheduled
+  a precise expiry wake with the Team runtime tick as fallback, and kept a zero-second migrated
+  default so existing agents retain their current behavior.
+- Added Admin API and Team UI controls with bounds from zero through seven days; the editor
+  suggests 60 minutes when an agent is newly switched to idle clearing.
+
 ## 2026-08-09 - Local Inference Concurrency Admission
 
 - Added an optional root provider setting, `local_openai_max_concurrency`, that limits concurrent

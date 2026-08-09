@@ -491,6 +491,7 @@ class TeamRuntimeService:
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
         blocker_routing_events: list[dict[str, Any]] = []
+        idle_rotation_result: dict[str, Any] = {"events": []}
         if normalized_limit == 0:
             return self._repository.read(), leases
 
@@ -581,6 +582,14 @@ class TeamRuntimeService:
                             runtime.context_handoff_preparation_status = "timed_out"
                             runtime.next_wake_at = effective_now
                         runtime.updated_at = effective_now
+                if normalized_agent_id is None or agent.id == normalized_agent_id:
+                    _maybe_mark_idle_context_rotation_due(
+                        state_model,
+                        agent_id=agent.id,
+                        now=effective_now,
+                        result=idle_rotation_result,
+                    )
+                runtime = state_model.agent_runtimes.get(agent.id)
                 if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
                     continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
@@ -600,6 +609,7 @@ class TeamRuntimeService:
                     )
                 ):
                     teams_with_lease.add(agent.team_id)
+            blocker_routing_events.extend(idle_rotation_result.get("events") or [])
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
@@ -2246,6 +2256,7 @@ class TeamRuntimeService:
                 state,
                 agent_id=agent.id,
                 now=runtime.updated_at,
+                result=result,
             )
             _append_pending_chat_message_queued_event_for_agent(
                 state,
@@ -2352,6 +2363,17 @@ class TeamRuntimeService:
                     runtime.context_clearing_policy.value
                     if runtime is not None
                     else AgentContextClearingPolicy.OFF.value
+                ),
+                "context_clearing_idle_grace_seconds": (
+                    runtime.context_clearing_idle_grace_seconds
+                    if runtime is not None
+                    else 0
+                ),
+                "context_idle_rotation_due_at": (
+                    runtime.context_idle_rotation_due_at.isoformat()
+                    if runtime is not None
+                    and runtime.context_idle_rotation_due_at is not None
+                    else None
                 ),
                 "auto_context_clearing_enabled": (
                     runtime.auto_context_clearing_enabled if runtime is not None else False

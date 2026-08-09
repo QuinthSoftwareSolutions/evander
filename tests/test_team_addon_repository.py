@@ -7434,6 +7434,9 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
     assert "context_clearing_policy" in runtime_columns
+    assert "context_clearing_idle_grace_seconds" in runtime_columns
+    assert "context_idle_since_at" in runtime_columns
+    assert "context_idle_rotation_due_at" in runtime_columns
     assert "last_delivered_role_description_fingerprint" in runtime_columns
     assert "voice_profile_json" in agent_columns
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns

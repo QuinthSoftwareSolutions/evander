@@ -367,6 +367,7 @@ def _append_agent_wake_requested_event(
     now: datetime,
     delay_seconds: float,
     idempotency_suffix: str | None = None,
+    payload_extra: Mapping[str, Any] | None = None,
 ) -> None:
     agent = state.agents.get(agent_id)
     if agent is None or agent.status != AgentStatus.ACTIVE or agent.team_id is None:
@@ -389,6 +390,7 @@ def _append_agent_wake_requested_event(
                 "agent_id": agent.id,
                 "session_id": agent.session_id,
                 "reason": reason,
+                **dict(payload_extra or {}),
             },
         }
     )

@@ -104,7 +104,12 @@ def _mark_action_failure(
     runtime.wake_reason = None
     runtime.no_progress_count += 1
     runtime.updated_at = completed_at
-    _maybe_mark_idle_context_rotation_due(state, agent_id=agent_id, now=runtime.updated_at)
+    _maybe_mark_idle_context_rotation_due(
+        state,
+        agent_id=agent_id,
+        now=runtime.updated_at,
+        result=result,
+    )
     state.action_records[action_id] = AgentActionRecord(
         id=action_id,
         agent_id=agent_id,

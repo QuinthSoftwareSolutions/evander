@@ -11844,8 +11844,9 @@ possible.</td>
 </tr>
 <tr class="even">
 <td><code>idle</code></td>
-<td>After substantive activity, when the agent becomes truly idle,
-prepare a durable handoff and rotate on its next eligible wake.</td>
+<td>After substantive activity, when the agent becomes truly idle, wait
+for its configured continuous idle grace, then prepare a durable handoff
+and rotate before later work.</td>
 </tr>
 <tr class="odd">
 <td><code>every_wake</code></td>
@@ -11855,9 +11856,17 @@ does not make an idle agent eligible by itself.</td>
 </tbody>
 </table>
 <p>“Truly idle” means no active lease, active tasks, pending wakeable
-work, reviews, or ephemeral acceptance needing that agent. The system
-first creates a handoff summary so a new conversation does not discard
-durable orientation.</p>
+work, reviews, or ephemeral acceptance needing that agent. The per-agent
+<code>context_clearing_idle_grace_seconds</code> value can be from 0
+through 604800 seconds. Zero preserves immediate idle clearing. A
+positive value records the idle start and next expiry. Work arriving
+before the expiry cancels the idle window and retains the current
+context. Work arriving at or after the expiry waits behind the normal
+bounded handoff and fresh-context reset. A delayed wake requests
+reconciliation at the precise expiry, while the 15-minute Team runtime
+tick remains a fallback. Existing agents migrate to zero; the editor
+suggests 60 minutes when an operator switches a zero-grace agent from
+another policy to idle.</p>
 <p>The prompt labels the context lifecycle explicitly:</p>
 <table>
 <thead>
@@ -11894,13 +11903,13 @@ names, model names, and provider names do not. During a retained delta,
 <code>team_get_current_dispatch_context</code> hydrates the active
 immutable scope and its task, inbox, blocker, review, project, and Git
 records without widening membership.</p>
-<p>Manual and idle rotations also make one bounded 120-second attempt to
-resume the prior context and record a single advisory self-handoff. The
-summary is limited to 1,200 characters, is clearly separate from durable
-Team state, and cannot delay the fresh-context reset if it is missing,
-rejected, or times out. The <code>every_wake</code> policy deliberately
-skips this agent-authored step and keeps only its deterministic
-checkpoint.</p>
+<p>Manual and expired-idle rotations also make one bounded 120-second
+attempt to resume the prior context and record a single advisory
+self-handoff. The summary is limited to 1,200 characters, is clearly
+separate from durable Team state, and cannot delay the fresh-context
+reset if it is missing, rejected, or times out. The
+<code>every_wake</code> policy deliberately skips this agent-authored
+step and keeps only its deterministic checkpoint.</p>
 <p>A <code>context_handoff</code> dispatch grants only
 <code>team_record_context_handoff</code>, exactly once; ordinary Team
 reads, mutations, and messages are unavailable. The fresh reset proceeds
@@ -11915,11 +11924,12 @@ Its current operator message is exact and singular, while historical
 transcript bodies are bounded. Only a successful mutation-enabled Chat
 dispatch seeds ordinary Team context; a reply-only Chat dispatch leaves
 a pending ordinary reset intact.</p>
-<p>For Northstar, Imani might use <code>idle</code>: the telemetry
-implementation stays in one context while active, then rotates after all
-substantive work is handed off. Rowan might use <code>every_wake</code>
-for strongly isolated review passes. That does not make Rowan poll
-constantly; Rowan still needs a review or other wake reason.</p>
+<p>For Northstar, Imani might use <code>idle</code> with a 60-minute
+grace: related telemetry reviews stay in one context across short gaps,
+then rotate after a genuine break. Rowan might use
+<code>every_wake</code> for strongly isolated review passes. That does
+not make Rowan poll constantly; Rowan still needs a review or other wake
+reason.</p>
 <h2 id="stand-down">Stand-down</h2>
 <p>Stand-down is a durable operational hold, not deletion and not a
 prompt suggestion.</p>

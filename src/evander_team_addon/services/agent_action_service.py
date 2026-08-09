@@ -476,6 +476,7 @@ class TeamAgentActionService:
                             state_model,
                             agent_id=old_owner_id,
                             now=now,
+                            result=result,
                         )
                         if task.state in _NON_TERMINAL_TASK_STATES:
                             _mark_agent_work_due(
@@ -1245,6 +1246,7 @@ class TeamAgentActionService:
                 state_model,
                 agent_id=agent.id,
                 now=runtime.updated_at,
+                result=result,
             )
             _append_pending_chat_message_queued_event_for_agent(
                 state_model,

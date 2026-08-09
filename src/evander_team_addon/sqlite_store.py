@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 53
+SQLITE_SCHEMA_VERSION = 54
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -998,6 +998,24 @@ class TeamStateSqliteStore:
                     table_name="team_agent_runtimes",
                     column_name="context_clearing_policy",
                     definition="TEXT NOT NULL DEFAULT 'off'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_clearing_idle_grace_seconds",
+                    definition="INTEGER NOT NULL DEFAULT 0",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_idle_since_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_idle_rotation_due_at",
+                    definition="TEXT",
                 )
                 _ensure_column(
                     connection,
@@ -2349,6 +2367,11 @@ class TeamStateSqliteStore:
                 "low_priority_batch_cycle_count": row["low_priority_batch_cycle_count"],
                 "low_priority_batch_due_after_cycles": row["low_priority_batch_due_after_cycles"],
                 "context_clearing_policy": row["context_clearing_policy"],
+                "context_clearing_idle_grace_seconds": row[
+                    "context_clearing_idle_grace_seconds"
+                ],
+                "context_idle_since_at": row["context_idle_since_at"],
+                "context_idle_rotation_due_at": row["context_idle_rotation_due_at"],
                 "auto_context_clearing_enabled": _bool(row["auto_context_clearing_enabled"]),
                 "context_rotation_pending": _bool(row["context_rotation_pending"]),
                 "context_rotation_requested_by": row["context_rotation_requested_by"],
@@ -2380,7 +2403,8 @@ class TeamStateSqliteStore:
                     last_wake_at, next_wake_at, no_progress_count, last_progress_at,
                     low_priority_batch_started_at, low_priority_batch_cycle_count,
                     low_priority_batch_due_after_cycles,
-                    context_clearing_policy,
+                    context_clearing_policy, context_clearing_idle_grace_seconds,
+                    context_idle_since_at, context_idle_rotation_due_at,
                     auto_context_clearing_enabled, context_rotation_pending,
                     context_rotation_requested_by, context_rotation_requested_at,
                     context_rotation_reason, context_rotation_request_note,
@@ -2389,7 +2413,7 @@ class TeamStateSqliteStore:
                     last_agent_handoff_at, last_context_rotated_at, last_thread_id,
                     last_delivered_role_description_fingerprint, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2404,6 +2428,9 @@ class TeamStateSqliteStore:
                     int(runtime.get("low_priority_batch_cycle_count", 0)),
                     runtime.get("low_priority_batch_due_after_cycles"),
                     runtime.get("context_clearing_policy", "off"),
+                    int(runtime.get("context_clearing_idle_grace_seconds", 0)),
+                    runtime.get("context_idle_since_at"),
+                    runtime.get("context_idle_rotation_due_at"),
                     _int_bool(runtime.get("auto_context_clearing_enabled")),
                     _int_bool(runtime.get("context_rotation_pending")),
                     runtime.get("context_rotation_requested_by"),
@@ -7630,6 +7657,9 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     low_priority_batch_cycle_count INTEGER NOT NULL DEFAULT 0,
     low_priority_batch_due_after_cycles INTEGER,
     context_clearing_policy TEXT NOT NULL DEFAULT 'off',
+    context_clearing_idle_grace_seconds INTEGER NOT NULL DEFAULT 0,
+    context_idle_since_at TEXT,
+    context_idle_rotation_due_at TEXT,
     auto_context_clearing_enabled INTEGER NOT NULL,
     context_rotation_pending INTEGER NOT NULL,
     context_rotation_requested_by TEXT,

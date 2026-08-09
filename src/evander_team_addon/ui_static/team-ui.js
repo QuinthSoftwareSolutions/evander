@@ -526,6 +526,7 @@ const fieldTooltips = {
   "edit:agent:voice": "Base OpenAI Realtime voice used for this agent's browser calls.",
   "edit:agent:speaking_style": "Optional spoken delivery guidance appended to this agent's browser voice sessions.",
   "edit:agent:context_clearing_policy": "Controls when Team wakes start this agent with a fresh context.",
+  "edit:agent:context_clearing_idle_grace_minutes": "For idle clearing, keep the current context while new work arrives within this many continuous idle minutes. Zero preserves immediate idle clearing.",
   "edit:agent:auto_context_clearing_enabled": "Legacy setting equivalent to context clearing when idle.",
 
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
@@ -3154,6 +3155,19 @@ function bindProjectLeadSelects() {
 
 function bindAgentEditTeamScopedSelects() {
   document.addEventListener("change", (event) => {
+    const contextPolicySelect = event.target?.closest?.(
+      'select[name="context_clearing_policy"]',
+    );
+    if (
+      contextPolicySelect?.form === elements.editForm
+      && text(elements.editForm?.dataset.editType) === "agent"
+      && text(contextPolicySelect.value) === "idle"
+    ) {
+      const graceInput = contextPolicySelect.form.elements.context_clearing_idle_grace_minutes;
+      if (graceInput && numberOrZero(graceInput.value) === 0) {
+        graceInput.value = "60";
+      }
+    }
     const teamSelect = event.target?.closest?.('select[name="team_id"]');
     if (!teamSelect || teamSelect.form !== elements.editForm) {
       return;
@@ -7234,6 +7248,7 @@ function renderRuntimeAgentRow(agent) {
   const handoffPreparationStatus = runtimeText(agent.context_handoff_preparation_status);
   const contextPolicy = contextClearingPolicyValue(agent);
   const lastRotated = runtimeText(agent.last_context_rotated_at);
+  const idleRotationDue = runtimeText(agent.context_idle_rotation_due_at);
   const handoffSummary = text(agent.last_handoff_summary);
   return `
     <li class="record-item runtime-item runtime-agent-item">
@@ -7249,7 +7264,7 @@ function renderRuntimeAgentRow(agent) {
       <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}</div>
+      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : idleRotationDue ? `idle grace until ${idleRotationDue}` : "not pending")} - Last rotated ${escapeHtml(lastRotated)}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}</div>
       ${
         handoffSummary
           ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey(activeTeamView, "runtime-agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
@@ -7274,6 +7289,7 @@ function renderCompactRuntimeAgentRow(agent) {
   const contextPending = Boolean(agent.context_rotation_pending);
   const contextPolicy = contextClearingPolicyValue(agent);
   const lastRotated = runtimeText(agent.last_context_rotated_at);
+  const idleRotationDue = runtimeText(agent.context_idle_rotation_due_at);
   const handoffSummary = text(agent.last_handoff_summary);
   const flags = [
     sessionStatus.isExpired ? "session expired" : "",
@@ -7302,7 +7318,7 @@ function renderCompactRuntimeAgentRow(agent) {
           </div>
           <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
           <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-          <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+          <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : idleRotationDue ? `idle grace until ${idleRotationDue}` : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
           ${
             handoffSummary
               ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey("operations", "agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
@@ -8719,6 +8735,11 @@ function contextClearingPolicyValue(runtime) {
 
 function contextClearingPolicyLabel(policy) {
   return contextClearingPolicyLabels[text(policy)] || "Off";
+}
+
+function contextClearingIdleGraceMinutesForEdit(runtime) {
+  const configuredSeconds = numberOrZero(runtime?.context_clearing_idle_grace_seconds);
+  return configuredSeconds / 60;
 }
 
 function teamInlineCreateKey(teamId, kind) {
@@ -10461,7 +10482,7 @@ function agentRuntimeDetailRows(details) {
     rows.push(
       `Context clearing ${contextClearingPolicyLabel(runtime.contextClearingPolicy)}${
         runtime.contextRotationPending ? " - pending" : ""
-      }`,
+      }${runtime.contextIdleRotationDueAt ? ` - idle grace until ${runtime.contextIdleRotationDueAt}` : ""}`,
     );
   }
   if (runtime.contextClearingPolicy !== "every_wake") {
@@ -10824,8 +10845,10 @@ function runtimeSummary(agentId) {
       lowPriorityBatchCycleCount: 0,
       lowPriorityBatchDueAfterCycles: null,
       contextClearingPolicy: "off",
+      contextClearingIdleGraceSeconds: 0,
       autoContextClearingEnabled: false,
       contextRotationPending: false,
+      contextIdleRotationDueAt: null,
       lastContextRotatedAt: null,
       inputTokensSinceContextReset: null,
       lastHandoffSummary: null,
@@ -10841,6 +10864,10 @@ function runtimeSummary(agentId) {
   const lowPriorityBatchDueAfterCycles = numberOrNull(runtime.low_priority_batch_due_after_cycles);
   const contextRotationPending = Boolean(runtime.context_rotation_pending);
   const contextClearingPolicy = contextClearingPolicyValue(runtime);
+  const contextClearingIdleGraceSeconds = numberOrZero(
+    runtime.context_clearing_idle_grace_seconds,
+  );
+  const contextIdleRotationDueAt = text(runtime.context_idle_rotation_due_at);
   const autoContextClearingEnabled = contextClearingPolicy !== "off";
   const lastContextRotatedAt = text(runtime.last_context_rotated_at);
   const inputTokensSinceContextReset = numberOrNull(
@@ -10867,6 +10894,8 @@ function runtimeSummary(agentId) {
   }
   if (contextRotationPending) {
     parts.push("context clearing pending");
+  } else if (contextIdleRotationDueAt) {
+    parts.push(`idle context grace until ${contextIdleRotationDueAt}`);
   }
   if (lastContextRotatedAt && contextClearingPolicy !== "every_wake") {
     parts.push(`last context reset ${lastContextRotatedAt}`);
@@ -10884,8 +10913,10 @@ function runtimeSummary(agentId) {
     lowPriorityBatchCycleCount,
     lowPriorityBatchDueAfterCycles,
     contextClearingPolicy,
+    contextClearingIdleGraceSeconds,
     autoContextClearingEnabled,
     contextRotationPending,
+    contextIdleRotationDueAt: contextIdleRotationDueAt || null,
     lastContextRotatedAt: lastContextRotatedAt || null,
     inputTokensSinceContextReset,
     lastHandoffSummary: text(runtime.last_handoff_summary) || null,
@@ -23137,6 +23168,9 @@ function renderEditFields(type, record) {
   if (type === "agent") {
     const runtime = state.agent_runtimes?.[record.id] || {};
     const contextPolicy = contextClearingPolicyValue(runtime);
+    const contextIdleGraceMinutes = contextClearingIdleGraceMinutesForEdit(
+      runtime,
+    );
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
@@ -23150,6 +23184,7 @@ function renderEditFields(type, record) {
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
       ${selectField("Context clearing", "context_clearing_policy", "context-clearing-policies", contextPolicy, { required: true })}
+      ${numberField("Idle grace minutes", "context_clearing_idle_grace_minutes", contextIdleGraceMinutes, { min: 0, max: 10080, step: "any", required: true })}
     `;
   }
   if (type === "role") {
@@ -23365,6 +23400,9 @@ function editPayloadForForm(type, form) {
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
       status: text(data.status),
       context_clearing_policy: text(data.context_clearing_policy) || "off",
+      context_clearing_idle_grace_seconds: Math.round(
+        numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
+      ),
     };
     if (selectedProjectId !== currentProjectId) {
       payload.project_id = selectedProjectId || null;
@@ -23473,8 +23511,8 @@ function textField(label, name, value, { required = false, placeholder = "" } = 
   return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" value="${escapeAttr(value)}"${required ? " required" : ""}${placeholder ? ` placeholder="${escapeAttr(placeholder)}"` : ""} /></label>`;
 }
 
-function numberField(label, name, value, { min = null, step = null, required = false } = {}) {
-  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${step !== null ? ` step="${escapeAttr(step)}"` : ""}${required ? " required" : ""} /></label>`;
+function numberField(label, name, value, { min = null, max = null, step = null, required = false } = {}) {
+  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${max !== null ? ` max="${escapeAttr(max)}"` : ""}${step !== null ? ` step="${escapeAttr(step)}"` : ""}${required ? " required" : ""} /></label>`;
 }
 
 function textareaField(label, name, value, { rows = 3, required = false, placeholder = "" } = {}) {

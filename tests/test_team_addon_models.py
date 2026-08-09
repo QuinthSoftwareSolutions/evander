@@ -1115,6 +1115,22 @@ def test_agent_runtime_maps_legacy_auto_context_clearing_to_idle_policy() -> Non
     assert runtime.context_clearing_policy == AgentContextClearingPolicy.IDLE
     assert runtime.auto_context_clearing_enabled is True
     assert runtime.model_dump(mode="json")["context_clearing_policy"] == "idle"
+    assert runtime.context_clearing_idle_grace_seconds == 0
+
+
+def test_agent_runtime_validates_idle_context_grace_bounds() -> None:
+    runtime = AgentRuntime(
+        agent_id="backend",
+        context_clearing_idle_grace_seconds=604800,
+    )
+
+    assert runtime.model_dump(mode="json")[
+        "context_clearing_idle_grace_seconds"
+    ] == 604800
+    with pytest.raises(ValidationError):
+        AgentRuntime(agent_id="backend", context_clearing_idle_grace_seconds=-1)
+    with pytest.raises(ValidationError):
+        AgentRuntime(agent_id="backend", context_clearing_idle_grace_seconds=604801)
 
 
 def test_team_state_payload_includes_derived_task_fields() -> None:

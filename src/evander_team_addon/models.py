@@ -947,6 +947,9 @@ class AgentRuntime(TeamModel):
     low_priority_batch_cycle_count: int = Field(default=0, ge=0)
     low_priority_batch_due_after_cycles: int | None = Field(default=None, ge=0)
     context_clearing_policy: AgentContextClearingPolicy = AgentContextClearingPolicy.OFF
+    context_clearing_idle_grace_seconds: int = Field(default=0, ge=0, le=604800)
+    context_idle_since_at: datetime | None = None
+    context_idle_rotation_due_at: datetime | None = None
     auto_context_clearing_enabled: bool = False
     context_rotation_pending: bool = False
     context_rotation_requested_by: str | None = None
@@ -7455,6 +7458,15 @@ def _runtime_agent_payload(
             runtime.context_clearing_policy.value
             if runtime is not None
             else AgentContextClearingPolicy.OFF.value
+        ),
+        "context_clearing_idle_grace_seconds": (
+            runtime.context_clearing_idle_grace_seconds if runtime is not None else 0
+        ),
+        "context_idle_since_at": _json_datetime(
+            runtime.context_idle_since_at if runtime is not None else None
+        ),
+        "context_idle_rotation_due_at": _json_datetime(
+            runtime.context_idle_rotation_due_at if runtime is not None else None
         ),
         "auto_context_clearing_enabled": (
             runtime.auto_context_clearing_enabled if runtime is not None else False
