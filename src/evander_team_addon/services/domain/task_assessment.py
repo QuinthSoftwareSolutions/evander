@@ -1523,9 +1523,13 @@ def _local_lifecycle_invalid_reason_codes(
     if orphaned_active_deliverables:
         invalid.add("active_deliverable_without_acceptance_path")
 
-    if contribution_coverage.get("status") == "incomplete" and any(
-        deliverable.state in _CURRENT_COMPOSITION_STATES
-        for deliverable in current_deliverables
+    if (
+        task.state != TeamTaskState.CANCELLED
+        and contribution_coverage.get("status") == "incomplete"
+        and any(
+            deliverable.state in _CURRENT_COMPOSITION_STATES
+            for deliverable in current_deliverables
+        )
     ):
         invalid.add("aggregate_deliverable_contribution_invalid")
     return invalid
@@ -1595,10 +1599,10 @@ def _task_resolution_reason(
     current_deliverables: Sequence[Deliverable],
 ) -> str | None:
     del state
-    if _pending_accepted_deliverable_rework_ids(current_deliverables):
-        return None
     if task.state == TeamTaskState.CANCELLED:
         return "cancelled_by_authorized_disposition"
+    if _pending_accepted_deliverable_rework_ids(current_deliverables):
+        return None
     if task.integration_boundary and task.state in {
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,

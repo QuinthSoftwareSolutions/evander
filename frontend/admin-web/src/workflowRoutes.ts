@@ -70,6 +70,18 @@ export function workflowOutputPortsForNode(
   return outputPorts;
 }
 
+/**
+ * The workflow runtime can route any failed node through its standard `error`
+ * port even when that port is not part of the node's configurable catalog ports.
+ * Keep a physical React Flow handle available so persisted error edges render.
+ */
+export function workflowOutputHandleIds(
+  outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
+): string[] {
+  const outputPortIds = outputPorts.map((port) => port.key);
+  return outputPortIds.includes("error") ? outputPortIds : [...outputPortIds, "error"];
+}
+
 export function workflowEdgeRouteLabel(
   sourcePort: string | null | undefined,
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,

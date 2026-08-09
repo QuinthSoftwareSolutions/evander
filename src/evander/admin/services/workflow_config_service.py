@@ -1137,6 +1137,7 @@ class WorkflowConfigAdminService:
         *,
         raw_config: dict[str, object],
         pack_payload: dict[str, object],
+        layout_payload: dict[str, object] | None = None,
         overwrite_existing: bool,
         operation: str,
         actor: WorkflowPackChangeActor | None = None,
@@ -1156,6 +1157,19 @@ class WorkflowConfigAdminService:
         )
         pack_path = self._workflow_editor_pack_path(reference)
         layout_path = self._workflow_editor_pack_layout_path(reference)
+        normalized_layout: dict[str, object] | None = None
+        if layout_payload is not None:
+            node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
+            normalized_layout = self._validate_workflow_editor_layout(
+                layout_payload,
+                node_ids=node_ids,
+            )
+            missing_node_ids = sorted(node_ids.difference(normalized_layout["nodes"]))
+            if missing_node_ids:
+                raise ValueError(
+                    "Workflow pack layout must position every node ID: "
+                    + ", ".join(missing_node_ids)
+                )
         configured_references = self._workflow_editor_configured_pack_references(raw_config)
         existing_pack = pack_path.exists()
         if existing_pack and not overwrite_existing:
@@ -1171,6 +1185,8 @@ class WorkflowConfigAdminService:
         if write_pack:
             pack_path.parent.mkdir(parents=True, exist_ok=True)
             self._write_json_file_atomic(pack_path, normalized_payload)
+            if normalized_layout is not None:
+                self._write_json_file_atomic(layout_path, normalized_layout)
 
         wrote_config = False
         next_config = dict(raw_config)
@@ -1887,12 +1903,22 @@ class WorkflowConfigAdminService:
                 project_dir=self.project_dir,
                 workflow_packs=[normalized_reference],
             )
+            pack_config = self._workflow_editor_config_for_pack_composition(
+                raw_config=raw_config,
+                composition=composition,
+            )
             for collection_name in ("triggers", "gates", "effects", "queries"):
                 full_config[collection_name].extend(
                     dict(entry) for entry in getattr(composition, collection_name)
                 )
             full_config["edges"].extend(dict(edge) for edge in composition.edges)
-            combined_graphs.extend(graph.model_dump(mode="json") for graph in composition.graphs)
+            combined_graphs.extend(
+                graph.model_dump(mode="json")
+                for graph in self._workflow_editor_graphs_for_config(
+                    config=pack_config,
+                    graphs=[graph.model_dump(mode="json") for graph in composition.graphs],
+                )
+            )
 
         self._validate_workflow_editor_document(
             config=full_config,

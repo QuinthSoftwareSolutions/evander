@@ -419,6 +419,57 @@ def test_support_outcome_noop_and_cancellation_have_distinct_valid_resolutions()
     )
 
 
+def test_cancelled_legacy_aggregate_ignores_stale_contribution_coverage() -> None:
+    state = _state()
+    cancelled_payload = _support_task("aggregate").model_dump()
+    cancelled_payload.update(
+        state=TeamTaskState.CANCELLED,
+        cancellation=TaskCancellation(
+            reason_code="operator_release_abandoned",
+            reason="The rejected release no longer needs a correction.",
+            actor_kind="operator",
+            actor_id="operator:test",
+        ),
+    )
+    state.tasks["aggregate"] = AgentTask.model_validate(cancelled_payload)
+    state.tasks["older-child"] = _support_task(
+        "older-child",
+        state=TeamTaskState.FINISHED,
+        parent_task_id="aggregate",
+    )
+    state.tasks["newer-child"] = _support_task(
+        "newer-child",
+        state=TeamTaskState.FINISHED,
+        parent_task_id="aggregate",
+    )
+    older_deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-older-child",
+        task_id="older-child",
+    )
+    _delivered(
+        state,
+        deliverable_id="deliverable-newer-child",
+        task_id="newer-child",
+    )
+    aggregate_deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-aggregate",
+        task_id="aggregate",
+        source_deliverable_ids=[older_deliverable.id],
+    )
+    aggregate_deliverable.rework_requested_at = utc_now()
+    aggregate_deliverable.rework_requested_by_agent_id = "reviewer"
+    aggregate_deliverable.rework_reason = "A later finding requested correction."
+
+    assessment = assess_task(state, "aggregate")
+
+    assert assessment.contribution_coverage["status"] == "incomplete"
+    assert assessment.invalid_reason_codes == []
+    assert assessment.resolution_status == TaskResolutionStatus.RESOLVED
+    assert assessment.resolution_reason == "cancelled_by_authorized_disposition"
+
+
 def test_finish_boundary_assesses_proposed_dependencies() -> None:
     state = _state()
     state.tasks["task"] = _support_task("task")

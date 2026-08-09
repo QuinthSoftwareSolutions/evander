@@ -979,5 +979,74 @@ def _ir_node_from_legacy_node(node: dict[str, Any]) -> dict[str, Any]:
 TEAM_RUNTIME_V1: dict[str, Any] = _pack_from_legacy_config(_TEAM_RUNTIME_V1_LEGACY)
 
 
+_TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
+    ("team-agent-run-completed", 0.0, -80.0),
+    ("team-agent-wake-requested", 0.0, 520.0),
+    ("team-chat-message-queued", 0.0, 180.0),
+    ("team-completed-ephemeral", 720.0, 20.0),
+    ("team-completed-persistent", 720.0, -140.0),
+    ("team-consolidate-correction-branches", 720.0, 1360.0),
+    ("team-consolidate-feature-branches", 720.0, 1240.0),
+    ("team-consolidate-release-branches", 720.0, 1480.0),
+    ("team-create-ephemeral-agent", 360.0, 820.0),
+    ("team-cron", 0.0, -320.0),
+    ("team-destroy-ephemeral-agent", 1080.0, 20.0),
+    ("team-ephemeral-requested", 0.0, 820.0),
+    ("team-ephemeral-spawned", 1080.0, 820.0),
+    ("team-external-chat-reply-requested", 0.0, 340.0),
+    ("team-finalize-persistent-dispatch", 1080.0, -140.0),
+    ("team-git-promote-review-branch", 720.0, 1120.0),
+    ("team-git-promotion-canonical", 360.0, 1600.0),
+    ("team-git-promotion-correction-aggregate", 360.0, 1360.0),
+    ("team-git-promotion-feature", 360.0, 1240.0),
+    ("team-git-promotion-release", 360.0, 1480.0),
+    ("team-git-promotion-requested", 0.0, 1240.0),
+    ("team-git-promotion-review", 360.0, 1120.0),
+    ("team-git-release-recovery-requested", 0.0, 1940.0),
+    ("team-governance-wake-requested", 0.0, 640.0),
+    ("team-mark-ephemeral-cleaned-up", 1440.0, 20.0),
+    ("team-mark-ephemeral-spawned", 720.0, 820.0),
+    ("team-mark-release-published", 1440.0, 1600.0),
+    ("team-notify-operator", 360.0, 1000.0),
+    ("team-operator-escalation", 0.0, 1000.0),
+    ("team-outbox-publish-requested", 0.0, 40.0),
+    ("team-promote-release-recovery-branch", 360.0, 1940.0),
+    ("team-prompt-ephemeral-agent", 1440.0, 820.0),
+    ("team-publish-outbox-after-dispatch", 1440.0, -140.0),
+    ("team-publish-outbox-events", 360.0, -240.0),
+    ("team-publish-outbox-on-request", 360.0, 40.0),
+    ("team-push-canonical-branch", 720.0, 1600.0),
+    ("team-record-canonical-promotion", 1080.0, 1600.0),
+    ("team-record-correction-aggregate-promotion", 1080.0, 1360.0),
+    ("team-record-external-chat-delivery", 720.0, 300.0),
+    ("team-record-external-chat-delivery-failure", 720.0, 400.0),
+    ("team-record-feature-promotion", 1080.0, 1240.0),
+    ("team-record-release-promotion", 1080.0, 1480.0),
+    ("team-record-release-recovery-promotion", 720.0, 1940.0),
+    ("team-record-review-promotion", 1080.0, 1120.0),
+    ("team-release-verification-requested", 0.0, 1800.0),
+    ("team-route-completed-session", 360.0, -80.0),
+    ("team-send-external-chat-reply", 360.0, 340.0),
+    ("team-verify-release-candidate", 360.0, 1800.0),
+    ("team-wake-due-agents", 360.0, -400.0),
+    ("team-wake-governance-managers", 360.0, -320.0),
+    ("team-wake-queued-chat-message", 360.0, 180.0),
+    ("team-wake-requested-agent", 360.0, 520.0),
+    ("team-wake-requested-governance", 360.0, 640.0),
+)
+
+TEAM_RUNTIME_V1_LAYOUT: dict[str, Any] = {
+    "nodes": {
+        node_id: {"x": x, "y": y}
+        for node_id, x, y in _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS
+    }
+}
+
+
 def team_runtime_v1() -> dict[str, Any]:
     return deepcopy(TEAM_RUNTIME_V1)
+
+
+def team_runtime_v1_layout() -> dict[str, Any]:
+    """Return complete deterministic positions for the Team Runtime workflow pack."""
+    return deepcopy(TEAM_RUNTIME_V1_LAYOUT)

@@ -28,6 +28,9 @@ def register_addon() -> AddonRegistration:
             "description": "Hierarchical team state model for optional agent-team orchestration.",
             "state_file": STATE_FILE,
             "runtime_workflow_pack": "evander_team_addon.workflow_packs.team_runtime_v1",
+            "runtime_workflow_pack_layout": (
+                "evander_team_addon.workflow_packs.team_runtime_v1_layout"
+            ),
         },
     )
 

@@ -9343,6 +9343,14 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     pack_a_payload = {
         "pack_id": "pack-a",
         "pack_version": "v1",
+        "graphs": [
+            {
+                "id": "legacy-graph-a",
+                "name": "Legacy Graph A",
+                "directory_path": "root",
+                "node_ids": ["trigger-a", "trigger-a-sibling"],
+            }
+        ],
         "ir": {
             "version": "v1",
             "nodes": [
@@ -9351,7 +9359,13 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
                     "display_name": "Every minute",
                     "type": "trigger:cron",
                     "expression": "* * * * *",
-                }
+                },
+                {
+                    "id": "trigger-a-sibling",
+                    "display_name": "Every five minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/5 * * * *",
+                },
             ],
             "edges": [],
         },

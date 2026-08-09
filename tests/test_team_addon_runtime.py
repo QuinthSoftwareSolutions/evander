@@ -191,12 +191,28 @@ from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
 )
-from evander_team_addon.workflow_packs import team_runtime_v1
+from evander_team_addon.workflow_packs import team_runtime_v1, team_runtime_v1_layout
 
 ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
     *ORDINARY_TEAM_MCP_TOOL_NAMES,
     *READ_TEAM_MCP_TOOL_NAMES,
 )
+
+
+def test_team_runtime_pack_layout_positions_every_runtime_node() -> None:
+    pack = WorkflowPack.model_validate(team_runtime_v1())
+    layout = team_runtime_v1_layout()
+    nodes = layout["nodes"]
+    assert isinstance(nodes, dict)
+
+    node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
+    assert set(nodes) == node_ids
+    assert len({(position["x"], position["y"]) for position in nodes.values()}) == len(
+        node_ids
+    )
+    assert nodes["team-consolidate-correction-branches"] == {"x": 720.0, "y": 1360.0}
+    assert nodes["team-publish-outbox-on-request"] == {"x": 360.0, "y": 40.0}
+    assert nodes["team-record-release-recovery-promotion"] == {"x": 720.0, "y": 1940.0}
 
 
 def test_project_git_identity_defaults_to_evander_bot() -> None:

@@ -41,6 +41,32 @@
 - Stored capability blocker identity structurally so valid delimiter-bearing IDs remain safe, and
   started transport evidence at the confirmed policy-grant time.
 
+## 2026-08-07 - Trudy Discord Team Chat Bridge
+
+- Added a mutation-capable, author-restricted Discord bridge that queues messages for Trudy through the normal Team Chat lease, scope, transcript, and reply lifecycle.
+
+## 2026-08-07 - Cancelled Aggregate Assessment Reconciliation
+
+- Kept authorized task cancellation resolved when an abandoned historical aggregate deliverable
+  has stale contribution metadata or a pre-cancellation rework request, without rewriting its
+  accepted provenance or creating successor work.
+
+## 2026-08-07 - Legacy Workflow Pack Graph Validation
+
+- Normalized unchanged legacy workflow-pack graph metadata before validating a save to another
+  pack, so unrelated disconnected graphs no longer reject an otherwise valid workflow edit.
+
+## 2026-08-07 - Add-on Workflow Layout Regeneration
+
+- Made Team Runtime add-on materialization supply a complete, validated node layout and replace
+  the layout alongside the pack on refresh, preventing new or stale nodes from falling back into
+  the workflow editor's default overlapping position.
+
+## 2026-08-07 - Workflow Error Route Rendering
+
+- Added a standard canvas handle for each workflow node's runtime error route, so persisted
+  error-path edges render even when their catalog entry has no configurable error output.
+
 ## 2026-08-07 - Safe Batched Team Chat Reply Validation
 
 - Rejected agent chat replies with neither a non-empty `message_ids` batch nor a legacy
