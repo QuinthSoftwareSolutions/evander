@@ -4,6 +4,8 @@
 
 - Added reset-bounded input-token totals and the latest completed reset time to selected Team
   agents, while excluding agents that reset context on every wake.
+- Rebased token boundaries when agents move to another session and report usage as unavailable
+  whenever any post-reset request lacks normalized token counts.
 
 ## 2026-08-09 - Review MCP Capability Receipts
 

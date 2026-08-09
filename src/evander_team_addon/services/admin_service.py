@@ -2201,7 +2201,15 @@ class TeamAdminService:
                             assignment.role_id = role.id
                             assignment.updated_at = now
             if session_id is not None:
+                session_changed = session_id != agent.session_id
                 agent.session_id = session_id
+                if session_changed:
+                    runtime = state.agent_runtimes.setdefault(
+                        agent.id,
+                        AgentRuntime(agent_id=agent.id),
+                    )
+                    runtime.last_context_rotated_at = now
+                    runtime.updated_at = now
             if set_display_name:
                 agent.display_name = display_name
             if ephemeral_policy is not None:

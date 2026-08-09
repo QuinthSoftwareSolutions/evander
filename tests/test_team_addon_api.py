@@ -6766,7 +6766,7 @@ def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) ->
     runtimes = response.json()["agent_runtimes"]
     assert runtimes["backend"]["last_context_rotated_at"] == "2026-06-16T12:00:00Z"
     assert runtimes["backend"]["context_reset_usage"] == {
-        "input_tokens_since_reset": 16,
+        "input_tokens_since_reset": None,
     }
     assert runtimes["lead"]["context_reset_usage"] == {
         "input_tokens_since_reset": 11,
@@ -6779,7 +6779,60 @@ def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) ->
 
     assert people_response.status_code == 200
     people_runtime = people_response.json()["data"]["state"]["agent_runtimes"]["backend"]
-    assert people_runtime["context_reset_usage"]["input_tokens_since_reset"] == 16
+    assert people_runtime["context_reset_usage"]["input_tokens_since_reset"] is None
+
+
+def test_team_addon_state_rebases_reset_usage_when_agent_session_changes(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    old_boundary = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+
+    def _set_old_boundary(state):
+        state.agent_runtimes["backend"].last_context_rotated_at = old_boundary
+        return state
+
+    repo.update(_set_old_boundary)
+    unchanged = _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        session_id="session-backend",
+    )
+    assert unchanged.agent_runtimes["backend"].last_context_rotated_at == old_boundary
+
+    reassigned = _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        session_id="session-destination",
+    )
+    rebased_at = reassigned.agent_runtimes["backend"].last_context_rotated_at
+    assert rebased_at is not None
+    assert rebased_at > old_boundary
+
+    usage_store = ModelUsageStore(runtime_dir / "model-usage.db")
+    for event_id, occurred_at, input_tokens in (
+        ("destination-history", rebased_at - timedelta(seconds=1), 100),
+        ("destination-current", rebased_at + timedelta(seconds=1), 7),
+    ):
+        usage_store.upsert_event(
+            ModelInferenceUsageEvent(
+                event_id=event_id,
+                occurred_at=occurred_at,
+                provider="openai",
+                provider_endpoint_identifier="responses",
+                input_tokens=input_tokens,
+                request_status="success",
+                normalized_usage_status="available",
+                raw_usage_metadata={},
+                session_id="session-destination",
+            )
+        )
+
+    response = _client(tmp_path).get("/api/addons/team-addon/state")
+
+    assert response.status_code == 200
+    runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["last_context_rotated_at"] == rebased_at.isoformat().replace("+00:00", "Z")
+    assert runtime["context_reset_usage"] == {"input_tokens_since_reset": 7}
 
 
 def test_team_addon_state_omits_reset_usage_for_every_wake_agents(tmp_path: Path) -> None:
