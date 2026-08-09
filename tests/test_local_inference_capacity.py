@@ -71,3 +71,79 @@ def test_local_inference_capacity_reclaims_only_stale_launching_claims(
 
     assert replacement.admitted is True
     assert replacement.slot_id != stale.slot_id
+
+
+def test_local_inference_capacity_reconciles_only_authoritatively_terminal_runs(
+    tmp_path: Path,
+) -> None:
+    store = LocalInferenceCapacityStore(tmp_path)
+    terminal = store.claim(
+        max_concurrency=3,
+        owner_id="terminal",
+        model="qwen3.6:27b",
+        target_name="vm-terminal",
+    )
+    active = store.claim(
+        max_concurrency=3,
+        owner_id="active",
+        model="qwen3.6:27b",
+        target_name="vm-active",
+    )
+    indeterminate = store.claim(
+        max_concurrency=3,
+        owner_id="indeterminate",
+        model="qwen3.6:27b",
+        target_name="vm-indeterminate",
+    )
+    for admission in (terminal, active, indeterminate):
+        assert store.mark_running(admission.slot_id) is True
+
+    reconciled = store.reconcile_running(
+        lambda lease: {
+            "vm-terminal": False,
+            "vm-active": True,
+            "vm-indeterminate": None,
+        }[str(lease.target_name)],
+        minimum_age_seconds=0,
+    )
+
+    assert reconciled == 1
+    remaining = store.read_all()
+    assert terminal.slot_id not in remaining
+    assert active.slot_id in remaining
+    assert indeterminate.slot_id in remaining
+
+
+def test_local_inference_capacity_keeps_running_lease_when_reconciliation_fails(
+    tmp_path: Path,
+) -> None:
+    store = LocalInferenceCapacityStore(tmp_path)
+    admission = store.claim(
+        max_concurrency=1,
+        owner_id="active",
+        model="qwen3.6:27b",
+    )
+    assert store.mark_running(admission.slot_id) is True
+
+    assert store.reconcile_running(
+        lambda _lease: (_ for _ in ()).throw(RuntimeError("backend unavailable")),
+        minimum_age_seconds=0,
+    ) == 0
+    assert admission.slot_id in store.read_all()
+
+
+def test_local_inference_capacity_does_not_reconcile_fresh_running_lease(
+    tmp_path: Path,
+) -> None:
+    store = LocalInferenceCapacityStore(tmp_path)
+    now = datetime(2026, 8, 9, 10, 0, tzinfo=UTC)
+    admission = store.claim(
+        max_concurrency=1,
+        owner_id="fresh-run",
+        model="qwen3.6:27b",
+        now=now,
+    )
+    assert store.mark_running(admission.slot_id, now=now) is True
+
+    assert store.reconcile_running(lambda _lease: False, now=now) == 0
+    assert admission.slot_id in store.read_all()

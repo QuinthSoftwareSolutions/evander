@@ -4504,12 +4504,12 @@ def test_logs_accepts_custom_initial_tail_line_count(tmp_path: Path, monkeypatch
     assert captured_cmd[1:] == ["12305", "25", "", "debugger"]
 
 
-def test_resume_agent_invokes_script_with_message_and_issue_number(
+def test_resume_agent_routes_issue_target_through_queue_aware_admin_service(
     tmp_path: Path, monkeypatch
 ) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
-    captured_cmd: list[str] = []
+    captured: dict[str, object] = {}
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
@@ -4530,19 +4530,25 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(
         == 0
     )
 
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool,
-        text: bool,
-        env: dict[str, str],
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal captured_cmd
-        captured_cmd = cmd
-        assert env["AGENT_MODEL"] == "gpt-5.2-codex"
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
+    service = SimpleNamespace(
+        resolve_agent_model_for_target=lambda _target: "gpt-5.2-codex",
+        enqueue_agent_prompt=lambda target, prompt, **kwargs: (
+            captured.update(target=target, prompt=prompt, **kwargs)
+            or VmActionResult(
+                success=True,
+                vm_name="vm-12305",
+                action="prompt-agent",
+                message="Dispatched prompt to vm-12305",
+            )
+        ),
+    )
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
+    monkeypatch.setattr(
+        "evander.cli.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resume-agent must not invoke the resume script directly")
+        ),
+    )
 
     result = runner.invoke(
         app,
@@ -4557,16 +4563,20 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(
     )
 
     assert result.exit_code == 0
-    assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
-    assert captured_cmd[1:4] == ["Continue from the failing restore", "12305", "agent"]
-    assert captured_cmd[4] == "--host-control-state-path"
-    assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
+    assert captured == {
+        "target": "issue-12305-session",
+        "prompt": "Continue from the failing restore",
+        "model": "gpt-5.2-codex",
+        "vm_user": "agent",
+    }
 
 
-def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, monkeypatch) -> None:
+def test_resume_agent_observe_tails_logs_only_after_admitted_dispatch(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
-    captured_cmd: list[str] = []
+    captured: dict[str, object] = {}
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
@@ -4587,15 +4597,23 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
         == 0
     )
 
-    def fake_run(
-        cmd: list[str], check: bool, env: dict[str, str]
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal captured_cmd
-        captured_cmd = cmd
-        assert env["AGENT_MODEL"] == "gpt-5.2-codex"
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
+    service = SimpleNamespace(
+        resolve_agent_model_for_target=lambda _target: "gpt-5.2-codex",
+        enqueue_agent_prompt=lambda target, prompt, **kwargs: (
+            captured.update(target=target, prompt=prompt, **kwargs)
+            or VmActionResult(
+                success=True,
+                vm_name="vm-12305",
+                action="prompt-agent",
+                message="Dispatched prompt to vm-12305",
+            )
+        ),
+    )
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
+    monkeypatch.setattr(
+        "evander.cli._run_subprocess_compat",
+        lambda cmd, **kwargs: captured.update(log_cmd=cmd, log_kwargs=kwargs),
+    )
 
     result = runner.invoke(
         app,
@@ -4615,17 +4633,21 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
     )
 
     assert result.exit_code == 0
-    assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
-    assert captured_cmd[1:4] == ["Continue from the failing restore", "12305", "debugger"]
-    assert captured_cmd[4] == "--host-control-state-path"
-    assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
-    assert captured_cmd[6:] == ["--observe", "25"]
+    assert captured["target"] == "issue-12305-session"
+    assert captured["vm_user"] == "debugger"
+    assert str(captured["log_cmd"][0]).endswith("/scripts/tail_issue_vm_log.sh")
+    assert captured["log_cmd"][1:] == ["12305", "25", "", "debugger"]
+    assert captured["log_kwargs"] == {
+        "check": True,
+        "capture_output": False,
+        "text": False,
+    }
 
 
 def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
-    captured_cmd: list[str] = []
+    captured: dict[str, object] = {}
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
     assert (
@@ -4645,19 +4667,19 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         == 0
     )
 
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool,
-        text: bool,
-        env: dict[str, str],
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal captured_cmd
-        captured_cmd = cmd
-        assert env["AGENT_MODEL"] == "gpt-5.4"
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
+    service = SimpleNamespace(
+        resolve_agent_model_for_target=lambda _target: "gpt-5.4",
+        enqueue_agent_prompt=lambda target, prompt, **kwargs: (
+            captured.update(target=target, prompt=prompt, **kwargs)
+            or VmActionResult(
+                success=True,
+                vm_name="evander-receptionist-vm",
+                action="prompt-agent",
+                message="Dispatched prompt to evander-receptionist-vm",
+            )
+        ),
+    )
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
 
     result = runner.invoke(
         app,
@@ -4672,17 +4694,66 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
     )
 
     assert result.exit_code == 0
-    assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
-    assert captured_cmd[1:] == [
-        "--prompt",
-        "Continue from Discord",
-        "--vm-name",
-        "evander-receptionist-vm",
-        "--vm-user",
-        "agent",
-        "--host-control-state-path",
-        str(tmp_path / "runtime" / "host-agent-control-state.json"),
-    ]
+    assert captured == {
+        "target": "evander-receptionist-vm-20260330T112127Z-1353036",
+        "prompt": "Continue from Discord",
+        "model": "gpt-5.4",
+        "vm_user": "agent",
+    }
+
+
+def test_resume_agent_reports_capacity_queued_result_without_observing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "create-session",
+            "--config",
+            str(config_path),
+            "--vm-id",
+            "vm-12305",
+            "--model",
+            "local-model",
+            "issue-12305-session",
+        ],
+    ).exit_code == 0
+    service = SimpleNamespace(
+        resolve_agent_model_for_target=lambda _target: "local-model",
+        enqueue_agent_prompt=lambda *_args, **_kwargs: VmActionResult(
+            success=True,
+            vm_name="vm-12305",
+            action="prompt-agent",
+            message="Queued prompt for vm-12305",
+            queued=True,
+            queue_key="admin-agent-prompt:vm-12305:local-inference:dispatch-1",
+            queue_reason="local_inference_capacity",
+        ),
+        get_agent_log_snapshot=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("queued prompts must not be observed before dispatch")
+        ),
+    )
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "12305",
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue later",
+            "--observe",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Queued prompt for vm-12305" in result.output
+    assert "log observation will be available after dispatch" in result.output
 
 
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:

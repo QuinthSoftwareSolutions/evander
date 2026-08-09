@@ -345,6 +345,58 @@ def test_resume_binding_queues_resolved_local_model_when_global_capacity_is_full
     assert wake_store.latest_dispatch_by_request_id()["wake-local"].status == "queued"
 
 
+def test_wake_capacity_claim_reconciles_orphaned_terminal_container_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, _wake_store = _build_dispatcher(tmp_path)
+    _upsert_container_session(session_repository, session_id="orphaned-session")
+    worker_config = config.model_copy(
+        update={
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_max_concurrency": 1,
+        }
+    )
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    orphaned = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="orphaned-container-run",
+        model="local-model",
+        session_id="orphaned-session",
+        dispatch_id="orphaned-dispatch",
+        execution_backend="container_worker_vm",
+        target_name="agent-orphaned-session",
+    )
+    assert capacity_store.mark_running(
+        orphaned.slot_id,
+        target_name="agent-orphaned-session",
+        execution_id="execution:orphaned-session",
+        now=datetime.now(UTC) - timedelta(minutes=1),
+    ) is True
+    monkeypatch.setattr(
+        "evander.messaging.wake_dispatch.build_execution_backend",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            inspect=lambda execution_id: SimpleNamespace(
+                execution_id=execution_id,
+                status=ExecutionStatusKind.STOPPED,
+            )
+        ),
+    )
+
+    admission = dispatcher._claim_local_inference_capacity(
+        config=worker_config,
+        dispatch_id="replacement-dispatch",
+        session_id="replacement-session",
+        model="local-model",
+        execution_backend="libvirt_vm",
+        target_name="vm-replacement",
+    )
+
+    assert admission.admitted is True
+    assert orphaned.slot_id not in capacity_store.read_all()
+
+
 def test_resume_binding_records_failed_dispatch_when_script_is_missing(
     tmp_path: Path,
 ) -> None:

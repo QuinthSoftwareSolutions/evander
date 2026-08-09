@@ -42,7 +42,9 @@ from evander.execution import (
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
+    LocalInferenceCapacityLease,
     local_inference_capacity_store,
+    local_inference_execution_is_active,
 )
 from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from evander.messaging.scheduled_wake_queue import scheduled_wake_queue_key
@@ -314,10 +316,13 @@ class HostWakeDispatcher:
         session_id: str,
         model: str,
         execution_backend: str,
+        target_name: str,
     ) -> LocalInferenceCapacityAdmission:
         if config.model_provider_mode != "local_openai":
             return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
-        return local_inference_capacity_store(config.runtime_dir).claim(
+        capacity_store = local_inference_capacity_store(config.runtime_dir)
+        self._reconcile_local_inference_capacity(capacity_store=capacity_store)
+        return capacity_store.claim(
             max_concurrency=config.local_openai_max_concurrency,
             owner_id=f"wake:{dispatch_id}",
             model=model,
@@ -325,15 +330,51 @@ class HostWakeDispatcher:
             dispatch_id=dispatch_id,
             effect_id=f"wake-prompt:{dispatch_id}",
             execution_backend=execution_backend,
+            target_name=target_name,
         )
+
+    def _reconcile_local_inference_capacity(self, *, capacity_store: Any) -> None:
+        def is_active(lease: LocalInferenceCapacityLease) -> bool | None:
+            if lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+                return None
+            session_id = str(lease.session_id or "").strip()
+            execution_id = str(lease.execution_id or "").strip()
+            if not execution_id and session_id:
+                execution_id = safe_effect_execution_id("agent", session_id)
+            if not session_id or not execution_id:
+                return None
+            session = self.runtime.session_repository.get_session(session_id)
+            if session is None:
+                return False
+            config = self._resolve_prompt_provider_config(
+                self.config,
+                session_id=session_id,
+                directory_path=getattr(session, "directory_path", None),
+            )
+            backend = build_execution_backend(
+                config.model_copy(
+                    update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+                ),
+                admin_service=getattr(self.runtime, "admin_service", None),
+            )
+            return local_inference_execution_is_active(backend.inspect(execution_id))
+
+        capacity_store.reconcile_running(is_active)
 
     @staticmethod
     def _mark_local_inference_running(
         config: GatewayConfig,
         admission: LocalInferenceCapacityAdmission,
+        *,
+        target_name: str,
+        execution_id: str,
     ) -> None:
         if admission.slot_id is not None:
-            local_inference_capacity_store(config.runtime_dir).mark_running(admission.slot_id)
+            local_inference_capacity_store(config.runtime_dir).mark_running(
+                admission.slot_id,
+                target_name=target_name,
+                execution_id=execution_id,
+            )
 
     @staticmethod
     def _release_local_inference_capacity(
@@ -482,6 +523,7 @@ class HostWakeDispatcher:
             session_id=binding.session_id,
             model=resolved_model,
             execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            target_name=binding.vm_id,
         )
         if not capacity_admission.admitted:
             queue_key = self._wake_prompt_queue_key(
@@ -648,7 +690,12 @@ class HostWakeDispatcher:
             return dispatch_record
 
         if completed.returncode == 0:
-            self._mark_local_inference_running(worker_config, capacity_admission)
+            self._mark_local_inference_running(
+                worker_config,
+                capacity_admission,
+                target_name=binding.vm_id,
+                execution_id=binding.vm_id,
+            )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
                 request_id=request_id,
@@ -831,6 +878,7 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 model=resolved_model,
                 execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                target_name=target_name,
             )
         if session_is_busy or not capacity_admission.admitted:
             queue_key = self._wake_prompt_queue_key(
@@ -1006,7 +1054,12 @@ class HostWakeDispatcher:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
 
-        self._mark_local_inference_running(base_config, capacity_admission)
+        self._mark_local_inference_running(
+            base_config,
+            capacity_admission,
+            target_name=target_name,
+            execution_id=handle.execution_id,
+        )
         dispatch_record = self._build_dispatch_record(
             dispatch_id=dispatch_id,
             session_id=session_id,

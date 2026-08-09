@@ -25,7 +25,10 @@ from evander.model_usage.runtime import (
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
+    LocalInferenceCapacityLease,
     local_inference_capacity_store,
+    local_inference_execution_is_active,
+    local_inference_vm_lease_is_active,
 )
 from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.effects.providers.resume_thread_metadata import (
@@ -367,6 +370,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 self._mark_local_inference_running(
                     worker=worker,
                     admission=capacity_admission,
+                    target_name=str(record.vm_name or record.target).strip(),
+                    execution_id=str(record.vm_name or record.target).strip(),
                 )
                 self._persist_chat_assistant_thread_id(
                     worker=worker,
@@ -557,17 +562,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         dispatch_id: str,
         execution_backend: str,
     ) -> LocalInferenceCapacityAdmission:
-        provider_mode = str(
-            getattr(record, "model_provider_mode", None)
-            or getattr(config, "model_provider_mode", None)
-            or ""
-        ).strip()
+        provider_mode = str(getattr(config, "model_provider_mode", None) or "").strip()
         if provider_mode != "local_openai":
             return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
         runtime_dir = resolve_runtime_dir(worker)
         if runtime_dir is None:
             return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
-        return local_inference_capacity_store(runtime_dir).claim(
+        capacity_store = local_inference_capacity_store(runtime_dir)
+        self._reconcile_local_inference_capacity(worker=worker, capacity_store=capacity_store)
+        return capacity_store.claim(
             max_concurrency=getattr(config, "local_openai_max_concurrency", None),
             owner_id=f"queued-agent-prompt:{queue_key}:{dispatch_id}",
             model=str(getattr(record, "model", None) or "unknown-local-model"),
@@ -575,17 +578,82 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             dispatch_id=dispatch_id,
             effect_id=str(getattr(record, "effect_id", None) or "").strip() or None,
             execution_backend=execution_backend,
+            target_name=str(getattr(record, "vm_name", None) or "").strip() or None,
         )
+
+    def _reconcile_local_inference_capacity(self, *, worker: Any, capacity_store: Any) -> None:
+        running_leases = [
+            lease for lease in capacity_store.read_all().values() if lease.status == "running"
+        ]
+        if not running_leases:
+            return
+
+        summaries: list[Any] | None = None
+        if any(
+            lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+            for lease in running_leases
+        ):
+            try:
+                summaries = list(list_vm_summaries_for_agent_reconciliation(worker))
+            except Exception:
+                summaries = None
+
+        def is_active(lease: LocalInferenceCapacityLease) -> bool | None:
+            if lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+                if summaries is None:
+                    return None
+                return local_inference_vm_lease_is_active(lease, summaries)
+
+            session_id = str(lease.session_id or "").strip()
+            execution_id = str(lease.execution_id or "").strip()
+            if not execution_id and session_id:
+                execution_id = safe_effect_execution_id("agent", session_id)
+            if not session_id or not execution_id:
+                return None
+            repository = self._session_repository_for_worker(worker)
+            get_session = getattr(repository, "get_session", None)
+            if not callable(get_session):
+                return None
+            session = get_session(session_id)
+            if session is None:
+                return False
+            config = self._config_for_container_record(
+                worker=worker,
+                session=session,
+                session_id=session_id,
+            )
+            if config is None:
+                return None
+            admin_service = getattr(
+                getattr(worker, "provider_factory", None), "admin_service", None
+            )
+            backend = build_execution_backend(
+                config.model_copy(
+                    update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+                ),
+                admin_service=admin_service,
+            )
+            return local_inference_execution_is_active(backend.inspect(execution_id))
+
+        capacity_store.reconcile_running(is_active)
 
     @staticmethod
     def _mark_local_inference_running(
-        *, worker: Any, admission: LocalInferenceCapacityAdmission
+        *,
+        worker: Any,
+        admission: LocalInferenceCapacityAdmission,
+        target_name: str,
+        execution_id: str,
     ) -> None:
         if admission.slot_id is None:
             return
         runtime_dir = resolve_runtime_dir(worker)
         if runtime_dir is not None:
-            local_inference_capacity_store(runtime_dir).mark_running(admission.slot_id)
+            local_inference_capacity_store(runtime_dir).mark_running(
+                admission.slot_id,
+                target_name=target_name,
+                execution_id=execution_id,
+            )
 
     @staticmethod
     def _release_local_inference_capacity(
@@ -768,7 +836,12 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             )
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
-        self._mark_local_inference_running(worker=worker, admission=capacity_admission)
+        self._mark_local_inference_running(
+            worker=worker,
+            admission=capacity_admission,
+            target_name=str(record.vm_name or session_id).strip(),
+            execution_id=handle.execution_id,
+        )
         if not self._record_container_waiting_execution(
             worker=worker,
             record=record,

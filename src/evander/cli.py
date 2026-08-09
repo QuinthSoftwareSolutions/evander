@@ -4083,33 +4083,11 @@ def resume_agent(
         agent_model = admin.resolve_agent_model_for_target(resolved_session_id)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
     if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
         issue_number = _resolve_issue_number_or_raise(target)
         vm_name = f"vm-{issue_number}"
-        cmd = [
-            str(script_path),
-            message,
-            issue_number,
-            vm_user,
-            "--host-control-state-path",
-            str(cfg.host_agent_control_state_path),
-        ]
     else:
         vm_name = _resolve_vm_name(target)
-        cmd = [
-            str(script_path),
-            "--prompt",
-            message,
-            "--vm-name",
-            vm_name,
-            "--vm-user",
-            vm_user,
-            "--host-control-state-path",
-            str(cfg.host_agent_control_state_path),
-        ]
-    if observe:
-        cmd.extend(["--observe", str(lines)])
 
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_ATTEMPTED,
@@ -4125,41 +4103,78 @@ def resume_agent(
         decision="attempted",
         reason="resume-agent-command",
     )
-    if observe:
-        completed = subprocess.run(cmd, check=False, env=os.environ | {"AGENT_MODEL": agent_model})
-    else:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=os.environ | {"AGENT_MODEL": agent_model},
+    try:
+        result = admin.enqueue_agent_prompt(
+            resolved_session_id,
+            message,
+            model=agent_model,
+            vm_user=vm_user,
         )
-    if completed.returncode == 0:
+    except Exception as exc:
+        reason = f"resume-agent-error-{type(exc).__name__}"
+        runtime.audit.log_decision(
+            event_type=AuditEventType.VM_START_FAILED,
+            session_id=resolved_session_id,
+            vm_id=vm_name,
+            decision="failed",
+            reason=reason,
+            args={"error": str(exc)},
+        )
+        runtime.audit.log_decision(
+            event_type=AuditEventType.RESUME_FAILED,
+            session_id=resolved_session_id,
+            vm_id=vm_name,
+            decision="failed",
+            reason=reason,
+            args={"error": str(exc)},
+        )
+        raise
+
+    result_vm_name = str(getattr(result, "vm_name", None) or vm_name)
+    if bool(getattr(result, "queued", False)):
+        queue_key = str(getattr(result, "queue_key", None) or "").strip()
+        result_message = str(getattr(result, "message", None) or "").strip()
+        typer.echo(
+            result_message or f"Queued prompt for {result_vm_name} (queue_key={queue_key})"
+        )
+        if observe:
+            typer.echo("Prompt is queued; log observation will be available after dispatch.")
+        return
+
+    if bool(getattr(result, "success", False)):
         runtime.audit.log_decision(
             event_type=AuditEventType.VM_START_SUCCEEDED,
             session_id=resolved_session_id,
-            vm_id=vm_name,
+            vm_id=result_vm_name,
             decision="succeeded",
-            reason="resume-script-success",
+            reason="resume-agent-dispatched",
         )
         runtime.audit.log_decision(
             event_type=AuditEventType.RESUME_SUCCEEDED,
             session_id=resolved_session_id,
-            vm_id=vm_name,
+            vm_id=result_vm_name,
             decision="succeeded",
-            reason="resume-script-success",
+            reason="resume-agent-dispatched",
         )
+        if observe:
+            logs(
+                target,
+                config=config,
+                repo_name=None,
+                lines=lines,
+                vm_user=vm_user,
+            )
         return
 
-    reason = f"resume-script-exit-{completed.returncode}"
+    failure_message = str(getattr(result, "message", None) or "Agent resume failed").strip()
+    reason = "resume-agent-dispatch-failed"
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_FAILED,
         session_id=resolved_session_id,
         vm_id=vm_name,
         decision="failed",
         reason=reason,
-        args={"stderr": (completed.stderr or "").strip()},
+        args={"error": failure_message},
     )
     runtime.audit.log_decision(
         event_type=AuditEventType.RESUME_FAILED,
@@ -4167,13 +4182,10 @@ def resume_agent(
         vm_id=vm_name,
         decision="failed",
         reason=reason,
-        args={"stderr": (completed.stderr or "").strip()},
+        args={"error": failure_message},
     )
-    if getattr(completed, "stdout", ""):
-        typer.echo(completed.stdout, nl=False)
-    if getattr(completed, "stderr", ""):
-        typer.echo(completed.stderr, err=True, nl=False)
-    raise typer.Exit(code=completed.returncode)
+    typer.echo(failure_message, err=True)
+    raise typer.Exit(code=1)
 
 
 @app.command(

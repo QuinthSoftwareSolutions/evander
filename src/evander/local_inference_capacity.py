@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,7 @@ from evander.storage import JsonStore
 LOCAL_INFERENCE_CAPACITY_STORE_FILENAME = "local-inference-capacity.json"
 LOCAL_INFERENCE_QUEUE_REASON = "local_inference_capacity"
 LOCAL_INFERENCE_LAUNCH_TIMEOUT_SECONDS = 300
+LOCAL_INFERENCE_BACKEND_RECONCILIATION_GRACE_SECONDS = 30
 
 
 class LocalInferenceCapacityLease(BaseModel):
@@ -22,6 +24,8 @@ class LocalInferenceCapacityLease(BaseModel):
     dispatch_id: str | None = None
     effect_id: str | None = None
     execution_backend: str | None = None
+    target_name: str | None = None
+    execution_id: str | None = None
     model: str = Field(min_length=1)
     model_provider_mode: Literal["local_openai"] = "local_openai"
     status: Literal["launching", "running"] = "launching"
@@ -70,6 +74,7 @@ class LocalInferenceCapacityStore:
         dispatch_id: str | None = None,
         effect_id: str | None = None,
         execution_backend: str | None = None,
+        target_name: str | None = None,
         now: datetime | None = None,
     ) -> LocalInferenceCapacityAdmission:
         if max_concurrency is None:
@@ -116,6 +121,7 @@ class LocalInferenceCapacityStore:
                 dispatch_id=dispatch_id,
                 effect_id=effect_id,
                 execution_backend=execution_backend,
+                target_name=target_name,
                 model=model,
                 claimed_at=effective_now,
                 updated_at=effective_now,
@@ -134,6 +140,8 @@ class LocalInferenceCapacityStore:
         self,
         slot_id: str | None,
         *,
+        target_name: str | None = None,
+        execution_id: str | None = None,
         now: datetime | None = None,
     ) -> bool:
         normalized_slot_id = str(slot_id or "").strip()
@@ -146,9 +154,62 @@ class LocalInferenceCapacityStore:
             if record is None:
                 return False
             record.status = "running"
+            if str(target_name or "").strip():
+                record.target_name = str(target_name).strip()
+            if str(execution_id or "").strip():
+                record.execution_id = str(execution_id).strip()
             record.launched_at = record.launched_at or effective_now
             record.updated_at = effective_now
             return True
+
+        return self.store.update_all(updater)
+
+    def reconcile_running(
+        self,
+        is_active: Callable[[LocalInferenceCapacityLease], bool | None],
+        *,
+        minimum_age_seconds: float = LOCAL_INFERENCE_BACKEND_RECONCILIATION_GRACE_SECONDS,
+        now: datetime | None = None,
+    ) -> int:
+        """Release running leases whose authoritative backend is terminal.
+
+        Freshly launched runs are left alone during a short backend-propagation grace.
+        ``None`` and probe failures are deliberately treated as indeterminate so a
+        transient inventory/backend error cannot admit more work than the configured
+        limit.
+        """
+
+        effective_now = now or datetime.now(UTC)
+        reconciliation_cutoff = effective_now - timedelta(
+            seconds=max(0.0, float(minimum_age_seconds))
+        )
+        terminal_slot_ids: set[str] = set()
+        for slot_id, record in self.read_all().items():
+            if record.status != "running":
+                continue
+            updated_at = record.updated_at
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=UTC)
+            if updated_at > reconciliation_cutoff:
+                continue
+            try:
+                active = is_active(record)
+            except Exception:
+                continue
+            if active is False:
+                terminal_slot_ids.add(slot_id)
+        if not terminal_slot_ids:
+            return 0
+
+        def updater(records: dict[str, LocalInferenceCapacityLease]) -> int:
+            released = 0
+            for slot_id in terminal_slot_ids:
+                record = records.get(slot_id)
+                if record is None or record.status != "running":
+                    continue
+                records.pop(slot_id, None)
+                released += 1
+            return released
 
         return self.store.update_all(updater)
 
@@ -168,3 +229,50 @@ class LocalInferenceCapacityStore:
 
 def local_inference_capacity_store(runtime_dir: str | Path) -> LocalInferenceCapacityStore:
     return LocalInferenceCapacityStore(runtime_dir)
+
+
+def local_inference_execution_is_active(status: Any) -> bool | None:
+    status_value = getattr(status, "status", status)
+    normalized = str(getattr(status_value, "value", status_value) or "").strip().casefold()
+    if normalized in {"created", "preparing", "starting", "running"}:
+        return True
+    if normalized in {"stopped", "failed", "destroyed"}:
+        return False
+    return None
+
+
+def local_inference_vm_lease_is_active(
+    lease: LocalInferenceCapacityLease,
+    summaries: list[Any],
+) -> bool | None:
+    target_name = str(lease.target_name or "").strip()
+    session_id = str(lease.session_id or "").strip()
+    dispatch_id = str(lease.dispatch_id or "").strip()
+    if not (target_name or session_id or dispatch_id):
+        return None
+
+    matching = None
+    for summary in summaries:
+        summary_name = str(getattr(summary, "vm_name", "") or "").strip()
+        summary_sessions = {
+            str(value).strip()
+            for value in (getattr(summary, "session_ids", None) or [])
+            if str(value).strip()
+        }
+        summary_dispatch_id = str(getattr(summary, "dispatch_id", "") or "").strip()
+        if (
+            (target_name and summary_name == target_name)
+            or (session_id and session_id in summary_sessions)
+            or (dispatch_id and summary_dispatch_id == dispatch_id)
+        ):
+            matching = summary
+            break
+    if matching is None:
+        return False
+
+    agent_state = str(getattr(matching, "agent_state", "") or "").strip().casefold()
+    if agent_state == "running":
+        return True
+    if agent_state in {"", "unknown", "omitted"}:
+        return None
+    return False

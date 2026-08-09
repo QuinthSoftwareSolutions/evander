@@ -32,7 +32,10 @@ from evander.model_usage.runtime import (
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
+    LocalInferenceCapacityLease,
     local_inference_capacity_store,
+    local_inference_execution_is_active,
+    local_inference_vm_lease_is_active,
 )
 from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from evander.triggers.queue import TriggerQueueRecord
@@ -270,8 +273,18 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         capacity_admission = LocalInferenceCapacityAdmission(enabled=False, admitted=True)
         runtime_dir = resolve_runtime_dir(context)
+        vm_name = (
+            self._normalize_optional_string(payload.get("vm_name"))
+            or self._normalize_optional_string(getattr(active_session, "vm_id", None))
+            or target
+        )
         if runtime_dir is not None and effective_config.model_provider_mode == "local_openai":
-            capacity_admission = local_inference_capacity_store(runtime_dir).claim(
+            capacity_store = local_inference_capacity_store(runtime_dir)
+            self._reconcile_local_inference_capacity(
+                capacity_store=capacity_store,
+                config=effective_config,
+            )
+            capacity_admission = capacity_store.claim(
                 max_concurrency=effective_config.local_openai_max_concurrency,
                 owner_id=self._current_idempotency_key(execution_context) or dispatch_id,
                 model=resolved_model,
@@ -279,6 +292,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 dispatch_id=dispatch_id,
                 effect_id=effect.id,
                 execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                target_name=vm_name,
             )
         if not capacity_admission.admitted:
             record = enqueue_agent_prompt(
@@ -406,9 +420,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 trace_id=self._trace_id(execution_context),
                 agent_harness=agent_harness,
             )
-            local_inference_capacity_store(runtime_dir).mark_running(
-                capacity_admission.slot_id
-            )
+            if capacity_admission.slot_id is not None:
+                local_inference_capacity_store(runtime_dir).mark_running(
+                    capacity_admission.slot_id,
+                    target_name=vm_name,
+                    execution_id=vm_name,
+                )
         self._persist_resume_thread_metadata_key(
             target=target,
             session_id=session_id,
@@ -444,6 +461,55 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 or capacity_admission.slot_id
             ),
         }
+
+    def _reconcile_local_inference_capacity(self, *, capacity_store: Any, config: Any) -> None:
+        context = self._context()
+        running_leases = [
+            lease for lease in capacity_store.read_all().values() if lease.status == "running"
+        ]
+        if not running_leases:
+            return
+
+        summaries: list[Any] | None = None
+        if any(
+            lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+            for lease in running_leases
+        ):
+            list_vms = getattr(context.vm_inventory, "list_vms", None)
+            if callable(list_vms):
+                try:
+                    summaries = list(list_vms(include_inactive=True, vm_user="agent"))
+                except Exception:
+                    summaries = None
+
+        def is_active(lease: LocalInferenceCapacityLease) -> bool | None:
+            if lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+                if summaries is None:
+                    return None
+                return local_inference_vm_lease_is_active(lease, summaries)
+
+            session_id = str(lease.session_id or "").strip()
+            execution_id = str(lease.execution_id or "").strip()
+            if not execution_id and session_id:
+                execution_id = safe_effect_execution_id("agent", session_id)
+            if not execution_id:
+                return None
+            effective_config = (
+                effective_config_for_session(context, session_id) if session_id else config
+            )
+            backend = container_backend(context, effective_config)
+            return local_inference_execution_is_active(backend.inspect(execution_id))
+
+        capacity_store.reconcile_running(is_active)
+
+    @staticmethod
+    def _current_idempotency_key(
+        execution_context: Mapping[str, Any] | None,
+    ) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        value = str(execution_context.get("idempotency_key") or "").strip()
+        return value or None
 
     def _execute_container_prompt(
         self,
@@ -492,7 +558,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             runtime_dir is not None
             and effective_config.model_provider_mode == "local_openai"
         ):
-            capacity_admission = local_inference_capacity_store(runtime_dir).claim(
+            capacity_store = local_inference_capacity_store(runtime_dir)
+            self._reconcile_local_inference_capacity(
+                capacity_store=capacity_store,
+                config=effective_config,
+            )
+            capacity_admission = capacity_store.claim(
                 max_concurrency=effective_config.local_openai_max_concurrency,
                 owner_id=self._current_idempotency_key(execution_context) or dispatch_id,
                 model=resolved_model,
@@ -500,6 +571,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 dispatch_id=dispatch_id,
                 effect_id=self._effect().id,
                 execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                target_name=safe_effect_execution_id("agent", session_id),
             )
         if not capacity_admission.admitted:
             record = enqueue_agent_prompt(
@@ -620,9 +692,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 trace_id=self._trace_id(execution_context),
                 agent_harness=agent_harness,
             )
-            local_inference_capacity_store(runtime_dir).mark_running(
-                capacity_admission.slot_id
-            )
+            if capacity_admission.slot_id is not None:
+                local_inference_capacity_store(runtime_dir).mark_running(
+                    capacity_admission.slot_id,
+                    target_name=str(
+                        getattr(handle, "target_name", None) or handle.execution_id
+                    ),
+                    execution_id=handle.execution_id,
+                )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,

@@ -4637,8 +4637,10 @@ def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
     assert by_effect["effect-2"].status == "succeeded"
     assert by_effect["effect-2"].outputs["queued"] is True
     assert by_effect["effect-2"].outputs["queue_reason"] == LOCAL_INFERENCE_QUEUE_REASON
-    queued = worker.queued_agent_prompt_store.get("vm-2")
-    assert queued is not None
+    queued_records = worker.queued_agent_prompt_store.read_all()
+    assert len(queued_records) == 1
+    [queued] = queued_records.values()
+    assert queued.queue_key.startswith("vm-2:local-inference:")
     assert queued.model == "resolved-local-model-b"
     assert queued.model_provider_mode == "local_openai"
     assert queued.queue_reason == LOCAL_INFERENCE_QUEUE_REASON
@@ -4673,6 +4675,152 @@ def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
     slots = LocalInferenceCapacityStore(runtime_dir).read_all()
     assert len(slots) == 1
     assert next(iter(slots.values())).model == "resolved-local-model-b"
+
+
+def test_local_capacity_reconciles_terminal_vm_lease_before_new_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Local prompt",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-new",
+                    "prompt": "continue",
+                    "model": "resolved-local-model",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.admin_service.runtime.provider_config = _ProviderConfigResolver(config)
+    capacity_store = LocalInferenceCapacityStore(runtime_dir)
+    orphaned = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="orphaned-run",
+        model="old-local-model",
+        dispatch_id="old-dispatch",
+        execution_backend="libvirt_vm",
+        target_name="vm-old",
+    )
+    assert capacity_store.mark_running(
+        orphaned.slot_id,
+        target_name="vm-old",
+        execution_id="vm-old",
+        now=datetime.now(timezone.utc) - timedelta(minutes=1),
+    ) is True
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "list_vms",
+        lambda **_kwargs: [
+            VmSummary(
+                vm_name="vm-old",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            ),
+            VmSummary(
+                vm_name="vm-new",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            ),
+        ],
+    )
+    resume_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "resume_agent",
+        lambda **kwargs: (
+            resume_calls.append(dict(kwargs))
+            or SimpleNamespace(success=True, thread_id="thread-new")
+        ),
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-reconcile-capacity",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-reconcile-capacity",
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    assert [call["target"] for call in resume_calls] == ["vm-new"]
+    remaining = capacity_store.read_all()
+    assert orphaned.slot_id not in remaining
+    assert len(remaining) == 1
+    assert next(iter(remaining.values())).target_name == "vm-new"
+
+
+def test_queued_dispatch_uses_current_provider_mode_for_capacity_admission(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {"runtime_dir": runtime_dir, "triggers": [], "effects": [], "edges": []}
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    capacity_store = LocalInferenceCapacityStore(runtime_dir)
+    occupied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="active-local-run",
+        model="local-model",
+        execution_backend="container_worker_vm",
+    )
+    assert capacity_store.mark_running(occupied.slot_id) is True
+    record = QueuedAgentPromptRecord(
+        queue_key="vm-1",
+        target="vm-1",
+        vm_name="vm-1",
+        prompt="continue",
+        model="local-model",
+        model_provider_mode="openai_public",
+        effect_id="effect-1",
+    )
+
+    admission = AgentEnqueuePromptQueueDispatchHook()._claim_local_inference_capacity_for_record(
+        worker=worker,
+        record=record,
+        config=config,
+        queue_key=record.queue_key,
+        dispatch_id="queued-dispatch",
+        execution_backend="libvirt_vm",
+    )
+
+    assert admission.enabled is True
+    assert admission.admitted is False
 
 
 def test_agent_enqueue_prompt_queues_racing_prompt_while_dispatch_is_inflight(

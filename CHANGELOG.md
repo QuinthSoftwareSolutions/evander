@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-09 - Local Inference Admission Reliability
+
+- Preserved every capacity-blocked prompt with a dispatch-specific durable queue key, including
+  multiple prompts for the same target, while retaining coalescing for ordinary retry waits.
+- Reconciled persisted running capacity leases against authoritative VM and container state so
+  lost completion monitoring cannot leave the host-global pool permanently exhausted.
+- Routed CLI resumes through queue-aware admission and made queued replay use the current fully
+  resolved provider mode before launching a turn.
+
 ## 2026-08-09 - Team Idle Context Grace Reliability
 
 - Cancelled a pending idle-grace rotation when work makes the agent active, including when the

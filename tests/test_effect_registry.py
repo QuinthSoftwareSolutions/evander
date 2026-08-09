@@ -89,6 +89,7 @@ from evander.events.provider_models import (
     VmCreateEffectDefinition,
 )
 from evander.host_directories.models import HostDirectoryDirectoryConfig
+from evander.local_inference_capacity import LocalInferenceCapacityStore
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.managed_git_grants import managed_git_key_name, managed_git_ssh_alias
 from evander.messaging.targets import (
@@ -3964,6 +3965,87 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     assert queued.metadata["agent_context_retry_enabled"] == "False"
     assert queued.metadata["agent_context_retry_max_attempts"] == "0"
     assert queued.metadata["agent_context_retry_target_chars"] == "4096"
+
+
+def test_agent_enqueue_prompt_provider_keeps_same_target_capacity_waits_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="local-model",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **_kwargs: [],
+    )
+    backend = _FakeContainerBackend()
+    backend.repository = SimpleNamespace(
+        list_active_by_session=lambda _session_id, _active_statuses: []
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda _context, _config: backend,
+    )
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    occupied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="untracked-local-run",
+        model="other-local-model",
+    )
+    assert capacity_store.mark_running(occupied.slot_id) is True
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    outputs = [
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt=prompt,
+                dispatch_id=dispatch_id,
+                queue_key="chat:thread-1",
+            )
+        ).execute()
+        for prompt, dispatch_id in (
+            ("first prompt", "caller-dispatch-1"),
+            ("second prompt", "caller-dispatch-2"),
+        )
+    ]
+
+    assert [output["queue_key"] for output in outputs] == [
+        "chat:thread-1:local-inference:caller-dispatch-1",
+        "chat:thread-1:local-inference:caller-dispatch-2",
+    ]
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert len(queued) == 2
+    assert {record.prompt for record in queued.values()} == {"first prompt", "second prompt"}
+    assert all(record.coalesced_count == 1 for record in queued.values())
+    assert backend.started_specs == []
 
 
 def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
