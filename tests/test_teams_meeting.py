@@ -20,6 +20,7 @@ from evander.teams_meeting import (
 from evander.messaging.teams_meeting_ingest import (
     TeamsMeetingIngestWorker,
 )
+from evander.triggers.providers._cursor_state import TriggerCursorStore
 from evander.triggers.providers.base import TriggerRuntimeContext
 from evander.triggers.providers.schemas import TeamsMeetingNewTranscriptTriggerDefinition
 from evander.triggers.providers.teams_meeting_new_transcript import (
@@ -546,6 +547,63 @@ def test_teams_meeting_transcript_trigger_emits_transcripts_once(tmp_path: Path)
         (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
     )
     assert cursor_payload["meeting-trigger"] == {"last_sequences_by_meeting": {"meeting-1": 1}}
+
+
+def test_teams_meeting_transcript_trigger_filters_delayed_pre_registration_transcript(
+    tmp_path: Path,
+) -> None:
+    baseline_at = datetime(2026, 8, 10, 8, 0, tzinfo=UTC)
+    config = GatewayConfig(
+        runtime_dir=tmp_path, teams_meeting_store_path=tmp_path / "meetings.json"
+    )
+    store = TeamsMeetingStore(config.teams_meeting_store_path)
+    store.upsert_binding(TeamsMeetingBinding(meeting_id="meeting-1", session_id="session-1"))
+    TriggerCursorStore(tmp_path / "trigger-cursors-teams-meeting.json").put(
+        "meeting-trigger",
+        {
+            "initialized_at": baseline_at.isoformat().replace("+00:00", "Z"),
+            "last_sequences_by_meeting": {"meeting-1": 0},
+        },
+    )
+    provider = TeamsMeetingNewTranscriptTriggerProvider()
+    provider.initialize(
+        TeamsMeetingNewTranscriptTriggerDefinition(
+            id="meeting-trigger",
+            display_name="Meeting transcript",
+            type="trigger:teams-meeting:new-transcript",
+        ),
+        TriggerRuntimeContext(resolved_config=config, metadata={"directory_path": "root"}),
+    )
+
+    store.append_bridge_events(
+        meeting_id="meeting-1",
+        bridge_events=[
+            TeamsMeetingBridgeEvent(
+                sequence=1,
+                event_type="transcript",
+                occurred_at=baseline_at - timedelta(minutes=1),
+                text="arrived late",
+            )
+        ],
+    )
+
+    assert provider.poll() == []
+
+    store.append_bridge_events(
+        meeting_id="meeting-1",
+        bridge_events=[
+            TeamsMeetingBridgeEvent(
+                sequence=2,
+                event_type="transcript",
+                occurred_at=baseline_at + timedelta(minutes=1),
+                text="registered transcript",
+            )
+        ],
+    )
+
+    events = provider.poll()
+    assert [event.event_id for event in events] == ["meeting-trigger:meeting-1:2"]
+    assert events[0].payload["transcript"]["text"] == "registered transcript"
 
 
 def test_teams_meeting_transcript_trigger_uses_monotonic_sequence_cursor(

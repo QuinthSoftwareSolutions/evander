@@ -11,8 +11,11 @@
 
 - Used Microsoft Graph's supported message-delta date filter for fallback polling and kept the
   unread check client-side, allowing unread email workflow triggers to poll successfully.
-- Baseline newly registered communication, email, Discord, Teams, and Teams-transcript triggers at
-  their save-time cursor so a new subscription does not replay historical messages or transcripts.
+- Baseline newly registered communication, email, Discord, Teams, and Teams-transcript triggers in
+  the shared trigger-orchestrator config writer, including trigger type changes, so every supported
+  configuration path avoids replaying message history.
+- Filter Teams meeting transcripts by the saved registration time as well as the host sequence, so
+  a pre-registration bridge transcript that reaches the ingest store late is not replayed.
 
 ## 2026-08-10 - Resettable Team Cost Budgets
 

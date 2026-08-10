@@ -496,6 +496,19 @@ class WorkflowConfigAdminService:
         if path is None:
             raise ValueError(f"Unknown worker: {worker_id}")
         config = self._validate_worker_global_config_payload(worker_id, payload)
+        if worker_id == "trigger-orchestrator":
+            previous_config: dict[str, object] = {}
+            if path.exists():
+                try:
+                    raw_previous_config = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raw_previous_config = None
+                if isinstance(raw_previous_config, dict):
+                    previous_config = raw_previous_config
+            self._seed_new_trigger_cursors(
+                previous_config=previous_config,
+                next_config=config,
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
         return WorkerGlobalConfigWritePayload(
@@ -2555,11 +2568,7 @@ class WorkflowConfigAdminService:
             existing_editable_config = self._strip_system_managed_workflows(
                 self._compose_workflow_editor_config(raw_config)
             )
-        self._seed_new_ticket_created_trigger_cursors(
-            previous_config=existing_editable_config,
-            next_config=validation.config,
-        )
-        self._seed_new_message_trigger_cursors(
+        self._seed_new_trigger_cursors(
             previous_config=existing_editable_config,
             next_config=validation.config,
         )
@@ -2711,6 +2720,18 @@ class WorkflowConfigAdminService:
         )
         seed_new_ticket_created_trigger_cursors(
             runtime_dir=runtime_dir,
+            previous_config=previous_config,
+            next_config=next_config,
+        )
+
+    def _seed_new_trigger_cursors(
+        self, *, previous_config: dict[str, object], next_config: dict[str, object]
+    ) -> None:
+        self._seed_new_ticket_created_trigger_cursors(
+            previous_config=previous_config,
+            next_config=next_config,
+        )
+        self._seed_new_message_trigger_cursors(
             previous_config=previous_config,
             next_config=next_config,
         )
@@ -3465,16 +3486,6 @@ class WorkflowConfigAdminService:
                     replacing = True
                     break
             if not replacing:
-                next_config = dict(config)
-                next_config["triggers"] = existing_triggers + [normalized_payload]
-                self._seed_new_ticket_created_trigger_cursors(
-                    previous_config=config,
-                    next_config=next_config,
-                )
-                self._seed_new_message_trigger_cursors(
-                    previous_config=config,
-                    next_config=next_config,
-                )
                 existing_triggers.append(normalized_payload)
             config["triggers"] = existing_triggers
             write_result = self._write_trigger_document_unlocked(config)

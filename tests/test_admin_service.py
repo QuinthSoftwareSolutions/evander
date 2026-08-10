@@ -8624,6 +8624,38 @@ def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(
     assert removed.config["triggers"] == []
 
 
+def test_trigger_upsert_baselines_retyped_message_trigger(tmp_path: Path) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    service.workflow_config_admin.upsert_trigger_config(
+        "retyped-trigger",
+        {
+            "display_name": "Scheduled before retyping",
+            "type": "trigger:cron",
+            "expression": "*/15 * * * *",
+        },
+    )
+    before_retype = datetime.now(UTC)
+    service.workflow_config_admin.upsert_trigger_config(
+        "retyped-trigger",
+        {
+            "display_name": "Email after retyping",
+            "type": "trigger:email:new-message",
+            "mailbox_ids": ["default"],
+        },
+    )
+    after_retype = datetime.now(UTC)
+
+    email_cursor_path = runtime_dir / "trigger-cursors-email.json"
+    email_cursors = json.loads(email_cursor_path.read_text(encoding="utf-8"))
+    _assert_cursor_seeded_during_operation(
+        email_cursors["retyped-trigger"]["initialized_at"],
+        before=before_retype,
+        after=after_retype,
+    )
+    assert email_cursors["retyped-trigger"]["recent_message_ids"] == []
+
+
 def test_trigger_mutations_do_not_reenter_admin_config_mutation_lock(
     tmp_path: Path,
 ) -> None:

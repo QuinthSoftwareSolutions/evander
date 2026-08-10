@@ -11393,16 +11393,26 @@ def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path)
     detail = detail_response.json()
     config = dict(detail["config"]["config"])
     config["poll_interval_seconds"] = int(config.get("poll_interval_seconds") or 5) + 1
+    config["triggers"] = [
+        {
+            "id": "worker-email",
+            "display_name": "Worker email",
+            "type": "trigger:email:new-message",
+            "mailbox_ids": ["default"],
+        }
+    ]
 
     missing = client.put(f"/api/workers/{worker_id}/config", json={"config": config})
     stale = client.put(
         f"/api/workers/{worker_id}/config",
         json={"config": config, "expected_revision": "stale"},
     )
+    before_save = datetime.now(timezone.utc)
     saved = client.put(
         f"/api/workers/{worker_id}/config",
         json={"config": config, "expected_revision": detail["config"]["revision"]},
     )
+    after_save = datetime.now(timezone.utc)
 
     assert missing.status_code == 428
     assert stale.status_code == 409
@@ -11414,6 +11424,12 @@ def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path)
     assert (
         saved.json()["config"]["config"]["poll_interval_seconds"] == config["poll_interval_seconds"]
     )
+    email_cursor = json.loads(
+        (tmp_path / "runtime" / "trigger-cursors-email.json").read_text(encoding="utf-8")
+    )["worker-email"]
+    initialized_at = datetime.fromisoformat(email_cursor["initialized_at"].replace("Z", "+00:00"))
+    assert before_save <= initialized_at <= after_save
+    assert email_cursor["recent_message_ids"] == []
 
 
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:

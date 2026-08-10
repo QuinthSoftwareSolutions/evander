@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 from evander.events.models import TriggerEvent
@@ -18,11 +18,13 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
         cursor_store = self._cursor_store()
         state = cursor_store.get(trigger.id)
         last_sequences = _last_sequences_by_meeting(state)
+        initialized_at = _initialized_at(state)
         session_filter = {value.strip() for value in trigger.session_ids if value.strip()}
 
         transcript_events = self._list_transcript_events(
             last_sequences=last_sequences,
             session_filter=session_filter,
+            initialized_at=initialized_at,
         )
         transcript_events.sort(key=lambda item: (item.occurred_at, item.meeting_id, item.sequence))
 
@@ -76,6 +78,7 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
         *,
         last_sequences: dict[str, int],
         session_filter: set[str],
+        initialized_at: datetime | None,
     ) -> list[TeamsMeetingEvent]:
         store = TeamsMeetingStore(
             Path(self.runtime_context.resolved_config.teams_meeting_store_path)
@@ -90,7 +93,12 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
                 since_sequence=since_sequence,
                 limit=10_000,
             )
-            transcript_events.extend(event for event in events if event.event_type == "transcript")
+            transcript_events.extend(
+                event
+                for event in events
+                if event.event_type == "transcript"
+                and (initialized_at is None or _as_utc(event.occurred_at) > initialized_at)
+            )
         return transcript_events
 
     def _cursor_store(self) -> TriggerCursorStore:
@@ -131,6 +139,27 @@ def _last_sequences_by_meeting(state: dict[str, object]) -> dict[str, int]:
             if sequence >= 0:
                 sequences[meeting_id] = max(sequences.get(meeting_id, 0), sequence)
     return sequences
+
+
+def _initialized_at(state: dict[str, object]) -> datetime | None:
+    value = state.get("initialized_at")
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        return _as_utc(datetime.fromisoformat(normalized))
+    except ValueError:
+        return None
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _acknowledge_sequence(
