@@ -3954,15 +3954,12 @@ def logs(
         normalized.startswith("vm-") and normalized[3:].isdigit()
     )
     if is_legacy_issue_target:
-        issue_number = _resolve_issue_number_or_raise(target)
-        script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
-        cmd = [str(script_path), issue_number, str(lines)]
-        if repo_name is not None:
-            cmd.append(repo_name)
-            cmd.append(vm_user)
-        elif vm_user != "agent":
-            cmd.extend(["", vm_user])
-        _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+        _follow_agent_logs(
+            target,
+            lines=lines,
+            repo_name=repo_name,
+            vm_user=vm_user,
+        )
         return
 
     service = build_admin_runtime(config).vm_agent_admin
@@ -3970,6 +3967,100 @@ def logs(
         target, lines=lines, repo_name=repo_name, vm_user=vm_user
     )
     typer.echo(output)
+
+
+def _follow_agent_logs(
+    target: str,
+    *,
+    lines: int,
+    repo_name: str | None,
+    vm_user: str,
+    resolved_vm_name: str | None = None,
+) -> None:
+    normalized = target.strip()
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
+    if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
+        issue_number = _resolve_issue_number_or_raise(target)
+        cmd = [str(script_path), issue_number, str(lines)]
+    else:
+        vm_name = str(resolved_vm_name or "").strip() or _resolve_vm_name(target)
+        cmd = [str(script_path), "--vm-name", vm_name, str(lines)]
+    if repo_name is not None:
+        cmd.append(repo_name)
+        cmd.append(vm_user)
+    elif vm_user != "agent":
+        cmd.extend(["", vm_user])
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+
+
+def _container_log_delta(previous: str, current: str) -> str:
+    if not current or current == previous:
+        return ""
+    if not previous:
+        return current
+    previous_lines = previous.splitlines()
+    current_lines = current.splitlines()
+    max_overlap = min(len(previous_lines), len(current_lines))
+    overlap = 0
+    for candidate in range(max_overlap, 0, -1):
+        if previous_lines[-candidate:] == current_lines[:candidate]:
+            overlap = candidate
+            break
+    return "\n".join(current_lines[overlap:])
+
+
+def _container_log_tail(text: str, *, lines: int) -> str:
+    selected = text.splitlines()[-max(1, int(lines)) :]
+    return "\n".join(selected)
+
+
+def _observe_container_agent_logs(
+    service: object,
+    *,
+    session_id: str,
+    execution_id: str | None,
+    lines: int,
+    poll_interval_seconds: float = 1.0,
+) -> None:
+    get_snapshot = getattr(service, "get_admin_agent_log_snapshot")
+    get_agent = getattr(service, "get_agent")
+    log_target = execution_id or session_id
+    previous = ""
+    initialized = False
+    while True:
+        # Container snapshots support ``lines=0`` as the full execution log. Keeping
+        # a complete prior snapshot makes following append-only logs lossless even
+        # when more than the requested initial tail arrives between polls.
+        current = str(
+            get_snapshot(
+                log_target,
+                backend="container_worker_vm",
+                view="executions",
+                lines=0,
+            )
+            or ""
+        )
+        delta = (
+            _container_log_delta(previous, current)
+            if initialized
+            else _container_log_tail(current, lines=lines)
+        )
+        if delta:
+            typer.echo(delta)
+        previous = current
+        initialized = True
+        agent = get_agent(
+            session_id,
+            backend="container_worker_vm",
+            reconcile_containers=True,
+        )
+        if str(getattr(agent, "status", "") or "").strip().casefold() not in {
+            "preparing",
+            "starting",
+            "running",
+        }:
+            return
+        time.sleep(max(0.05, float(poll_interval_seconds)))
 
 
 def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
@@ -4109,6 +4200,7 @@ def resume_agent(
             message,
             model=agent_model,
             vm_user=vm_user,
+            resume_mode="same_context",
         )
     except Exception as exc:
         reason = f"resume-agent-error-{type(exc).__name__}"
@@ -4157,13 +4249,29 @@ def resume_agent(
             reason="resume-agent-dispatched",
         )
         if observe:
-            logs(
-                target,
-                config=config,
-                repo_name=None,
-                lines=lines,
-                vm_user=vm_user,
-            )
+            if str(getattr(result, "provider", "") or "").strip() == "container_worker_vm":
+                provider_details = getattr(result, "provider_details", {})
+                execution_id = (
+                    str(provider_details.get("execution_id") or "").strip()
+                    if isinstance(provider_details, dict)
+                    else ""
+                )
+                _observe_container_agent_logs(
+                    admin,
+                    session_id=(
+                        str(getattr(result, "session_id", None) or resolved_session_id).strip()
+                    ),
+                    execution_id=execution_id or None,
+                    lines=lines,
+                )
+            else:
+                _follow_agent_logs(
+                    target,
+                    repo_name=None,
+                    lines=lines,
+                    vm_user=vm_user,
+                    resolved_vm_name=result_vm_name,
+                )
         return
 
     failure_message = str(getattr(result, "message", None) or "Agent resume failed").strip()

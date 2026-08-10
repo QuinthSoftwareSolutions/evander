@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -303,6 +304,8 @@ from .services.worktree_cleanup_service import (
     TeamWorktreeCleanupService,
     team_task_worktree_cleanup_lock,
 )
+
+logger = logging.getLogger(__name__)
 
 TEAM_AGENT_GUIDANCE_VERSION = 30
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
@@ -2524,10 +2527,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         "the affected review attempts were blocked before inference"
                     )
                     continue
-                runtime_payload = lease.get("runtime")
-                context_rotation_pending = isinstance(runtime_payload, Mapping) and bool(
-                    runtime_payload.get("context_rotation_pending")
-                )
                 effective_resume_mode = (
                     resume_mode
                     if context_handoff_preparation
@@ -2562,6 +2561,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     errors.append(f"{agent['id']}: {error}")
                     continue
                 if bool(result_payload.get("queued")):
+                    state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                    )
                     dispatches.append(
                         {
                             "agent_id": agent["id"],
@@ -2574,10 +2577,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         }
                     )
                     continue
-                state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
-                    agent_id=agent["id"],
+                state, activation = _activate_delivered_team_prompt(
+                    context,
+                    repo=repo,
                     dispatch_id=lease["dispatch_id"],
-                    lease_seconds=(120 if context_handoff_preparation else agent_lease_seconds),
+                    result_payload=result_payload,
                 )
                 lease = {
                     **lease,
@@ -2585,24 +2589,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
                 }
                 leases[lease_index] = lease
-                if not context_handoff_preparation:
-                    state = TeamRuntimeService(repo).record_agent_role_description_delivered(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        role_description_fingerprint=_required_text(
-                            lease.get("role_description_fingerprint"),
-                            "role_description_fingerprint",
-                        ),
-                    )
-                delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(lease)
-                if delivered_action_feedback_dispatch_ids:
-                    feedback_service = TeamAdminService(repo)
-                    for source_dispatch_id in delivered_action_feedback_dispatch_ids:
-                        state = feedback_service.mark_action_feedback_delivered(
-                            agent_id=agent["id"],
-                            source_dispatch_id=source_dispatch_id,
-                            delivery_dispatch_id=lease["dispatch_id"],
-                        )
+                delivered_action_feedback_dispatch_ids = list(
+                    activation["delivered_action_feedback_dispatch_ids"]
+                )
                 dispatch_payload = {
                     "agent_id": agent["id"],
                     "session_id": agent["session_id"],
@@ -2625,32 +2614,13 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     dispatch_payload["review_artifact_import_errors"] = lease[
                         "review_artifact_import_errors"
                     ]
-                if context_rotation_pending and not context_handoff_preparation:
-                    thread_id = _optional_text(result_payload.get("thread_id"))
-                    state = TeamRuntimeService(repo).record_context_rotation_dispatch_started(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        thread_id=thread_id,
-                    )
-                    dispatch_payload["context_rotation"] = {
-                        "rotated": True,
-                        "reason": runtime_payload.get("context_rotation_reason")
-                        if isinstance(runtime_payload, Mapping)
-                        else None,
-                    }
-                elif context_handoff_preparation:
-                    dispatch_payload["context_handoff_preparation"] = {
-                        "status": "started",
-                        "timeout_seconds": 120,
-                    }
+                if activation["context_rotation"] is not None:
+                    dispatch_payload["context_rotation"] = activation["context_rotation"]
+                if activation["context_handoff_preparation"] is not None:
+                    dispatch_payload["context_handoff_preparation"] = activation[
+                        "context_handoff_preparation"
+                    ]
                 dispatches.append(dispatch_payload)
-                _mirror_session_metadata(
-                    context,
-                    repo=repo,
-                    state=state,
-                    agent_id=agent["id"],
-                    session_id=agent["session_id"],
-                )
             except TeamStateConflictError as exc:
                 conflict_record: dict[str, Any] = {
                     "agent_id": agent["id"],
@@ -2893,6 +2863,10 @@ def _dispatch_queued_team_chat_messages(
                 errors.append(f"{agent_id}: {error}")
                 continue
             if bool(result_payload.get("queued")):
+                state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
+                    agent_id=agent_id,
+                    dispatch_id=dispatch_id,
+                )
                 dispatches.append(
                     {
                         "agent_id": agent_id,
@@ -2906,38 +2880,12 @@ def _dispatch_queued_team_chat_messages(
                     }
                 )
                 continue
-            state = TeamChatService(repo).activate_chat_message_dispatch(
+            state, activation = _activate_delivered_team_prompt(
+                context,
+                repo=repo,
                 dispatch_id=dispatch_id,
+                result_payload=result_payload,
             )
-            runtime_payload = chat_lease.get("runtime")
-            context_rotation_pending = isinstance(runtime_payload, Mapping) and bool(
-                runtime_payload.get("context_rotation_pending")
-            )
-            context_rotation: dict[str, Any] | None = None
-            if mutation_allowed:
-                for source_message_id in message_ids:
-                    state = TeamChatService(repo).mark_chat_message_ordinary_context_seeded(
-                        message_id=source_message_id,
-                    )
-                state = TeamRuntimeService(repo).record_agent_role_description_delivered(
-                    agent_id=agent_id,
-                    dispatch_id=dispatch_id,
-                    role_description_fingerprint=_required_text(
-                        chat_lease.get("role_description_fingerprint"),
-                        "role_description_fingerprint",
-                    ),
-                )
-            if context_rotation_pending and mutation_allowed:
-                thread_id = _optional_text(result_payload.get("thread_id"))
-                state = TeamRuntimeService(repo).record_context_rotation_dispatch_started(
-                    agent_id=agent_id,
-                    dispatch_id=dispatch_id,
-                    thread_id=thread_id,
-                )
-                context_rotation = {
-                    "rotated": True,
-                    "reason": runtime_payload.get("context_rotation_reason"),
-                }
             dispatch_payload = {
                 "agent_id": agent_id,
                 "session_id": agent.session_id,
@@ -2954,16 +2902,9 @@ def _dispatch_queued_team_chat_messages(
                 dispatch_payload["team_context_mode"] = ordinary_team_context["context_mode"]
             if project_repos:
                 dispatch_payload["project_repos"] = project_repos
-            if context_rotation is not None:
-                dispatch_payload["context_rotation"] = context_rotation
+            if activation["context_rotation"] is not None:
+                dispatch_payload["context_rotation"] = activation["context_rotation"]
             dispatches.append(dispatch_payload)
-            _mirror_session_metadata(
-                context,
-                repo=repo,
-                state=state,
-                agent_id=agent_id,
-                session_id=agent.session_id,
-            )
         except Exception as exc:  # pragma: no cover - covered through provider tests with fakes
             error = str(exc)
             try:
@@ -3076,6 +3017,30 @@ def _team_chat_wake_lease(
         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
         "subordinates": _subordinate_agent_payloads(state, agent),
     }
+
+
+def _activate_delivered_team_prompt(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    dispatch_id: str,
+    result_payload: Mapping[str, Any],
+    mirror_session_metadata: bool = True,
+) -> tuple[TeamState, dict[str, Any]]:
+    """Apply the same durable transitions for immediate and replayed prompts."""
+
+    state, activation = TeamRuntimeService(repo).activate_delivered_agent_dispatch(
+        dispatch_id=dispatch_id,
+        thread_id=_optional_text(result_payload.get("thread_id")),
+    )
+    if mirror_session_metadata:
+        state, _mirrored = _try_mirror_activated_dispatch_session_metadata(
+            context,
+            repo=repo,
+            state=state,
+            dispatch_id=dispatch_id,
+        )
+    return state, activation
 
 
 def build_voice_reconciliation_context(
@@ -3337,6 +3302,10 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                     )
                 elif bool(result_payload.get("queued")):
                     queued_for_delivery = True
+                    state = TeamRuntimeService(repo).mark_governance_dispatch_queued(
+                        governance_group_id=group["id"],
+                        dispatch_id=lease["dispatch_id"],
+                    )
                 else:
                     state = TeamRuntimeService(repo).activate_governance_dispatch(
                         governance_group_id=group["id"],
@@ -4420,6 +4389,12 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         repo = TeamStateRepository(runtime_dir)
         state = repo.read()
         now = datetime.now(UTC)
+        state, queue_reconciled_count = _reconcile_team_queued_prompt_reservations(
+            worker,
+            repo=repo,
+            state=state,
+            now=now,
+        )
         renewal_due_at = now + timedelta(seconds=self._LEASE_RENEWAL_WINDOW_SECONDS)
         due_dispatches = {
             dispatch_id: (agent_id, state.agents[agent_id].session_id)
@@ -4437,7 +4412,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             )
         }
         if not due_dispatches:
-            return 0
+            return queue_reconciled_count
 
         records_by_dispatch: dict[str, Any] = {}
         for record in _waiting_agent_prompt_records(worker):
@@ -4474,7 +4449,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 # The next reconciliation cycle will use the authoritative row.
                 continue
             renewed_count += int(renewed)
-        return renewed_count
+        return queue_reconciled_count + renewed_count
 
     def on_post_completion_dispatch(self, *, worker: Any) -> int:
         runtime_dir = _runtime_dir_from_worker(worker)
@@ -4482,14 +4457,25 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             return 0
         repo = TeamStateRepository(runtime_dir)
         state = repo.read()
+        context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
         activated_count = 0
+        state, _queue_reconciled_count = _reconcile_team_queued_prompt_reservations(
+            worker,
+            repo=repo,
+            state=state,
+            now=datetime.now(UTC),
+        )
+        delivered_records = [
+            *_waiting_agent_prompt_records(worker),
+            *_completed_agent_prompt_records(worker),
+        ]
         pending_governance = {
             runtime.active_dispatch_id: group_id
             for group_id, runtime in state.governance_runtimes.items()
             if runtime.active_dispatch_id is not None and runtime.wake_leased_until is None
         }
         if pending_governance:
-            for record in _waiting_agent_prompt_records(worker):
+            for record in delivered_records:
                 dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
                 if dispatch_id is None or dispatch_id not in pending_governance:
                     continue
@@ -4498,6 +4484,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                     state = TeamRuntimeService(repo).activate_governance_dispatch(
                         governance_group_id=group_id,
                         dispatch_id=dispatch_id,
+                        lease_seconds=state.governance_runtimes[group_id].requested_lease_seconds,
                     )
                     state = TeamRuntimeService(repo).complete_governance_dispatch(
                         governance_group_id=group_id,
@@ -4509,36 +4496,38 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 pending_governance.pop(dispatch_id, None)
                 if not pending_governance:
                     break
-        preparing_dispatches = {
+        activation_candidates = {
             dispatch_id: dispatch
             for dispatch_id, dispatch in state.dispatches.items()
-            if dispatch.status.value == "preparing"
+            if dispatch.status == TeamDispatchStatus.PREPARING
+            or (
+                dispatch.status == TeamDispatchStatus.LEASED
+                and dispatch.activation_completed_at is None
+            )
         }
-        if preparing_dispatches:
-            for record in _waiting_agent_prompt_records(worker):
+        if activation_candidates:
+            for record in delivered_records:
                 outputs = _record_outputs(record)
                 dispatch_id = _optional_text(outputs.get("dispatch_id"))
-                if dispatch_id is None or dispatch_id not in preparing_dispatches:
+                if dispatch_id is None or dispatch_id not in activation_candidates:
                     continue
-                dispatch = preparing_dispatches[dispatch_id]
+                dispatch = activation_candidates[dispatch_id]
                 if _optional_text(outputs.get("session_id")) != dispatch.session_id:
                     continue
+                was_preparing = dispatch.status == TeamDispatchStatus.PREPARING
                 try:
-                    if dispatch.cause_kind == "team_chat":
-                        state = TeamChatService(repo).activate_chat_message_dispatch(
-                            dispatch_id=dispatch_id,
-                        )
-                    else:
-                        state = TeamRuntimeService(repo).mark_agent_dispatch_leased(
-                            agent_id=dispatch.agent_id,
-                            dispatch_id=dispatch_id,
-                            lease_seconds=(120 if dispatch.cause_kind == "context_handoff" else 900),
-                        )
+                    state, _activation = _activate_delivered_team_prompt(
+                        context,
+                        repo=repo,
+                        dispatch_id=dispatch_id,
+                        result_payload=outputs,
+                        mirror_session_metadata=False,
+                    )
                 except (RuntimeError, ValueError, TeamStateConflictError):
                     continue
-                activated_count += 1
-                preparing_dispatches.pop(dispatch_id, None)
-                if not preparing_dispatches:
+                activated_count += int(was_preparing)
+                activation_candidates.pop(dispatch_id, None)
+                if not activation_candidates:
                     break
         active_dispatches = {
             dispatch_id: agent_id
@@ -4546,10 +4535,6 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if (dispatch_id := _optional_text(runtime.active_dispatch_id)) is not None
             and (dispatch_id.startswith("team-dispatch-") or dispatch_id.startswith("team-chat:"))
         }
-        if not active_dispatches:
-            return activated_count
-
-        context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
         finalized_count = 0
         for record in _completed_agent_prompt_records(worker):
             dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
@@ -4573,15 +4558,6 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 continue
             finalized_count += 1
             active_dispatches.pop(dispatch_id, None)
-            agent = state.agents.get(agent_id)
-            if agent is not None:
-                _mirror_session_metadata(
-                    context,
-                    repo=repo,
-                    state=state,
-                    agent_id=agent_id,
-                    session_id=agent.session_id,
-                )
             _publish_team_events(context, result.get("events"))
             if not active_dispatches:
                 break
@@ -4615,6 +4591,19 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 limit=25,
                 claim_ttl_seconds=300,
                 retry_after_seconds=60,
+            )
+        state = repo.read()
+        for dispatch in sorted(
+            state.dispatches.values(),
+            key=lambda item: (item.created_at, item.id),
+        ):
+            if not _dispatch_session_metadata_mirror_is_due(dispatch):
+                continue
+            state, _mirrored = _try_mirror_activated_dispatch_session_metadata(
+                context,
+                repo=repo,
+                state=state,
+                dispatch_id=dispatch.id,
             )
         return activated_count + finalized_count
 
@@ -6876,22 +6865,6 @@ def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
         "- If this agent also manages governance groups, follow the separate "
         f"{TEAM_GOVERNANCE_GUIDANCE_SECTION_ID} section and the current "
         "governance wake prompt instead.\n"
-    )
-
-
-def _lease_action_feedback_dispatch_ids(lease: Mapping[str, Any]) -> list[str]:
-    if _optional_text(lease.get("reason")) != "action_feedback":
-        return []
-    feedback = lease.get("recent_action_feedback")
-    if not isinstance(feedback, list):
-        return []
-    return sorted(
-        {
-            dispatch_id
-            for item in feedback
-            if isinstance(item, Mapping)
-            and (dispatch_id := _optional_text(item.get("dispatch_id"))) is not None
-        }
     )
 
 
@@ -9664,6 +9637,59 @@ def _mirror_session_metadata(
     )
 
 
+def _try_mirror_activated_dispatch_session_metadata(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    state: TeamState,
+    dispatch_id: str,
+) -> tuple[TeamState, bool]:
+    """Retry-safe bridge from durable activation to external session metadata."""
+
+    dispatch = state.dispatches.get(dispatch_id)
+    if (
+        dispatch is None
+        or dispatch.activation_completed_at is None
+        or not _dispatch_session_metadata_mirror_is_due(dispatch)
+    ):
+        return state, False
+    agent = state.agents.get(dispatch.agent_id)
+    if agent is None:
+        return state, False
+    updater = getattr(context, "session_metadata_updater", None)
+    if not callable(getattr(updater, "session_update_metadata", None)):
+        return state, False
+    try:
+        _mirror_session_metadata(
+            context,
+            repo=repo,
+            state=state,
+            agent_id=agent.id,
+            session_id=agent.session_id,
+        )
+        state = TeamRuntimeService(repo).mark_agent_dispatch_session_metadata_mirrored(
+            dispatch_id=dispatch.id,
+        )
+    except Exception:
+        logger.exception(
+            "Team session metadata mirror remains pending dispatch_id=%s session_id=%s",
+            dispatch.id,
+            agent.session_id,
+        )
+        return repo.read(), False
+    return state, True
+
+
+def _dispatch_session_metadata_mirror_is_due(dispatch: TeamDispatch) -> bool:
+    required_at = dispatch.completed_at or dispatch.activation_completed_at
+    if required_at is None:
+        return False
+    mirrored_at = dispatch.session_metadata_mirrored_at
+    return mirrored_at is None or _team_datetime_utc(mirrored_at) < _team_datetime_utc(
+        required_at
+    )
+
+
 def _cost_guard_blocked_teams(
     context: Any,
     *,
@@ -10887,6 +10913,210 @@ def _effect_context_from_worker(worker: Any, *, runtime_dir: Path) -> EffectRunt
         resolved_config={"runtime_dir": str(runtime_dir)},
         admin_service=admin_service,
     )
+
+
+def _team_queue_dispatch_is_current(
+    state: TeamState,
+    *,
+    dispatch_id: str,
+    record_session_id: str | None,
+) -> bool:
+    dispatch = state.dispatches.get(dispatch_id)
+    if dispatch is None or dispatch.status != TeamDispatchStatus.PREPARING:
+        return False
+    runtime = state.agent_runtimes.get(dispatch.agent_id)
+    return bool(
+        runtime is not None
+        and runtime.active_dispatch_id == dispatch.id
+        and (record_session_id is None or record_session_id == dispatch.session_id)
+    )
+
+
+def _team_queue_governance_group_id(
+    state: TeamState,
+    *,
+    dispatch_id: str,
+    record_session_id: str | None,
+) -> str | None:
+    for group_id, runtime in state.governance_runtimes.items():
+        if runtime.active_dispatch_id != dispatch_id or runtime.wake_leased_until is not None:
+            continue
+        group = state.governance_groups.get(group_id)
+        if group is None:
+            continue
+        manager = state.agents.get(group.manager_agent_id)
+        if manager is None:
+            continue
+        if record_session_id is not None and record_session_id != manager.session_id:
+            continue
+        return group_id
+    return None
+
+
+def _reconcile_team_queued_prompt_reservations(
+    worker: Any,
+    *,
+    repo: TeamStateRepository,
+    state: TeamState,
+    now: datetime,
+) -> tuple[TeamState, int]:
+    """Validate Team queue ownership before the generic replay phase runs."""
+
+    queue_store = getattr(worker, "queued_agent_prompt_store", None)
+    read_all = getattr(queue_store, "read_all", None)
+    delete = getattr(queue_store, "delete", None)
+    compare_delete = getattr(queue_store, "delete_if_dispatch_id", None)
+    if not callable(read_all):
+        return state, 0
+    try:
+        queued_records = read_all()
+    except Exception:
+        logger.exception("Team queued-prompt reservation reconciliation could not read the queue")
+        return state, 0
+    if not isinstance(queued_records, Mapping) or not queued_records:
+        return state, 0
+
+    def delete_current_record(queue_key: str, dispatch_id: str) -> bool:
+        if callable(compare_delete):
+            return bool(compare_delete(queue_key, dispatch_id))
+        if not callable(delete):
+            return False
+        current_records = read_all()
+        current = current_records.get(queue_key) if isinstance(current_records, Mapping) else None
+        current_dispatch_id = _optional_text(getattr(current, "dispatch_id", None))
+        if current_dispatch_id != dispatch_id:
+            return False
+        delete(queue_key)
+        return True
+
+    reconciled_count = 0
+    for queue_key, record in sorted(queued_records.items()):
+        dispatch_id = _optional_text(getattr(record, "dispatch_id", None))
+        if dispatch_id is None:
+            continue
+        record_session_id = _optional_text(getattr(record, "session_id", None))
+        dispatch = state.dispatches.get(dispatch_id)
+        if dispatch is not None:
+            if _team_queue_dispatch_is_current(
+                state,
+                dispatch_id=dispatch_id,
+                record_session_id=record_session_id,
+            ):
+                if dispatch.queued_at is None:
+                    try:
+                        state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
+                            agent_id=dispatch.agent_id,
+                            dispatch_id=dispatch.id,
+                            now=now,
+                        )
+                    except (RuntimeError, ValueError, TeamStateConflictError):
+                        state = repo.read()
+                        if _team_queue_dispatch_is_current(
+                            state,
+                            dispatch_id=dispatch_id,
+                            record_session_id=record_session_id,
+                        ):
+                            try:
+                                state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
+                                    agent_id=dispatch.agent_id,
+                                    dispatch_id=dispatch.id,
+                                    now=now,
+                                )
+                            except (RuntimeError, ValueError, TeamStateConflictError):
+                                state = repo.read()
+                                if _team_queue_dispatch_is_current(
+                                    state,
+                                    dispatch_id=dispatch_id,
+                                    record_session_id=record_session_id,
+                                ):
+                                    continue
+                            else:
+                                reconciled_count += 1
+                                continue
+                    else:
+                        reconciled_count += 1
+                        continue
+                elif _team_queue_dispatch_is_current(
+                    state,
+                    dispatch_id=dispatch_id,
+                    record_session_id=record_session_id,
+                ):
+                    continue
+            if not delete_current_record(queue_key, dispatch_id):
+                continue
+            logger.warning(
+                "discarded stale Team queued prompt queue_key=%s dispatch_id=%s",
+                queue_key,
+                dispatch_id,
+            )
+            reconciled_count += 1
+            continue
+
+        governance_group_id = _team_queue_governance_group_id(
+            state,
+            dispatch_id=dispatch_id,
+            record_session_id=record_session_id,
+        )
+        if governance_group_id is not None:
+            runtime = state.governance_runtimes[governance_group_id]
+            if runtime.queued_at is None:
+                try:
+                    state = TeamRuntimeService(repo).mark_governance_dispatch_queued(
+                        governance_group_id=governance_group_id,
+                        dispatch_id=dispatch_id,
+                        now=now,
+                    )
+                except (RuntimeError, ValueError, TeamStateConflictError):
+                    state = repo.read()
+                    refreshed_group_id = _team_queue_governance_group_id(
+                        state,
+                        dispatch_id=dispatch_id,
+                        record_session_id=record_session_id,
+                    )
+                    if refreshed_group_id is not None:
+                        try:
+                            state = TeamRuntimeService(repo).mark_governance_dispatch_queued(
+                                governance_group_id=refreshed_group_id,
+                                dispatch_id=dispatch_id,
+                                now=now,
+                            )
+                        except (RuntimeError, ValueError, TeamStateConflictError):
+                            state = repo.read()
+                            if (
+                                _team_queue_governance_group_id(
+                                    state,
+                                    dispatch_id=dispatch_id,
+                                    record_session_id=record_session_id,
+                                )
+                                is not None
+                            ):
+                                continue
+                        else:
+                            reconciled_count += 1
+                            continue
+                else:
+                    reconciled_count += 1
+                    continue
+            elif _team_queue_governance_group_id(
+                state,
+                dispatch_id=dispatch_id,
+                record_session_id=record_session_id,
+            ) is not None:
+                continue
+
+        if dispatch_id.startswith(
+            ("team-dispatch-", "team-chat:", "team-governance-dispatch-")
+        ):
+            if not delete_current_record(queue_key, dispatch_id):
+                continue
+            logger.warning(
+                "discarded unowned Team queued prompt queue_key=%s dispatch_id=%s",
+                queue_key,
+                dispatch_id,
+            )
+            reconciled_count += 1
+
+    return state, reconciled_count
 
 
 def _completed_agent_prompt_records(worker: Any) -> list[Any]:

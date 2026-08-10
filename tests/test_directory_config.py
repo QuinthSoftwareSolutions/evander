@@ -36,13 +36,26 @@ def test_local_openai_max_concurrency_is_root_only(tmp_path: Path) -> None:
         domain="providers",
         payload={"local_openai_max_concurrency": 2},
     ) == {"local_openai_max_concurrency": 2}
+    assert (
+        config_store.write(
+            child.path,
+            domain="providers",
+            payload={"email_provider_timeout_seconds": 15},
+        )
+        == {}
+    )
 
     with pytest.raises(ValueError, match="host-global"):
         config_store.write(
             child.path,
             domain="providers",
-            payload={"local_openai_max_concurrency": 1},
+            payload={
+                "local_openai_max_concurrency": 1,
+                "email_provider_timeout_seconds": 45,
+            },
         )
+
+    assert config_store.read(child.path, domain="email") == {"email_provider_timeout_seconds": 15.0}
 
 
 def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(

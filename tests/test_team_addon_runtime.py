@@ -19,6 +19,7 @@ from evander.events.scheduled import scheduled_internal_event_store_path
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.execution import ExecutionStatusKind
 from evander.model_usage.store import ModelUsageStore
 from evander.messaging.targets import (
@@ -623,6 +624,26 @@ class FakeExecutionStore:
 
     def list_executions(self) -> list[object]:
         return list(self.records)
+
+
+class FakeAgentPromptQueueStore:
+    def __init__(self, records: dict[str, object]) -> None:
+        self.records = dict(records)
+        self.deleted: list[str] = []
+
+    def read_all(self) -> dict[str, object]:
+        return dict(self.records)
+
+    def delete(self, queue_key: str) -> None:
+        self.deleted.append(queue_key)
+        self.records.pop(queue_key, None)
+
+    def delete_if_dispatch_id(self, queue_key: str, dispatch_id: str) -> bool:
+        current = self.records.get(queue_key)
+        if str(getattr(current, "dispatch_id", "") or "").strip() != dispatch_id:
+            return False
+        self.delete(queue_key)
+        return True
 
 
 class FakeFileCopier:
@@ -4188,6 +4209,7 @@ def test_governance_dispatch_reservation_is_not_released_or_replaced_before_deli
 
     state, leases = runtime.lease_due_governance_managers(
         now=now,
+        lease_seconds=43,
         wake_interval_seconds=1,
         defer_activation=True,
     )
@@ -4210,7 +4232,130 @@ def test_governance_dispatch_reservation_is_not_released_or_replaced_before_deli
         dispatch_id=dispatch_id,
         now=now + timedelta(seconds=2),
     )
-    assert activated.governance_runtimes["portfolio"].wake_leased_until is not None
+    activated_until = activated.governance_runtimes["portfolio"].wake_leased_until
+    assert activated_until == now + timedelta(seconds=45)
+
+
+def test_queued_governance_dispatch_preparation_expires_and_can_be_replaced(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="portfolio-manager",
+        session_id="session-portfolio-manager",
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="portfolio-manager",
+        member_team_ids=["team"],
+        goals=[{"id": "cost", "description": "Keep Team under budget"}],
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review weekly status",
+        summary="Check whether Team is blocked.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_governance_managers(
+        now=now,
+        wake_interval_seconds=1,
+        defer_activation=True,
+    )
+    stale_dispatch_id = leases[0]["dispatch_id"]
+    runtime.mark_governance_dispatch_queued(
+        governance_group_id="portfolio",
+        dispatch_id=stale_dispatch_id,
+        now=now,
+    )
+
+    state, replacement_leases = runtime.lease_due_governance_managers(
+        now=now + timedelta(minutes=6),
+        wake_interval_seconds=1,
+        defer_activation=True,
+    )
+
+    assert len(replacement_leases) == 1
+    replacement_dispatch_id = replacement_leases[0]["dispatch_id"]
+    assert replacement_dispatch_id != stale_dispatch_id
+    governance_runtime = state.governance_runtimes["portfolio"]
+    assert governance_runtime.active_dispatch_id == replacement_dispatch_id
+    assert governance_runtime.preparation_expires_at is not None
+
+
+def test_waiting_reconciliation_discards_replaced_governance_queue_record_before_replay(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="portfolio-manager",
+        session_id="session-portfolio-manager",
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="portfolio-manager",
+        member_team_ids=["team"],
+        goals=[{"id": "cost", "description": "Keep Team under budget"}],
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review weekly status",
+        summary="Check whether Team is blocked.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_governance_managers(
+        now=now,
+        wake_interval_seconds=1,
+        defer_activation=True,
+    )
+    stale_dispatch_id = leases[0]["dispatch_id"]
+    _state, replacement_leases = runtime.lease_due_governance_managers(
+        now=now + timedelta(minutes=6),
+        wake_interval_seconds=1,
+        defer_activation=True,
+    )
+    replacement_dispatch_id = replacement_leases[0]["dispatch_id"]
+    queue_store = FakeAgentPromptQueueStore(
+        {
+            "stale-governance": SimpleNamespace(
+                dispatch_id=stale_dispatch_id,
+                session_id="session-portfolio-manager",
+            ),
+            "replacement-governance": SimpleNamespace(
+                dispatch_id=replacement_dispatch_id,
+                session_id="session-portfolio-manager",
+            ),
+        }
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_waiting_reconciliation(worker=worker) == 2
+
+    assert queue_store.deleted == ["stale-governance"]
+    assert set(queue_store.records) == {"replacement-governance"}
+    governance_runtime = repo.read().governance_runtimes["portfolio"]
+    assert governance_runtime.active_dispatch_id == replacement_dispatch_id
+    assert governance_runtime.queued_at is not None
 
 
 def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
@@ -8349,6 +8494,8 @@ def test_wake_due_agents_keeps_local_capacity_queued_dispatch_unleased(
     assert dispatch.status == TeamDispatchStatus.PREPARING
     assert dispatch.leased_at is None
     assert dispatch.lease_expires_at is None
+    assert dispatch.queued_at is not None
+    assert dispatch.preparation_expires_at is not None
     assert runtime.active_dispatch_id == dispatch.id
     assert runtime.wake_leased_until is None
     assert len(session_store.calls) == 1
@@ -8412,17 +8559,393 @@ def test_wake_due_agents_keeps_capacity_queued_chat_unleased_and_skips_regular_d
     assert dispatch.status == TeamDispatchStatus.PREPARING
     assert dispatch.leased_at is None
     assert dispatch.lease_expires_at is None
+    assert dispatch.queued_at is not None
+    assert dispatch.preparation_expires_at is not None
     assert state.agent_runtimes["backend"].active_dispatch_id == dispatch_id
     assert state.agent_runtimes["backend"].wake_leased_until is None
     assert state.conversation_messages[message.id].status == "dispatching"
+
+
+def test_queued_team_dispatch_preparation_expires_and_can_be_released(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        now=now,
+        defer_activation=True,
+    )
+    stale_dispatch_id = leases[0]["dispatch_id"]
+    runtime.mark_agent_dispatch_queued(
+        agent_id="backend",
+        dispatch_id=stale_dispatch_id,
+        now=now,
+    )
+
+    state, replacement_leases = runtime.lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(minutes=6),
+        defer_activation=True,
+    )
+
+    assert len(replacement_leases) == 1
+    replacement_dispatch_id = replacement_leases[0]["dispatch_id"]
+    assert replacement_dispatch_id != stale_dispatch_id
+    stale_dispatch = state.dispatches[stale_dispatch_id]
+    assert stale_dispatch.status == TeamDispatchStatus.FAILED
+    assert stale_dispatch.error == (
+        "dispatch preparation reservation expired before durable prompt delivery"
+    )
+    assert state.agent_runtimes["backend"].active_dispatch_id == replacement_dispatch_id
+
+
+def test_waiting_reconciliation_discards_replaced_team_queue_record_before_replay(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        now=now,
+        defer_activation=True,
+    )
+    stale_dispatch_id = leases[0]["dispatch_id"]
+    _state, replacement_leases = runtime.lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(minutes=6),
+        defer_activation=True,
+    )
+    replacement_dispatch_id = replacement_leases[0]["dispatch_id"]
+    queue_store = FakeAgentPromptQueueStore(
+        {
+            "stale-team": SimpleNamespace(
+                dispatch_id=stale_dispatch_id,
+                session_id="session-backend",
+            ),
+            "replacement-team": SimpleNamespace(
+                dispatch_id=replacement_dispatch_id,
+                session_id="session-backend",
+            ),
+            "ordinary-admin": SimpleNamespace(
+                dispatch_id="admin-dispatch-1",
+                session_id="session-backend",
+            ),
+        }
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_waiting_reconciliation(worker=worker) == 2
+
+    assert queue_store.deleted == ["stale-team"]
+    assert set(queue_store.records) == {"replacement-team", "ordinary-admin"}
+    state = repo.read()
+    assert state.dispatches[stale_dispatch_id].status == TeamDispatchStatus.FAILED
+    assert state.dispatches[replacement_dispatch_id].queued_at is not None
+
+
+def test_waiting_reconciliation_does_not_delete_new_queue_row_at_stale_team_key(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        now=now,
+        defer_activation=True,
+    )
+    stale_dispatch_id = leases[0]["dispatch_id"]
+    runtime.lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(minutes=6),
+        defer_activation=True,
+    )
+
+    class ReplacingQueueStore(FakeAgentPromptQueueStore):
+        def delete_if_dispatch_id(self, queue_key: str, dispatch_id: str) -> bool:
+            self.records[queue_key] = SimpleNamespace(
+                dispatch_id="admin-replacement",
+                session_id="session-backend",
+            )
+            return super().delete_if_dispatch_id(queue_key, dispatch_id)
+
+    queue_store = ReplacingQueueStore(
+        {
+            "shared-key": SimpleNamespace(
+                dispatch_id=stale_dispatch_id,
+                session_id="session-backend",
+            )
+        }
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    TeamAgentPromptCompletionFinalizeHook().on_waiting_reconciliation(worker=worker)
+
+    assert queue_store.deleted == []
+    assert queue_store.records["shared-key"].dispatch_id == "admin-replacement"
+
+
+def test_waiting_reconciliation_prevents_stale_team_record_from_reaching_generic_replay(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        now=now,
+        defer_activation=True,
+    )
+    stale_dispatch_id = leases[0]["dispatch_id"]
+    runtime.lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(minutes=6),
+        defer_activation=True,
+    )
+    queue_store = FakeAgentPromptQueueStore(
+        {
+            "stale-team": SimpleNamespace(
+                dispatch_id=stale_dispatch_id,
+                session_id="session-backend",
+            )
+        }
+    )
+
+    class _RejectStaleDispatchPort:
+        def dispatch_agent_prompt(self, **_kwargs: object) -> object:
+            pytest.fail("stale Team queue record reached generic replay")
+
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=_RejectStaleDispatchPort(),
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    team_hook = TeamAgentPromptCompletionFinalizeHook()
+    generic_hook = AgentEnqueuePromptQueueDispatchHook()
+    assert team_hook.on_waiting_reconciliation(worker=worker) == 1
+    assert generic_hook.on_post_completion_dispatch(worker=worker) == 0
+    assert queue_store.records == {}
+
+
+def test_team_hook_reconciles_a_persisted_queue_record_with_its_reservation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=datetime.now(UTC) - timedelta(minutes=6),
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    queue_store = FakeAgentPromptQueueStore(
+        {
+            "durable-team-prompt": SimpleNamespace(
+                dispatch_id=dispatch_id,
+                session_id="session-backend",
+            )
+        }
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_waiting_reconciliation(worker=worker) == 1
+
+    reconciled = repo.read().dispatches[dispatch_id]
+    assert reconciled.status == TeamDispatchStatus.PREPARING
+    assert reconciled.queued_at is not None
+    assert reconciled.preparation_expires_at is not None
+    assert queue_store.deleted == []
+
+
+def test_waiting_reconciliation_preserves_current_queue_record_when_marker_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    queue_store = FakeAgentPromptQueueStore(
+        {
+            "durable-team-prompt": SimpleNamespace(
+                dispatch_id=dispatch_id,
+                session_id="session-backend",
+            )
+        }
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    def _fail_marker_write(_service: TeamRuntimeService, **_kwargs: object) -> TeamState:
+        raise RuntimeError("database busy")
+
+    monkeypatch.setattr(
+        TeamRuntimeService,
+        "mark_agent_dispatch_queued",
+        _fail_marker_write,
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_waiting_reconciliation(worker=worker) == 0
+    assert queue_store.deleted == []
+    assert set(queue_store.records) == {"durable-team-prompt"}
+    assert repo.read().agent_runtimes["backend"].active_dispatch_id == dispatch_id
+
+
+def test_queued_chat_dispatch_preparation_is_requeued_with_a_new_reservation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Retry this chat reservation after an interrupted preparation.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        agent_id="backend",
+        now=now,
+        defer_activation=True,
+    )
+    stale_dispatch_id = claims[0]["dispatch_id"]
+    _team_runtime_service(repo).mark_agent_dispatch_queued(
+        agent_id="backend",
+        dispatch_id=stale_dispatch_id,
+        now=now,
+    )
+
+    state, replacement_claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        agent_id="backend",
+        now=now + timedelta(minutes=6),
+        defer_activation=True,
+    )
+
+    assert len(replacement_claims) == 1
+    replacement_dispatch_id = replacement_claims[0]["dispatch_id"]
+    assert replacement_dispatch_id != stale_dispatch_id
+    assert state.dispatches[stale_dispatch_id].status == TeamDispatchStatus.FAILED
+    assert state.dispatches[stale_dispatch_id].error == (
+        "chat dispatch preparation reservation expired before durable prompt delivery"
+    )
+    assert state.dispatches[replacement_dispatch_id].status == TeamDispatchStatus.PREPARING
+    assert state.conversation_messages[message.id].status == "dispatching"
+    assert state.agent_runtimes["backend"].active_dispatch_id == replacement_dispatch_id
+
+
+def test_waiting_reconciliation_discards_replaced_chat_queue_record_before_replay(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Keep only the replacement chat replay record.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        agent_id="backend",
+        now=now,
+        defer_activation=True,
+    )
+    stale_dispatch_id = claims[0]["dispatch_id"]
+    _state, replacement_claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        agent_id="backend",
+        now=now + timedelta(minutes=6),
+        defer_activation=True,
+    )
+    replacement_dispatch_id = replacement_claims[0]["dispatch_id"]
+    queue_store = FakeAgentPromptQueueStore(
+        {
+            "stale-chat": SimpleNamespace(
+                dispatch_id=stale_dispatch_id,
+                session_id="session-backend",
+            ),
+            "replacement-chat": SimpleNamespace(
+                dispatch_id=replacement_dispatch_id,
+                session_id="session-backend",
+            ),
+        }
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([]),
+        queued_agent_prompt_store=queue_store,
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_waiting_reconciliation(worker=worker) == 2
+
+    assert queue_store.deleted == ["stale-chat"]
+    assert set(queue_store.records) == {"replacement-chat"}
+    state = repo.read()
+    assert state.dispatches[replacement_dispatch_id].queued_at is not None
 
 
 def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_delivered(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    _add_action_record(
+        repo,
+        action_id="queued-action-feedback",
+        dispatch_id="failed-before-queued-wake",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        success=False,
+        error="queued feedback must be recorded after delivery",
+    )
     _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
+        lease_seconds=37,
         defer_activation=True,
     )
     dispatch_id = leases[0]["dispatch_id"]
@@ -8438,6 +8961,283 @@ def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_deli
         outputs={
             "dispatch_id": dispatch_id,
             "session_id": "session-backend",
+            "thread_id": "queued-team-thread",
+            "success": True,
+            "queued": False,
+        },
+    )
+    session_store = FakeSessionStore()
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=session_store),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=worker) == 1
+
+    leased = repo.read()
+    dispatch = leased.dispatches[dispatch_id]
+    runtime = leased.agent_runtimes["backend"]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.activation_completed_at is not None
+    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.leased_at is not None
+    assert dispatch.lease_expires_at is not None
+    assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=37)
+    assert runtime.wake_leased_until == dispatch.lease_expires_at
+    assert runtime.last_delivered_role_description_fingerprint == (
+        dispatch.role_description_fingerprint
+    )
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_thread_id == "queued-team-thread"
+    action_record = leased.action_records["queued-action-feedback"]
+    assert action_record.feedback_delivered_by_dispatch_id == dispatch_id
+    assert action_record.feedback_delivered_at is not None
+    assert session_store.calls[-1]["target"] == "session-backend"
+
+
+def test_delivered_team_activation_is_atomic_and_retryable_after_injected_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    _add_action_record(
+        repo,
+        action_id="atomic-action-feedback",
+        dispatch_id="failed-before-atomic-wake",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        success=False,
+        error="feedback must commit with activation",
+    )
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        lease_seconds=41,
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+
+    def _clear_fingerprint(state: TeamState) -> TeamState:
+        state.dispatches[dispatch_id].role_description_fingerprint = None
+        return state
+
+    repo.update(_clear_fingerprint)
+
+    def _fail_role_fingerprint(_agent: object) -> str:
+        raise RuntimeError("injected activation failure")
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.runtime_service.agent_role_description_fingerprint",
+        _fail_role_fingerprint,
+    )
+    with pytest.raises(RuntimeError, match="injected activation failure"):
+        runtime.activate_delivered_agent_dispatch(
+            dispatch_id=dispatch_id,
+            thread_id="thread-after-retry",
+        )
+
+    rolled_back = repo.read()
+    assert rolled_back.dispatches[dispatch_id].status == TeamDispatchStatus.PREPARING
+    assert rolled_back.dispatches[dispatch_id].activation_completed_at is None
+    assert rolled_back.agent_runtimes["backend"].context_rotation_pending is True
+    assert rolled_back.action_records["atomic-action-feedback"].feedback_delivered_at is None
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.runtime_service.agent_role_description_fingerprint",
+        lambda _agent: "recovered-role-fingerprint",
+    )
+    recovered, _activation = runtime.activate_delivered_agent_dispatch(
+        dispatch_id=dispatch_id,
+        thread_id="thread-after-retry",
+    )
+
+    dispatch = recovered.dispatches[dispatch_id]
+    agent_runtime = recovered.agent_runtimes["backend"]
+    feedback = recovered.action_records["atomic-action-feedback"]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.activation_completed_at is not None
+    assert dispatch.lease_expires_at is not None
+    assert dispatch.leased_at is not None
+    assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=41)
+    assert agent_runtime.last_delivered_role_description_fingerprint == (
+        "recovered-role-fingerprint"
+    )
+    assert agent_runtime.context_rotation_pending is False
+    assert agent_runtime.last_thread_id == "thread-after-retry"
+    assert feedback.feedback_delivered_by_dispatch_id == dispatch_id
+    assert feedback.feedback_delivered_at is not None
+
+
+def test_reconciliation_repairs_legacy_leased_dispatch_missing_activation_bookkeeping(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    _add_action_record(
+        repo,
+        action_id="legacy-partial-feedback",
+        dispatch_id="failed-before-legacy-partial-wake",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        success=False,
+        error="recover feedback after the legacy partial lease",
+    )
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="backend",
+        lease_seconds=47,
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    runtime.mark_agent_dispatch_leased(
+        agent_id="backend",
+        dispatch_id=dispatch_id,
+        lease_seconds=47,
+    )
+    partial = repo.read()
+    assert partial.dispatches[dispatch_id].status == TeamDispatchStatus.LEASED
+    assert partial.dispatches[dispatch_id].activation_completed_at is None
+    assert partial.action_records["legacy-partial-feedback"].feedback_delivered_at is None
+
+    record = SimpleNamespace(
+        execution_id="exec-legacy-partial-activation",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
+            "thread_id": "legacy-partial-thread",
+            "success": True,
+            "queued": False,
+        },
+    )
+    session_store = FakeSessionStore()
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=session_store),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=worker) == 0
+
+    repaired = repo.read()
+    dispatch = repaired.dispatches[dispatch_id]
+    agent_runtime = repaired.agent_runtimes["backend"]
+    feedback = repaired.action_records["legacy-partial-feedback"]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.activation_completed_at is not None
+    assert dispatch.session_metadata_mirrored_at is not None
+    assert agent_runtime.last_delivered_role_description_fingerprint == (
+        dispatch.role_description_fingerprint
+    )
+    assert agent_runtime.context_rotation_pending is False
+    assert agent_runtime.last_thread_id == "legacy-partial-thread"
+    assert feedback.feedback_delivered_by_dispatch_id == dispatch_id
+    assert feedback.feedback_delivered_at is not None
+
+
+def test_session_metadata_mirror_retries_after_activation_survives_worker_restart(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        lease_seconds=53,
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    record = SimpleNamespace(
+        execution_id="exec-metadata-mirror-retry",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
+            "thread_id": "metadata-retry-thread",
+            "success": True,
+            "queued": False,
+        },
+    )
+
+    class _FailingMetadataStore(FakeSessionStore):
+        def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
+            raise RuntimeError("injected metadata mirror outage")
+
+    failed_worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=_FailingMetadataStore()),
+    )
+
+    assert (
+        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(
+            worker=failed_worker
+        )
+        == 1
+    )
+
+    activated = repo.read()
+    dispatch = activated.dispatches[dispatch_id]
+    agent_runtime = activated.agent_runtimes["backend"]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.activation_completed_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
+    assert agent_runtime.context_rotation_pending is False
+    assert agent_runtime.last_thread_id == "metadata-retry-thread"
+    assert agent_runtime.last_delivered_role_description_fingerprint == (
+        dispatch.role_description_fingerprint
+    )
+
+    recovered_session_store = FakeSessionStore()
+    restarted_worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=recovered_session_store),
+    )
+
+    assert (
+        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(
+            worker=restarted_worker
+        )
+        == 0
+    )
+
+    mirrored = repo.read().dispatches[dispatch_id]
+    assert mirrored.activation_completed_at is not None
+    assert mirrored.session_metadata_mirrored_at is not None
+    assert recovered_session_store.calls[-1]["target"] == "session-backend"
+
+
+def test_terminal_queued_prompt_is_activated_before_team_finalization(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        defer_activation=True,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    record = SimpleNamespace(
+        execution_id="exec-terminal-delivered-team-prompt",
+        effect_type="effect:agent:enqueue-prompt",
+        status="succeeded",
+        finished_at=datetime.now(UTC),
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
             "success": True,
             "queued": False,
         },
@@ -8448,15 +9248,13 @@ def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_deli
         provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
     )
 
-    assert TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=worker) == 1
+    assert TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=worker) == 2
 
-    leased = repo.read()
-    dispatch = leased.dispatches[dispatch_id]
-    runtime = leased.agent_runtimes["backend"]
-    assert dispatch.status == TeamDispatchStatus.LEASED
-    assert dispatch.leased_at is not None
-    assert dispatch.lease_expires_at is not None
-    assert runtime.wake_leased_until == dispatch.lease_expires_at
+    finalized = repo.read()
+    assert finalized.dispatches[dispatch_id].status == TeamDispatchStatus.COMPLETED
+    assert finalized.dispatches[dispatch_id].activation_completed_at is not None
+    assert finalized.dispatches[dispatch_id].leased_at is not None
+    assert finalized.agent_runtimes["backend"].active_dispatch_id is None
 
 
 def test_chat_dispatch_lease_starts_only_when_preparing_prompt_is_delivered(
@@ -8501,6 +9299,77 @@ def test_chat_dispatch_lease_starts_only_when_preparing_prompt_is_delivered(
     assert dispatch.lease_expires_at is not None
     assert activated.agent_runtimes["backend"].wake_leased_until == dispatch.lease_expires_at
     assert activated.conversation_messages[message.id].status == "running"
+
+
+def test_queued_chat_replay_applies_full_activation_bookkeeping(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Apply ordinary Team context after queued replay.",
+        created_by="operator:alice@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    _state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        agent_id="backend",
+        lease_seconds=71,
+        defer_activation=True,
+    )
+    dispatch_id = claims[0]["dispatch_id"]
+    record = SimpleNamespace(
+        execution_id="exec-delivered-team-chat-prompt",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
+            "thread_id": "queued-chat-thread",
+            "success": True,
+            "queued": False,
+        },
+    )
+    session_store = FakeSessionStore()
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=session_store),
+    )
+
+    assert TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=worker) == 1
+
+    activated = repo.read()
+    dispatch = activated.dispatches[dispatch_id]
+    runtime = activated.agent_runtimes["backend"]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.activation_completed_at is not None
+    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.lease_expires_at is not None
+    assert dispatch.leased_at is not None
+    assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=71)
+    assert activated.conversation_messages[message.id].status == "running"
+    assert activated.conversation_messages[message.id].metadata["ordinary_context_seeded"] is True
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_thread_id == "queued-chat-thread"
+    assert runtime.last_delivered_role_description_fingerprint == (
+        dispatch.role_description_fingerprint
+    )
+    assert session_store.calls[-1]["target"] == "session-backend"
 
 
 def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(

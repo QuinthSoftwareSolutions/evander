@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
@@ -12,6 +15,78 @@ from evander.messaging.agent_prompt_queue import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def workflow_context_from_sources(
+    *,
+    execution_context: Mapping[str, Any] | None,
+    input_payload: Mapping[str, Any] | None,
+    context_key: str,
+) -> dict[str, dict[str, Any]] | None:
+    for source in (execution_context, input_payload):
+        if not isinstance(source, Mapping):
+            continue
+        workflow_context = _copy_workflow_context(source.get(context_key))
+        if workflow_context:
+            return workflow_context
+        nested_input = source.get("input_payload")
+        if isinstance(nested_input, Mapping):
+            workflow_context = _copy_workflow_context(nested_input.get(context_key))
+            if workflow_context:
+                return workflow_context
+    return None
+
+
+def workflow_for_execution_ids_from_sources(
+    *,
+    execution_context: Mapping[str, Any] | None,
+    input_payload: Mapping[str, Any] | None,
+    context_key: str,
+) -> dict[str, str] | None:
+    for source in (execution_context, input_payload):
+        if not isinstance(source, Mapping):
+            continue
+        execution_ids = _copy_workflow_for_execution_ids(source.get(context_key))
+        if execution_ids:
+            return execution_ids
+        nested_input = source.get("input_payload")
+        if isinstance(nested_input, Mapping):
+            execution_ids = _copy_workflow_for_execution_ids(nested_input.get(context_key))
+            if execution_ids:
+                return execution_ids
+    return None
+
+
+def _copy_workflow_for_execution_ids(raw_value: Any) -> dict[str, str] | None:
+    if not isinstance(raw_value, Mapping):
+        return None
+    execution_ids = {
+        gate_id.strip(): str(execution_id).strip()
+        for gate_id, execution_id in raw_value.items()
+        if isinstance(gate_id, str)
+        and gate_id.strip()
+        and execution_id is not None
+        and str(execution_id).strip()
+    }
+    return execution_ids or None
+
+
+def _copy_workflow_context(raw_context: Any) -> dict[str, dict[str, Any]] | None:
+    if not isinstance(raw_context, Mapping):
+        return None
+    workflow_context: dict[str, dict[str, Any]] = {}
+    for node_id, node_payload in raw_context.items():
+        if not isinstance(node_id, str) or not isinstance(node_payload, Mapping):
+            continue
+        if not all(isinstance(key, str) for key in node_payload):
+            continue
+        try:
+            copied_payload = json.loads(json.dumps(dict(node_payload)))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(copied_payload, dict):
+            workflow_context[node_id] = copied_payload
+    return workflow_context or None
 
 
 def enqueue_agent_prompt(
@@ -38,6 +113,9 @@ def enqueue_agent_prompt(
     max_retries: int = 3,
 ) -> QueuedAgentPromptRecord:
     start = time.monotonic()
+    persisted_dispatch_id = (
+        str(dispatch_id or "").strip() or f"dispatch-queued-{uuid4().hex}"
+    )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
     try:
         record = queue_store.put(
@@ -51,7 +129,7 @@ def enqueue_agent_prompt(
                 model_provider_mode=model_provider_mode,
                 queue_reason=queue_reason,
                 vm_user=vm_user,
-                dispatch_id=dispatch_id,
+                dispatch_id=persisted_dispatch_id,
                 resume_thread_id=resume_thread_id,
                 resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,

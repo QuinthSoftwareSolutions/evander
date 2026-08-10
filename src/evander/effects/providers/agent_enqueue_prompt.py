@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import logging
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -14,10 +14,15 @@ from evander.local_inference_capacity import (
     local_inference_execution_is_active,
     local_inference_vm_lease_is_active,
 )
-from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
+from evander.messaging.agent_prompt_enqueue import (
+    enqueue_agent_prompt,
+    workflow_context_from_sources,
+    workflow_for_execution_ids_from_sources,
+)
 from evander.messaging.agent_prompt_queue import (
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
+    queued_agent_prompt_dispatch_id,
 )
 from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
@@ -34,10 +39,7 @@ from evander.workflow.migrations import (
     AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
-from evander.workflow.contracts import (
-    FOR_EXECUTION_IDS_CONTEXT_KEY,
-    NODE_OUTPUTS_CONTEXT_KEY,
-)
+from evander.workflow.contracts import FOR_EXECUTION_IDS_CONTEXT_KEY, NODE_OUTPUTS_CONTEXT_KEY
 from evander.workflow.validation import NodeCapability
 
 from .agent_prompt import AgentPromptEffectProvider, _prompt_error_outputs
@@ -84,6 +86,8 @@ _CONTEXT_RETRY_METADATA_KEYS = (
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _DeniedPromptLockClaim:
@@ -154,13 +158,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         }
         if resolved_config:
             payload.update(dict(resolved_config))
-        workflow_context = self._workflow_context_from_sources(
+        workflow_context = workflow_context_from_sources(
             execution_context=execution_context,
             input_payload=payload,
+            context_key=NODE_OUTPUTS_CONTEXT_KEY,
         )
-        workflow_for_execution_ids = self._workflow_for_execution_ids_from_sources(
+        workflow_for_execution_ids = workflow_for_execution_ids_from_sources(
             execution_context=execution_context,
             input_payload=payload,
+            context_key=FOR_EXECUTION_IDS_CONTEXT_KEY,
         )
 
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
@@ -457,7 +463,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 ),
             )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
-        if not thread_id:
+        effective_resume_mode = resume_mode or "new_context"
+        if not thread_id and effective_resume_mode != "same_context":
             self._release_local_inference_capacity(capacity_admission)
             self._release_enqueue_prompt(prompt_lock_claim)
             message = "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
@@ -496,22 +503,23 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             target_name=vm_name,
             execution_id=vm_name,
         )
-        self._persist_chat_assistant_thread_id(
-            session_id=effective_session_id,
-            thread_id=thread_id,
-            queue_key=queue_key,
-            backend=ExecutionBackendKind.LIBVIRT_VM.value,
-        )
-        self._persist_resume_thread_metadata_key(
-            target=target,
-            session_id=effective_session_id,
-            resume_thread_metadata_key=resume_thread_metadata_key,
-            resume_thread_metadata_collection=resume_thread_metadata_collection,
-            thread_id=thread_id,
-        )
-        return {
+        if thread_id is not None:
+            self._persist_chat_assistant_thread_id(
+                session_id=effective_session_id,
+                thread_id=thread_id,
+                queue_key=queue_key,
+                backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            )
+            self._persist_resume_thread_metadata_key(
+                target=target,
+                session_id=effective_session_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                thread_id=thread_id,
+            )
+        outputs = {
             "dispatch_id": dispatch_id,
-            "thread_id": thread_id,
+            "resume_mode": effective_resume_mode,
             "success": bool(result.success),
             "queued": False,
             "vm_name": vm_name,
@@ -521,6 +529,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             **capacity_admission.output_metadata(),
             **self._prompt_lock_metadata(prompt_lock_claim),
         }
+        if thread_id is not None:
+            outputs["thread_id"] = thread_id
+        return outputs
 
     def _execute_container(
         self,
@@ -916,6 +927,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         completed = 0
         vm_records: list[Any] = []
         for record in _waiting_execution_records(worker, cls.node_type()):
+            if not cls._publish_queued_started_event_before_reconciliation(
+                worker=worker,
+                record=record,
+            ):
+                continue
             if (
                 str(record.outputs.get("execution_backend") or "").strip()
                 == ExecutionBackendKind.CONTAINER_WORKER_VM.value
@@ -947,6 +963,55 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 )
                 completed += 1
         return completed
+
+    @staticmethod
+    def _publish_queued_started_event_before_reconciliation(
+        *,
+        worker: Any,
+        record: Any,
+    ) -> bool:
+        outputs = getattr(record, "outputs", {})
+        if not isinstance(outputs, Mapping) or outputs.get("dispatched_from_queue") is not True:
+            return True
+        queue_key = str(outputs.get("queue_key") or "").strip()
+        dispatch_id = str(outputs.get("dispatch_id") or "").strip()
+        queue_store = getattr(worker, "queued_agent_prompt_store", None)
+        get_queued_record = getattr(queue_store, "get", None)
+        if not queue_key or not dispatch_id or not callable(get_queued_record):
+            return True
+        try:
+            queued_record = get_queued_record(queue_key)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "AgentEnqueuePromptEffectProvider deferred queued terminal reconciliation "
+                "because its durable queue row could not be read queue_key=%s dispatch_id=%s",
+                queue_key,
+                dispatch_id,
+            )
+            return False
+        if queued_record is None:
+            return True
+        queued_dispatch_id = queued_agent_prompt_dispatch_id(queued_record)
+        if queued_dispatch_id != dispatch_id:
+            return True
+        publish = getattr(worker, "_publish_completion_event_from_record", None)
+        if not callable(publish):
+            return False
+        try:
+            publish(
+                record=record,
+                outputs=dict(outputs),
+                branch_port=AGENT_PROMPT_STARTED_PORT,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "AgentEnqueuePromptEffectProvider deferred terminal reconciliation until "
+                "the queued dispatch started event can be published event_id=%s dispatch_id=%s",
+                getattr(record, "event_id", None),
+                outputs.get("dispatch_id"),
+            )
+            return False
+        return True
 
     @classmethod
     def node_type(cls) -> str:
@@ -1519,84 +1584,6 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return max(1, int(value))
         except (TypeError, ValueError):
             return 3
-
-    @classmethod
-    def _workflow_context_from_sources(
-        cls,
-        *,
-        execution_context: Mapping[str, Any] | None,
-        input_payload: Mapping[str, Any] | None,
-    ) -> dict[str, dict[str, Any]] | None:
-        for source in (execution_context, input_payload):
-            if not isinstance(source, Mapping):
-                continue
-            workflow_context = cls._copy_workflow_context(source.get(NODE_OUTPUTS_CONTEXT_KEY))
-            if workflow_context:
-                return workflow_context
-            nested_input = source.get("input_payload")
-            if isinstance(nested_input, Mapping):
-                workflow_context = cls._copy_workflow_context(
-                    nested_input.get(NODE_OUTPUTS_CONTEXT_KEY)
-                )
-                if workflow_context:
-                    return workflow_context
-        return None
-
-    @classmethod
-    def _workflow_for_execution_ids_from_sources(
-        cls,
-        *,
-        execution_context: Mapping[str, Any] | None,
-        input_payload: Mapping[str, Any] | None,
-    ) -> dict[str, str] | None:
-        for source in (execution_context, input_payload):
-            if not isinstance(source, Mapping):
-                continue
-            workflow_for_execution_ids = cls._copy_workflow_for_execution_ids(
-                source.get(FOR_EXECUTION_IDS_CONTEXT_KEY)
-            )
-            if workflow_for_execution_ids:
-                return workflow_for_execution_ids
-            nested_input = source.get("input_payload")
-            if isinstance(nested_input, Mapping):
-                workflow_for_execution_ids = cls._copy_workflow_for_execution_ids(
-                    nested_input.get(FOR_EXECUTION_IDS_CONTEXT_KEY)
-                )
-                if workflow_for_execution_ids:
-                    return workflow_for_execution_ids
-        return None
-
-    @staticmethod
-    def _copy_workflow_for_execution_ids(raw_value: Any) -> dict[str, str] | None:
-        if not isinstance(raw_value, Mapping):
-            return None
-        workflow_for_execution_ids: dict[str, str] = {}
-        for gate_id, execution_id in raw_value.items():
-            if not isinstance(gate_id, str):
-                continue
-            gate_text = gate_id.strip()
-            execution_text = str(execution_id).strip() if execution_id is not None else ""
-            if gate_text and execution_text:
-                workflow_for_execution_ids[gate_text] = execution_text
-        return workflow_for_execution_ids or None
-
-    @staticmethod
-    def _copy_workflow_context(raw_context: Any) -> dict[str, dict[str, Any]] | None:
-        if not isinstance(raw_context, Mapping):
-            return None
-        workflow_context: dict[str, dict[str, Any]] = {}
-        for node_id, node_payload in raw_context.items():
-            if not isinstance(node_id, str) or not isinstance(node_payload, Mapping):
-                continue
-            if not all(isinstance(key, str) for key in node_payload):
-                continue
-            try:
-                copied_payload = json.loads(json.dumps(dict(node_payload)))
-            except (TypeError, ValueError):
-                continue
-            if isinstance(copied_payload, dict):
-                workflow_context[node_id] = copied_payload
-        return workflow_context or None
 
     @classmethod
     def _usable_resume_thread_id(cls, value: Any) -> str | None:

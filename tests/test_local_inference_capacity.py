@@ -1,7 +1,14 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from evander.local_inference_capacity import LocalInferenceCapacityStore
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityStore,
+)
+from evander.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+)
 
 
 def test_local_inference_capacity_enforces_one_host_wide_limit(tmp_path: Path) -> None:
@@ -47,6 +54,54 @@ def test_local_inference_capacity_is_unlimited_when_unconfigured(tmp_path: Path)
     assert admission.enabled is False
     assert admission.admitted is True
     assert admission.slot_id is None
+
+
+def test_local_inference_capacity_admits_fifo_head_before_new_arrivals(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    older_created_at = datetime(2026, 8, 9, 10, 0, tzinfo=UTC)
+    for queue_key, created_at in (
+        ("container-oldest", older_created_at),
+        ("libvirt-newer", older_created_at + timedelta(seconds=1)),
+    ):
+        queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key=queue_key,
+                target=queue_key,
+                vm_name=queue_key,
+                prompt="continue",
+                model="qwen3.6:27b",
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+                effect_id=f"effect-{queue_key}",
+                created_at=created_at,
+            )
+        )
+
+    store = LocalInferenceCapacityStore(tmp_path)
+    new_arrival = store.claim(
+        max_concurrency=1,
+        owner_id="new-arrival",
+        model="qwen3.6:27b",
+    )
+    newer_replay = store.claim(
+        max_concurrency=1,
+        owner_id="newer-replay",
+        model="qwen3.6:27b",
+        queue_key="libvirt-newer",
+    )
+    fifo_head = store.claim(
+        max_concurrency=1,
+        owner_id="oldest-replay",
+        model="qwen3.6:27b",
+        queue_key="container-oldest",
+    )
+
+    assert new_arrival.admitted is False
+    assert new_arrival.active_count == 0
+    assert newer_replay.admitted is False
+    assert fifo_head.admitted is True
+    assert fifo_head.slot_id is not None
 
 
 def test_local_inference_capacity_reclaims_only_stale_launching_claims(

@@ -289,3 +289,47 @@ def test_model_usage_store_manages_expiring_correlation_contexts(tmp_path: Path)
     )
 
     assert store.prune_expired_correlation_contexts(now_utc=now) == 1
+
+
+def test_model_usage_store_upsert_preserves_existing_team_attribution(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    store.upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-1",
+            dispatch_id="team-dispatch-1",
+            workflow_run_id="workflow-1",
+            effect_id="team-wake",
+            node_id="team-wake",
+            agent_harness="codex",
+            team_id="team-a",
+            project_id="project-a",
+            agent_id="agent-a",
+            started_at=now,
+            expires_at=now + timedelta(minutes=15),
+        )
+    )
+
+    store.upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-1",
+            dispatch_id="team-dispatch-1",
+            workflow_run_id="workflow-1",
+            effect_id="generic-agent-prompt",
+            node_id="generic-agent-prompt",
+            agent_harness="codex",
+            execution_backend="libvirt_vm",
+            model="gpt-5.2-codex",
+            started_at=now + timedelta(seconds=1),
+            expires_at=now + timedelta(minutes=16),
+        )
+    )
+
+    merged = store.get_correlation_context("team-dispatch-1")
+    assert merged is not None
+    assert merged.effect_id == "generic-agent-prompt"
+    assert merged.execution_backend == "libvirt_vm"
+    assert merged.model == "gpt-5.2-codex"
+    assert merged.team_id == "team-a"
+    assert merged.project_id == "project-a"
+    assert merged.agent_id == "agent-a"

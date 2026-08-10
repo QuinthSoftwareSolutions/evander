@@ -37,7 +37,11 @@ from evander.local_inference_capacity import (
     local_inference_execution_is_active,
     local_inference_vm_lease_is_active,
 )
-from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
+from evander.messaging.agent_prompt_enqueue import (
+    enqueue_agent_prompt,
+    workflow_context_from_sources,
+    workflow_for_execution_ids_from_sources,
+)
 from evander.triggers.queue import TriggerQueueRecord
 from evander.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from evander.workflow.migrations import (
@@ -188,6 +192,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
         }
         if resolved_config:
             payload.update(dict(resolved_config))
+        workflow_context = workflow_context_from_sources(
+            execution_context=execution_context,
+            input_payload=payload,
+            context_key=NODE_OUTPUTS_CONTEXT_KEY,
+        )
+        workflow_for_execution_ids = workflow_for_execution_ids_from_sources(
+            execution_context=execution_context,
+            input_payload=payload,
+            context_key=_FOR_EXECUTION_IDS_PAYLOAD_KEY,
+        )
 
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
         target = self._resolve_target(payload)
@@ -207,6 +221,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             execution_context=execution_context,
         )
         workflow_run_id = self._workflow_run_id(execution_context)
+        queue_metadata = self._queued_prompt_metadata(
+            payload=payload,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
 
         execution_backend, config = self._resolve_execution_backend(payload, target=target)
         if execution_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value:
@@ -222,6 +241,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 execution_context=execution_context,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                queue_metadata=queue_metadata,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -298,7 +320,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             record = enqueue_agent_prompt(
                 runtime_dir=runtime_dir,
                 target=target,
-                vm_name=self._normalize_optional_string(payload.get("vm_name")) or target,
+                vm_name=vm_name,
                 session_id=session_id,
                 prompt=prompt,
                 model=resolved_model,
@@ -311,6 +333,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect.id,
                 queue_key=f"{effect.id}:{dispatch_id}",
+                metadata=queue_metadata,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 max_retries=effective_config.agent_prompt_queue_max_retries,
             )
             return {
@@ -525,6 +550,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
         execution_context: Mapping[str, Any] | None,
+        workflow_context: dict[str, dict[str, Any]] | None,
+        workflow_for_execution_ids: dict[str, str] | None,
+        queue_metadata: dict[str, str],
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -590,6 +618,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=self._effect().id,
                 queue_key=f"{self._effect().id}:{dispatch_id}",
+                metadata=queue_metadata,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 max_retries=effective_config.agent_prompt_queue_max_retries,
             )
             return {
@@ -2041,6 +2072,36 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 if text:
                     return text
         return None
+
+    @classmethod
+    def _queued_prompt_metadata(
+        cls,
+        *,
+        payload: Mapping[str, Any],
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+    ) -> dict[str, str]:
+        metadata = {
+            key: value
+            for key, value in {
+                "workflow_run_id": cls._normalize_optional_string(workflow_run_id),
+                "mcp_tool_approval_lease_id": cls._normalize_optional_string(
+                    mcp_tool_approval_lease_id
+                ),
+            }.items()
+            if value
+        }
+        for key in (
+            "reduced_context_prompt",
+            "context_retry_prompt",
+            "agent_context_retry_enabled",
+            "agent_context_retry_max_attempts",
+            "agent_context_retry_target_chars",
+        ):
+            value = cls._normalize_optional_string(payload.get(key))
+            if value is not None:
+                metadata[key] = value
+        return metadata
 
     def _workflow_run_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
         if not isinstance(execution_context, Mapping):

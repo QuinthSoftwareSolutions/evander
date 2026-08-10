@@ -45,6 +45,7 @@ class AgentPromptDispatchPort(Protocol):
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> Any: ...
@@ -129,6 +130,7 @@ def dispatch_agent_prompt(
     vm_user: str = "agent",
     dispatch_id: str | None = None,
     resume_thread_id: str | None = None,
+    resume_mode: str = "new_context",
     persist_thread_id: bool = True,
     mcp_gateway_url: str | None = None,
 ) -> Any:
@@ -142,6 +144,7 @@ def dispatch_agent_prompt(
         vm_user=vm_user,
         dispatch_id=dispatch_id,
         resume_thread_id=resume_thread_id,
+        resume_mode=resume_mode,
         persist_thread_id=persist_thread_id,
         mcp_gateway_url=mcp_gateway_url,
     )
@@ -186,6 +189,7 @@ class _AdminServiceAgentPromptDispatchPort:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> Any:
@@ -196,6 +200,7 @@ class _AdminServiceAgentPromptDispatchPort:
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
             persist_thread_id=persist_thread_id,
             mcp_gateway_url=mcp_gateway_url,
         )

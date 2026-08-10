@@ -959,6 +959,48 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_dispatches",
+                    column_name="preparation_expires_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="queued_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="requested_lease_seconds",
+                    definition="INTEGER NOT NULL DEFAULT 900",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="activation_completed_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="session_metadata_mirrored_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="role_description_fingerprint",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="action_feedback_dispatch_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_deliverables",
                     column_name="initial_release_disposition_json",
                     definition="TEXT",
@@ -1088,6 +1130,24 @@ class TeamStateSqliteStore:
                     table_name="team_governance_runtimes",
                     column_name="last_blocked_signal_fingerprints_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="preparation_expires_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="queued_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="requested_lease_seconds",
+                    definition="INTEGER NOT NULL DEFAULT 900",
                 )
                 _ensure_column(
                     connection,
@@ -2030,6 +2090,9 @@ class TeamStateSqliteStore:
                 "governance_group_id": row["governance_group_id"],
                 "wake_leased_until": row["wake_leased_until"],
                 "active_dispatch_id": row["active_dispatch_id"],
+                "preparation_expires_at": row["preparation_expires_at"],
+                "queued_at": row["queued_at"],
+                "requested_lease_seconds": row["requested_lease_seconds"],
                 "wake_reason": row["wake_reason"],
                 "last_wake_at": row["last_wake_at"],
                 "next_wake_at": row["next_wake_at"],
@@ -2056,17 +2119,21 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_governance_runtimes(
                     governance_group_id, wake_leased_until, active_dispatch_id,
+                    preparation_expires_at, queued_at, requested_lease_seconds,
                     wake_reason, last_wake_at, next_wake_at,
                     last_cost_signal_fingerprints_json,
                     last_blocked_signal_fingerprints_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["governance_group_id"],
                     runtime.get("wake_leased_until"),
                     runtime.get("active_dispatch_id"),
+                    runtime.get("preparation_expires_at"),
+                    runtime.get("queued_at"),
+                    runtime.get("requested_lease_seconds", 900),
                     runtime.get("wake_reason"),
                     runtime.get("last_wake_at"),
                     runtime.get("next_wake_at"),
@@ -4214,6 +4281,15 @@ class TeamStateSqliteStore:
                 ),
                 "status": row["status"],
                 "created_at": row["created_at"],
+                "preparation_expires_at": row["preparation_expires_at"],
+                "queued_at": row["queued_at"],
+                "requested_lease_seconds": row["requested_lease_seconds"],
+                "activation_completed_at": row["activation_completed_at"],
+                "session_metadata_mirrored_at": row["session_metadata_mirrored_at"],
+                "role_description_fingerprint": row["role_description_fingerprint"],
+                "action_feedback_dispatch_ids": _json_loads(
+                    row["action_feedback_dispatch_ids_json"] or "[]"
+                ),
                 "prepared_at": row["prepared_at"],
                 "leased_at": row["leased_at"],
                 "lease_expires_at": row["lease_expires_at"],
@@ -4235,9 +4311,13 @@ class TeamStateSqliteStore:
                     review_routing_authorities_json,
                     initial_release_decision_deliverable_ids_json,
                     mcp_capability_receipt_json, status,
-                    created_at, prepared_at, leased_at, lease_expires_at,
+                    created_at, preparation_expires_at, queued_at,
+                    requested_lease_seconds, activation_completed_at,
+                    session_metadata_mirrored_at, role_description_fingerprint,
+                    action_feedback_dispatch_ids_json,
+                    prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4253,6 +4333,13 @@ class TeamStateSqliteStore:
                     _json_dumps(dispatch.get("mcp_capability_receipt")),
                     dispatch["status"],
                     dispatch["created_at"],
+                    dispatch.get("preparation_expires_at"),
+                    dispatch.get("queued_at"),
+                    dispatch.get("requested_lease_seconds", 900),
+                    dispatch.get("activation_completed_at"),
+                    dispatch.get("session_metadata_mirrored_at"),
+                    dispatch.get("role_description_fingerprint"),
+                    _json_dumps(dispatch.get("action_feedback_dispatch_ids", [])),
                     dispatch.get("prepared_at"),
                     dispatch.get("leased_at"),
                     dispatch.get("lease_expires_at"),
@@ -7541,6 +7628,9 @@ CREATE TABLE IF NOT EXISTS team_governance_runtimes (
     governance_group_id TEXT PRIMARY KEY,
     wake_leased_until TEXT,
     active_dispatch_id TEXT,
+    preparation_expires_at TEXT,
+    queued_at TEXT,
+    requested_lease_seconds INTEGER NOT NULL DEFAULT 900,
     wake_reason TEXT,
     last_wake_at TEXT,
     next_wake_at TEXT,
@@ -8372,6 +8462,13 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     mcp_capability_receipt_json TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    preparation_expires_at TEXT,
+    queued_at TEXT,
+    requested_lease_seconds INTEGER NOT NULL DEFAULT 900,
+    activation_completed_at TEXT,
+    session_metadata_mirrored_at TEXT,
+    role_description_fingerprint TEXT,
+    action_feedback_dispatch_ids_json TEXT NOT NULL DEFAULT '[]',
     prepared_at TEXT,
     leased_at TEXT,
     lease_expires_at TEXT,

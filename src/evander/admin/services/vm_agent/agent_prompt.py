@@ -142,6 +142,11 @@ class VmAgentPromptMixin:
 
         target = session_id or target_name
         effect_id = f"admin-agent-prompt:{backend}:{target}"
+        queue_key = (
+            f"{effect_id}:dispatch:{dispatch_id}"
+            if dispatch_id is not None
+            else effect_id
+        )
         effect = AgentEnqueuePromptEffectDefinition(
             id=effect_id,
             display_name="Admin prompt agent",
@@ -155,7 +160,7 @@ class VmAgentPromptMixin:
             resume_mode=resume_mode,
             dispatch_id=dispatch_id,
             vm_user=vm_user,
-            queue_key=effect_id,
+            queue_key=queue_key,
         )
         provider = EffectProviderFactory(
             provider_config_resolver=self.runtime.provider_config,
@@ -167,7 +172,7 @@ class VmAgentPromptMixin:
             result = provider.execute()
         except RuntimeError as exc:
             queued_result = self._queued_admin_prompt_result_after_dispatch_error(
-                queue_key=effect_id,
+                queue_key=queue_key,
                 target_name=target_name,
                 session_id=session_id,
                 backend=backend,
@@ -185,8 +190,10 @@ class VmAgentPromptMixin:
                 session_id=session_id,
                 prompt=prompt,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 vm_user=vm_user,
                 directory_path=directory_path,
+                queue_key=queue_key,
                 result=result,
             )
         if (
@@ -290,8 +297,10 @@ class VmAgentPromptMixin:
         session_id: str | None,
         prompt: str,
         resume_thread_id: str | None,
+        resume_mode: str | None,
         vm_user: str,
         directory_path: str,
+        queue_key: str,
         result: Mapping[str, Any],
     ) -> None:
         dispatch_id = str(result.get("dispatch_id") or "").strip()
@@ -301,7 +310,7 @@ class VmAgentPromptMixin:
             for key in ("prompt_lock_key", "prompt_lock_owner_id")
             if str(result.get(key) or "").strip()
         }
-        if not dispatch_id or not thread_id or not lock_metadata:
+        if not dispatch_id or not lock_metadata:
             raise RuntimeError(
                 "prompt-agent libvirt dispatch did not include execution tracking identifiers"
             )
@@ -323,9 +332,10 @@ class VmAgentPromptMixin:
             "model": result.get("model"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
+            "resume_mode": resume_mode,
             "directory_path": directory_path,
             "execution_backend": "libvirt_vm",
-            "queue_key": effect_id,
+            "queue_key": queue_key,
             **lock_metadata,
         }
         input_payload = {
@@ -336,20 +346,21 @@ class VmAgentPromptMixin:
             "model": result.get("model"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
-            "queue_key": effect_id,
+            "resume_mode": resume_mode,
+            "queue_key": queue_key,
             **lock_metadata,
         }
         outputs = dict(result)
         outputs.update(
             {
                 "dispatch_id": dispatch_id,
-                "thread_id": thread_id,
                 "success": True,
                 "queued": False,
                 "vm_name": target_name,
                 "session_id": session_id,
                 "execution_backend": "libvirt_vm",
-                "queue_key": effect_id,
+                "queue_key": queue_key,
+                **({"thread_id": thread_id} if thread_id else {}),
                 **lock_metadata,
             }
         )

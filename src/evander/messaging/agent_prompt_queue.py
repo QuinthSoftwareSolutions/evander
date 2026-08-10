@@ -42,6 +42,34 @@ def _retry_key(*, effect_id: str, queue_key: str, prompt: str) -> str:
     ).hexdigest()
 
 
+def queued_agent_prompt_dispatch_id(record: Any) -> str:
+    dispatch_id = str(getattr(record, "dispatch_id", "") or "").strip()
+    if dispatch_id:
+        return dispatch_id
+    created_at = getattr(record, "created_at", None)
+    created_text = (
+        created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
+    )
+    identity = "\0".join(
+        (
+            str(getattr(record, "queue_key", "") or ""),
+            str(getattr(record, "effect_id", "") or ""),
+            created_text,
+            str(getattr(record, "prompt", "") or ""),
+        )
+    )
+    suffix = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+    return f"dispatch-{getattr(record, 'effect_id', '')}-{suffix}"
+
+
+def agent_prompt_replay_queue_key(record: Any) -> str:
+    queue_key = str(getattr(record, "queue_key", "") or "").strip()
+    dispatch_id = queued_agent_prompt_dispatch_id(record)
+    if queue_key.startswith("scheduled-wake:") or queue_key.endswith(f":{dispatch_id}"):
+        return queue_key
+    return f"{queue_key}:replay:{dispatch_id}"
+
+
 class AgentPromptRetryLedgerRecord(BaseModel):
     retry_key: str = Field(min_length=1)
     queue_key: str = Field(min_length=1)
@@ -216,6 +244,55 @@ class AgentPromptQueueStore:
     def delete(self, queue_key: str) -> None:
         self.store.delete(queue_key)
 
+    def delete_if_dispatch_id(self, queue_key: str, dispatch_id: str) -> bool:
+        normalized_queue_key = str(queue_key or "").strip()
+        normalized_dispatch_id = str(dispatch_id or "").strip()
+        if not normalized_queue_key or not normalized_dispatch_id:
+            return False
+
+        def updater(records: dict[str, QueuedAgentPromptRecord]) -> bool:
+            current = records.get(normalized_queue_key)
+            if current is None:
+                return False
+            if queued_agent_prompt_dispatch_id(current) != normalized_dispatch_id:
+                return False
+            del records[normalized_queue_key]
+            return True
+
+        return self.store.update_all(updater)
+
+    def claim_for_replay(
+        self,
+        queue_key: str,
+        dispatch_id: str,
+        *,
+        claimed_queue_key: str,
+    ) -> QueuedAgentPromptRecord | None:
+        normalized_queue_key = str(queue_key or "").strip()
+        normalized_dispatch_id = str(dispatch_id or "").strip()
+        normalized_claimed_key = str(claimed_queue_key or "").strip()
+        if not normalized_queue_key or not normalized_dispatch_id or not normalized_claimed_key:
+            return None
+
+        def updater(
+            records: dict[str, QueuedAgentPromptRecord],
+        ) -> QueuedAgentPromptRecord | None:
+            current = records.get(normalized_queue_key)
+            if current is None:
+                return None
+            if queued_agent_prompt_dispatch_id(current) != normalized_dispatch_id:
+                return None
+            if normalized_claimed_key != normalized_queue_key:
+                if normalized_claimed_key in records:
+                    return None
+                del records[normalized_queue_key]
+                current.queue_key = normalized_claimed_key
+            current.dispatch_id = normalized_dispatch_id
+            records[normalized_claimed_key] = current
+            return current
+
+        return self.store.update_all(updater)
+
     def put(
         self,
         record: QueuedAgentPromptRecord,
@@ -223,9 +300,13 @@ class AgentPromptQueueStore:
         max_retries: int = 3,
     ) -> QueuedAgentPromptRecord:
         record = self.retry_ledger.claim_retry(record=record, max_retries=max_retries)
-        existing = self.get(record.queue_key)
-        if existing is not None:
-            record.created_at = existing.created_at
-            record.coalesced_count = existing.coalesced_count + 1
-        self.store.put(record.queue_key, record)
-        return record
+
+        def updater(records: dict[str, QueuedAgentPromptRecord]) -> QueuedAgentPromptRecord:
+            existing = records.get(record.queue_key)
+            if existing is not None:
+                record.created_at = existing.created_at
+                record.coalesced_count = existing.coalesced_count + 1
+            records[record.queue_key] = record
+            return record
+
+        return self.store.update_all(updater)

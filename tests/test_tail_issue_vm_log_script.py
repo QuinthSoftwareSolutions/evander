@@ -137,6 +137,68 @@ exit 0
     assert result.stderr == ""
 
 
+def test_tail_issue_vm_log_accepts_explicit_vm_name(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "scripts" / "tail_issue_vm_log.sh"
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    virsh_args_path = tmp_path / "virsh-args.txt"
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "${VIRSH_ARGS_PATH}"
+if [[ "${1:-}" == "domifaddr" ]]; then
+  printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+  exit 0
+fi
+exit 1
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${*: -1}" != *"TAIL_LINES=25"* ]]; then
+  echo "missing tail lines in remote command: ${*: -1}" >&2
+  exit 1
+fi
+cat >/dev/null
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["VIRSH_ARGS_PATH"] = str(virsh_args_path)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [
+            str(script_path),
+            "--vm-name",
+            "evander-receptionist-vm",
+            "25",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert virsh_args_path.read_text(encoding="utf-8").strip() == (
+        "domifaddr evander-receptionist-vm"
+    )
+
+
 def test_tail_issue_vm_log_auto_detects_codex_heartbeat_log(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script_path = root / "scripts" / "tail_issue_vm_log.sh"

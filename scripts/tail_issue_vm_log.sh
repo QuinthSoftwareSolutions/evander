@@ -4,11 +4,13 @@ set -euo pipefail
 show_help() {
   cat <<'EOF'
 Usage: tail_issue_vm_log.sh <issue-number> [lines] [repo-name] [vm-user]
+       tail_issue_vm_log.sh --vm-name <vm-name> [lines] [repo-name] [vm-user]
 
-Follow the background guest agent log for an issue VM from the host.
+Follow the background guest agent log for a VM from the host.
 
 Arguments:
   issue-number  Issue identifier used to derive the VM name.
+  --vm-name     Use an explicit VM name instead of deriving one from an issue.
   lines         Number of log lines to print before following. Default: 10
   repo-name     Repo basename used by guest agent logs. Default: auto-detect
   vm-user       Guest user to inspect. Default: agent
@@ -27,11 +29,21 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
-ISSUE_NUMBER="$1"
-TAIL_LINES="${2:-10}"
-REPO_NAME="${3:-}"
-VM_USER="${4:-agent}"
-VM_NAME="vm-${ISSUE_NUMBER}"
+if [[ "$1" == "--vm-name" ]]; then
+  if [[ $# -lt 2 || -z "${2:-}" ]]; then
+    echo "--vm-name requires a non-empty VM name" >&2
+    exit 1
+  fi
+  VM_NAME="$2"
+  shift 2
+else
+  ISSUE_NUMBER="$1"
+  VM_NAME="vm-${ISSUE_NUMBER}"
+  shift
+fi
+TAIL_LINES="${1:-10}"
+REPO_NAME="${2:-}"
+VM_USER="${3:-agent}"
 SSH_USER="${VM_SSH_USER:-agent-admin}"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" 2>/dev/null | cut -d: -f6 || true)"

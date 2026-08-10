@@ -368,6 +368,26 @@ class ModelUsageStore:
         validated = ModelUsageCorrelationContext.model_validate(context)
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            existing_row = connection.execute(
+                """
+                SELECT payload_json
+                FROM model_usage_correlation_contexts
+                WHERE dispatch_id = ?
+                """,
+                (validated.dispatch_id,),
+            ).fetchone()
+            if existing_row is not None:
+                existing = ModelUsageCorrelationContext.model_validate_json(
+                    existing_row["payload_json"]
+                )
+                validated = validated.model_copy(
+                    update={
+                        field_name: getattr(existing, field_name)
+                        for field_name in ("team_id", "project_id", "agent_id")
+                        if getattr(validated, field_name) is None
+                        and getattr(existing, field_name) is not None
+                    }
+                )
             connection.execute(
                 """
                 INSERT INTO model_usage_correlation_contexts(

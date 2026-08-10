@@ -578,6 +578,9 @@ class GovernanceRuntime(TeamModel):
     governance_group_id: str
     wake_leased_until: datetime | None = None
     active_dispatch_id: str | None = None
+    preparation_expires_at: datetime | None = None
+    queued_at: datetime | None = None
+    requested_lease_seconds: int = Field(default=900, ge=1)
     wake_reason: str | None = None
     last_wake_at: datetime | None = None
     next_wake_at: datetime | None = None
@@ -2364,6 +2367,9 @@ class TeamDispatchStatus(str, Enum):
     FAILED = "failed"
 
 
+TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS = 300
+
+
 class TeamDispatchMcpCapabilityStatus(str, Enum):
     PENDING = "pending"
     VERIFIED = "verified"
@@ -2461,6 +2467,13 @@ class TeamDispatch(TeamModel):
     mcp_capability_receipt: TeamDispatchMcpCapabilityReceipt | None = None
     status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
     created_at: datetime = Field(default_factory=utc_now)
+    preparation_expires_at: datetime | None = None
+    queued_at: datetime | None = None
+    requested_lease_seconds: int = Field(default=900, ge=1)
+    activation_completed_at: datetime | None = None
+    session_metadata_mirrored_at: datetime | None = None
+    role_description_fingerprint: str | None = None
+    action_feedback_dispatch_ids: list[str] = Field(default_factory=list)
     prepared_at: datetime | None = None
     leased_at: datetime | None = None
     lease_expires_at: datetime | None = None
@@ -2472,7 +2485,7 @@ class TeamDispatch(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("cause_id", "error", mode="before")
+    @field_validator("cause_id", "error", "role_description_fingerprint", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -2485,6 +2498,7 @@ class TeamDispatch(TeamModel):
         "project_ids",
         "managed_repo_ids",
         "chat_message_ids",
+        "action_feedback_dispatch_ids",
         "initial_release_decision_deliverable_ids",
         mode="before",
     )

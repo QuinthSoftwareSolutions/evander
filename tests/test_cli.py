@@ -4568,6 +4568,7 @@ def test_resume_agent_routes_issue_target_through_queue_aware_admin_service(
         "prompt": "Continue from the failing restore",
         "model": "gpt-5.2-codex",
         "vm_user": "agent",
+        "resume_mode": "same_context",
     }
 
 
@@ -4699,7 +4700,205 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         "prompt": "Continue from Discord",
         "model": "gpt-5.4",
         "vm_user": "agent",
+        "resume_mode": "same_context",
     }
+
+
+@pytest.mark.parametrize(
+    "resume_target",
+    [
+        "evander-receptionist-vm-20260330T112127Z-1353036",
+        "evander-receptionist-vm",
+    ],
+)
+def test_resume_agent_observe_follows_logs_for_nonlegacy_targets(
+    tmp_path: Path, monkeypatch, resume_target: str
+) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "evander-receptionist-vm",
+                "--model",
+                "gpt-5.4",
+                "evander-receptionist-vm-20260330T112127Z-1353036",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    service = SimpleNamespace(
+        resolve_agent_model_for_target=lambda _target: "gpt-5.4",
+        enqueue_agent_prompt=lambda target, prompt, **kwargs: (
+            captured.update(target=target, prompt=prompt, **kwargs)
+            or VmActionResult(
+                success=True,
+                vm_name="evander-receptionist-vm",
+                action="prompt-agent",
+                message="Dispatched prompt to evander-receptionist-vm",
+            )
+        ),
+    )
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
+    monkeypatch.setattr(
+        "evander.cli._run_subprocess_compat",
+        lambda cmd, **kwargs: captured.update(log_cmd=cmd, log_kwargs=kwargs),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            resume_target,
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue from Discord",
+            "--observe",
+            "--lines",
+            "25",
+            "--vm-user",
+            "debugger",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["resume_mode"] == "same_context"
+    assert str(captured["log_cmd"][0]).endswith("/scripts/tail_issue_vm_log.sh")
+    assert captured["log_cmd"][1:] == [
+        "--vm-name",
+        "evander-receptionist-vm",
+        "25",
+        "",
+        "debugger",
+    ]
+    assert captured["log_kwargs"] == {
+        "check": True,
+        "capture_output": False,
+        "text": False,
+    }
+
+
+def test_resume_agent_observe_follows_container_execution_logs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    snapshots = iter(
+        [
+            "".join(f"line {line_number}\n" for line_number in range(1, 5)),
+            "".join(f"line {line_number}\n" for line_number in range(1, 11)),
+        ]
+    )
+    statuses = iter(["running", "idle"])
+    captured: dict[str, object] = {"snapshot_calls": [], "agent_calls": []}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "container-target",
+                "--model",
+                "gpt-5.4",
+                "container-session",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def get_snapshot(agent_id: str, **kwargs: object) -> str:
+        captured["snapshot_calls"].append((agent_id, kwargs))
+        return next(snapshots)
+
+    def get_agent(agent_id: str, **kwargs: object) -> SimpleNamespace:
+        captured["agent_calls"].append((agent_id, kwargs))
+        return SimpleNamespace(status=next(statuses))
+
+    service = SimpleNamespace(
+        resolve_agent_model_for_target=lambda _target: "gpt-5.4",
+        enqueue_agent_prompt=lambda *_args, **_kwargs: VmActionResult(
+            success=True,
+            vm_name="container-target",
+            session_id="container-session",
+            provider="container_worker_vm",
+            provider_details={"execution_id": "execution-1"},
+            action="prompt-agent",
+            message="Dispatched prompt to container-target",
+        ),
+        get_admin_agent_log_snapshot=get_snapshot,
+        get_agent=get_agent,
+    )
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
+    monkeypatch.setattr("evander.cli.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "evander.cli._run_subprocess_compat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("container observation must not invoke the libvirt tail script")
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "container-session",
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue the container turn",
+            "--observe",
+            "--lines",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "line 1\n" not in result.stdout
+    assert "line 2\n" not in result.stdout
+    for expected_line in range(3, 11):
+        assert result.stdout.count(f"line {expected_line}\n") == 1
+    assert captured["snapshot_calls"] == [
+        (
+            "execution-1",
+            {
+                "backend": "container_worker_vm",
+                "view": "executions",
+                "lines": 0,
+            },
+        ),
+        (
+            "execution-1",
+            {
+                "backend": "container_worker_vm",
+                "view": "executions",
+                "lines": 0,
+            },
+        ),
+    ]
+    assert captured["agent_calls"] == [
+        (
+            "container-session",
+            {"backend": "container_worker_vm", "reconcile_containers": True},
+        ),
+        (
+            "container-session",
+            {"backend": "container_worker_vm", "reconcile_containers": True},
+        ),
+    ]
 
 
 def test_resume_agent_reports_capacity_queued_result_without_observing(

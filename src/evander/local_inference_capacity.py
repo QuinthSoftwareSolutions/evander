@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fcntl
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections.abc import Callable
@@ -75,6 +77,7 @@ class LocalInferenceCapacityStore:
         effect_id: str | None = None,
         execution_backend: str | None = None,
         target_name: str | None = None,
+        queue_key: str | None = None,
         now: datetime | None = None,
     ) -> LocalInferenceCapacityAdmission:
         if max_concurrency is None:
@@ -106,6 +109,15 @@ class LocalInferenceCapacityStore:
                         max_concurrency=normalized_limit,
                     )
             active_count = len(records)
+            oldest_queue_key = self._oldest_local_inference_queue_key()
+            normalized_queue_key = str(queue_key or "").strip()
+            if oldest_queue_key is not None and normalized_queue_key != oldest_queue_key:
+                return LocalInferenceCapacityAdmission(
+                    enabled=True,
+                    admitted=False,
+                    active_count=active_count,
+                    max_concurrency=normalized_limit,
+                )
             if active_count >= normalized_limit:
                 return LocalInferenceCapacityAdmission(
                     enabled=True,
@@ -135,6 +147,58 @@ class LocalInferenceCapacityStore:
             )
 
         return self.store.update_all(updater)
+
+    def _oldest_local_inference_queue_key(self) -> str | None:
+        """Return the host-global FIFO head without creating queue state.
+
+        Capacity claims are serialized by the capacity store lock. Reading the
+        prompt queue under its own file lock makes an already-durable capacity
+        waiter visible before a newly arriving prompt can take a free slot.
+        """
+
+        queue_path = self.runtime_dir / "queued-agent-prompts.json"
+        if not queue_path.exists():
+            return None
+        lock_path = queue_path.with_name(f".{queue_path.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with lock_path.open("a+", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    if not queue_path.exists():
+                        return None
+                    raw = json.loads(queue_path.read_text(encoding="utf-8") or "{}")
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+
+        candidates: list[tuple[datetime, str]] = []
+        for key, value in raw.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            if str(value.get("queue_reason") or "").strip() != LOCAL_INFERENCE_QUEUE_REASON:
+                continue
+            created_at = self._queue_created_at(value.get("created_at"))
+            candidates.append((created_at, key))
+        if not candidates:
+            return None
+        return min(candidates)[1]
+
+    @staticmethod
+    def _queue_created_at(value: Any) -> datetime:
+        text = str(value or "").strip()
+        if text:
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                return parsed.astimezone(UTC)
+            except ValueError:
+                pass
+        return datetime.max.replace(tzinfo=UTC)
 
     def mark_running(
         self,

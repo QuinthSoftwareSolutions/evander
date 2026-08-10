@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-08-09 - Queue-Aware Dispatch Correctness
+
+- Preserved same-context behavior through CLI, immediate libvirt tracking, and queued replay,
+  including successful resumes that do not emit a new thread identifier, and kept CLI log
+  observation following named, session-based, and container-worker targets without dropping
+  bursts larger than the initial tail window.
+- Kept durable Team dispatches distinct in the prompt queue and retained resolved VM identity,
+  workflow and loop context, MCP approval leases, and Team model-usage attribution across delayed
+  delivery.
+- Bounded deferred Team, Team Chat, and governance preparation reservations through durable
+  queueing, discarded queue records that no longer own a reservation before replay, and made full
+  post-delivery activation plus session-metadata mirroring atomic or retryable across worker
+  restarts.
+- Enforced host-global FIFO admission across new arrivals and both local-inference replay backends,
+  while discarding expired-session and removed-effect queue heads so they cannot starve the host
+  indefinitely.
+- Made queued replay restart- and concurrency-safe with stable dispatch identities, atomic
+  in-flight claims and identity-checked deletion, preserving ordinary retry coalescing while
+  repairing each delivered prompt's started branch before terminal reconciliation.
+- Validated root-only local-inference capacity settings before compatibility provider writes can
+  persist a child directory's email-domain changes.
+
 ## 2026-08-09 - Local Inference Admission Reliability
 
 - Preserved every capacity-blocked prompt with a dispatch-specific durable queue key, including

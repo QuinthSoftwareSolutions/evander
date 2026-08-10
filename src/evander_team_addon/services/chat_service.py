@@ -20,6 +20,7 @@ from ..models import (
     PersistentAgent,
     TeamDispatch,
     TeamDispatchStatus,
+    TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS,
     TeamConversation,
     TeamConversationMessage,
     TeamChatMutationAuthorization,
@@ -28,7 +29,11 @@ from ..models import (
     TeamState,
     agent_has_project_assignment,
 )
-from .domain.agent_access import _visible_project_ids_for_agent
+from .domain.agent_access import (
+    _agent_payload,
+    _visible_project_ids_for_agent,
+    agent_role_description_fingerprint,
+)
 from .domain.chat import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     _chat_preview,
@@ -73,6 +78,50 @@ def _runtime_has_active_chat_or_agent_dispatch(
         TeamDispatchStatus.PREPARING,
         TeamDispatchStatus.LEASED,
     }
+
+
+def _reconcile_stale_chat_dispatch_preparations(
+    state: TeamState,
+    *,
+    now: datetime,
+) -> None:
+    for dispatch in list(state.dispatches.values()):
+        if (
+            dispatch.cause_kind != "team_chat"
+            or dispatch.status != TeamDispatchStatus.PREPARING
+            or dispatch.preparation_expires_at is None
+            or _ensure_utc(dispatch.preparation_expires_at) > now
+        ):
+            continue
+        error = "chat dispatch preparation reservation expired before durable prompt delivery"
+        retry_dispatch_id = f"team-chat:{dispatch.cause_id or dispatch.id}:retry:{uuid4().hex}"
+        dispatch.status = TeamDispatchStatus.FAILED
+        dispatch.completed_at = now
+        dispatch.error = error
+        runtime = state.agent_runtimes.get(dispatch.agent_id)
+        if runtime is not None and runtime.active_dispatch_id == dispatch.id:
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.wake_reason = None
+            runtime.next_wake_at = None
+            runtime.updated_at = now
+        stale_message_ids = list(dispatch.chat_message_ids)
+        for message_id in stale_message_ids:
+            message = state.conversation_messages.get(message_id)
+            if message is None or message.status != "dispatching":
+                continue
+            message.status = "queued"
+            message.dispatch_id = retry_dispatch_id
+            message.error = error
+            message.updated_at = now
+            for ingress in state.external_chat_ingress.values():
+                if ingress.message_id == message.id:
+                    ingress.dispatch_id = retry_dispatch_id
+                    ingress.updated_at = now
+        # A retried chat message can belong to only one active dispatch. The
+        # stale dispatch retains its cause id and terminal diagnostic while the
+        # replacement owns the durable message scope.
+        dispatch.chat_message_ids = []
 
 
 def _require_agent_chat_dispatch_eligibility(
@@ -794,6 +843,7 @@ class TeamChatService:
                     **chat_scope,
                     status=TeamDispatchStatus.LEASED,
                     created_at=now,
+                    requested_lease_seconds=max(1, int(lease_seconds)),
                     prepared_at=now,
                     leased_at=now,
                     lease_expires_at=lease_expires_at,
@@ -963,6 +1013,10 @@ class TeamChatService:
             return self._repository.read(), claims
 
         def _mutate(state: TeamState) -> TeamState:
+            _reconcile_stale_chat_dispatch_preparations(
+                state,
+                now=effective_now,
+            )
             messages = sorted(
                 state.conversation_messages.values(),
                 key=lambda item: (item.created_at, item.id),
@@ -1053,6 +1107,16 @@ class TeamChatService:
                             else TeamDispatchStatus.LEASED
                         ),
                         created_at=effective_now,
+                        preparation_expires_at=(
+                            effective_now
+                            + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
+                            if defer_activation
+                            else None
+                        ),
+                        requested_lease_seconds=max(1, int(lease_seconds)),
+                        role_description_fingerprint=agent_role_description_fingerprint(
+                            _agent_payload(state, agent)
+                        ),
                         prepared_at=(None if defer_activation else effective_now),
                         leased_at=(None if defer_activation else effective_now),
                         lease_expires_at=(None if defer_activation else lease_expires_at),
@@ -1103,12 +1167,11 @@ class TeamChatService:
         self,
         *,
         dispatch_id: str,
-        lease_seconds: int = 172800,
+        lease_seconds: int | None = None,
         now: datetime | None = None,
     ) -> TeamState:
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
         effective_now = _ensure_utc(now or utc_now())
-        normalized_lease_seconds = max(1, int(lease_seconds))
 
         def _mutate(state: TeamState) -> TeamState:
             dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
@@ -1125,8 +1188,13 @@ class TeamChatService:
                 raise ValueError(
                     f"chat dispatch {dispatch.id} no longer owns the agent reservation"
                 )
+            normalized_lease_seconds = max(
+                1,
+                int(dispatch.requested_lease_seconds if lease_seconds is None else lease_seconds),
+            )
             lease_expires_at = effective_now + timedelta(seconds=normalized_lease_seconds)
             dispatch.status = TeamDispatchStatus.LEASED
+            dispatch.preparation_expires_at = None
             dispatch.prepared_at = effective_now
             dispatch.leased_at = effective_now
             dispatch.lease_expires_at = lease_expires_at
