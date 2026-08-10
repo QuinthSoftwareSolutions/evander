@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from datetime import UTC, datetime
 from inspect import signature
 from pathlib import Path
@@ -1428,5 +1429,10 @@ def test_discord_webhook_errors_redact_credential_token(
 
     assert "super-secret-webhook-token" not in str(raised.value)
     assert "super-secret-webhook-token" not in str(raised.value.request.url)
+    assert "super-secret-webhook-token" not in "".join(
+        traceback.format_exception(raised.value)
+    )
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__ is True
     assert "redacted" in str(raised.value.request.url)
     assert service.webhook_status("chan-a")["last_error"] == "http_500"

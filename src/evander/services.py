@@ -1497,28 +1497,28 @@ class DiscordBotApiService:
                 f"Discord webhook request failed with status {exc.response.status_code}",
                 request=safe_request,
                 response=safe_response,
-            ) from exc
-        except httpx.ConnectError as exc:
+            ) from None
+        except httpx.ConnectError:
             self._record_webhook_error(credential, "connect_error")
             safe_request = self._safe_webhook_request(credential)
             raise httpx.ConnectError(
                 "Discord webhook connection failed",
                 request=safe_request,
-            ) from exc
-        except httpx.TimeoutException as exc:
+            ) from None
+        except httpx.TimeoutException:
             self._record_webhook_error(credential, "timeout")
             safe_request = self._safe_webhook_request(credential)
             raise httpx.TimeoutException(
                 "Discord webhook request timed out",
                 request=safe_request,
-            ) from exc
-        except httpx.RequestError as exc:
+            ) from None
+        except httpx.RequestError:
             self._record_webhook_error(credential, "request_error")
             safe_request = self._safe_webhook_request(credential)
             raise httpx.RequestError(
                 "Discord webhook request failed",
                 request=safe_request,
-            ) from exc
+            ) from None
         if self.webhook_store is not None:
             now = datetime.now(UTC)
             self.webhook_store.put(

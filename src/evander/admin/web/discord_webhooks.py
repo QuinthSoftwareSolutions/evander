@@ -19,21 +19,27 @@ def discord_webhook_routes(
     service: AdminRuntimeComponents, auth: AdminWebAuth
 ) -> list[BaseRoute]:
     def request_context(request: Request) -> tuple[str, str]:
-        directory_path = (
+        requested_directory_path = (
             str(request.query_params.get("directory_path") or "root").strip() or "root"
+        )
+        directory_path = service.teams_admin.normalize_directory_reference(
+            requested_directory_path
         )
         target_id = str(request.path_params.get("target_id") or "").strip()
         if not target_id:
             raise ValueError("target_id is required")
         return directory_path, target_id
 
-    def require_mutation_access(request: Request) -> JSONResponse | None:
+    def require_mutation_access(
+        request: Request, *, directory_path: str
+    ) -> JSONResponse | None:
         auth.require(request)
         if request_has_privileged_operations(
             auth=auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
         ):
             return None
         return json_error("Privileged operations are locked.", status_code=403)
@@ -52,11 +58,11 @@ def discord_webhook_routes(
         return JSONResponse(result)
 
     async def provision(request: Request) -> JSONResponse:
-        denied = require_mutation_access(request)
-        if denied is not None:
-            return denied
         try:
             directory_path, target_id = request_context(request)
+            denied = require_mutation_access(request, directory_path=directory_path)
+            if denied is not None:
+                return denied
             result = await run_in_threadpool(
                 service.discord_webhook_admin.provision,
                 directory_path=directory_path,
@@ -70,11 +76,11 @@ def discord_webhook_routes(
         return JSONResponse(result)
 
     async def recreate(request: Request) -> JSONResponse:
-        denied = require_mutation_access(request)
-        if denied is not None:
-            return denied
         try:
             directory_path, target_id = request_context(request)
+            denied = require_mutation_access(request, directory_path=directory_path)
+            if denied is not None:
+                return denied
             result = await run_in_threadpool(
                 service.discord_webhook_admin.provision,
                 directory_path=directory_path,
@@ -88,11 +94,11 @@ def discord_webhook_routes(
         return JSONResponse(result)
 
     async def test(request: Request) -> JSONResponse:
-        denied = require_mutation_access(request)
-        if denied is not None:
-            return denied
         try:
             directory_path, target_id = request_context(request)
+            denied = require_mutation_access(request, directory_path=directory_path)
+            if denied is not None:
+                return denied
             result = await run_in_threadpool(
                 service.discord_webhook_admin.test,
                 directory_path=directory_path,

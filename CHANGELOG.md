@@ -10,6 +10,8 @@
 - Connected Team Add-on persistent agents to the resolver so their configured display names and
   avatars appear on opted-in Discord sends, and added Admin Web status, provision, test, and
   recreate controls for the shared channel webhook.
+- Kept reusable Discord webhook tokens out of rendered failure tracebacks and authorized webhook
+  mutations against the selected directory so directory-scoped owners can manage their targets.
 
 ## 2026-08-10 - Team Agent Context Editor
 
