@@ -1767,8 +1767,12 @@ export function ConfigurationScreen() {
         action === "status" ? undefined : { method: "POST" },
       );
       const configured = Boolean(payload.configured ?? action !== "status");
+      const channelWebhookCount = Number(payload.channel_webhook_count ?? 0);
+      const personaWebhookCount = Number(payload.persona_webhook_count ?? 0);
       const message = action === "test"
         ? `Webhook test posted (message ${String(payload.message_id ?? "created")}).`
+        : action === "status" && configured
+          ? `${channelWebhookCount} channel webhook${channelWebhookCount === 1 ? "" : "s"} ready (${personaWebhookCount} cached persona avatar${personaWebhookCount === 1 ? "" : "s"}).`
         : configured
           ? `Webhook ready${payload.webhook_id ? ` (${String(payload.webhook_id)})` : ""}.`
           : "No webhook is currently provisioned.";
@@ -2420,9 +2424,9 @@ export function ConfigurationScreen() {
                   <div className="contact-subsection">
                     <div className="contact-subsection-header">
                       <div>
-                        <strong>Discord persona webhook</strong>
+                        <strong>Discord persona webhook pool</strong>
                         <div className="panel-meta">
-                          One channel webhook is shared by all resolved agent identities. Save target changes before managing it.
+                          Discord stores each resolved avatar on a small, lazily managed channel webhook pool; no public Admin Web avatar URL is required. Save target changes before managing it.
                         </div>
                       </div>
                       <div className="inline-actions compact-actions">

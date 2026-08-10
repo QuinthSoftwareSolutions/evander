@@ -4,14 +4,18 @@
 
 - Added an add-on-extensible outbound identity resolver and per-communication-target Discord
   persona opt-in without introducing a platform-owned persona registry.
-- Added host-managed, per-channel Discord webhooks that apply a resolved sender name and signed
-  public avatar URL per message, lazily provision and repair credentials, and fall back to normal
-  bot posts on definite webhook failures.
+- Added host-managed Discord webhooks keyed by channel and avatar digest that apply a resolved
+  sender name with a Discord-hosted default avatar, lazily provision and repair credentials, and
+  fall back to normal bot posts on definite webhook failures.
 - Connected Team Add-on persistent agents to the resolver so their configured display names and
   avatars appear on opted-in Discord sends, and added Admin Web status, provision, test, and
-  recreate controls for the shared channel webhook.
+  recreate controls for the channel webhook pool.
 - Kept reusable Discord webhook tokens out of rendered failure tracebacks and authorized webhook
   mutations against the selected directory so directory-scoped owners can manage their targets.
+- Kept Admin Web private by storing avatar image data as each cached webhook's default avatar and
+  bounded the per-channel persona cache with least-recently-used cleanup.
+- Made webhook send bookkeeping, stale-404 repair, and cache eviction identity-checked so an
+  in-flight send cannot restore or delete a concurrently replaced webhook credential.
 
 ## 2026-08-10 - Team Agent Context Editor
 

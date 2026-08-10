@@ -49,15 +49,12 @@ from evander.models import (
 )
 from evander.issue_owner import assigned_to_identity
 from evander.messaging.discord_inbox_store import DiscordInboxStore
-from evander.communication_artifact_links import (
-    CommunicationArtifactLinkError,
-    issue_communication_persona_avatar_link,
-)
 from evander.discord_webhooks import (
-    CommunicationPersonaAvatarStore,
+    DiscordWebhookAvatar,
     DiscordWebhookCredential,
     DiscordWebhookCredentialStore,
     discord_webhook_credential_key,
+    prepare_discord_webhook_avatar,
 )
 from evander.outbound_identity import OutboundIdentity
 from evander.repositories.cursors import DiscordInboxCursorRepository
@@ -969,10 +966,7 @@ class DiscordBotApiService:
         read_reaction_emoji: str = "👀",
         bot_token_env: str = "DISCORD_BOT_TOKEN",
         webhook_store_path: str | Path | None = None,
-        runtime_dir: str | Path | None = None,
-        persona_avatar_public_base_url: str | None = None,
-        persona_avatar_secret_env: str = "EVANDER_COMMUNICATION_ARTIFACT_LINK_SECRET",
-        persona_avatar_link_ttl_seconds: int = 7 * 24 * 60 * 60,
+        persona_webhook_cache_limit: int = 10,
     ) -> None:
         self.command_store = command_store
         self.token = token
@@ -998,12 +992,7 @@ class DiscordBotApiService:
             if webhook_store_path is not None
             else None
         )
-        self.persona_avatar_store = (
-            CommunicationPersonaAvatarStore(runtime_dir) if runtime_dir is not None else None
-        )
-        self.persona_avatar_public_base_url = persona_avatar_public_base_url
-        self.persona_avatar_secret_env = persona_avatar_secret_env
-        self.persona_avatar_link_ttl_seconds = persona_avatar_link_ttl_seconds
+        self.persona_webhook_cache_limit = max(1, min(10, int(persona_webhook_cache_limit)))
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -1307,7 +1296,9 @@ class DiscordBotApiService:
                 "identity_source": identity.source if identity is not None else None,
                 "identity_status": identity_status,
                 "persona_name_applied": identity is not None,
-                "persona_avatar_applied": bool(identity is not None and identity.avatar is not None),
+                "persona_avatar_applied": bool(
+                    identity is not None and identity.avatar is not None
+                ),
                 "fallback_reason": fallback_reason,
             },
         )
@@ -1338,35 +1329,73 @@ class DiscordBotApiService:
 
     def webhook_status(self, channel_id: str) -> dict[str, Any]:
         if self.webhook_store is None:
-            return {"configured": False, "channel_id": channel_id}
-        credential = self.webhook_store.get(
+            return {
+                "configured": False,
+                "channel_id": channel_id,
+                "channel_webhook_count": 0,
+                "persona_webhook_count": 0,
+                "persona_webhook_cache_limit": self.persona_webhook_cache_limit,
+                "persona_webhooks": [],
+            }
+        credentials = self.webhook_store.list_for_channel(
             api_base_url=self.api_base_url,
             bot_token_env=self.bot_token_env,
             channel_id=channel_id,
         )
-        return (
-            credential.safe_status()
-            if credential is not None
+        platform_credential = next(
+            (credential for credential in credentials if credential.avatar_sha256 is None),
+            None,
+        )
+        persona_credentials = [
+            credential for credential in credentials if credential.avatar_sha256 is not None
+        ]
+        selected = platform_credential or (credentials[-1] if credentials else None)
+        result = (
+            selected.safe_status()
+            if selected is not None
             else {"configured": False, "channel_id": channel_id}
         )
+        result.update(
+            {
+                "configured": bool(credentials),
+                "channel_webhook_count": len(credentials),
+                "persona_webhook_count": len(persona_credentials),
+                "persona_webhook_cache_limit": self.persona_webhook_cache_limit,
+                "persona_webhooks": [
+                    credential.safe_status() for credential in persona_credentials
+                ],
+            }
+        )
+        return result
 
-    def provision_webhook(self, channel_id: str, *, force: bool = False) -> dict[str, Any]:
+    def provision_webhook(
+        self,
+        channel_id: str,
+        *,
+        force: bool = False,
+        avatar: DiscordWebhookAvatar | None = None,
+    ) -> dict[str, Any]:
         if self.webhook_store is None:
             raise RuntimeError("Discord webhook credential storage is not configured")
         self._require_allowed_channel_id(channel_id)
+        avatar_sha256 = avatar.sha256 if avatar is not None else None
         with self.webhook_store.provision_lock():
             existing = self.webhook_store.get(
                 api_base_url=self.api_base_url,
                 bot_token_env=self.bot_token_env,
                 channel_id=channel_id,
+                avatar_sha256=avatar_sha256,
             )
             if existing is not None and not force:
                 return existing.safe_status()
+            request_payload = {"name": "Evander"}
+            if avatar is not None:
+                request_payload["avatar"] = avatar.image_data
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 response = client.post(
                     f"{self.api_base_url}/channels/{channel_id}/webhooks",
                     headers=self._headers(),
-                    json={"name": "Evander"},
+                    json=request_payload,
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
@@ -1377,12 +1406,14 @@ class DiscordBotApiService:
                     api_base_url=self.api_base_url,
                     bot_token_env=self.bot_token_env,
                     channel_id=channel_id,
+                    avatar_sha256=avatar_sha256,
                 ),
                 channel_id=channel_id,
                 api_base_url=self.api_base_url,
                 bot_token_env=self.bot_token_env,
                 webhook_id=str(payload.get("id") or ""),
                 token=str(payload.get("token") or ""),
+                avatar_sha256=avatar_sha256,
                 created_at=now,
                 updated_at=now,
                 last_verified_at=now,
@@ -1401,60 +1432,106 @@ class DiscordBotApiService:
                             delete_response.raise_for_status()
                 except httpx.HTTPError as exc:
                     result["replacement_cleanup_warning"] = type(exc).__name__
+            if avatar is not None:
+                cleanup_warnings = self._trim_persona_webhooks(
+                    channel_id,
+                    keep_key=credential.key,
+                )
+                if cleanup_warnings:
+                    result["persona_cleanup_warnings"] = cleanup_warnings
+                    _LOGGER.warning(
+                        "Discord persona webhook cleanup failed for channel %s: %s",
+                        channel_id,
+                        ", ".join(cleanup_warnings),
+                    )
             return result
 
-    def _webhook_credential(self, channel_id: str) -> DiscordWebhookCredential:
+    def _trim_persona_webhooks(self, channel_id: str, *, keep_key: str) -> list[str]:
+        if self.webhook_store is None:
+            return []
+        persona_credentials = [
+            credential
+            for credential in self.webhook_store.list_for_channel(
+                api_base_url=self.api_base_url,
+                bot_token_env=self.bot_token_env,
+                channel_id=channel_id,
+            )
+            if credential.avatar_sha256 is not None
+        ]
+        excess = len(persona_credentials) - self.persona_webhook_cache_limit
+        if excess <= 0:
+            return []
+        candidates = [
+            credential for credential in persona_credentials if credential.key != keep_key
+        ]
+        warnings: list[str] = []
+        for credential in candidates[:excess]:
+            try:
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    response = client.delete(
+                        f"{self.api_base_url}/webhooks/{credential.webhook_id}",
+                        headers=self._headers(),
+                        timeout=self.timeout_seconds,
+                    )
+                    if response.status_code not in {204, 404}:
+                        response.raise_for_status()
+                self.webhook_store.delete_if_current(credential)
+            except httpx.HTTPError as exc:
+                warnings.append(f"{credential.webhook_id}:{type(exc).__name__}")
+        return warnings
+
+    def _webhook_credential(
+        self,
+        channel_id: str,
+        *,
+        avatar: DiscordWebhookAvatar | None = None,
+    ) -> DiscordWebhookCredential:
         if self.webhook_store is None:
             raise RuntimeError("Discord webhook credential storage is not configured")
+        avatar_sha256 = avatar.sha256 if avatar is not None else None
         credential = self.webhook_store.get(
             api_base_url=self.api_base_url,
             bot_token_env=self.bot_token_env,
             channel_id=channel_id,
+            avatar_sha256=avatar_sha256,
         )
         if credential is None:
-            self.provision_webhook(channel_id)
+            self.provision_webhook(channel_id, avatar=avatar)
             credential = self.webhook_store.get(
                 api_base_url=self.api_base_url,
                 bot_token_env=self.bot_token_env,
                 channel_id=channel_id,
+                avatar_sha256=avatar_sha256,
             )
         if credential is None:
             raise RuntimeError("Discord webhook provisioning did not return a credential")
         return credential
 
-    def _persona_avatar_url(self, identity: OutboundIdentity | None) -> str | None:
-        if identity is None or identity.avatar is None or self.persona_avatar_store is None:
-            return None
-        self.persona_avatar_store.put(identity.avatar)
-        link = issue_communication_persona_avatar_link(
-            sha256=identity.avatar.sha256,
-            public_base_url=self.persona_avatar_public_base_url,
-            secret_env=self.persona_avatar_secret_env,
-            ttl_seconds=self.persona_avatar_link_ttl_seconds,
-        )
-        return link.url
-
     def _webhook_payload(
         self, message: str, identity: OutboundIdentity | None
-    ) -> tuple[dict[str, Any], OutboundIdentity | None, str | None]:
+    ) -> tuple[
+        dict[str, Any],
+        OutboundIdentity | None,
+        str | None,
+        DiscordWebhookAvatar | None,
+    ]:
         payload: dict[str, Any] = {"content": message}
         if identity is None:
-            return payload, None, None
+            return payload, None, None, None
         payload["username"] = identity.display_name
         fallback_reason = None
         applied_identity = identity
-        try:
-            avatar_url = self._persona_avatar_url(identity)
-        except (CommunicationArtifactLinkError, OSError, ValueError) as exc:
-            avatar_url = None
-            fallback_reason = f"persona_avatar_unavailable:{type(exc).__name__}"
-            applied_identity = OutboundIdentity(
-                display_name=identity.display_name,
-                source=identity.source,
-            )
-        if avatar_url:
-            payload["avatar_url"] = avatar_url
-        return payload, applied_identity, fallback_reason
+        webhook_avatar = None
+        if identity.avatar is not None:
+            try:
+                webhook_avatar = prepare_discord_webhook_avatar(identity.avatar)
+            except (RuntimeError, OSError, ValueError) as exc:
+                fallback_reason = f"persona_avatar_unavailable:{type(exc).__name__}"
+                applied_identity = OutboundIdentity(
+                    display_name=identity.display_name,
+                    source=identity.source,
+                )
+        return payload, applied_identity, fallback_reason, webhook_avatar
 
     def _execute_webhook(
         self,
@@ -1463,10 +1540,7 @@ class DiscordBotApiService:
         payload: dict[str, Any],
         files: Any = None,
     ) -> dict[str, Any]:
-        url = (
-            f"{self.api_base_url}/webhooks/{credential.webhook_id}/{credential.token}"
-            "?wait=true"
-        )
+        url = f"{self.api_base_url}/webhooks/{credential.webhook_id}/{credential.token}?wait=true"
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 if files is None:
@@ -1521,7 +1595,7 @@ class DiscordBotApiService:
             ) from None
         if self.webhook_store is not None:
             now = datetime.now(UTC)
-            self.webhook_store.put(
+            self.webhook_store.put_if_current(
                 credential.model_copy(
                     update={
                         "updated_at": now,
@@ -1532,9 +1606,7 @@ class DiscordBotApiService:
             )
         return response.json()
 
-    def _safe_webhook_request(
-        self, credential: DiscordWebhookCredential
-    ) -> httpx.Request:
+    def _safe_webhook_request(self, credential: DiscordWebhookCredential) -> httpx.Request:
         return httpx.Request(
             "POST",
             f"{self.api_base_url}/webhooks/{credential.webhook_id}/<redacted>",
@@ -1547,7 +1619,7 @@ class DiscordBotApiService:
     ) -> None:
         if self.webhook_store is None:
             return
-        self.webhook_store.put(
+        self.webhook_store.put_if_current(
             credential.model_copy(
                 update={
                     "updated_at": datetime.now(UTC),
@@ -1561,9 +1633,10 @@ class DiscordBotApiService:
         *,
         channel_id: str,
         payload: dict[str, Any],
+        avatar: DiscordWebhookAvatar | None = None,
         files: Any = None,
     ) -> dict[str, Any]:
-        credential = self._webhook_credential(channel_id)
+        credential = self._webhook_credential(channel_id, avatar=avatar)
         try:
             return self._execute_webhook(
                 credential=credential,
@@ -1573,9 +1646,9 @@ class DiscordBotApiService:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404 or self.webhook_store is None:
                 raise
-            self.webhook_store.delete(credential)
+            self.webhook_store.delete_if_current(credential)
             return self._execute_webhook(
-                credential=self._webhook_credential(channel_id),
+                credential=self._webhook_credential(channel_id, avatar=avatar),
                 payload=payload,
                 files=files,
             )
@@ -1631,11 +1704,14 @@ class DiscordBotApiService:
                 )
             )
         if use_resolved_identity and identity is not None:
-            payload, applied_identity, avatar_fallback = self._webhook_payload(message, identity)
+            payload, applied_identity, avatar_fallback, webhook_avatar = self._webhook_payload(
+                message, identity
+            )
             try:
                 response_payload = self._execute_identity_webhook(
                     channel_id=channel_id,
                     payload=payload,
+                    avatar=webhook_avatar,
                     files=files,
                 )
                 result = self._persist_posted_message(
@@ -1726,13 +1802,17 @@ class DiscordBotApiService:
     ) -> dict[str, Any]:
         self._require_allowed_channel_id(channel_id)
         if use_resolved_identity and identity is not None:
-            webhook_payload, applied_identity, avatar_fallback = self._webhook_payload(
-                message, identity
-            )
+            (
+                webhook_payload,
+                applied_identity,
+                avatar_fallback,
+                webhook_avatar,
+            ) = self._webhook_payload(message, identity)
             try:
                 payload = self._execute_identity_webhook(
                     channel_id=channel_id,
                     payload=webhook_payload,
+                    avatar=webhook_avatar,
                 )
                 return self._persist_posted_message(
                     payload,
@@ -3742,10 +3822,14 @@ class DiscordInboxService:
     def _is_self_authored_message(message: DiscordMessageEnvelope, *, session_id: str) -> bool:
         raw_source = str(message.raw.get("source", "")).strip()
         raw_session_id = str(message.raw.get("session_id", "")).strip()
-        return raw_source in {
-            "discord_bot_api_status",
-            "discord_webhook_status",
-        } and raw_session_id == session_id
+        return (
+            raw_source
+            in {
+                "discord_bot_api_status",
+                "discord_webhook_status",
+            }
+            and raw_session_id == session_id
+        )
 
     def _effective_cursor(
         self,

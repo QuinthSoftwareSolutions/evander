@@ -4,10 +4,6 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from evander.communication_artifact_links import (
-    communication_artifact_link_secret_env,
-    communication_artifact_public_base_url,
-)
 from evander.messaging.targets import (
     CommunicationTargetDefinition,
     load_communication_targets_config,
@@ -78,16 +74,7 @@ class DiscordWebhookAdminService:
             read_reaction_emoji=config.discord_read_reaction_emoji,
             bot_token_env=token_env,
             webhook_store_path=config.discord_webhook_store_path,
-            runtime_dir=config.runtime_dir,
-            persona_avatar_public_base_url=communication_artifact_public_base_url(
-                self._deps.runtime.config
-            ),
-            persona_avatar_secret_env=communication_artifact_link_secret_env(
-                self._deps.runtime.config
-            ),
-            persona_avatar_link_ttl_seconds=(
-                self._deps.runtime.config.communication_artifact_link_ttl_seconds
-            ),
+            persona_webhook_cache_limit=config.discord_persona_webhook_cache_limit,
         )
         return directory, target, service
 

@@ -347,6 +347,7 @@ class GatewayConfig(BaseModel):
     discord_retry_count: int = Field(default=3, ge=0, le=10)
     discord_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     discord_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
+    discord_persona_webhook_cache_limit: int = Field(default=10, ge=1, le=10)
     discord_read_reaction_emoji: str = "👀"
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)

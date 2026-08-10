@@ -7,10 +7,6 @@ from typing import Callable
 from pathlib import Path
 
 from evander.messaging.agent_prompt_store import AgentPromptStore
-from evander.communication_artifact_links import (
-    communication_artifact_link_secret_env,
-    communication_artifact_public_base_url,
-)
 from evander.audit import AuditLogger
 from evander.directories import DirectoryStore
 from evander.models import (
@@ -229,7 +225,6 @@ class RuntimeContext:
             self.session_repository,
             self.policy_config,
             session_id=session_id,
-            persona_link_config=self.config,
         )
 
     def discord_inbox_service_for_session(self, session_id: str) -> DiscordInboxService:
@@ -560,7 +555,6 @@ def _build_discord_service(
     policy_config: PolicyConfigResolver,
     *,
     session_id: str | None = None,
-    persona_link_config: GatewayConfig | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(
@@ -579,7 +573,6 @@ def _build_discord_service(
                 "discord backend 'bot_api' requires a bot token in environment variable "
                 f"{env_var_name!r}"
             )
-        link_config = persona_link_config or config
         return DiscordBotApiService(
             command_store,
             token=token,
@@ -608,10 +601,7 @@ def _build_discord_service(
             read_reaction_emoji=config.discord_read_reaction_emoji,
             bot_token_env=env_var_name,
             webhook_store_path=config.discord_webhook_store_path,
-            runtime_dir=config.runtime_dir,
-            persona_avatar_public_base_url=communication_artifact_public_base_url(link_config),
-            persona_avatar_secret_env=communication_artifact_link_secret_env(link_config),
-            persona_avatar_link_ttl_seconds=link_config.communication_artifact_link_ttl_seconds,
+            persona_webhook_cache_limit=config.discord_persona_webhook_cache_limit,
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."

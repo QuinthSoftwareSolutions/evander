@@ -136,6 +136,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "discord_retry_base_backoff_seconds",
             "discord_retry_count",
             "discord_retry_max_backoff_seconds",
+            "discord_persona_webhook_cache_limit",
             "discord_timeout_seconds",
             "discord_read_reaction_emoji",
             "github_token_env",

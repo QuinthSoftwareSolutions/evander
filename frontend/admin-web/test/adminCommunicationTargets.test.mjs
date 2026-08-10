@@ -47,12 +47,13 @@ test("communication target editor preserves capability drafts and inserts Teams 
   assert.match(configuration, /Insert target/);
 });
 
-test("Discord communication targets expose resolved identity and shared webhook controls", () => {
+test("Discord communication targets expose resolved identity and webhook pool controls", () => {
   assert.match(configuration, /policy\.sender_identity === "resolved"/);
   assert.match(configuration, /policy\.sender_identity = "resolved"/);
   assert.match(configuration, /Use resolved sender name and avatar/);
   assert.match(configuration, /\/api\/discord-webhooks\/targets\//);
-  assert.match(configuration, /Discord persona webhook/);
+  assert.match(configuration, /Discord persona webhook pool/);
+  assert.match(configuration, /no public Admin Web avatar URL is required/);
   assert.match(configuration, />\s*Status\s*</);
   assert.match(configuration, />\s*Provision\s*</);
   assert.match(configuration, />\s*Test\s*</);

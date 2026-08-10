@@ -451,6 +451,18 @@ def test_read_reaction_emoji_defaults_to_eyes_for_discord_and_teams() -> None:
     assert config.teams_read_reaction_emoji == "👀"
 
 
+def test_discord_persona_webhook_cache_limit_is_bounded() -> None:
+    assert GatewayConfig.model_validate({}).discord_persona_webhook_cache_limit == 10
+    assert (
+        GatewayConfig.model_validate(
+            {"discord_persona_webhook_cache_limit": 3}
+        ).discord_persona_webhook_cache_limit
+        == 3
+    )
+    with pytest.raises(ValueError, match="discord_persona_webhook_cache_limit"):
+        GatewayConfig.model_validate({"discord_persona_webhook_cache_limit": 11})
+
+
 def test_read_reaction_emoji_fields_normalize_unicode_and_trim_whitespace() -> None:
     config = GatewayConfig.model_validate(
         {
