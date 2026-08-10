@@ -136,6 +136,7 @@ from evander_team_addon.providers import (
     _artifact_space_path_segment,
     _build_prompt,
     _build_team_chat_prompt,
+    _completed_agent_prompt_records,
     _create_project_repo_git_work_contexts,
     _review_artifact_destination_path,
     _publish_deliverable_artifact_bundle,
@@ -634,6 +635,38 @@ class FakeExecutionStore:
 
     def list_executions(self) -> list[object]:
         return list(self.records)
+
+
+def test_completed_agent_prompt_records_uses_filtered_store_query() -> None:
+    completed = SimpleNamespace(
+        execution_id="exec-completed",
+        effect_type="effect:agent:enqueue-prompt",
+        status="succeeded",
+        finished_at=datetime(2026, 1, 1, tzinfo=UTC),
+        outputs={"dispatch_id": "dispatch-1", "queued": False},
+    )
+
+    class _FilteredExecutionStore:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def list_records_by_node_type_and_statuses(self, **kwargs: object) -> list[object]:
+            self.calls.append(dict(kwargs))
+            return [completed]
+
+        def list_executions(self) -> list[object]:
+            raise AssertionError("completed Team prompts must use the filtered store query")
+
+    execution_store = _FilteredExecutionStore()
+    worker = SimpleNamespace(execution_store=execution_store)
+
+    assert _completed_agent_prompt_records(worker) == [completed]
+    assert execution_store.calls == [
+        {
+            "node_type": "effect:agent:enqueue-prompt",
+            "statuses": {"succeeded", "failed"},
+        }
+    ]
 
 
 class FakeAgentPromptQueueStore:

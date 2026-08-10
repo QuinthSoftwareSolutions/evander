@@ -4439,9 +4439,10 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             state=state,
             now=datetime.now(UTC),
         )
+        completed_records = _completed_agent_prompt_records(worker)
         delivered_records = [
             *_waiting_agent_prompt_records(worker),
-            *_completed_agent_prompt_records(worker),
+            *completed_records,
         ]
         pending_governance = {
             runtime.active_dispatch_id: group_id
@@ -4510,7 +4511,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             and (dispatch_id.startswith("team-dispatch-") or dispatch_id.startswith("team-chat:"))
         }
         finalized_count = 0
-        for record in _completed_agent_prompt_records(worker):
+        for record in completed_records:
             dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
             if dispatch_id is None or dispatch_id not in active_dispatches:
                 continue
@@ -11043,6 +11044,23 @@ def _completed_agent_prompt_records(worker: Any) -> list[Any]:
     if execution_store is None:
         return []
     records: list[Any] = []
+    list_by_type_and_statuses = getattr(
+        execution_store,
+        "list_records_by_node_type_and_statuses",
+        None,
+    )
+    if callable(list_by_type_and_statuses):
+        try:
+            records = list(
+                list_by_type_and_statuses(
+                    node_type="effect:agent:enqueue-prompt",
+                    statuses={"succeeded", "failed"},
+                )
+            )
+        except Exception:
+            records = []
+        else:
+            return _completed_agent_prompt_records_from_records(records)
     list_executions = getattr(execution_store, "list_executions", None)
     if callable(list_executions):
         try:
@@ -11057,6 +11075,10 @@ def _completed_agent_prompt_records(worker: Any) -> list[Any]:
                 records = list(raw.values()) if isinstance(raw, Mapping) else []
             except Exception:
                 records = []
+    return _completed_agent_prompt_records_from_records(records)
+
+
+def _completed_agent_prompt_records_from_records(records: list[Any]) -> list[Any]:
     candidates = [
         record
         for record in records

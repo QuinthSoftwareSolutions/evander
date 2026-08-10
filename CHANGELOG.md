@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-10 - Team Chat Dispatch Latency
+
+- Made Team prompt-completion reconciliation query only terminal prompt effects and reuse that
+  result within a cycle, rather than deserializing the full effect-execution history before chat
+  dispatches can be leased.
+
 ## 2026-08-10 - Team Chat Send Latency
 
 - Persisted a direct operator chat message and its queued asynchronous dispatch in one Team-state
