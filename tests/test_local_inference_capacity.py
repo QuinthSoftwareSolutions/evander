@@ -37,11 +37,14 @@ def test_local_inference_capacity_enforces_one_host_wide_limit(tmp_path: Path) -
     assert second.active_count == 1
     assert store.mark_running(first.slot_id) is True
     assert store.release(first.slot_id) is True
-    assert store.claim(
-        max_concurrency=1,
-        owner_id="dispatch-2",
-        model="qwen3.6:27b",
-    ).admitted is True
+    assert (
+        store.claim(
+            max_concurrency=1,
+            owner_id="dispatch-2",
+            model="qwen3.6:27b",
+        ).admitted
+        is True
+    )
 
 
 def test_local_inference_capacity_is_unlimited_when_unconfigured(tmp_path: Path) -> None:
@@ -128,6 +131,37 @@ def test_local_inference_capacity_reclaims_only_stale_launching_claims(
     assert replacement.slot_id != stale.slot_id
 
 
+def test_local_inference_capacity_heartbeat_retains_live_launching_claim(
+    tmp_path: Path,
+) -> None:
+    store = LocalInferenceCapacityStore(tmp_path)
+    claimed_at = datetime(2026, 8, 9, 10, 0, tzinfo=UTC)
+    launching = store.claim(
+        max_concurrency=1,
+        owner_id="long-launch",
+        model="qwen3.6:27b",
+        now=claimed_at,
+    )
+    assert launching.slot_id is not None
+    assert (
+        store.heartbeat_launching(
+            launching.slot_id,
+            now=claimed_at + timedelta(minutes=4),
+        )
+        is True
+    )
+
+    replacement = store.claim(
+        max_concurrency=1,
+        owner_id="replacement",
+        model="qwen3.6:27b",
+        now=claimed_at + timedelta(minutes=6),
+    )
+
+    assert replacement.admitted is False
+    assert launching.slot_id in store.read_all()
+
+
 def test_local_inference_capacity_reconciles_only_authoritatively_terminal_runs(
     tmp_path: Path,
 ) -> None:
@@ -180,10 +214,13 @@ def test_local_inference_capacity_keeps_running_lease_when_reconciliation_fails(
     )
     assert store.mark_running(admission.slot_id) is True
 
-    assert store.reconcile_running(
-        lambda _lease: (_ for _ in ()).throw(RuntimeError("backend unavailable")),
-        minimum_age_seconds=0,
-    ) == 0
+    assert (
+        store.reconcile_running(
+            lambda _lease: (_ for _ in ()).throw(RuntimeError("backend unavailable")),
+            minimum_age_seconds=0,
+        )
+        == 0
+    )
     assert admission.slot_id in store.read_all()
 
 

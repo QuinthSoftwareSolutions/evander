@@ -7,8 +7,8 @@ import random
 import re
 import subprocess
 import sys
-import time
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,15 +45,16 @@ from evander.local_inference_capacity import (
     LocalInferenceCapacityLease,
     local_inference_capacity_store,
     local_inference_execution_is_active,
+    maintain_local_inference_launch,
 )
 from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from evander.messaging.scheduled_wake_queue import scheduled_wake_queue_key
 from evander.models import WakeDispatchRecord, WakeResumePromptPayload
 from evander.orchestration.host_polling import single_instance_lock
-from evander.runtime import RuntimeContext
 from evander.provider_config import EffectProviderConfig
-from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
+from evander.runtime import RuntimeContext
 from evander.session_auth import session_mcp_auth_token
+from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
 from evander.worker_directory_context import WorkerDirectoryContextResolver
 
 logger = logging.getLogger(__name__)
@@ -616,7 +617,11 @@ class HostWakeDispatcher:
             agent_env["AGENT_MODEL"] = agent_model
         run_kwargs["env"] = os.environ | agent_env
         try:
-            completed = subprocess.run(cmd, **run_kwargs)
+            with maintain_local_inference_launch(
+                worker_config.runtime_dir,
+                capacity_admission.slot_id,
+            ):
+                completed = subprocess.run(cmd, **run_kwargs)
         except OSError as exc:
             self._release_local_inference_capacity(worker_config, capacity_admission)
             logger.warning(
@@ -885,9 +890,7 @@ class HostWakeDispatcher:
                 request_id=request_id,
                 dispatch_id=dispatch_id,
             )
-            queue_reason = (
-                LOCAL_INFERENCE_QUEUE_REASON if not capacity_admission.admitted else None
-            )
+            queue_reason = LOCAL_INFERENCE_QUEUE_REASON if not capacity_admission.admitted else None
             queue_metadata: dict[str, str] = {
                 "source": dispatch_source,
                 "resume_mode": effective_resume_mode,
@@ -919,9 +922,7 @@ class HostWakeDispatcher:
                     resume_mode=effective_resume_mode,
                     queue_key=queue_key,
                     metadata=queue_metadata,
-                    max_retries=int(
-                        getattr(base_config, "agent_prompt_queue_max_retries", 3) or 3
-                    ),
+                    max_retries=int(getattr(base_config, "agent_prompt_queue_max_retries", 3) or 3),
                 )
             except Exception as exc:
                 error, failure_metadata = _build_dispatch_failure_details(
@@ -999,33 +1000,37 @@ class HostWakeDispatcher:
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         try:
-            handle = backend.start(
-                backend.prepare(
-                    ExecutionSpec(
-                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                        target_name=execution_id,
-                        session_id=session_id,
-                        directory_path=directory_path,
-                        image=container_worker_image_for_session(session, base_config),
-                        resource_limits=container_worker_resource_limits_for_session(session),
-                        command=command,
-                        codex_turn=codex_turn,
-                        metadata={
-                            "source": dispatch_source,
-                            "dispatch_id": dispatch_id,
-                            "resume_mode": effective_resume_mode,
-                            "agent_provider": agent_provider,
-                            "model": resolved_model,
-                            "model_provider_mode": base_config.model_provider_mode,
-                            **(
-                                {"codex_auth_mode": codex_turn.auth_mode.value}
-                                if codex_turn is not None
-                                else {}
-                            ),
-                        },
+            with maintain_local_inference_launch(
+                base_config.runtime_dir,
+                capacity_admission.slot_id,
+            ):
+                handle = backend.start(
+                    backend.prepare(
+                        ExecutionSpec(
+                            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                            target_name=execution_id,
+                            session_id=session_id,
+                            directory_path=directory_path,
+                            image=container_worker_image_for_session(session, base_config),
+                            resource_limits=container_worker_resource_limits_for_session(session),
+                            command=command,
+                            codex_turn=codex_turn,
+                            metadata={
+                                "source": dispatch_source,
+                                "dispatch_id": dispatch_id,
+                                "resume_mode": effective_resume_mode,
+                                "agent_provider": agent_provider,
+                                "model": resolved_model,
+                                "model_provider_mode": base_config.model_provider_mode,
+                                **(
+                                    {"codex_auth_mode": codex_turn.auth_mode.value}
+                                    if codex_turn is not None
+                                    else {}
+                                ),
+                            },
+                        )
                     )
                 )
-            )
         except Exception as exc:
             self._release_local_inference_capacity(base_config, capacity_admission)
             error, failure_metadata = _build_dispatch_failure_details(

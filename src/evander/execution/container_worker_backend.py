@@ -7,11 +7,11 @@ from typing import Any
 from evander.config import GatewayConfig
 from evander.worker.models import (
     SAFE_ID_PATTERN,
-    WorkerFileWriteRequest,
     WorkerFileWriteRecord,
+    WorkerFileWriteRequest,
+    WorkerGitKeyDeleteRecord,
     WorkerGitWriteKeyRecord,
     WorkerGitWriteKeyRequest,
-    WorkerGitKeyDeleteRecord,
     WorkerJobRequest,
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
@@ -159,7 +159,28 @@ class ContainerWorkerVmExecutionBackend:
 
     def inspect(self, target: ExecutionTarget) -> ExecutionStatus:
         mapping = self._mapping_for_target(target)
-        record = self.client.get(mapping.worker_job_id)
+        if mapping.cleanup_status == "cleanup_succeeded" or mapping.last_status == "removed":
+            return self._status_from_record(
+                mapping,
+                "removed",
+                message="container worker job was destroyed",
+            )
+        try:
+            record = self.client.get(mapping.worker_job_id)
+        except ContainerWorkerClientError as exc:
+            if exc.status_code != 404:
+                raise
+            observed_at = now_utc()
+            self._mark_cleanup_succeeded(
+                mapping,
+                attempted_at=observed_at,
+                completed_at=observed_at,
+            )
+            return self._status_from_record(
+                mapping,
+                "removed",
+                message="container worker job no longer exists",
+            )
         mapping.last_status = record.status
         mapping.started_at = record.started_at
         mapping.finished_at = record.finished_at
@@ -320,9 +341,7 @@ class ContainerWorkerVmExecutionBackend:
                 resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                 dependency_merge_author_name=dependency_merge_author_name,
                 dependency_merge_author_email=dependency_merge_author_email,
-                dependency_composition_commit_message=(
-                    dependency_composition_commit_message
-                ),
+                dependency_composition_commit_message=(dependency_composition_commit_message),
             ),
         )
 
@@ -616,9 +635,7 @@ class ContainerWorkerVmExecutionBackend:
                 metadata[key] = worker_metadata[key]
         failure_cause = getattr(record, "failure_cause", None)
         if failure_cause is not None:
-            metadata["worker_failure_cause"] = getattr(
-                failure_cause, "value", str(failure_cause)
-            )
+            metadata["worker_failure_cause"] = getattr(failure_cause, "value", str(failure_cause))
         if getattr(record, "error", None):
             metadata["worker_error"] = str(record.error)
         metadata["worker_status"] = record.status

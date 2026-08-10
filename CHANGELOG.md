@@ -5,6 +5,9 @@
 - Retained local-inference capacity after a successful VM launch that has not yet emitted its
   thread identifier, allowing backend termination reconciliation to release the slot instead of
   admitting overlapping work while the original agent still runs.
+- Heartbeat long-running launch reservations until their blocking launcher returns, release
+  container leases when the worker authoritatively reports a destroyed job, and preserve raw
+  partial-line appends while following container logs.
 
 ## 2026-08-09 - Queue-Aware Dispatch Correctness
 

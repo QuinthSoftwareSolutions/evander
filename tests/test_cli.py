@@ -2,16 +2,22 @@ import json
 import re
 import sqlite3
 import subprocess
-from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
-from evander.cli import EndpointStatus, UnitStatus, app
-from evander.directory_config import DirectoryConfigStore
+from evander.cli import (
+    EndpointStatus,
+    UnitStatus,
+    _container_log_delta,
+    _container_log_tail,
+    app,
+)
 from evander.directories import DirectoryStore
+from evander.directory_config import DirectoryConfigStore
 from evander.execution import (
     ExecutionBackendKind,
     ExecutionHandle,
@@ -24,6 +30,7 @@ from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
+from evander.messaging.teams_auth import InvalidClientConfigurationError
 from evander.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
@@ -34,7 +41,6 @@ from evander.models import (
     VmActionResult,
     VmSummary,
 )
-from evander.messaging.teams_auth import InvalidClientConfigurationError
 from evander.repositories.audit_index import ToolCallAuditIndex
 
 UTC = timezone.utc
@@ -4788,9 +4794,7 @@ def test_resume_agent_observe_follows_logs_for_nonlegacy_targets(
     }
 
 
-def test_resume_agent_observe_follows_container_execution_logs(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_resume_agent_observe_follows_container_execution_logs(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     snapshots = iter(
@@ -4901,25 +4905,43 @@ def test_resume_agent_observe_follows_container_execution_logs(
     ]
 
 
+def test_container_log_delta_preserves_partial_line_appends() -> None:
+    previous = "complete line\npartial"
+    current = "complete line\npartial line\nnext line\n"
+
+    assert _container_log_delta(previous, current) == " line\nnext line\n"
+
+
+def test_container_log_delta_preserves_raw_truncation_fallback() -> None:
+    previous = "discarded\nretained\n"
+    current = "retained\nnew partial"
+
+    assert _container_log_delta(previous, current) == "new partial"
+    assert _container_log_tail(current, lines=1) == "new partial"
+
+
 def test_resume_agent_reports_capacity_queued_result_without_observing(
     tmp_path: Path, monkeypatch
 ) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(
-        app,
-        [
-            "create-session",
-            "--config",
-            str(config_path),
-            "--vm-id",
-            "vm-12305",
-            "--model",
-            "local-model",
-            "issue-12305-session",
-        ],
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "vm-12305",
+                "--model",
+                "local-model",
+                "issue-12305-session",
+            ],
+        ).exit_code
+        == 0
+    )
     service = SimpleNamespace(
         resolve_agent_model_for_target=lambda _target: "local-model",
         enqueue_agent_prompt=lambda *_args, **_kwargs: VmActionResult(

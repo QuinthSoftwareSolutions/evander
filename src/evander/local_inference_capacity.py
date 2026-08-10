@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import fcntl
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from collections.abc import Callable
+from threading import Event, Thread
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -12,10 +14,10 @@ from pydantic import BaseModel, Field
 
 from evander.storage import JsonStore
 
-
 LOCAL_INFERENCE_CAPACITY_STORE_FILENAME = "local-inference-capacity.json"
 LOCAL_INFERENCE_QUEUE_REASON = "local_inference_capacity"
 LOCAL_INFERENCE_LAUNCH_TIMEOUT_SECONDS = 300
+LOCAL_INFERENCE_LAUNCH_HEARTBEAT_SECONDS = 60
 LOCAL_INFERENCE_BACKEND_RECONCILIATION_GRACE_SECONDS = 30
 
 
@@ -48,11 +50,7 @@ class LocalInferenceCapacityAdmission(BaseModel):
             "local_inference_capacity_enabled": self.enabled,
             "local_inference_active_count": self.active_count,
             "local_inference_max_concurrency": self.max_concurrency,
-            **(
-                {"local_inference_slot_id": self.slot_id}
-                if self.slot_id is not None
-                else {}
-            ),
+            **({"local_inference_slot_id": self.slot_id} if self.slot_id is not None else {}),
         }
 
 
@@ -84,9 +82,7 @@ class LocalInferenceCapacityStore:
             return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
         normalized_limit = max(1, int(max_concurrency))
         effective_now = now or datetime.now(UTC)
-        launch_cutoff = effective_now - timedelta(
-            seconds=LOCAL_INFERENCE_LAUNCH_TIMEOUT_SECONDS
-        )
+        launch_cutoff = effective_now - timedelta(seconds=LOCAL_INFERENCE_LAUNCH_TIMEOUT_SECONDS)
 
         def updater(
             records: dict[str, LocalInferenceCapacityLease],
@@ -228,6 +224,63 @@ class LocalInferenceCapacityStore:
 
         return self.store.update_all(updater)
 
+    def heartbeat_launching(
+        self,
+        slot_id: str | None,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """Refresh a launch reservation without reviving a released or running lease."""
+
+        normalized_slot_id = str(slot_id or "").strip()
+        if not normalized_slot_id:
+            return False
+        effective_now = now or datetime.now(UTC)
+
+        def updater(records: dict[str, LocalInferenceCapacityLease]) -> bool:
+            record = records.get(normalized_slot_id)
+            if record is None or record.status != "launching":
+                return False
+            record.updated_at = effective_now
+            return True
+
+        return self.store.update_all(updater)
+
+    @contextmanager
+    def maintain_launching(
+        self,
+        slot_id: str | None,
+        *,
+        interval_seconds: float = LOCAL_INFERENCE_LAUNCH_HEARTBEAT_SECONDS,
+    ) -> Iterator[None]:
+        """Keep a reservation fresh while its blocking launch call is alive."""
+
+        normalized_slot_id = str(slot_id or "").strip()
+        if not normalized_slot_id:
+            yield
+            return
+
+        stopped = Event()
+
+        def heartbeat_until_stopped() -> None:
+            interval = max(0.05, float(interval_seconds))
+            while not stopped.wait(interval):
+                if not self.heartbeat_launching(normalized_slot_id):
+                    return
+
+        self.heartbeat_launching(normalized_slot_id)
+        thread = Thread(
+            target=heartbeat_until_stopped,
+            name=f"local-inference-launch-{normalized_slot_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            thread.join()
+
     def reconcile_running(
         self,
         is_active: Callable[[LocalInferenceCapacityLease], bool | None],
@@ -293,6 +346,18 @@ class LocalInferenceCapacityStore:
 
 def local_inference_capacity_store(runtime_dir: str | Path) -> LocalInferenceCapacityStore:
     return LocalInferenceCapacityStore(runtime_dir)
+
+
+@contextmanager
+def maintain_local_inference_launch(
+    runtime_dir: str | Path | None,
+    slot_id: str | None,
+) -> Iterator[None]:
+    if runtime_dir is None or not str(slot_id or "").strip():
+        yield
+        return
+    with local_inference_capacity_store(runtime_dir).maintain_launching(slot_id):
+        yield
 
 
 def local_inference_execution_is_active(status: Any) -> bool | None:

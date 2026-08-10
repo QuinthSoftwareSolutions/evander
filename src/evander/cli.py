@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import importlib
 import asyncio
-import json
+import importlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -27,31 +27,29 @@ from evander.admin.services.issue_setup_helpers import (
     resolve_effective_issue_setup_config,
 )
 from evander.audit import AuditEventType, AuditLogger
-from evander.daemons.ado_issue_worker import run_worker_command
 from evander.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
     resolve_project_dir,
     resolve_runtime_dir,
 )
-from evander.config import GatewayConfig, load_config
 from evander.communication_artifacts import CommunicationArtifactStore
+from evander.config import GatewayConfig, load_config
 from evander.connectors.models import normalize_connector_id
 from evander.connectors.service import ConnectorService, connector_registry_from_addons
-from evander.provider_config import (
-    MODEL_PROVIDER_MODE_METADATA_KEY,
-    normalize_model_provider_mode_override,
-)
-from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
-from evander.messaging.discord_wake import build_discord_wake_worker
-from evander.directories import DirectoryService
+from evander.daemons.ado_issue_worker import run_worker_command
 from evander.daemons.effect_orchestrator import build_effect_orchestrator_worker
 from evander.daemons.proxy_issue_sync import (
     DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS,
     DEFAULT_PROXY_ISSUE_SYNC_INTERVAL_SECONDS,
-    run_once_from_runtime as run_proxy_issue_sync_once,
     run_proxy_issue_sync_worker,
 )
+from evander.daemons.proxy_issue_sync import (
+    run_once_from_runtime as run_proxy_issue_sync_once,
+)
+from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from evander.directories import DirectoryService
+from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.execution import (
     ContainerWorkerExecutionRepository,
     ContainerWorkerVmExecutionBackend,
@@ -60,9 +58,9 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
+from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
-from evander.teams_meeting import TeamsMeetingService
-from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from evander.messaging.teams_auth import TeamsAuthError
 from evander.migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
@@ -71,46 +69,50 @@ from evander.migrations import (
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
 )
-from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
-from evander.repositories.audit_index import (
-    ToolCallAuditIndex,
-    audit_index_path_for_log_path,
+from evander.model_usage import (
+    DEFAULT_MODEL_PRICING_FILENAME,
+    seed_default_model_pricing_catalog,
 )
-from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.models import (
-    AuditEvent,
     ApprovalStatus,
+    AuditEvent,
     DiscordCommandEnvelope,
     EmailMessage,
     SessionManifest,
     ToolName,
 )
-from evander.pr_tracking import PrMapStore
-from evander.model_usage import (
-    DEFAULT_MODEL_PRICING_FILENAME,
-    seed_default_model_pricing_catalog,
-)
+from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
 from evander.policy_config import EffectivePolicyConfig
+from evander.pr_feedback.store import PrFeedbackStore
+from evander.pr_tracking import PrMapStore
+from evander.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+)
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander.repositories.audit_index import (
+    ToolCallAuditIndex,
+    audit_index_path_for_log_path,
+)
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.runtime import build_runtime
 from evander.setup import setup_doctor_payload, setup_plan_payload
 from evander.setup.tui import run_setup_tui
-from evander.repositories.session_manifests import JsonSessionManifestRepository
-from evander.messaging.teams_auth import TeamsAuthError
+from evander.teams_meeting import TeamsMeetingService
 from evander.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from evander.vm_to_container_migration import (
+    build_session_migration_plan,
     copy_vm_session_state,
     create_migration_backup,
     cutover_sessions_to_container,
     default_local_worker_root,
     default_migration_backup_root,
     plan_payload,
-    build_session_migration_plan,
     restore_selected_manifests_from_backup,
     select_sessions_for_migration,
     verify_worker_session_state,
 )
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
-from evander.pr_feedback.store import PrFeedbackStore
 
 _COMMAND_PANELS = {
     "Health and State": 0,
@@ -351,10 +353,7 @@ def team_dispatch_tail(
                     detail = payload.get("error_message") or payload.get(
                         "correction_context_summary"
                     )
-                    line = (
-                        f"{occurred_at} {status} {actor} {dispatch} "
-                        f"{payload.get('tool_name')}"
-                    )
+                    line = f"{occurred_at} {status} {actor} {dispatch} {payload.get('tool_name')}"
                     typer.echo(f"{line} - {detail}" if detail else line)
                 seen.add(row.id)
             if not follow:
@@ -3998,20 +3997,22 @@ def _container_log_delta(previous: str, current: str) -> str:
         return ""
     if not previous:
         return current
-    previous_lines = previous.splitlines()
-    current_lines = current.splitlines()
+    if current.startswith(previous):
+        return current[len(previous) :]
+    previous_lines = previous.splitlines(keepends=True)
+    current_lines = current.splitlines(keepends=True)
     max_overlap = min(len(previous_lines), len(current_lines))
     overlap = 0
     for candidate in range(max_overlap, 0, -1):
         if previous_lines[-candidate:] == current_lines[:candidate]:
             overlap = candidate
             break
-    return "\n".join(current_lines[overlap:])
+    return "".join(current_lines[overlap:])
 
 
 def _container_log_tail(text: str, *, lines: int) -> str:
-    selected = text.splitlines()[-max(1, int(lines)) :]
-    return "\n".join(selected)
+    selected = text.splitlines(keepends=True)[-max(1, int(lines)) :]
+    return "".join(selected)
 
 
 def _observe_container_agent_logs(
@@ -4046,7 +4047,7 @@ def _observe_container_agent_logs(
             else _container_log_tail(current, lines=lines)
         )
         if delta:
-            typer.echo(delta)
+            typer.echo(delta, nl=False)
         previous = current
         initialized = True
         agent = get_agent(
@@ -4226,9 +4227,7 @@ def resume_agent(
     if bool(getattr(result, "queued", False)):
         queue_key = str(getattr(result, "queue_key", None) or "").strip()
         result_message = str(getattr(result, "message", None) or "").strip()
-        typer.echo(
-            result_message or f"Queued prompt for {result_vm_name} (queue_key={queue_key})"
-        )
+        typer.echo(result_message or f"Queued prompt for {result_vm_name} (queue_key={queue_key})")
         if observe:
             typer.echo("Prompt is queued; log observation will be available after dispatch.")
         return
