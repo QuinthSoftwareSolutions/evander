@@ -32,6 +32,7 @@ class HostConfig(BaseModel):
     email_store_path: Path = Path("/var/lib/evander/emails.json")
     email_cursor_store_path: Path = Path("/var/lib/evander/email_cursors.json")
     discord_command_store_path: Path = Path("/var/lib/evander/discord_commands.json")
+    discord_webhook_store_path: Path = Path("/var/lib/evander/discord-webhooks.json")
     directories_store_path: Path = Path("/var/lib/evander/directories.json")
     pr_map_path: Path = Path("/var/lib/evander/pr-map.json")
     host_agent_control_state_path: Path = Path("/var/lib/evander/host-agent-control-state.json")
@@ -50,6 +51,7 @@ class HostConfig(BaseModel):
             "email_store_path": default_runtime_dir / "emails.json",
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+            "discord_webhook_store_path": default_runtime_dir / "discord-webhooks.json",
             "directories_store_path": default_runtime_dir / "directories.json",
             "pr_map_path": default_runtime_dir / "pr-map.json",
             "host_agent_control_state_path": default_runtime_dir / "host-agent-control-state.json",
@@ -88,6 +90,7 @@ class HostConfig(BaseModel):
                 "email_store_path": config.email_store_path,
                 "email_cursor_store_path": config.email_cursor_store_path,
                 "discord_command_store_path": config.discord_command_store_path,
+                "discord_webhook_store_path": config.discord_webhook_store_path,
                 "directories_store_path": config.directories_store_path,
                 "pr_map_path": config.pr_map_path,
                 "host_agent_control_state_path": config.host_agent_control_state_path,
@@ -163,6 +166,7 @@ def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:
             "email_store_path": host_config.email_store_path,
             "email_cursor_store_path": host_config.email_cursor_store_path,
             "discord_command_store_path": host_config.discord_command_store_path,
+            "discord_webhook_store_path": host_config.discord_webhook_store_path,
             "directories_store_path": host_config.directories_store_path,
             "pr_map_path": host_config.pr_map_path,
             "host_agent_control_state_path": host_config.host_agent_control_state_path,

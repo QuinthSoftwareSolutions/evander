@@ -310,6 +310,7 @@ class GatewayConfig(BaseModel):
     email_store_path: Path = Path("/var/lib/evander/emails.json")
     email_cursor_store_path: Path = Path("/var/lib/evander/email_cursors.json")
     discord_command_store_path: Path = Path("/var/lib/evander/discord_commands.json")
+    discord_webhook_store_path: Path = Path("/var/lib/evander/discord-webhooks.json")
     teams_message_store_path: Path = Path("/var/lib/evander/teams_messages.json")
     directories_store_path: Path = Path("/var/lib/evander/directories.json")
     addon_loader: AddonLoaderConfig = Field(default_factory=AddonLoaderConfig)
@@ -984,6 +985,7 @@ class GatewayConfig(BaseModel):
             "email_store_path": default_runtime_dir / "emails.json",
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+            "discord_webhook_store_path": default_runtime_dir / "discord-webhooks.json",
             "teams_message_store_path": default_runtime_dir / "teams_messages.json",
             "teams_meeting_store_path": default_runtime_dir / "teams-meetings.json",
             "teams_delegated_credential_store_path": default_runtime_dir

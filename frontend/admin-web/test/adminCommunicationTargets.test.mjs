@@ -47,6 +47,19 @@ test("communication target editor preserves capability drafts and inserts Teams 
   assert.match(configuration, /Insert target/);
 });
 
+test("Discord communication targets expose resolved identity and shared webhook controls", () => {
+  assert.match(configuration, /policy\.sender_identity === "resolved"/);
+  assert.match(configuration, /policy\.sender_identity = "resolved"/);
+  assert.match(configuration, /Use resolved sender name and avatar/);
+  assert.match(configuration, /\/api\/discord-webhooks\/targets\//);
+  assert.match(configuration, /Discord persona webhook/);
+  assert.match(configuration, />\s*Status\s*</);
+  assert.match(configuration, />\s*Provision\s*</);
+  assert.match(configuration, />\s*Test\s*</);
+  assert.match(configuration, />\s*Recreate\s*</);
+  assert.match(configuration, /!privilegedUnlocked/);
+});
+
 test("email policy mailbox references use structured mailbox and folder selectors", () => {
   assert.match(configuration, /isEmailMailboxFolderPolicyField\(field\)/);
   assert.match(configuration, /<EmailMailboxFolderPolicyEditor/);

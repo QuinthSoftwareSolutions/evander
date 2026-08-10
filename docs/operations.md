@@ -1633,6 +1633,28 @@ Audit/result behavior:
   - Destination `channel_id` must be in `session.discord_channel_allowlist`, either directly or
     through a communication target ID with `write`.
   - `discord_operator_user_allowlist` does not override post destination checks.
+- Optional per-agent sender identity is configured on a saved Discord communication target with
+  `policy.sender_identity = "resolved"`; the default is `"platform"`. Raw channel-ID sends retain
+  the bot identity. Identity providers are add-on extensions: Team Add-on resolves the persistent
+  agent attached to the sending session and returns that agent's display name and avatar.
+- Resolved identities use a host-created incoming webhook scoped to the destination channel. One
+  webhook is shared across agents posting to that channel, so no Discord persona registration and
+  no bot/application per agent is required. Grant the Evander bot permission to manage webhooks in
+  each opted-in channel.
+- The gateway lazily creates the webhook on first resolved-identity send and stores its ID/token in
+  `discord_webhook_store_path` (default `runtime/discord-webhooks.json`, mode `0600`). A stale
+  webhook is recreated once after a Discord `404`. Definite provisioning/delivery failures fall
+  back to the ordinary bot message; transient or ambiguous failures are not duplicated through a
+  second transport.
+- In Admin Web, save the Discord target first, unlock privileged operations, then use the target's
+  Discord persona webhook controls to Provision, Test, or Recreate it. Status is read-only and
+  never returns the webhook token. Recreate stores the replacement before attempting to delete the
+  old webhook.
+- Avatars are copied to a content-addressed host cache and exposed only through a signed public
+  Admin Web URL. Configure `communication_artifact_public_base_url` (or
+  `EVANDER_COMMUNICATION_ARTIFACT_PUBLIC_BASE_URL`) and ensure the gateway and Admin Web share the
+  secret referenced by `communication_artifact_link_secret_env`. Without public-link
+  configuration the name can still be used, but the avatar is omitted with fallback metadata.
 - Reaction precedence for `add_message_reaction`:
   - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`, either
     directly or through a communication target ID with `reply`.

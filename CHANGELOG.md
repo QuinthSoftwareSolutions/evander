@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-10 - Discord Agent Personas
+
+- Added an add-on-extensible outbound identity resolver and per-communication-target Discord
+  persona opt-in without introducing a platform-owned persona registry.
+- Added host-managed, per-channel Discord webhooks that apply a resolved sender name and signed
+  public avatar URL per message, lazily provision and repair credentials, and fall back to normal
+  bot posts on definite webhook failures.
+- Connected Team Add-on persistent agents to the resolver so their configured display names and
+  avatars appear on opted-in Discord sends, and added Admin Web status, provision, test, and
+  recreate controls for the shared channel webhook.
+
 ## 2026-08-10 - Team Agent Context Editor
 
 - Show Idle grace minutes only when an agent uses idle context clearing, update it immediately

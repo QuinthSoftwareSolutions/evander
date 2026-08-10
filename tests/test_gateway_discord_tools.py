@@ -35,6 +35,7 @@ from evander.models import (
     WakeScheduleDefinition,
     ToolName,
 )
+from evander.outbound_identity import OutboundIdentity
 from evander.runtime import build_runtime
 
 
@@ -941,6 +942,89 @@ def test_discord_post_status_resolves_communication_target_id(tmp_path: Path) ->
     assert fake_discord.post_calls == [
         ("Host relay is healthy.", "123456789012345678", "session-1"),
     ]
+
+
+def test_discord_post_status_uses_resolved_identity_for_opted_in_target(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    write_root_communication_targets(
+        context,
+        [
+            {
+                "id": "discord-team",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {
+                    "capabilities": ["write"],
+                    "sender_identity": "resolved",
+                },
+            }
+        ],
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DISCORD_POST_STATUS],
+            discord_channel_allowlist=["discord-team"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class IdentityDiscordService(FakeDiscordService):
+        def __init__(self) -> None:
+            super().__init__(commands=[])
+            self.identity_calls: list[tuple[str, str, str, OutboundIdentity | None, str]] = []
+
+        def post_status_with_identity(
+            self,
+            message: str,
+            channel_id: str,
+            session_id: str,
+            *,
+            identity: OutboundIdentity | None,
+            identity_status: str,
+        ) -> dict[str, str]:
+            self.identity_calls.append(
+                (message, channel_id, session_id, identity, identity_status)
+            )
+            return {
+                "status": "posted",
+                "message_id": "discord-persona-1",
+                "channel_id": channel_id,
+                "session_id": session_id,
+                "identity_status": identity_status,
+            }
+
+    context.register_outbound_identity_resolver(
+        "test",
+        lambda **_: OutboundIdentity(display_name="Team Agent", source="test"),
+    )
+    fake_discord = IdentityDiscordService()
+    set_discord_service(context, fake_discord)
+    result = call_tool(
+        create_server(context),
+        "discord_post_status",
+        {
+            "session_id": "session-1",
+            "channel_id": "discord-team",
+            "message": "Persona post",
+        },
+    )
+
+    assert result["identity_status"] == "resolved"
+    assert len(fake_discord.identity_calls) == 1
+    message, channel_id, session_id, identity, status = fake_discord.identity_calls[0]
+    assert (message, channel_id, session_id, status) == (
+        "Persona post",
+        "123456789012345678",
+        "session-1",
+        "resolved",
+    )
+    assert identity is not None
+    assert identity.display_name == "Team Agent"
+    assert fake_discord.post_calls == []
 
 
 def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:

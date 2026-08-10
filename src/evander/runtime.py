@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 from pathlib import Path
 
 from evander.messaging.agent_prompt_store import AgentPromptStore
+from evander.communication_artifact_links import (
+    communication_artifact_link_secret_env,
+    communication_artifact_public_base_url,
+)
 from evander.audit import AuditLogger
 from evander.directories import DirectoryStore
 from evander.models import (
@@ -83,6 +87,11 @@ from evander.messaging.teams_auth import (
     TeamsDeviceCodeTokenProvider,
 )
 from evander.messaging.wake_store import WakeRequestRepository, WakeRequestStore
+from evander.outbound_identity import (
+    OutboundIdentityRegistry,
+    OutboundIdentityResolution,
+    OutboundIdentityResolver,
+)
 from evander.teams_meeting import (
     TeamsMeetingBridgeClient,
     TeamsMeetingStore,
@@ -175,11 +184,30 @@ class RuntimeContext:
     voice_session_reconciler: VoiceSessionReconciler
     teams_meeting_store: TeamsMeetingStore
     teams_meeting_bridge_client: TeamsMeetingBridgeClient
+    outbound_identity_registry: OutboundIdentityRegistry = field(
+        default_factory=OutboundIdentityRegistry
+    )
     tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
     mcp_transport_bindings: McpTransportBindingRepository | None = None
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
+
+    def register_outbound_identity_resolver(
+        self, source: str, resolver: OutboundIdentityResolver
+    ) -> None:
+        self.outbound_identity_registry.register(source, resolver)
+
+    def resolve_outbound_identity(
+        self, *, session_id: str, provider: str, destination: str
+    ) -> OutboundIdentityResolution:
+        if provider != "discord":
+            return OutboundIdentityResolution(identity=None, status="not_found")
+        return self.outbound_identity_registry.resolve(
+            session_id=session_id,
+            provider="discord",
+            destination=destination,
+        )
 
     def email_service_for_session(self, session_id: str) -> EmailService:
         if not isinstance(self.email_service, EmailService):
@@ -201,6 +229,7 @@ class RuntimeContext:
             self.session_repository,
             self.policy_config,
             session_id=session_id,
+            persona_link_config=self.config,
         )
 
     def discord_inbox_service_for_session(self, session_id: str) -> DiscordInboxService:
@@ -531,6 +560,7 @@ def _build_discord_service(
     policy_config: PolicyConfigResolver,
     *,
     session_id: str | None = None,
+    persona_link_config: GatewayConfig | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(
@@ -549,6 +579,7 @@ def _build_discord_service(
                 "discord backend 'bot_api' requires a bot token in environment variable "
                 f"{env_var_name!r}"
             )
+        link_config = persona_link_config or config
         return DiscordBotApiService(
             command_store,
             token=token,
@@ -575,6 +606,12 @@ def _build_discord_service(
                 else lambda: policy_config.include_operator_dms_for_session_id(session_id)
             ),
             read_reaction_emoji=config.discord_read_reaction_emoji,
+            bot_token_env=env_var_name,
+            webhook_store_path=config.discord_webhook_store_path,
+            runtime_dir=config.runtime_dir,
+            persona_avatar_public_base_url=communication_artifact_public_base_url(link_config),
+            persona_avatar_secret_env=communication_artifact_link_secret_env(link_config),
+            persona_avatar_link_ttl_seconds=link_config.communication_artifact_link_ttl_seconds,
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."

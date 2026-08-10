@@ -12,6 +12,8 @@ import sys
 import types
 from typing import Any
 
+from evander.outbound_identity import OutboundIdentityResolverFactory
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from evander.storage import JsonObjectStore
@@ -137,6 +139,7 @@ class AddonRegistration:
     mcp_tool_catalog: Sequence[AddonMcpTool | Mapping[str, Any]] = field(default_factory=tuple)
     workflow_providers: Any | None = None
     connector_drivers: Mapping[str, Any] = field(default_factory=dict)
+    outbound_identity_resolver: OutboundIdentityResolverFactory | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

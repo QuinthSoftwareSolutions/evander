@@ -13,6 +13,7 @@ from urllib.parse import quote
 from evander.communication_artifacts import validate_artifact_id
 
 PUBLIC_COMMUNICATION_ARTIFACT_DOWNLOAD_PREFIX = "/public/communication-artifacts"
+PUBLIC_COMMUNICATION_PERSONA_AVATAR_PREFIX = "/public/communication-persona-avatars"
 DEFAULT_COMMUNICATION_ARTIFACT_LINK_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -26,6 +27,13 @@ class CommunicationArtifactDownloadLink:
     url: str
     expires_at: datetime
     token: str
+
+
+@dataclass(frozen=True)
+class CommunicationPersonaAvatarLink:
+    sha256: str
+    url: str
+    expires_at: datetime
 
 
 def issue_communication_artifact_download_link(
@@ -79,6 +87,49 @@ def verify_communication_artifact_download_token(
     if expires_at <= current:
         raise CommunicationArtifactLinkError("download token has expired")
     return safe_id
+
+
+def issue_communication_persona_avatar_link(
+    *,
+    sha256: str,
+    public_base_url: str | None,
+    secret_env: str,
+    ttl_seconds: int,
+    now: datetime | None = None,
+) -> CommunicationPersonaAvatarLink:
+    from evander.discord_webhooks import validate_avatar_sha256
+
+    digest = validate_avatar_sha256(sha256)
+    current = _as_utc(now or datetime.now(UTC))
+    expires_at = current + timedelta(seconds=max(1, int(ttl_seconds)))
+    payload = {"kind": "persona_avatar", "sha256": digest, "exp": int(expires_at.timestamp()), "v": 1}
+    token = _encode_signed_payload(payload, _secret_from_env(secret_env))
+    base_url = _normalize_public_base_url(public_base_url)
+    return CommunicationPersonaAvatarLink(
+        sha256=digest,
+        url=(
+            f"{base_url}{PUBLIC_COMMUNICATION_PERSONA_AVATAR_PREFIX}/"
+            f"{quote(digest, safe='')}?token={quote(token, safe='')}"
+        ),
+        expires_at=expires_at,
+    )
+
+
+def verify_communication_persona_avatar_token(
+    *, sha256: str, token: str, secret_env: str, now: datetime | None = None
+) -> str:
+    from evander.discord_webhooks import validate_avatar_sha256
+
+    digest = validate_avatar_sha256(sha256)
+    payload = _decode_signed_payload(token, _secret_from_env(secret_env))
+    if payload.get("kind") != "persona_avatar":
+        raise CommunicationArtifactLinkError("download token has the wrong kind")
+    if validate_avatar_sha256(str(payload.get("sha256") or "")) != digest:
+        raise CommunicationArtifactLinkError("download token does not match avatar")
+    current = int(_as_utc(now or datetime.now(UTC)).timestamp())
+    if int(payload.get("exp") or 0) <= current:
+        raise CommunicationArtifactLinkError("download token has expired")
+    return digest
 
 
 def communication_artifact_link_secret_env(config: Any) -> str:
