@@ -4298,6 +4298,125 @@ def test_assigned_blocker_dispatch_scopes_only_owned_source_task_for_recovery(
     assert owned["errors"][0]["code"] == "task_boundary_blocked"
 
 
+def test_resolving_task_blocker_restores_owner_work_and_enqueues_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task-blocker-recovery", owner_agent_id="worker")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_blocked_task(state):
+        task = state.tasks["task-blocker-recovery"]
+        task.state = TeamTaskState.BLOCKED
+        task.state_entered_at = now
+        task.updated_at = now
+        state.agent_runtimes["worker"].next_wake_at = now + timedelta(minutes=15)
+        state.blockers["blocker-task-recovery"] = TeamBlocker(
+            id="blocker-task-recovery",
+            team_id="team",
+            project_id="project",
+            task_id=task.id,
+            source_kind=TeamBlockerSourceKind.TASK,
+            source_id=task.id,
+            owner_agent_id="backend",
+            route=TeamBlockerRoute.OWNED,
+            summary="Recover the blocked task.",
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_seed_blocked_task)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-resolve-task-blocker")
+
+    state, result = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id="blocker-task-recovery",
+        action="resolve",
+        note="The source input is available again.",
+        request_id="request-resolve-task-blocker",
+    )
+
+    assert result["success"] is True
+    assert result["async_effect_pending"] is True
+    assert state.tasks["task-blocker-recovery"].state == TeamTaskState.IN_PROGRESS
+    assert state.agent_runtimes["worker"].next_wake_at is None
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    assert wake_events[0]["payload"]["reason"] == "task_ready"
+    assert wake_events[0]["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    wake_outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert [record.id for record in wake_outbox_records] == result["outbox_record_ids"]
+    assert wake_outbox_records[0].payload["payload"]["agent_id"] == "worker"
+    _state, immediate_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        respect_wake_interval=False,
+    )
+    assert [lease["agent"]["id"] for lease in immediate_leases] == ["worker"]
+
+
+def test_operator_resolving_task_blocker_restores_owner_work_and_enqueues_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="operator-task-blocker-recovery", owner_agent_id="worker")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_blocked_task(state):
+        task = state.tasks["operator-task-blocker-recovery"]
+        task.state = TeamTaskState.BLOCKED
+        task.state_entered_at = now
+        task.updated_at = now
+        state.agent_runtimes["worker"].next_wake_at = now + timedelta(minutes=15)
+        state.blockers["blocker-operator-task-recovery"] = TeamBlocker(
+            id="blocker-operator-task-recovery",
+            team_id="team",
+            project_id="project",
+            task_id=task.id,
+            source_kind=TeamBlockerSourceKind.TASK,
+            source_id=task.id,
+            owner_agent_id="lead",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="Recover the blocked task as operator.",
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_seed_blocked_task)
+
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="blocker-operator-task-recovery",
+        note="The source input is available again.",
+        operator_actor_id="operator:recovery-test",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["operator-task-blocker-recovery"].state == TeamTaskState.IN_PROGRESS
+    assert state.agent_runtimes["worker"].next_wake_at is None
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    assert wake_events[0]["payload"]["reason"] == "task_ready"
+    assert wake_events[0]["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    wake_outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert len(wake_outbox_records) == 1
+    assert wake_outbox_records[0].payload["payload"]["agent_id"] == "worker"
+
+
 def test_blocker_specific_progress_keeps_owner_and_sets_follow_up(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     blocker_id = _report_explicit_blocker(
@@ -9013,6 +9132,45 @@ def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Pat
     assert state.agents["manager"].session_id == manager_before.session_id
     assert "manager" not in state.agents["manager"].subordinate_agent_ids
     assert state.roles["project__project-lead"].permissions == [RolePermission.CREATE_ROOT_TASK]
+
+
+def test_transfer_project_lead_promotes_existing_manager_overlay(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = _team_admin_service(repo).create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+
+    state = _team_admin_service(repo).transfer_project_lead(
+        project_id="project",
+        lead_agent_id="manager",
+        expected_revision=state.revision,
+    )
+
+    assert state.projects["project"].lead_agent_id == "manager"
+    assert project_lead_agent_id(state, "project") == "manager"
+    assert agent_project_ids(state, "manager") == ["project"]
+    assert agent_project_ids(state, "lead") == ["project"]
+    assignments = {
+        assignment.agent_id: assignment
+        for assignment in state.project_assignments.values()
+        if assignment.project_id == "project"
+    }
+    assert assignments["manager"].kind.value == "project_lead"
+    assert assignments["manager"].role_id == "team__manager"
+    assert assignments["lead"].kind.value == "project_member"
+    assert assignments["lead"].role_id == "project__project-lead"
 
 
 def test_create_project_existing_project_lead_is_assignment_overlay(

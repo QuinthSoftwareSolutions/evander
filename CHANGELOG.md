@@ -1,10 +1,22 @@
 # Changelog
 
+## 2026-08-10 - Team Project-Lead Handoff
+
+- Added a revision-safe Team admin handoff for an existing project's lead overlay, preserving the
+  former lead as a project member so their later retirement can be validated without orphaning the
+  project's lead or assignment records.
+
 ## 2026-08-10 - Team Chat Dispatch Latency
 
 - Made Team prompt-completion reconciliation query only terminal prompt effects and reuse that
   result within a cycle, rather than deserializing the full effect-execution history before chat
   dispatches can be leased.
+
+## 2026-08-10 - Team Blocker Recovery Wake
+
+- Restored a task owner's immediate durable wake whenever a task-backed blocker is resolved,
+  including manager and operator resolution paths, so recovery does not wait for the periodic
+  Team scheduler tick.
 
 ## 2026-08-10 - Team Chat Send Latency
 

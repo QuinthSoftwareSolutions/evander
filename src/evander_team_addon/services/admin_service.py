@@ -196,7 +196,9 @@ from .domain.task_assessment import (
     require_task_can_finish,
 )
 from .domain.task_supervision import queue_parent_resolution_transitions
+from .domain.wake import _append_agent_wake_requested_event
 from .domain.work_due import _mark_agent_work_due
+from .domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from .domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
 )
@@ -738,9 +740,11 @@ class TeamAdminService:
                     "with retry, create_verified_replacement, or "
                     "authorize_verification_waiver"
                 )
-            _prepare_blocker_source_for_resolution(
+            now = utc_now()
+            restored_task_owner_id = _prepare_blocker_source_for_resolution(
                 state,
                 blocker=blocker,
+                now=now,
             )
             route_before_resolution = blocker.route.value
             event = resolve_blocker(
@@ -751,7 +755,22 @@ class TeamAdminService:
                 note=normalized_note,
                 reference_ids=normalized_refs,
                 metadata={"operator_actor_id": normalized_actor_id},
+                now=now,
             )
+            if restored_task_owner_id is not None:
+                _mark_agent_work_due(
+                    state,
+                    agent_id=restored_task_owner_id,
+                    now=now,
+                )
+                _append_agent_wake_requested_event(
+                    state,
+                    agent_id=restored_task_owner_id,
+                    result=result,
+                    reason="task_ready",
+                    now=now,
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                )
             create_rejected_candidate_correction_preparation_recovery_inbox(
                 state,
                 blocker=blocker,
@@ -1839,6 +1858,101 @@ class TeamAdminService:
             next_managed_repo_id=next_managed_repo_id,
             expected_revision=expected_revision,
         )
+
+    def transfer_project_lead(
+        self,
+        *,
+        project_id: str,
+        lead_agent_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        """Transfer a project's lead overlay to an existing active team agent.
+
+        The receiving agent retains their existing role.  Their project assignment
+        is promoted to ``PROJECT_LEAD`` while any previous lead remains a project
+        member, allowing a later, separately validated team removal or archival.
+        """
+
+        normalized_project_id = _required_text(project_id, "project_id")
+        normalized_lead_agent_id = _required_text(lead_agent_id, "lead_agent_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            project = _require_present(state.projects, normalized_project_id, "project")
+            next_lead = _require_present(
+                state.agents,
+                normalized_lead_agent_id,
+                "project lead agent",
+            )
+            if next_lead.team_id != project.team_id:
+                raise ValueError(
+                    f"agent {next_lead.id} does not belong to project team {project.team_id}"
+                )
+            if next_lead.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {next_lead.id} is archived")
+            if next_lead.role_id is None:
+                raise ValueError(f"agent {next_lead.id} has no Team role")
+            role = _require_present(state.roles, next_lead.role_id, "project lead role")
+            _validate_role_assignment(
+                role,
+                team_id=project.team_id,
+                project_ids=sorted(
+                    set(agent_project_ids(state, next_lead.id)).union({project.id})
+                ),
+            )
+
+            now = utc_now()
+            next_lead_assignments = sorted(
+                (
+                    assignment
+                    for assignment in state.project_assignments.values()
+                    if assignment.project_id == project.id
+                    and assignment.agent_id == next_lead.id
+                ),
+                key=lambda assignment: assignment.id,
+            )
+            retained_assignment = (
+                next_lead_assignments[0] if next_lead_assignments else None
+            )
+            if retained_assignment is None:
+                assignment_id = _project_assignment_id(
+                    project.id,
+                    next_lead.id,
+                    AgentProjectAssignmentKind.PROJECT_LEAD,
+                    existing_ids=state.project_assignments,
+                )
+                retained_assignment = AgentProjectAssignment(
+                    id=assignment_id,
+                    team_id=project.team_id,
+                    project_id=project.id,
+                    agent_id=next_lead.id,
+                    role_id=next_lead.role_id,
+                    kind=AgentProjectAssignmentKind.PROJECT_LEAD,
+                    created_at=now,
+                    updated_at=now,
+                )
+                state.project_assignments[assignment_id] = retained_assignment
+            else:
+                for duplicate in next_lead_assignments[1:]:
+                    state.project_assignments.pop(duplicate.id, None)
+                retained_assignment.team_id = project.team_id
+                retained_assignment.role_id = next_lead.role_id
+                retained_assignment.kind = AgentProjectAssignmentKind.PROJECT_LEAD
+                retained_assignment.updated_at = now
+
+            for assignment in state.project_assignments.values():
+                if (
+                    assignment.id != retained_assignment.id
+                    and assignment.project_id == project.id
+                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD
+                ):
+                    assignment.kind = AgentProjectAssignmentKind.PROJECT_MEMBER
+                    assignment.updated_at = now
+
+            project.lead_agent_id = next_lead.id
+            project.updated_at = now
+            return state
+
+        return self._repository.update(_mutate, expected_revision=expected_revision)
 
     def create_git_work_context_with_id(
         self,
