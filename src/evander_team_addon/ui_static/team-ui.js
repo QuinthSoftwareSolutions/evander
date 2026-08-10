@@ -610,6 +610,7 @@ const fieldTooltips = {
   "edit:governance-group:max_cost_usd": "Optional advisory lifetime USD cap for the governed portfolio.",
   "edit:governance-group:archived": "Archived governance groups remain retained but leave active views.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
+  "edit:project:lead_agent_id": "Transfer project-lead authority to an existing agent in this team. The former lead remains a project member.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
   "edit:project:goals": "Replace project goals using id | description | state rows.",
   "edit:project:human_review_enabled": "Require an authenticated, assigned Admin Web reviewer to decide the pinned release candidate.",
@@ -2476,6 +2477,13 @@ function bindRecordEditing() {
         governanceAgendaHandleButton,
         governanceAgendaHandleButton.dataset.governanceAgendaHandleId,
       );
+      return;
+    }
+
+    const transferProjectLeadButton = event.target.closest("[data-transfer-project-lead]");
+    if (transferProjectLeadButton) {
+      event.preventDefault();
+      void transferProjectLead(transferProjectLeadButton.form);
       return;
     }
 
@@ -20265,7 +20273,8 @@ function agentEditSuperiorOptions(select) {
 }
 
 function projectLeadAgentOptions(select) {
-  const teamId = text(select.form?.elements?.team_id?.value);
+  const project = state.projects?.[text(select.form?.dataset?.editId)] || null;
+  const teamId = text(select.form?.elements?.team_id?.value) || text(project?.team_id);
   return projectLeadAgentOptionsForTeam(teamId);
 }
 
@@ -20765,6 +20774,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     [/^\/governance-groups\/([^/]+)$/, "governance_groups"],
     [/^\/governance-agenda\/([^/]+)\/handle$/, "governance_agenda"],
     [/^\/projects\/([^/]+)$/, "projects"],
+    [/^\/projects\/([^/]+)\/lead$/, "projects"],
     [/^\/roles\/([^/]+)$/, "roles"],
     [/^\/agents\/([^/]+)$/, "agents"],
     [/^\/agents\/([^/]+)\/context-rotation$/, "agents"],
@@ -23178,6 +23188,34 @@ async function submitEditForm(form) {
   }
 }
 
+async function transferProjectLead(form) {
+  if (!guardTeamMutation("transfer project leads")) {
+    return;
+  }
+  const projectId = text(form?.dataset?.editId);
+  const project = state.projects?.[projectId];
+  const leadAgentId = text(form?.elements?.lead_agent_id?.value);
+  if (!project || !leadAgentId) {
+    setStatus("Select a project lead to transfer authority.", "error");
+    return;
+  }
+  if (leadAgentId === text(project.lead_agent_id)) {
+    setStatus("That agent is already the project lead.", "warning");
+    return;
+  }
+  const transferred = await submitMutation(
+    form,
+    `/projects/${encodeURIComponent(projectId)}/lead`,
+    "POST",
+    { lead_agent_id: leadAgentId },
+    { resetOnSuccess: false },
+  );
+  if (transferred) {
+    clearFormDraft(form);
+    closeEditDialog();
+  }
+}
+
 function recordForEdit(type, id) {
   if (type === "team") return state.teams[id] || null;
   if (type === "governance-group") return state.governance_groups[id] || null;
@@ -23262,6 +23300,14 @@ function renderEditFields(type, record) {
         rows: 4,
         placeholder: "id | description | state",
       })}
+      <fieldset>
+        <legend>Project lead handoff</legend>
+        ${selectField("Project lead", "lead_agent_id", "project-lead-agents", record.lead_agent_id || "", { required: true, placeholder: "Select team agent" })}
+        <p class="field-help">Transfer authority separately from other project edits. The former lead remains a project member.</p>
+        <div class="record-actions">
+          <button type="button" data-transfer-project-lead>Transfer project lead</button>
+        </div>
+      </fieldset>
       <p class="subheading">Git config</p>
       ${textField("Repository source", "repo_source", "", {
         placeholder: "Git URL or local checkout",

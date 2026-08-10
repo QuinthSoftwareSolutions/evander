@@ -250,6 +250,18 @@ def test_project_git_editor_exposes_distinct_agent_commit_identities() -> None:
     )
 
 
+def test_project_editor_exposes_revision_safe_lead_handoff() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'selectField("Project lead", "lead_agent_id", "project-lead-agents"' in source
+    assert "data-transfer-project-lead" in source
+    assert "async function transferProjectLead(form)" in source
+    assert "`/projects/${encodeURIComponent(projectId)}/lead`" in source
+    assert '[/^\\/projects\\/([^/]+)\\/lead$/, "projects"]' in source
+
+
 def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

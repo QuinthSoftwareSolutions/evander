@@ -10,6 +10,8 @@
 - Added a revision-safe Team admin handoff for an existing project's lead overlay, preserving the
   former lead as a project member so their later retirement can be validated without orphaning the
   project's lead or assignment records.
+- Exposed that handoff through a revision-aware Admin API endpoint and a dedicated project editor
+  action, so operators can transfer lead authority without combining it with unrelated edits.
 
 ## 2026-08-10 - Team Chat Dispatch Latency
 
@@ -35,6 +37,8 @@
   the first automatic renewal now occurs only at a later UTC month boundary.
 - Treated a zero-valued active budget window as authoritative for governance warnings, preventing
   lifetime spend from producing a stale warning after a reset or renewal.
+- Roll overdue UTC-monthly windows forward before cost reads and inside budget mutations, so
+  reporting and cap status reflect the current month even when no Team wake has run.
 
 ## 2026-08-10 - Graph Email Trigger Reliability
 

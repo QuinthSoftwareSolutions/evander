@@ -432,6 +432,7 @@ def _team_costs_payload(
     *,
     backfill_transcripts: bool,
 ) -> dict[str, Any]:
+    TeamAdminService(repository).advance_team_cost_budget_windows()
     state = repository.read()
     service = TeamCostService(
         runtime_dir=context.runtime_dir,
@@ -989,6 +990,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 set_release_policy=(has_release_policy or re_resolve_existing_release_policy),
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
+                expected_revision=expected_revision,
+            ),
+            target_collection="projects",
+            target_id=project_id,
+        )
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def transfer_project_lead(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        project_id = request.path_params["project_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.transfer_project_lead(
+                project_id=project_id,
+                lead_agent_id=_required(payload, "lead_agent_id"),
                 expected_revision=expected_revision,
             ),
             target_collection="projects",
@@ -3773,6 +3789,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
         route("/projects", create_project, methods=["POST"]),
         route("/projects/git/import", import_project_git_repo, methods=["POST"]),
+        route("/projects/{project_id}/lead", transfer_project_lead, methods=["POST"]),
         route("/projects/{project_id}", patch_project, methods=["PATCH"]),
         route("/roles", create_role, methods=["POST"]),
         route("/roles", list_roles, methods=["GET"]),

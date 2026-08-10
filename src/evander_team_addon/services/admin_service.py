@@ -268,6 +268,34 @@ def _next_utc_month_start(value: datetime) -> datetime:
     return datetime(normalized.year, normalized.month + 1, 1, tzinfo=UTC)
 
 
+def _advance_team_cost_budget_window(team: Team, *, now: datetime) -> bool:
+    if (
+        team.max_cost_usd is None
+        or team.cost_budget_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
+    ):
+        return False
+    active_window = _active_team_cost_budget_window(team)
+    if active_window is None:
+        # A pre-window Team stays lifetime-based until an operator resets it.
+        return False
+    effective_now = now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    next_boundary = _next_utc_month_start(active_window.started_at)
+    if active_window.monthly_renewal_not_before is not None:
+        next_boundary = max(next_boundary, active_window.monthly_renewal_not_before)
+    advanced = False
+    while next_boundary <= effective_now:
+        _open_team_cost_budget_window(
+            team,
+            now=next_boundary,
+            kind=TeamCostBudgetWindowKind.MONTHLY_RENEWAL,
+            actor="system:team-cost-budget-renewal",
+            reason="UTC monthly cost budget renewal.",
+        )
+        next_boundary = _next_utc_month_start(next_boundary)
+        advanced = True
+    return advanced
+
+
 def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
     if agent_id is not None:
         return TeamMemoryScope.AGENT_PRIVATE.value
@@ -1251,6 +1279,8 @@ class TeamAdminService:
 
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, team_id, "team")
+            mutation_now = utc_now()
+            _advance_team_cost_budget_window(team, now=mutation_now)
             if (
                 normalized_manager_agent_id is not None
                 and normalized_manager_agent_id != team.manager_agent_id
@@ -1345,7 +1375,7 @@ class TeamAdminService:
                     # current manual window.  Its first monthly renewal is the next
                     # UTC month boundary after this edit.
                     active_window.monthly_renewal_not_before = _next_utc_month_start(
-                        utc_now()
+                        mutation_now
                     )
             if set_max_cost_usd:
                 previous_max_cost_usd = team.max_cost_usd
@@ -1353,13 +1383,13 @@ class TeamAdminService:
                 if previous_max_cost_usd is None and team.max_cost_usd is not None:
                     _open_team_cost_budget_window(
                         team,
-                        now=utc_now(),
+                        now=mutation_now,
                         kind=TeamCostBudgetWindowKind.CONFIGURED,
                         actor="operator:team-config",
                         reason="Cost budget configured.",
                     )
                 elif previous_max_cost_usd is not None and team.max_cost_usd is None:
-                    _close_active_team_cost_budget_window(team, ended_at=utc_now())
+                    _close_active_team_cost_budget_window(team, ended_at=mutation_now)
             if set_cost_warning_ratio:
                 team.cost_warning_ratio = _cost_warning_ratio(cost_warning_ratio)
             if escalate_to_governance is not None:
@@ -1370,7 +1400,7 @@ class TeamAdminService:
                     for agent in state.agents.values():
                         if agent.team_id == team_id:
                             agent.status = AgentStatus.ARCHIVED
-            team.updated_at = utc_now()
+            team.updated_at = mutation_now
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
@@ -1392,6 +1422,7 @@ class TeamAdminService:
             if team.max_cost_usd is None:
                 raise ValueError("team has no configured max_cost_usd to reset")
             now = utc_now()
+            _advance_team_cost_budget_window(team, now=now)
             _open_team_cost_budget_window(
                 team,
                 now=now,
@@ -1413,34 +1444,7 @@ class TeamAdminService:
 
         def _mutate(state: TeamState) -> TeamState:
             for team in state.teams.values():
-                if (
-                    team.max_cost_usd is None
-                    or team.cost_budget_renewal_mode
-                    != TeamCostBudgetRenewalMode.MONTHLY_UTC
-                ):
-                    continue
-                active_window = _active_team_cost_budget_window(team)
-                if active_window is None:
-                    # A pre-window Team stays lifetime-based until an operator resets it.
-                    continue
-                next_boundary = _next_utc_month_start(active_window.started_at)
-                if active_window.monthly_renewal_not_before is not None:
-                    next_boundary = max(
-                        next_boundary,
-                        active_window.monthly_renewal_not_before,
-                    )
-                advanced = False
-                while next_boundary <= effective_now:
-                    _open_team_cost_budget_window(
-                        team,
-                        now=next_boundary,
-                        kind=TeamCostBudgetWindowKind.MONTHLY_RENEWAL,
-                        actor="system:team-cost-budget-renewal",
-                        reason="UTC monthly cost budget renewal.",
-                    )
-                    next_boundary = _next_utc_month_start(next_boundary)
-                    advanced = True
-                if advanced:
+                if _advance_team_cost_budget_window(team, now=effective_now):
                     team.updated_at = effective_now
             return state
 

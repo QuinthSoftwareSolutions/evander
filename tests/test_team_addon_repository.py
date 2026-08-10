@@ -9802,6 +9802,41 @@ def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
     assert costs_module._current_team_budget_window(team, now=switched_at)["started_at"] == configured_at
 
 
+def test_team_budget_mutation_rolls_an_overdue_monthly_window_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_at = datetime(2026, 1, 15, tzinfo=UTC)
+    mutated_at = datetime(2026, 3, 2, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: configured_at)
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: mutated_at)
+    state = admin.update_team(
+        team_id="team",
+        max_cost_usd="12.00",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+
+    windows = state.teams["team"].cost_budget_windows
+    assert [window.started_at for window in windows] == [
+        configured_at,
+        datetime(2026, 2, 1, tzinfo=UTC),
+        datetime(2026, 3, 1, tzinfo=UTC),
+    ]
+    assert windows[-1].ended_at is None
+    assert state.teams["team"].max_cost_usd == 12
+
+
 def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 

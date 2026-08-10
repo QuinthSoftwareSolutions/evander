@@ -1437,6 +1437,10 @@ def _current_team_budget_window(team: Any | None, *, now: datetime) -> dict[str,
         monthly_renewal_not_before = getattr(active, "monthly_renewal_not_before", None)
         if monthly_renewal_not_before is not None:
             ends_at = max(ends_at, _ensure_utc(monthly_renewal_not_before))
+        effective_now = _ensure_utc(now)
+        while ends_at <= effective_now:
+            started_at = ends_at
+            ends_at = _next_utc_month_start(started_at)
     else:
         ends_at = None
         renewal_mode = "manual"

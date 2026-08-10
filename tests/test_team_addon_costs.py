@@ -360,6 +360,58 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
     assert team_cost["cost_limit_reached"] is True
 
 
+def test_team_costs_derive_the_current_month_from_a_stale_active_window(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="2.50",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+
+    def _backdate_window(state):
+        state.teams["team"].cost_budget_windows[-1].started_at = datetime(
+            2026, 1, 15, tzinfo=UTC
+        )
+        return state
+
+    repo.update(_backdate_window)
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "january",
+            session_id="session-manager",
+            occurred_at=datetime(2026, 1, 20, tzinfo=UTC),
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "march",
+            session_id="session-manager",
+            occurred_at=datetime(2026, 3, 2, tzinfo=UTC),
+        )
+    )
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(
+        backfill_transcripts=False,
+        now=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+
+    team_cost = payload["team_costs"]["team"]
+    assert team_cost["lifetime_estimated_cost"] == 2.0
+    assert team_cost["budget_window_estimated_cost"] == 1.0
+    assert team_cost["budget_window_events_count"] == 1
+    assert team_cost["budget_window_started_at"] == "2026-03-01T00:00:00Z"
+    assert team_cost["budget_window_ends_at"] == "2026-04-01T00:00:00Z"
+
+
 def test_team_cost_budget_reset_preserves_lifetime_cost_but_reopens_the_cap(
     tmp_path: Path,
 ) -> None:
