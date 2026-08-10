@@ -10,6 +10,8 @@ import pytest
 from pydantic import ValidationError
 
 import evander_team_addon.services.domain.common as team_domain_common
+import evander_team_addon.services.admin_service as admin_service_module
+import evander_team_addon.costs as costs_module
 from evander_team_addon.models import (
     AgentTask,
     AgentAvatar,
@@ -9613,6 +9615,33 @@ def test_team_cost_budget_windows_persist_resets_and_monthly_renewals(
     ]
     reloaded = TeamStateRepository(tmp_path).read().teams["team"]
     assert reloaded.cost_budget_windows[-1].reason == "UTC monthly cost budget renewal."
+
+
+def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_at = datetime(2026, 7, 15, tzinfo=UTC)
+    switched_at = datetime(2026, 8, 10, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: configured_at)
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="10.00", set_max_cost_usd=True)
+
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: switched_at)
+    admin.update_team(
+        team_id="team",
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+    admin.advance_team_cost_budget_windows(now=switched_at)
+
+    team = repo.read().teams["team"]
+    active_window = team.cost_budget_windows[-1]
+    assert active_window.started_at == configured_at
+    assert active_window.ended_at is None
+    assert active_window.monthly_renewal_not_before == datetime(2026, 9, 1, tzinfo=UTC)
+    assert costs_module._current_team_budget_window(team, now=switched_at)["started_at"] == configured_at
 
 
 def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:

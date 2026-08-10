@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-10 - Team Cost Budget Window Corrections
+
+- Kept an active manual cost window intact when an operator changes it to UTC-monthly renewal;
+  the first automatic renewal now occurs only at a later UTC month boundary.
+- Treated a zero-valued active budget window as authoritative for governance warnings, preventing
+  lifetime spend from producing a stale warning after a reset or renewal.
+
 ## 2026-08-10 - Graph Email Trigger Reliability
 
 - Used Microsoft Graph's supported message-delta date filter for fallback polling and kept the

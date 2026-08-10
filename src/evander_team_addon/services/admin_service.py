@@ -1311,6 +1311,23 @@ class TeamAdminService:
                 team.name = name
             if set_operator_communication_target_id:
                 team.operator_communication_target_id = operator_communication_target_id
+            if set_cost_budget_renewal_mode:
+                previous_renewal_mode = team.cost_budget_renewal_mode
+                team.cost_budget_renewal_mode = _cost_budget_renewal_mode(
+                    cost_budget_renewal_mode
+                )
+                active_window = _active_team_cost_budget_window(team)
+                if (
+                    previous_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
+                    and team.cost_budget_renewal_mode == TeamCostBudgetRenewalMode.MONTHLY_UTC
+                    and active_window is not None
+                ):
+                    # A mode change must not retroactively discard spend from the
+                    # current manual window.  Its first monthly renewal is the next
+                    # UTC month boundary after this edit.
+                    active_window.monthly_renewal_not_before = _next_utc_month_start(
+                        utc_now()
+                    )
             if set_max_cost_usd:
                 previous_max_cost_usd = team.max_cost_usd
                 team.max_cost_usd = _optional_cost_limit(max_cost_usd)
@@ -1326,10 +1343,6 @@ class TeamAdminService:
                     _close_active_team_cost_budget_window(team, ended_at=utc_now())
             if set_cost_warning_ratio:
                 team.cost_warning_ratio = _cost_warning_ratio(cost_warning_ratio)
-            if set_cost_budget_renewal_mode:
-                team.cost_budget_renewal_mode = _cost_budget_renewal_mode(
-                    cost_budget_renewal_mode
-                )
             if escalate_to_governance is not None:
                 team.escalate_to_governance = bool(escalate_to_governance)
             if archived is not None:
@@ -1392,6 +1405,11 @@ class TeamAdminService:
                     # A pre-window Team stays lifetime-based until an operator resets it.
                     continue
                 next_boundary = _next_utc_month_start(active_window.started_at)
+                if active_window.monthly_renewal_not_before is not None:
+                    next_boundary = max(
+                        next_boundary,
+                        active_window.monthly_renewal_not_before,
+                    )
                 advanced = False
                 while next_boundary <= effective_now:
                     _open_team_cost_budget_window(

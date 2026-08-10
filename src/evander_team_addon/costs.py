@@ -1433,10 +1433,10 @@ def _current_team_budget_window(team: Any | None, *, now: datetime) -> dict[str,
     raw_renewal_mode = getattr(team, "cost_budget_renewal_mode", "manual")
     renewal_mode = str(getattr(raw_renewal_mode, "value", raw_renewal_mode))
     if renewal_mode == "monthly_utc":
-        month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
-        if month_start > started_at:
-            started_at = month_start
         ends_at = _next_utc_month_start(started_at)
+        monthly_renewal_not_before = getattr(active, "monthly_renewal_not_before", None)
+        if monthly_renewal_not_before is not None:
+            ends_at = max(ends_at, _ensure_utc(monthly_renewal_not_before))
     else:
         ends_at = None
         renewal_mode = "manual"
@@ -1492,10 +1492,13 @@ def _governance_group_costs(
                 continue
             max_cost = _optional_decimal(team_cost.get("max_cost_usd"))
             if max_cost is not None and max_cost > 0:
+                window_estimated = _optional_decimal(
+                    team_cost.get("budget_window_estimated_cost")
+                )
                 team_estimated = (
-                    _optional_decimal(team_cost.get("budget_window_estimated_cost"))
-                    or _optional_decimal(team_cost.get("estimated_cost"))
-                    or Decimal("0")
+                    window_estimated
+                    if window_estimated is not None
+                    else _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
                 )
                 warning_ratio = _optional_decimal(
                     getattr(state.teams.get(team_id), "cost_warning_ratio", None)

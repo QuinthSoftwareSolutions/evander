@@ -632,6 +632,7 @@ class TeamCostBudgetWindow(TeamModel):
     actor: str
     reason: str
     max_cost_usd: Decimal = Field(ge=Decimal("0"))
+    monthly_renewal_not_before: datetime | None = None
 
     @field_validator("id", "actor", "reason", mode="before")
     @classmethod

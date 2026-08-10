@@ -405,6 +405,41 @@ def test_team_cost_budget_reset_preserves_lifetime_cost_but_reopens_the_cap(
     assert cost["cost_limit_reached"] is False
 
 
+def test_governance_cost_warning_uses_an_empty_reset_window_over_lifetime_spend(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="1.00", set_max_cost_usd=True)
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+    )
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event("first", session_id="session-manager", occurred_at=window_start)
+    )
+    admin.reset_team_cost_budget(
+        team_id="team",
+        reason="Approved the next unit of work.",
+        operator_actor_id="operator:jonathan",
+    )
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    assert payload["team_costs"]["team"]["budget_window_estimated_cost"] == 0.0
+    assert payload["governance_group_costs"]["portfolio"]["member_team_cap_warning_ids"] == []
+
+
 def test_legacy_team_cap_stays_lifetime_based_until_its_first_reset(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_team(runtime_dir)
